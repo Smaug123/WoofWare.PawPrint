@@ -1389,16 +1389,21 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-        let source =
-            pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state
+        match pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path it links from" u
+            |> Some
+        | Ok source ->
 
         match UnixNamespace.linkSourcePhase source state.Kernel.System with
         | Error refusal -> answer (Error refusal)
         | Ok (LinkProgress.Answered syscallAnswer) -> answer (Ok (syscallAnswer, state.Kernel.System))
         | Ok (LinkProgress.NeedsDestination paused) ->
-            pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state
-            |> fun destination -> UnixNamespace.linkWithDestination destination paused
-            |> answer
+            match pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path of the link it makes" u
+                |> Some
+            | Ok destination -> UnixNamespace.linkWithDestination destination paused |> answer
 
     /// `SystemNative_SymLink`, whose two pathnames are read as `rename`'s are:
     /// the link's own pathname not until the kernel has copied the target in
@@ -1421,15 +1426,20 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-        let target =
-            pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state
+        match pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the target of the link it makes" u
+            |> Some
+        | Ok target ->
 
         match UnixNamespace.symlinkTargetPhase target state.Kernel.System with
         | SymlinkProgress.Answered syscallAnswer -> answer (Ok (syscallAnswer, state.Kernel.System))
         | SymlinkProgress.NeedsPath paused ->
-            pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state
-            |> fun path -> UnixNamespace.symlinkWithPath path paused
-            |> answer
+            match pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path of the link it makes" u
+                |> Some
+            | Ok path -> UnixNamespace.symlinkWithPath path paused |> answer
 
     /// The `major.minor` at the start of a kernel release string, read as
     /// `sscanf(release, "%u.%u", &major, &minor)` reads it into two zeroes: a
@@ -6258,8 +6268,9 @@ module NativeSystemNative =
                             $"%s{operation}: fd %d{fd}: a send ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
 
             // The bytes of the caller's buffer from `offset` on, `count` of
-            // them, which the kernel has said it will read.
-            let extract (fd : int) (offset : int) (count : int) : ImmutableArray<byte> =
+            // them, which the kernel has said it will read. `Error` with a byte
+            // nothing wrote, which the send would put on the wire.
+            let extract (fd : int) (offset : int) (count : int) : Result<ImmutableArray<byte>, UndefinedValue> =
                 let source =
                     match BufferPointer.dereferenceable buffer with
                     | Some source -> source
@@ -6268,6 +6279,10 @@ module NativeSystemNative =
                             $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
                 readBytesThrough ctx operation (bufferFieldAt ctx operation source offset state) count state
+
+            let unwritten (u : UndefinedValue) : NativeHandlerResult option =
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the buffer it sends" u
+                |> Some
 
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Write`, which finishes a send as it finishes a write.
@@ -6278,7 +6293,11 @@ module NativeSystemNative =
                 match UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System with
                 | Error refusal -> refusedFinishing fd refusal
                 | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-                    match UnixReadWrite.finishWrite ctx.Thread (extract fd offset count) admitted with
+                    match extract fd offset count with
+                    | Error u -> unwritten u
+                    | Ok bytes ->
+
+                    match UnixReadWrite.finishWrite ctx.Thread bytes admitted with
                     | Error refusal -> refusedFinishing fd refusal
                     | Ok outcome -> finish fd outcome
                 | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
@@ -6335,10 +6354,17 @@ module NativeSystemNative =
             // A blocking send with room for part of it: the part is read now,
             // and the rest only as the connection takes it.
             | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
-                UnixReadWrite.sendThenSleep ctx.Thread fd total (extract fd 0 count) flags admitted
-                |> finish fd
+                match extract fd 0 count with
+                | Error u -> unwritten u
+                | Ok bytes ->
+                    UnixReadWrite.sendThenSleep ctx.Thread fd total bytes flags admitted
+                    |> finish fd
             | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
-                match UnixReadWrite.send ctx.Thread fd (extract fd 0 count) flags admitted with
+                match extract fd 0 count with
+                | Error u -> unwritten u
+                | Ok bytes ->
+
+                match UnixReadWrite.send ctx.Thread fd bytes flags admitted with
                 | Error refusal -> refusedSending fd refusal
                 | Ok outcome -> finish fd outcome
         // `int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t*
@@ -6430,8 +6456,11 @@ module NativeSystemNative =
                     complete (UnixErrorPal.toPal UnixError.EINVAL) state
                 else
 
-                let value =
-                    readBytesThrough ctx operation (requireStorage operation "optionValue" valueArgument) 4 state
+                match readBytesThrough ctx operation (requireStorage operation "optionValue" valueArgument) 4 state with
+                | Error u ->
+                    NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the option value it sets" u
+                    |> Some
+                | Ok value ->
 
                 let value = BinaryPrimitives.ReadInt32LittleEndian (value.AsSpan ())
 
@@ -6462,10 +6491,16 @@ module NativeSystemNative =
                             failwith
                                 $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
 
-                    Some (readBytesThrough ctx operation storage count state)
+                    readBytesThrough ctx operation storage count state |> Result.map Some
                 | Ok SetSockOptAdmission.NoCopy
                 | Ok (SetSockOptAdmission.Answered _)
-                | Error _ -> None
+                | Error _ -> Ok None
+
+            match supplied with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the option value it sets" u
+                |> Some
+            | Ok supplied ->
 
             match UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix with
             | Error (SocketOptionRefusal.Buffer refusal) ->
@@ -6516,8 +6551,13 @@ module NativeSystemNative =
             // screen.
             let lengthCell = requireStorage operation "optionLen" lengthArgument
 
-            let declared =
-                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+            match readBytesThrough ctx operation lengthCell 4 state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the option length it reads" u
+                |> Some
+            | Ok declared ->
+
+            let declared = BinaryPrimitives.ReadInt32LittleEndian (declared.AsSpan ())
 
             if declared < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
@@ -6626,9 +6666,13 @@ module NativeSystemNative =
 
             let platform = state.Kernel.UnixPlatform
 
-            let option =
-                readBytesThrough ctx operation (requireStorage operation "option" optionArgument) 8 state
-                |> SocketOptionPal.decodeLingerOption
+            match readBytesThrough ctx operation (requireStorage operation "option" optionArgument) 8 state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the linger option it sets" u
+                |> Some
+            | Ok option ->
+
+            let option = SocketOptionPal.decodeLingerOption option
 
             if
                 option.OnOff <> 0

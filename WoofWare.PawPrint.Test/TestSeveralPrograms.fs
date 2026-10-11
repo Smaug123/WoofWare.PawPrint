@@ -162,6 +162,8 @@ static class Out
                     EndedInOrder = List.rev ended
                 },
                 None
+            | MultiStepOutcome.StoppedAtUndefinedValue (_, pid, _, observation) ->
+                failwith $"process %O{pid} stopped at %O{observation}"
 
         go driver 0 [] []
 
@@ -173,6 +175,8 @@ static class Out
     let private outcomeOf (runEnd : RunEnd) : RunOutcome =
         match runEnd with
         | RunEnd.Ended outcome -> outcome
+        | RunEnd.StoppedAtUndefinedValue (_, _, observation) ->
+            failwith $"expected the program to end, but it stopped at %O{observation}"
 
     let private stdoutOf (runEnd : RunEnd) : byte[] =
         (RunOutcome.state (outcomeOf runEnd)).Kernel.OutputLog
@@ -499,10 +503,11 @@ public static class Program
                     (fst (KernelConfig.split KernelConfig.Default))
                     [ launch "Trivial.cs" image ]
             with
-            | [ pid, runEnd ] ->
+            | MultiRunEnd.Finished [ pid, runEnd ] ->
                 pid |> shouldEqual KernelConfig.Default.ProcessId
                 outcomeOf runEnd
-            | other -> failwith $"expected one program's end, got %A{other}"
+            | MultiRunEnd.Finished other -> failwith $"expected one program's end, got %A{other}"
+            | MultiRunEnd.StoppedAtUndefinedValue (_, _, _, observation) -> failwith $"stopped at %O{observation}"
 
         match expected, actual with
         | RunOutcome.NormalExit (expected, _, expectedTermination), RunOutcome.NormalExit (actual, _, actualTermination) ->
@@ -654,13 +659,15 @@ public static class Program
                 ]
 
         match ends with
-        | [ (_, listener) ; (_, connector) ] ->
+        | MultiRunEnd.StoppedAtUndefinedValue (_, pid, _, observation) ->
+            failwith $"process %O{pid} stopped at %O{observation}"
+        | MultiRunEnd.Finished [ (_, listener) ; (_, connector) ] ->
             match outcomeOf listener, outcomeOf connector with
             | RunOutcome.NormalExit (listener, _, _), RunOutcome.NormalExit (connector, _, _) ->
                 (listener.LatchedExitCode, connector.LatchedExitCode) |> shouldEqual (0, 0)
             | listener, connector ->
                 failwith $"expected both programs to exit normally, got %O{listener} and %O{connector}"
-        | other -> failwith $"expected two programs' ends, got %A{other}"
+        | MultiRunEnd.Finished other -> failwith $"expected two programs' ends, got %A{other}"
 
     [<Test>]
     let ``a listener and a connector, as two processes on one machine, both exit 0`` () : unit =
@@ -736,3 +743,76 @@ public static class Program
         |> List.pairwise
         |> List.forall (fun (before, after) -> before <> after)
         |> shouldEqual true
+
+    let private undefinedBranchSource : string =
+        """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+public static class Program
+{
+    public static unsafe int Main()
+    {
+        bool* flags = stackalloc bool[1];
+        Out.Text("about to branch");
+        if (flags[0]) return 1;
+        return 0;
+    }
+}
+"""
+
+    /// A stop at an undefined value stops the whole machine, whichever program used it, and is
+    /// reported at the driver as the tick found it: stepping that driver again makes the same
+    /// choice of program and stops at the same use.
+    [<Test>]
+    let ``an undefined value one program uses stops the machine, at a driver that stops there again`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestSeveralPrograms"
+
+        for choice in
+            [
+                ProgramChoice.RoundRobin
+                ProgramChoice.Seeded 7UL
+                ProgramChoice.Seeded 8UL
+            ] do
+            let driver =
+                MultiProgram.start
+                    loggerFactory
+                    (machineConfig choice)
+                    [
+                        launch "Exits.cs" (compile (pidSource "exits:"))
+                        launch "Branches.cs" (compile undefinedBranchSource)
+                    ]
+
+            let branching = driver.Launched.[1]
+
+            let rec go (driver : MultiProgram) =
+                match MultiProgram.step loggerFactory logger driver with
+                | MultiStepOutcome.Stepped (driver, _, _) -> go driver
+                | MultiStepOutcome.StoppedAtUndefinedValue (stopped, pid, thread, observation) ->
+                    stopped, pid, thread, observation
+                | MultiStepOutcome.Finished (ends, _) ->
+                    failwith $"%O{choice}: expected a stop at the branch, but every program ended: %A{ends}"
+                | MultiStepOutcome.Deadlocked (_, stuck) -> failwith $"%O{choice}: deadlocked: %A{stuck}"
+
+            let stopped, pid, thread, observation = go driver
+            pid |> shouldEqual branching
+
+            match observation.Use with
+            | UndefinedValueUse.Operand (method, _, _, _) -> method.Name |> shouldEqual "Main"
+            | other -> failwith $"%O{choice}: expected Main's branch to use the value, got %O{other}"
+
+            match MultiProgram.step loggerFactory logger stopped with
+            | MultiStepOutcome.StoppedAtUndefinedValue (stoppedAgain, pidAgain, threadAgain, again) ->
+                // Nothing of the tick that found the stop, not even the global tick its preamble
+                // advances, is carried into it.
+                stoppedAgain.Current.State.Kernel.StepCounter
+                |> shouldEqual stopped.Current.State.Kernel.StepCounter
+
+                pidAgain |> shouldEqual pid
+                threadAgain |> shouldEqual thread
+                again.Value |> shouldEqual observation.Value
+                string again.Use |> shouldEqual (string observation.Use)
+            | _ -> failwith $"%O{choice}: stepping the stopped driver again did not stop at %O{observation}"

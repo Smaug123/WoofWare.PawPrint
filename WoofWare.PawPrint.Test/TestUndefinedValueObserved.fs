@@ -1514,3 +1514,297 @@ unsafe class Program
                     index |> shouldEqual 2
                 | other -> failwith $"expected the span constructor's argument, got %O{other}"
             )
+
+    /// A guest whose `Main` is `body`, beside `declarations`.
+    let private nativeCallSource (declarations : string) (body : string) : string =
+        $"""
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{{
+%s{declarations}
+
+    static int Main(string[] args)
+    {{
+%s{body}
+    }}
+}}
+"""
+
+    let private linkDeclaration =
+        """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Link", SetLastError = true)]
+    static extern int Link(byte* source, byte* linkTarget);
+"""
+
+    let private symLinkDeclaration =
+        """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SymLink", SetLastError = true)]
+    static extern int SymLink(byte* target, byte* linkPath);
+"""
+
+    [<Test>]
+    let ``A link whose source path has an unwritten byte ends the run at the link`` () : unit =
+        let source =
+            nativeCallSource
+                linkDeclaration
+                """
+        byte* from = stackalloc byte[3];
+        from[0] = (byte)'f';
+        from[2] = 0;
+        byte* to = stackalloc byte[2];
+        to[0] = (byte)'g';
+        to[1] = 0;
+        return Link(from, to) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedLinkSource.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "Link" "the path it links from" observation
+            )
+
+    [<Test>]
+    let ``A link whose new path has an unwritten byte ends the run where the kernel copies it in`` () : unit =
+        let source =
+            nativeCallSource
+                linkDeclaration
+                """
+        File.WriteAllText("f", "x");
+        byte* from = stackalloc byte[2];
+        from[0] = (byte)'f';
+        from[1] = 0;
+        // Read only once the source has resolved to a file.
+        byte* to = stackalloc byte[3];
+        to[0] = (byte)'g';
+        to[2] = 0;
+        return Link(from, to) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedLinkTarget.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "Link" "the path of the link it makes" observation
+            )
+
+    [<Test>]
+    let ``A symbolic link whose target has an unwritten byte ends the run at the link`` () : unit =
+        let source =
+            nativeCallSource
+                symLinkDeclaration
+                """
+        byte* target = stackalloc byte[3];
+        target[0] = (byte)'f';
+        target[2] = 0;
+        byte* path = stackalloc byte[2];
+        path[0] = (byte)'l';
+        path[1] = 0;
+        return SymLink(target, path) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSymLinkTarget.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "SymLink" "the target of the link it makes" observation
+            )
+
+    [<Test>]
+    let ``A symbolic link whose own path has an unwritten byte ends the run where the kernel copies it in`` () : unit =
+        let source =
+            nativeCallSource
+                symLinkDeclaration
+                """
+        byte* target = stackalloc byte[2];
+        target[0] = (byte)'f';
+        target[1] = 0;
+        // Read only once the kernel has copied the target in.
+        byte* path = stackalloc byte[3];
+        path[0] = (byte)'l';
+        path[2] = 0;
+        return SymLink(target, path) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSymLinkPath.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "SymLink" "the path of the link it makes" observation
+            )
+
+    [<Test>]
+    let ``Sending a buffer with an unwritten byte on a socket ends the run at the send`` () : unit =
+        let source =
+            nativeCallSource
+                """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Send")]
+    static extern int Send(IntPtr socket, byte* buffer, int bufferLen, int flags, int* sent);
+"""
+                """
+        using var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        listener.Listen(1);
+        using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        client.Connect((IPEndPoint)listener.LocalEndPoint!);
+        using var server = listener.Accept();
+
+        byte* bytes = stackalloc byte[3];
+        bytes[0] = 1;
+        bytes[2] = 3;
+        int sent;
+        return Send(client.Handle, bytes, 3, 0, &sent) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSocketSend.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "Send" "the buffer it sends" observation
+            )
+
+    let private setSockOptDeclaration =
+        """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetSockOpt")]
+    static extern int SetSockOpt(IntPtr socket, int level, int name, byte* value, int length);
+"""
+
+    [<Test>]
+    let ``Setting a kernel socket option from unwritten bytes ends the run at the set`` () : unit =
+        let source =
+            nativeCallSource
+                setSockOptDeclaration
+                """
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        // `TCP_NODELAY`, which the shim hands to the kernel, at the managed `SocketOptionLevel.Tcp`.
+        byte* value = stackalloc byte[4];
+        return SetSockOpt(socket.Handle, 6, 1, value, 4) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSetSockOptKernel.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "SetSockOpt" "the option value it sets" observation
+            )
+
+    [<Test>]
+    let ``Setting the shim's own address-reuse option from unwritten bytes ends the run at the set`` () : unit =
+        let source =
+            nativeCallSource
+                setSockOptDeclaration
+                """
+        // `SO_REUSEADDR` at `SOL_SOCKET`, which the shim screens itself before any descriptor.
+        byte* value = stackalloc byte[4];
+        return SetSockOpt((IntPtr)0, 0xffff, 4, value, 4) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSetSockOptReuse.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "SetSockOpt" "the option value it sets" observation
+            )
+
+    [<Test>]
+    let ``Getting a socket option through an unwritten length ends the run at the get`` () : unit =
+        let source =
+            nativeCallSource
+                """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockOpt")]
+    static extern int GetSockOpt(IntPtr socket, int level, int name, byte* value, int* length);
+"""
+                """
+        byte* value = stackalloc byte[4];
+        // The shim reads the length before it looks at the descriptor.
+        int* length = stackalloc int[1];
+        return GetSockOpt((IntPtr)0, 6, 1, value, length) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedGetSockOptLength.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "GetSockOpt" "the option length it reads" observation
+            )
+
+    [<Test>]
+    let ``Setting a linger option nothing wrote ends the run at the set`` () : unit =
+        let source =
+            nativeCallSource
+                """
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetLingerOption")]
+    static extern int SetLingerOption(IntPtr socket, byte* option);
+"""
+                """
+        // The shim reads the option before it looks at the descriptor.
+        byte* option = stackalloc byte[8];
+        return SetLingerOption((IntPtr)0, option) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedLingerOption.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "SetLingerOption" "the linger option it sets" observation
+            )
+
+    [<Test>]
+    let ``Blocking a signal set nothing wrote ends the run at the mask change`` () : unit =
+        let source =
+            nativeCallSource
+                """
+    [DllImport("libc", EntryPoint = "pthread_sigmask", SetLastError = true)]
+    static extern int PthreadSigmask(int how, ulong* set, ulong* oldSet);
+"""
+                """
+        ulong* set = stackalloc ulong[1];
+        // `SIG_BLOCK`.
+        return PthreadSigmask(0, set, null) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSignalSet.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "PthreadSigmask" "the signal set it reads" observation
+            )
+
+    [<Test>]
+    let ``Suspending under a signal mask nothing wrote ends the run at the suspend`` () : unit =
+        let source =
+            nativeCallSource
+                """
+    [DllImport("libc", EntryPoint = "sigsuspend", SetLastError = true)]
+    static extern int Sigsuspend(ulong* mask);
+"""
+                """
+        ulong* mask = stackalloc ulong[1];
+        return Sigsuspend(mask) == 0 ? 0 : 1;
+"""
+
+        run
+            "UndefinedSigsuspendMask.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "Sigsuspend" "the signal mask it waits under" observation
+            )

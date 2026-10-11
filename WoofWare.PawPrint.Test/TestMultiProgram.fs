@@ -83,6 +83,7 @@ public static class Program
                 outcome, remaining
             | MultiStepOutcome.Finished (ends, _) -> failwith $"expected one program's end, got %A{ends}"
             | MultiStepOutcome.Deadlocked (_, stuck) -> failwith $"deadlocked: %A{stuck}"
+            | MultiStepOutcome.StoppedAtUndefinedValue (_, _, _, observation) -> failwith $"stopped at %O{observation}"
             | MultiStepOutcome.Stepped (_, _, ProgramEvent.PhaseAdvanced) ->
                 failwith "a startup call returned after Main was installed"
             | MultiStepOutcome.Stepped (_, _, ProgramEvent.Ended _) ->

@@ -1001,12 +1001,7 @@ type CliType =
             match vt._Storage with
             | CliValueTypeStorage.RawBytes _ -> named ()
             | CliValueTypeStorage.Fields storage ->
-                CliType.CheckByteRange
-                    "CliType.RangeImageAt"
-                    offset
-                    count
-                    storage.PreservedBytes.Length
-                    $"value type %O{vt._Declared}"
+                CliType.CheckByteRange "CliType.RangeImageAt" offset count storage.PreservedBytes.Length value
 
                 let result =
                     Array.init
@@ -1079,7 +1074,7 @@ type CliType =
                     offset
                     bytes.Length
                     storage.PreservedBytes.Length
-                    $"value type %O{vt._Declared}"
+                    value
 
                 let touching =
                     storage.Fields
