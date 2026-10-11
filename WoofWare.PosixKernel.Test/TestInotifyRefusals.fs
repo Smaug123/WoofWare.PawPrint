@@ -184,6 +184,15 @@ module TestInotifyRefusals =
         | other -> failwith $"%A{other}"
 
     [<Test>]
+    let ``a write goes through under a watch on another file asking for IN_MODIFY, which holds no name`` () : unit =
+        let system = boot root (seed @ [ "other", file "o" ])
+        let instance, system = init1 nonblock system
+        let _, system = watch instance "other" modify system
+        let fd, system = openFd writable "a/x" 0 system
+        let system = write fd "y" system
+        drain instance system |> fst |> shouldEqual "(none)"
+
+    [<Test>]
     let ``a write to a file with no name left goes through where no watch asks for IN_MODIFY`` () : unit =
         let instance, fd, system = watchingThenOpen "u" create
         let system = unlink "a/x" system |> write fd "y"
