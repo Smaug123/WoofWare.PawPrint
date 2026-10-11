@@ -134,17 +134,24 @@ module private ArithmeticTarget =
                 IlMachineManagedByref.zeroOfHandleWithoutLoading baseClassTypes state declaringHandle
             | _ -> IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
-/// Whether an arithmetic operation wraps on overflow (`add`, `sub`) or traps
-/// (`add.ovf`, `sub.ovf`). This is only observable in the pointer helpers at
-/// the `NativeIntPlaceholder` arms: everywhere else our pointers are symbolic
-/// (a root plus offsets), and the offsets have no machine-width bit pattern
-/// that could overflow. A placeholder's payload, by contrast, is a genuine
-/// native-int bit pattern from `(void*)bits`, so the checked forms must trap on
-/// it exactly as the CLR would.
+/// Whether an arithmetic operation wraps on overflow (`add`, `sub`), traps on signed overflow
+/// (`add.ovf`, `sub.ovf`), or traps on unsigned overflow (`add.ovf.un`, `sub.ovf.un`). Signed
+/// overflow is only observable in the pointer helpers at the `NativeIntPlaceholder` arms:
+/// everywhere else our pointers are symbolic (a root plus offsets), and the offsets have no
+/// machine-width bit pattern that could overflow. A placeholder's payload, by contrast, is a
+/// genuine native-int bit pattern from `(void*)bits`, so the checked forms must trap on it exactly
+/// as the CLR would.
+///
+/// Unsigned overflow is observable on symbolic pointers too, but only through their address:
+/// measured on CoreCLR, moving a real byref by a negative native int under `add.ovf.un` overflows,
+/// because the offset reads as nearly 2^64. Whether a move overflows depends on where the pointer
+/// is, which PawPrint never decides, so the symbolic arms refuse every nonzero move under
+/// `TrapUnsigned`.
 [<RequireQualifiedAccess>]
 type private OverflowBehaviour =
     | Wrap
     | Trap
+    | TrapUnsigned
 
 /// The carrier by which a host-detected operand fault crosses `execute`'s dispatch to
 /// `BinaryArithmetic.executeFaulting`, which converts it to an `Error`. Private so that
@@ -239,12 +246,29 @@ module ArithmeticOperation =
         match behaviour with
         | OverflowBehaviour.Wrap -> a + b
         | OverflowBehaviour.Trap -> hostFaultingArith (fun () -> Checked.(+) a b)
+        | OverflowBehaviour.TrapUnsigned -> hostFaultingArith (fun () -> (# "add.ovf.un" a b : int64 #))
 
     /// See <see cref="addPlaceholderBits"/>.
     let private subPlaceholderBits (behaviour : OverflowBehaviour) (a : int64) (b : int64) : int64 =
         match behaviour with
         | OverflowBehaviour.Wrap -> a - b
         | OverflowBehaviour.Trap -> hostFaultingArith (fun () -> Checked.(-) a b)
+        | OverflowBehaviour.TrapUnsigned -> hostFaultingArith (fun () -> (# "sub.ovf.un" a b : int64 #))
+
+    /// Refuses a nonzero move of a symbolic pointer under `TrapUnsigned`; see `OverflowBehaviour`.
+    let private refuseAddressDependentMove
+        (behaviour : OverflowBehaviour)
+        (operation : string)
+        (offset : int64)
+        : unit
+        =
+        match behaviour with
+        | OverflowBehaviour.TrapUnsigned when offset <> 0L ->
+            failwith
+                $"refusing %s{operation} of a managed pointer by %d{offset}: whether it overflows depends on the pointer's address, which PawPrint does not model"
+        | OverflowBehaviour.TrapUnsigned
+        | OverflowBehaviour.Wrap
+        | OverflowBehaviour.Trap -> ()
 
     /// Symbolic byrefs are a root plus an int32 offset (an array index, a
     /// field byte offset), so an offset that does not fit cannot be
@@ -353,6 +377,8 @@ module ArithmeticOperation =
             |> ManagedPointerSource.ofBitPattern
             |> Choice1Of2
         | ValueNone ->
+
+        refuseAddressDependentMove behaviour "add.ovf.un" offset
 
         let v = narrowSymbolicOffset offset
 
@@ -646,6 +672,61 @@ module ArithmeticOperation =
     let addOvf : FaultingArithmeticOperation =
         {
             Op = addOvfImpl
+        }
+
+    let private addOvfUnImpl =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "add.ovf.un" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "add.ovf.un" a b : int64 #))
+
+            // ECMA-335 III.3.2: add.ovf.un takes integers and &; floats have no overflow trap, so
+            // reaching these arms means the IL was malformed.
+            member _.Float32Float32 a b =
+                failwith $"refusing to add.ovf.un float values: %f{a} and %f{b}"
+
+            member _.Float64Float64 a b =
+                failwith $"refusing to add.ovf.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "add.ovf.un" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "add.ovf.un" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "add.ovf.un" a b : nativeint #))
+
+            member _.CrossArrayOffsets _ _ =
+                failwith "refusing to add.ovf.un SyntheticCrossArrayOffsets"
+
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
+                match ManagedPointerSource.tryBitPatternBits ptr1, ManagedPointerSource.tryBitPatternBits ptr2 with
+                | ValueSome bits1, ValueSome bits2 ->
+                    addPlaceholderBits OverflowBehaviour.TrapUnsigned bits1 bits2
+                    |> ManagedPointerSource.ofBitPattern
+                    |> Choice1Of2
+                | _ ->
+
+                match ptr1, ptr2 with
+                | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
+                | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
+                | _, _ -> failwith $"refusing to add.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
+
+            member _.Int64ManagedPtr baseClassTypes state val1 ptr2 =
+                addOffsetToManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state val1 ptr2
+
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                addOffsetToManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state val2 ptr1
+
+            member _.Name = "add.ovf.un"
+        }
+
+    let addOvfUn : FaultingArithmeticOperation =
+        {
+            Op = addOvfUnImpl
         }
 
     /// Whether both pointers reach into the *same* argument slot.
@@ -985,13 +1066,19 @@ module ArithmeticOperation =
                 failwith
                     $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
 
-    /// `int - &` is not in the ECMA-335 table, so this only tolerates the
-    /// degenerate null case, where the byref contributes the bit pattern 0 and
-    /// the result is just the integer.
-    let private subOffsetManagedPtr (val1 : int64) (ptr2 : ManagedPointerSource) : Choice<ManagedPointerSource, int64> =
-        match ptr2 with
-        | ManagedPointerSource.Null -> Choice2Of2 val1
-        | _ -> failwith "refusing to subtract a pointer"
+    /// `int - &` is not in the ECMA-335 table, so this only tolerates a right operand whose bits are
+    /// known: null, which is also a native int's zero here, and a pointer of raw bits, which is how
+    /// a native int computed from one is held. Either is a number, and the result is the integer
+    /// difference.
+    let private subOffsetManagedPtr
+        (behaviour : OverflowBehaviour)
+        (val1 : int64)
+        (ptr2 : ManagedPointerSource)
+        : Choice<ManagedPointerSource, int64>
+        =
+        match ManagedPointerSource.tryBitPatternBits ptr2 with
+        | ValueSome bits -> subPlaceholderBits behaviour val1 bits |> Choice2Of2
+        | ValueNone -> failwith "refusing to subtract a pointer"
 
     let private subOffsetFromManagedPtr
         (behaviour : OverflowBehaviour)
@@ -1010,6 +1097,8 @@ module ArithmeticOperation =
             |> ManagedPointerSource.ofBitPattern
             |> Choice1Of2
         | ValueNone ->
+
+        refuseAddressDependentMove behaviour "sub.ovf.un" offset
 
         if offset = System.Int64.MinValue then
             failwith
@@ -1036,7 +1125,8 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 ptr2
 
-            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.Wrap val1 ptr2
 
             member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
                 subOffsetFromManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 val2
@@ -1079,7 +1169,8 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 ptr2
 
-            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.Trap val1 ptr2
 
             member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
                 subOffsetFromManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 val2
@@ -1090,6 +1181,69 @@ module ArithmeticOperation =
     let subOvf : FaultingArithmeticOperation =
         {
             Op = subOvfImpl
+        }
+
+    let private subOvfUnImpl =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf.un" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf.un" a b : int64 #))
+
+            // ECMA-335 III.3.68: sub.ovf.un takes integers and &; floats have no overflow trap, so
+            // reaching these arms means the IL was malformed.
+            member _.Float32Float32 a b =
+                failwith $"refusing to sub.ovf.un float values: %f{a} and %f{b}"
+
+            member _.Float64Float64 a b =
+                failwith $"refusing to sub.ovf.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "sub.ovf.un" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "sub.ovf.un" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf.un" a b : nativeint #))
+
+            member _.CrossArrayOffsets a b =
+                if a = b then
+                    0L
+                else
+                    failwith "refusing to sub.ovf.un SyntheticCrossArrayOffsets"
+
+            member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
+                match ManagedPointerSource.tryBitPatternBits ptr1, ManagedPointerSource.tryBitPatternBits ptr2 with
+                | ValueSome _, ValueSome _ ->
+                    subManagedPtrManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state ptr1 ptr2
+                | _ ->
+
+                match subManagedPtrManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state ptr1 ptr2 with
+                // A verbatim difference is between two pointers into one storage, so the unsigned
+                // subtraction borrows exactly when the first is below the second, wherever that
+                // storage is. The checked conversion to unsigned is that borrow.
+                | Choice2Of2 (NativeIntSource.Verbatim difference) ->
+                    hostFaultingArith (fun () -> Checked.uint64 difference) |> ignore<uint64>
+                    Choice2Of2 (NativeIntSource.Verbatim difference)
+                | Choice2Of2 other ->
+                    failwith
+                        $"refusing to sub.ovf.un pointers into different storage (%O{other}): whether it overflows depends on their addresses, which PawPrint does not model"
+                | Choice1Of2 ptr -> Choice1Of2 ptr
+
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.TrapUnsigned val1 ptr2
+
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                subOffsetFromManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state ptr1 val2
+
+            member _.Name = "sub.ovf.un"
+        }
+
+    let subOvfUn : FaultingArithmeticOperation =
+        {
+            Op = subOvfUnImpl
         }
 
     let mul =
@@ -1333,6 +1487,25 @@ module ArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module BinaryArithmetic =
+    /// `add.ovf.un` and `sub.ovf.un` read an int32 beside a native int or a pointer as unsigned:
+    /// measured on CoreCLR, `(int)-1` added to a native int or a byref under either widens to
+    /// 2^32 - 1, where `add` and `add.ovf` sign-extend it. `execute` widens an int32 by sign, so
+    /// these instructions widen it here first. An int32 beside another int32 is left alone.
+    let zeroExtendInt32BesideNativeInt
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue * EvalStackValue
+        =
+        let zeroExtended (v : int32) : EvalStackValue =
+            EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<uint32> (uint32<int32> v)))
+
+        match val1, val2 with
+        | EvalStackValue.Int32 (Int32Source.Verbatim v), (EvalStackValue.NativeInt _ | EvalStackValue.ManagedPointer _) ->
+            zeroExtended v, val2
+        | (EvalStackValue.NativeInt _ | EvalStackValue.ManagedPointer _), EvalStackValue.Int32 (Int32Source.Verbatim v) ->
+            val1, zeroExtended v
+        | _ -> val1, val2
+
     /// Apply a binary arithmetic operation. Returns the result together with
     /// the (possibly updated) machine state — the WidenedNativeInt arms that
     /// materialise synthesised pointer-hash bits register new
