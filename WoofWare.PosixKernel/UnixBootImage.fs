@@ -348,6 +348,7 @@ module UnixBootImage =
         |> Result.map (fun (machine, proc, tasks) ->
             {
                 Machine = machine
+                Scheduling = UnixSchedulingState.initial
                 Process = proc
                 Tasks = tasks
                 Leader = ProcessLaunch.leader launch

@@ -932,7 +932,7 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, TruncationRefusal>
         =
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation system.Machine.UnixPlatform
 
         match
@@ -1958,10 +1958,10 @@ module UnixDescriptor =
                 match ended with
                 | ParkedSyscall.PipeRead {
                                              Reader = SleepTarget.EndedByClose pipeId
-                                         } -> UnixMachineState.touchedByPipeRead pipeId machine
+                                         } -> UnixMachineState.touchedByPipeRead pipeId system.Scheduling machine
                 | ParkedSyscall.PipeWrite {
                                               Writer = SleepTarget.EndedByClose pipeId
-                                          } -> UnixMachineState.touchedByPipeWrite pipeId machine
+                                          } -> UnixMachineState.touchedByPipeWrite pipeId system.Scheduling machine
                 | _ -> machine
             )
 

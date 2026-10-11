@@ -178,7 +178,7 @@ module TestUnixSystemInitial =
             UnixSystem.initial platform
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
+        system.Scheduling.NanosecondsSinceBoot |> shouldEqual 0L
         system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
 
     /// The cursor is where `bind(2)` for port 0 begins its sweep, and

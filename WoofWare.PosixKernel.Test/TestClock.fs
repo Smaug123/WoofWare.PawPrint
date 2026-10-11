@@ -22,8 +22,12 @@ module TestClock =
     let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
         UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
 
-    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        ((Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)) (imageOn flavour)).Machine
+    let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)) (imageOn flavour)
+
+    /// How long a freshly booted machine of `flavour` has been up, and what its
+    /// processors run.
+    let private schedulingOn (flavour : SimulatedUnixFlavour) : UnixSchedulingState = (systemOn flavour).Scheduling
 
     /// A value in `[low, high]`, weighted towards both ends as well as spread across
     /// the whole range: the ends are where the arithmetic can overflow, and a uniform
@@ -81,15 +85,6 @@ module TestClock =
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.advanceClock sinceBoot
 
-    /// The machine `systemWith` runs on.
-    let private machineWith
-        (flavour : SimulatedUnixFlavour)
-        (bootTime : UnixTimestamp)
-        (sinceBoot : int64)
-        : UnixMachineState
-        =
-        (systemWith flavour bootTime sinceBoot).Machine
-
     /// Any machine a client can reach: any flavour, any admissible boot instant, any uptime.
     let private reachableGen : Gen<SimulatedUnixFlavour * UnixTimestamp * int64> =
         gen {
@@ -104,10 +99,12 @@ module TestClock =
     [<Test>]
     let ``a fresh machine has been up for no time and booted at the epoch`` () : unit =
         for flavour in flavours do
-            let machine = machineOn flavour
-            machine.NanosecondsSinceBoot |> shouldEqual 0L
-            machine.BootTime |> shouldEqual UnixTimestamp.epoch
-            UnixMachineState.realtime machine |> shouldEqual UnixTimestamp.epoch
+            let system = systemOn flavour
+            system.Scheduling.NanosecondsSinceBoot |> shouldEqual 0L
+            system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
+
+            UnixMachineState.realtime system.Scheduling system.Machine
+            |> shouldEqual UnixTimestamp.epoch
 
     [<Test>]
     let ``advancing twice adds both amounts`` () : unit =
@@ -119,35 +116,42 @@ module TestClock =
             }
 
         let property (first : int64, second : int64) : bool =
-            let machine =
-                machineOn SimulatedUnixFlavour.Linux
-                |> UnixMachineState.advanceClock first
-                |> UnixMachineState.advanceClock second
+            let scheduling =
+                schedulingOn SimulatedUnixFlavour.Linux
+                |> UnixSchedulingState.advanceClock first
+                |> UnixSchedulingState.advanceClock second
 
-            machine.NanosecondsSinceBoot = first + second
+            scheduling.NanosecondsSinceBoot = first + second
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
     let ``advancing changes nothing but the uptime`` () : unit =
-        let machine = machineOn SimulatedUnixFlavour.Darwin
-        let advanced = UnixMachineState.advanceClock 12_345L machine
+        let system = systemOn SimulatedUnixFlavour.Darwin
+        let advanced = UnixSystem.advanceClock 12_345L system
 
         advanced
         |> shouldEqual
-            { machine with
-                NanosecondsSinceBoot = 12_345L
+            { system with
+                Scheduling =
+                    { system.Scheduling with
+                        NanosecondsSinceBoot = 12_345L
+                    }
             }
 
-        UnixMachineState.advanceClock 0L advanced |> shouldEqual advanced
+        // The machine every process shares is the same value, not merely an equal one.
+        obj.ReferenceEquals (advanced.Machine, system.Machine) |> shouldEqual true
+
+        UnixSystem.advanceClock 0L advanced |> shouldEqual advanced
 
     [<Test>]
     let ``advancing refuses a negative amount`` () : unit =
         let property (amount : int64) : bool =
-            let machine =
-                machineOn SimulatedUnixFlavour.Linux |> UnixMachineState.advanceClock 1_000L
+            let scheduling =
+                schedulingOn SimulatedUnixFlavour.Linux
+                |> UnixSchedulingState.advanceClock 1_000L
 
-            not (succeeds (fun () -> UnixMachineState.advanceClock amount machine))
+            not (succeeds (fun () -> UnixSchedulingState.advanceClock amount scheduling))
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (anywhereIn Int64.MinValue -1L)) property)
 
@@ -170,27 +174,27 @@ module TestClock =
             }
 
         let property (up : int64, amount : int64) : bool =
-            let machine =
-                machineOn SimulatedUnixFlavour.Linux |> UnixMachineState.advanceClock up
+            let scheduling =
+                schedulingOn SimulatedUnixFlavour.Linux |> UnixSchedulingState.advanceClock up
 
             let fits = amount <= Int64.MaxValue - up
-            succeeds (fun () -> UnixMachineState.advanceClock amount machine) = fits
+            succeeds (fun () -> UnixSchedulingState.advanceClock amount scheduling) = fits
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
 
         let atHorizon =
-            machineOn SimulatedUnixFlavour.Linux
-            |> UnixMachineState.advanceClock Int64.MaxValue
+            schedulingOn SimulatedUnixFlavour.Linux
+            |> UnixSchedulingState.advanceClock Int64.MaxValue
 
         atHorizon.NanosecondsSinceBoot |> shouldEqual Int64.MaxValue
 
-        succeeds (fun () -> UnixMachineState.advanceClock 1L atHorizon)
+        succeeds (fun () -> UnixSchedulingState.advanceClock 1L atHorizon)
         |> shouldEqual false
 
     [<Test>]
     let ``advancing refuses a machine whose uptime was record-copied negative`` () : unit =
-        let machine =
-            { machineOn SimulatedUnixFlavour.Linux with
+        let scheduling =
+            { schedulingOn SimulatedUnixFlavour.Linux with
                 NanosecondsSinceBoot = -5L
             }
 
@@ -198,7 +202,9 @@ module TestClock =
         // overflow check's `Int64.MaxValue - uptime` wraps negative and throws too, so a
         // bare "it threw" would pass without the guard that makes the arithmetic sound.
         let thrown =
-            Assert.Throws<Exception> (fun () -> UnixMachineState.advanceClock 10L machine |> ignore<UnixMachineState>)
+            Assert.Throws<Exception> (fun () ->
+                UnixSchedulingState.advanceClock 10L scheduling |> ignore<UnixSchedulingState>
+            )
 
         thrown.Message |> shouldContainText "which is negative"
 
@@ -324,7 +330,8 @@ module TestClock =
     [<Test>]
     let ``realtime is the boot instant plus the uptime, on every reachable machine`` () : unit =
         let property (flavour : SimulatedUnixFlavour, bootTime : UnixTimestamp, up : int64) : bool =
-            let reading = UnixMachineState.realtime (machineWith flavour bootTime up)
+            let system = systemWith flavour bootTime up
+            let reading = UnixMachineState.realtime system.Scheduling system.Machine
 
             exactNanoseconds reading = exactNanoseconds bootTime + bigint up
 
@@ -406,7 +413,11 @@ module TestClock =
         | Ok (Ok reading) ->
             if UnixTimestamp.seconds reading = UnixSystem.nanosecondsSinceBoot system / 1_000_000_000L then
                 Outcome.Monotonic
-            elif UnixTimestamp.seconds reading = UnixTimestamp.seconds (UnixMachineState.realtime system.Machine) then
+            elif
+                UnixTimestamp.seconds reading = UnixTimestamp.seconds (
+                    UnixMachineState.realtime system.Scheduling system.Machine
+                )
+            then
                 Outcome.Realtime
             else
                 failwith $"clock id %d{clockId} read %O{reading}, which is neither clock"

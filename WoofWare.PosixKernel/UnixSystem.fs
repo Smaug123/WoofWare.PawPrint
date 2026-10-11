@@ -831,7 +831,7 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : int64
         =
-        UnixMachineState.nanosecondsSinceBoot system.Machine
+        UnixSchedulingState.nanosecondsSinceBoot system.Scheduling
 
     /// Let `nanoseconds` pass on the machine: every clock it has moves forward
     /// by that much. Advancing by zero changes nothing.
@@ -845,7 +845,7 @@ module UnixSystem =
         : UnixSystem<'Task, 'Handler>
         =
         { system with
-            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+            Scheduling = UnixSchedulingState.advanceClock nanoseconds system.Scheduling
         }
 
     /// The process's descriptor table, which `FileDescriptorRegistry`'s queries
@@ -951,7 +951,7 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTimestamp
         =
-        UnixMachineState.realtime system.Machine
+        UnixMachineState.realtime system.Scheduling system.Machine
 
     /// Whether, and where, the machine's kernel screens a read or write buffer
     /// before performing the operation. See `UnixBootImage.withUserAddressLimit`.
@@ -1227,6 +1227,7 @@ module UnixSystem =
     let internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (complete : bool)
         (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
+        (scheduling : UnixSchedulingState)
         (machine : UnixMachineState)
         : UnixSystemDefect<'Task> list
         =
@@ -1936,7 +1937,7 @@ module UnixSystem =
                 |> List.map (fun (task, state) -> state.OsThreadId, (task, state))
                 |> Map.ofList
 
-            machine.Occupants
+            scheduling.Occupants
             |> Map.toList
             |> List.collect (fun (cpu, occupant) ->
                 let beyond =
@@ -2827,7 +2828,7 @@ module UnixSystem =
         let others =
             Set.remove system.Process.ProcessId (ProcessIdTable.live system.Machine.ProcessIds)
 
-        machineDefects (Set.isEmpty others) [ system.Process, system.Tasks ] system.Machine
+        machineDefects (Set.isEmpty others) [ system.Process, system.Tasks ] system.Scheduling system.Machine
         @ checkViewInvariants system
 
     /// Logical-processor count a freshly-minted simulated process reports.
@@ -3107,11 +3108,9 @@ module UnixSystem =
                     TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
                     LocalIpv4Addresses = defaultLocalIpv4Addresses
                     LocalRoutes = defaultLocalRoutes
-                    NanosecondsSinceBoot = 0L
                     BootTime = UnixTimestamp.epoch
                     EntropyPool = EntropyPool.ofSeed defaultEntropySeed
                     ProcessorCount = defaultProcessorCount
-                    Occupants = Map.empty
                     UserBufferCheck = defaultUserBufferCheck platform
                     UnixPlatform = platform
                     FileSystem = filesystem

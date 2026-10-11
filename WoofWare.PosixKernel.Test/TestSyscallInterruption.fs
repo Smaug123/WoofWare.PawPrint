@@ -553,7 +553,8 @@ module TestSyscallInterruption =
                 match timeoutOf sleep with
                 | Some ms when pastDeadline ->
                     { system with
-                        Machine = UnixMachineState.advanceClock (int64 ms * nanosecondsPerMillisecond) system.Machine
+                        Scheduling =
+                            UnixSchedulingState.advanceClock (int64 ms * nanosecondsPerMillisecond) system.Scheduling
                     }
                 | _ -> system
 

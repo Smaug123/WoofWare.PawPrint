@@ -797,6 +797,9 @@ A call asleep in one process wakes for what another process's call does: a conne
 It must name every task the client holds asleep, in every process: a parked task it leaves out counts as one the client has woken and not yet finished, which, on a queue whose waiters wake one at a time, will take what arrives, so none of the others wakes for it.
 Each sleeping task's condition is asked of its own process's view, and where a kernel wakes one waiter of a queue at a time, the one is chosen across every process by the machine's park order.
 A woken call is finished in its own process's view.
+A client that asks after every step, as one that interleaves instructions does, can ask `SimulatedMachine.wakesRemembering memo asleep` instead, starting from `WakeSweepMemo.empty` and passing each call the memo the last one answered.
+It answers what `wakes` answers, and asks no wake condition when the last sweep woke nobody and nothing a condition reads has changed since but the clock, which has not reached any sleeping task's deadline.
+Advancing the clock, and dispatching a task to the processor it is on, leave the memo answering; a syscall, and a dispatch that moves a task to another processor, make the next call sweep.
 A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
 
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.

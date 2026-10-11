@@ -64,15 +64,15 @@ module TestStateQueries =
     [<Test>]
     let ``nanosecondsSinceBoot is the sum of the advances, and what a full-precision uptime clock reads`` () : unit =
         let property (platform : SimulatedUnixPlatform, advances : int64 list) : unit =
-            let machine =
-                ((initialOn platform).Machine, advances)
-                ||> List.fold (fun machine advance -> UnixMachineState.advanceClock advance machine)
+            let scheduling =
+                (UnixSchedulingState.initial, advances)
+                ||> List.fold (fun scheduling advance -> UnixSchedulingState.advanceClock advance scheduling)
 
             let system =
                 (initialOn platform, advances)
                 ||> List.fold (fun system advance -> UnixSystem.advanceClock advance system)
 
-            let uptime = UnixMachineState.nanosecondsSinceBoot machine
+            let uptime = UnixSchedulingState.nanosecondsSinceBoot scheduling
             uptime |> shouldEqual (List.sum advances)
             UnixSystem.nanosecondsSinceBoot system |> shouldEqual uptime
 

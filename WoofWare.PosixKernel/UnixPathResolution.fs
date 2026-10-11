@@ -1090,7 +1090,7 @@ module UnixPathResolution =
         | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
         | Ok (ModeChange.Permitted bits) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         Ok (
             SyscallAnswer.Completed 0L,
@@ -1249,7 +1249,7 @@ module UnixPathResolution =
                                 Permissions = bits
                                 Times =
                                     { status.Times with
-                                        StatusChange = UnixMachineState.realtime system.Machine
+                                        StatusChange = UnixMachineState.realtime system.Scheduling system.Machine
                                     }
                             }
                 }
@@ -1307,7 +1307,7 @@ module UnixPathResolution =
         | Ok OwnerChange.Untouched -> Ok (SyscallAnswer.Completed 0L, system)
         | Ok (OwnerChange.Changed changed) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         let owner =
             {
@@ -1496,7 +1496,7 @@ module UnixPathResolution =
                                 Permissions = bits
                                 Times =
                                     { status.Times with
-                                        StatusChange = UnixMachineState.realtime system.Machine
+                                        StatusChange = UnixMachineState.realtime system.Scheduling system.Machine
                                     }
                             }
                 }
@@ -1660,7 +1660,7 @@ module UnixPathResolution =
 
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
         let credentials = system.Process.Credentials
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         let asNow =
             match flavour with

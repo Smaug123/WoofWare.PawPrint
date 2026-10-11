@@ -109,8 +109,10 @@ module TestSleepPark =
 
             let elapsed =
                 { asleep with
-                    Machine =
-                        UnixMachineState.advanceClock (deadline - asleep.Machine.NanosecondsSinceBoot) asleep.Machine
+                    Scheduling =
+                        UnixSchedulingState.advanceClock
+                            (deadline - asleep.Scheduling.NanosecondsSinceBoot)
+                            asleep.Scheduling
                 }
 
             UnixWait.satisfied task elapsed

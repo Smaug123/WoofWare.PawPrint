@@ -890,7 +890,7 @@ module UnixPoll =
                             $"UnixPoll.poll: fd %d{entry.Fd} reported nothing but names no open file description, where a closed descriptor reports POLLNVAL (this is a bug in this library)."
             )
 
-        let now = system.Machine.NanosecondsSinceBoot
+        let now = system.Scheduling.NanosecondsSinceBoot
 
         match relativeDeadline now milliseconds with
         | Error () -> Error (PollRefusal.DeadlineBeyondClock (now, milliseconds))
@@ -945,7 +945,7 @@ module UnixPoll =
 
         let timedOut =
             match parked.Deadline with
-            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | Some deadline -> system.Scheduling.NanosecondsSinceBoot >= deadline
             | None -> false
 
         let finished = (UnixParkState.unpark task system)
@@ -1184,7 +1184,7 @@ module UnixPoll =
         | fd :: _ -> Error (PollRefusal.UnmodelledVnodeWait fd)
         | [] ->
 
-        let now = system.Machine.NanosecondsSinceBoot
+        let now = system.Scheduling.NanosecondsSinceBoot
 
         let deadline =
             if milliseconds = -1 then
@@ -1237,7 +1237,7 @@ module UnixPoll =
 
         let timedOut =
             match parked.Deadline with
-            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | Some deadline -> system.Scheduling.NanosecondsSinceBoot >= deadline
             | None -> false
 
         let finished = (UnixParkState.unpark task system)
@@ -1554,7 +1554,7 @@ module UnixPoll =
             |> Result.map (fun () -> EpollWaitOutcome.Answered delivered, system)
         else
 
-        let now = system.Machine.NanosecondsSinceBoot
+        let now = system.Scheduling.NanosecondsSinceBoot
 
         match relativeDeadline now milliseconds with
         | Error () -> Error (EpollWaitRefusal.DeadlineBeyondClock (now, milliseconds))
@@ -1579,7 +1579,7 @@ module UnixPoll =
 
         let timedOut =
             match parked.Deadline with
-            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | Some deadline -> system.Scheduling.NanosecondsSinceBoot >= deadline
             | None -> false
 
         let finished = (UnixParkState.unpark task system)

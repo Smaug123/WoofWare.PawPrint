@@ -131,7 +131,7 @@ module TestPollTimeout =
 
     let private after (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         { system with
-            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+            Scheduling = UnixSchedulingState.advanceClock nanoseconds system.Scheduling
         }
 
     let private entry (fd : int) (events : int16) : PollEntry =
@@ -330,7 +330,7 @@ module TestPollTimeout =
 
         let nearTheEnd (uptime : int64) : UnixSystem<int, string> =
             { idle with
-                Machine = UnixMachineState.advanceClock uptime idle.Machine
+                Scheduling = UnixSchedulingState.advanceClock uptime idle.Scheduling
             }
 
         UnixPoll.poll task [ entry listener pollIn ] 1 (nearTheEnd (System.Int64.MaxValue - timeout + 1L))

@@ -109,6 +109,9 @@ module TestMultiProcessFuzz =
         | WakePass of finishing : int
         /// Let `milliseconds` pass on the machine's clock.
         | Advance of milliseconds : int
+        /// Report that a task of a process, not asleep or woken, runs on the
+        /// processor `cpu` (`UnixScheduling.dispatch`).
+        | Dispatch of proc : int * task : int * cpu : int
 
     let private ports : uint16 list = [ 8080us ; 8081us ; 8082us ]
     let private files : string list = [ "/f0" ; "/f1" ]
@@ -1393,6 +1396,27 @@ module TestMultiProcessFuzz =
             { world with
                 Machine = machine
             }
+        | Step.Dispatch (proc, task, cpu) ->
+            match world.Live with
+            | [] -> world
+            | live ->
+
+            let pid = live.[proc % live.Length]
+
+            if Set.contains (pid, task) world.Asleep || List.contains (pid, task) world.Woken then
+                world
+            else
+
+            let before = world.Machine
+
+            let machine =
+                Machines.doIn pid (UnixScheduling.dispatch task (CpuId cpu)) world.Machine
+
+            othersUnmoved pid before machine
+
+            { world with
+                Machine = machine
+            }
         | Step.WakePass finishing ->
             let woken =
                 SimulatedMachine.wakes (asleepByProcess world.Asleep) world.Machine
@@ -1699,9 +1723,17 @@ module TestMultiProcessFuzz =
                 true
         )
 
-    let private run (cover : FuzzLabel -> unit) (case : Case) : unit =
+    /// `case` run on a machine `configure` made, with `observe` shown each
+    /// step and the world it left.
+    let private runObserving
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (observe : Step -> World -> unit)
+        (cover : FuzzLabel -> unit)
+        (case : Case)
+        : unit
+        =
         let pids, machine =
-            Machines.withTasksOn smallBuffers case.Platform case.Processes tasks
+            Machines.withTasksOn configure case.Platform case.Processes tasks
 
         let machine =
             if case.Prepared then
@@ -1781,9 +1813,13 @@ module TestMultiProcessFuzz =
             if wokenRead then
                 cover FuzzLabel.QueuedClientResetWakesRead
 
+            observe next world
             world
         )
         |> ignore
+
+    let private run (cover : FuzzLabel -> unit) (case : Case) : unit =
+        runObserving smallBuffers (fun _ _ -> ()) cover case
 
     [<Test>]
     let ``random interleavings of several processes' calls, wakes and ends keep every invariant and touch no other process``
@@ -1841,3 +1877,132 @@ module TestMultiProcessFuzz =
         // fixed sample.
         coverage.Count FuzzLabel.Refusal * 10
         |> shouldBeSmallerThan (coverage.Count FuzzLabel.Call)
+
+    /// What a remembering sweep (`SimulatedMachine.wakesRemembering`) did at a
+    /// step, each counted every time a step reaches it.
+    [<RequireQualifiedAccess>]
+    type private MemoLabel =
+        /// The memo answered, sweeping nothing, after a step of this kind.
+        | Skip of after : string
+        /// The memo did not answer, and the sweep ran.
+        | Sweep
+        /// The sweep ran because the clock had reached a deadline, though
+        /// nothing else the memo compares had changed, and woke a task.
+        | ClockOnlyWake
+        /// A sweep, after a step whose sweep the memo answered, that woke a task
+        /// whose deadline had passed.
+        | DeadlineWakeAfterSkip
+        /// A sweep, after a step whose sweep the memo answered, that woke a task
+        /// for something besides its deadline.
+        | SyscallWakeAfterSkip
+
+    /// `caseGen`'s cases, run on two processors, with a dispatch or a
+    /// millisecond of the clock between some of their steps: the two things a
+    /// client does between syscalls.
+    let private memoCaseGen : Gen<Case> =
+        gen {
+            let! case = caseGen
+
+            let rec interleave (steps : Step list) (acc : Step list) : Gen<Step list> =
+                match steps with
+                | [] -> Gen.constant (List.rev acc)
+                | step :: rest ->
+                    gen {
+                        let! kind = Gen.choose (0, 9)
+                        let! proc = Gen.choose (0, case.Processes - 1)
+                        let! task = Gen.choose (0, tasks - 1)
+                        let! cpu = Gen.frequency [ 4, Gen.constant 0 ; 1, Gen.constant 1 ]
+
+                        let between =
+                            match kind with
+                            | k when k < 3 -> [ Step.Dispatch (proc, task, cpu) ]
+                            | 3 -> [ Step.Advance 1 ]
+                            | 4 -> [ Step.Advance 5 ]
+                            | _ -> []
+
+                        return! interleave rest (step :: List.rev between @ acc)
+                    }
+
+            let! steps = interleave case.Steps []
+
+            return
+                { case with
+                    Steps = steps
+                }
+        }
+
+    let private twoProcessors (image : UnixBootImage<int, string>) : UnixBootImage<int, string> =
+        smallBuffers image
+        |> UnixBootImage.withProcessorCount 2
+        |> Configured.expectOk ProcessorCountRefusal.describe
+
+    [<Test>]
+    let ``a remembering sweep answers what a full sweep answers, at every step of random interleavings`` () : unit =
+        let property (cover : MemoLabel -> unit) (case : Case) : unit =
+            let memo = ref WakeSweepMemo.empty<int, string>
+            let lastSkipped = ref false
+
+            let observe (step : Step) (world : World) : unit =
+                let asleep = asleepByProcess world.Asleep
+                let machine = world.Machine
+                let full = SimulatedMachine.wakes asleep machine
+
+                let skips, readsSame =
+                    match memo.Value.Remembered with
+                    | ValueNone -> false, false
+                    | ValueSome remembered ->
+                        WakeSweepMemo.covers remembered asleep machine.Machine machine.Scheduling machine.Processes,
+                        WakeSweepMemo.readsSame remembered asleep machine.Machine machine.Processes
+
+                let answer, next = SimulatedMachine.wakesRemembering memo.Value asleep machine
+                answer |> shouldEqual full
+
+                if skips then
+                    let kind =
+                        match step with
+                        | Step.Call _ -> "Call"
+                        | Step.WakePass _ -> "WakePass"
+                        | Step.Advance _ -> "Advance"
+                        | Step.Dispatch _ -> "Dispatch"
+
+                    cover (MemoLabel.Skip kind)
+                else
+                    cover MemoLabel.Sweep
+
+                    if readsSame && not answer.IsEmpty then
+                        cover MemoLabel.ClockOnlyWake
+
+                    if lastSkipped.Value then
+                        let fired = answer |> List.collect (fun (_, fired) -> Set.toList fired)
+
+                        let deadline (primitive : WakePrimitive) : bool =
+                            match primitive with
+                            | WakePrimitive.DeadlinePassed _ -> true
+                            | _ -> false
+
+                        if fired |> List.exists deadline then
+                            cover MemoLabel.DeadlineWakeAfterSkip
+
+                        if fired |> List.exists (deadline >> not) then
+                            cover MemoLabel.SyscallWakeAfterSkip
+
+                memo.Value <- next
+                lastSkipped.Value <- skips
+
+            runObserving twoProcessors observe ignore case
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen memoCaseGen) property
+
+        // A third of what the fixed sample reached when these were added. The
+        // memo answers after every kind of step, and a sweep it does not
+        // answer still wakes what it should: for a deadline the clock alone
+        // reached, and for a syscall, each after a step the memo answered.
+        coverage.Count (MemoLabel.Skip "Call") |> shouldBeGreaterThan 4690
+        coverage.Count (MemoLabel.Skip "WakePass") |> shouldBeGreaterThan 620
+        coverage.Count (MemoLabel.Skip "Advance") |> shouldBeGreaterThan 1980
+        coverage.Count (MemoLabel.Skip "Dispatch") |> shouldBeGreaterThan 2020
+        coverage.Count MemoLabel.Sweep |> shouldBeGreaterThan 5530
+        coverage.Count MemoLabel.ClockOnlyWake |> shouldBeGreaterThan 17
+        coverage.Count MemoLabel.DeadlineWakeAfterSkip |> shouldBeGreaterThan 11
+        coverage.Count MemoLabel.SyscallWakeAfterSkip |> shouldBeGreaterThan 59
