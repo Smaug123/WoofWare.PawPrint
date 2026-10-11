@@ -39,8 +39,6 @@ module TestOpcodeFaultsOnPawPrint =
             "refuses a native int whose zero is a null managed pointer (CliType.zeroOfPrimitive), where the host computes with 0"
 
         [
-            NullaryIlOp.Add_ovf_un, "unimplemented: the interpreter fails with a TODO"
-            NullaryIlOp.Sub_ovf_un, "unimplemented: the interpreter fails with a TODO"
             NullaryIlOp.Conv_r_un, "refuses a float operand (EvalStack.fs), which the host converts without raising"
             NullaryIlOp.Div, nullNativeIntZero
             NullaryIlOp.Div_un, nullNativeIntZero

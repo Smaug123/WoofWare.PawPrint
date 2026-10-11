@@ -1793,7 +1793,13 @@ module NullaryIlOp =
 
             BinaryArithmetic.executeFaulting corelib ArithmeticOperation.subOvf state val1 val2
             |> executeFaultingArithmetic loggerFactory corelib currentThread state
-        | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
+        | Sub_ovf_un ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let val1, val2 = BinaryArithmetic.zeroExtendInt32BesideNativeInt val1 val2
+
+            BinaryArithmetic.executeFaulting corelib ArithmeticOperation.subOvfUn state val1 val2
+            |> executeFaultingArithmetic loggerFactory corelib currentThread state
         | Add ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -1812,7 +1818,13 @@ module NullaryIlOp =
 
             BinaryArithmetic.executeFaulting corelib ArithmeticOperation.addOvf state val1 val2
             |> executeFaultingArithmetic loggerFactory corelib currentThread state
-        | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
+        | Add_ovf_un ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+            let val1, val2 = BinaryArithmetic.zeroExtendInt32BesideNativeInt val1 val2
+
+            BinaryArithmetic.executeFaulting corelib ArithmeticOperation.addOvfUn state val1 val2
+            |> executeFaultingArithmetic loggerFactory corelib currentThread state
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state

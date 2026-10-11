@@ -353,6 +353,7 @@
     <Compile Include="TestFabricatedCpblk.fs" />
     <Compile Include="TestFabricatedRankOneArrayCast.fs" />
     <Compile Include="TestFabricatedUnsignedDivision.fs" />
+    <Compile Include="TestFabricatedUnsignedOverflowPointer.fs" />
     <Compile Include="TestFabricatedEndfilter.fs" />
     <Compile Include="TestFabricatedCastclassNullable.fs" />
     <Compile Include="TestFabricatedCkfinite.fs" />
