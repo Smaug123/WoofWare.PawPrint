@@ -143,8 +143,18 @@ module TestInotifyAgainstHost =
         | LSeek of slot : int * offset : int64 * whence : int
         | Write of slot : int
 
+    /// What a sequence reached on the host, for the floors the test asserts.
+    [<RequireQualifiedAccess>]
+    type private HostLabel =
+        | RecordRead
+        | ReadTooSmall
+        | ReadFaulted
+        | Readable
+
     let private opGen : Gen<Op> =
-        let slot = Gen.choose (0, 3)
+        // Mostly the first slot, which every sequence begins by filling, so
+        // that most calls reach an instance.
+        let slot = Gen.frequency [ 6, Gen.constant 0 ; 1, Gen.choose (1, 3) ]
 
         let mask =
             Gen.frequency
@@ -165,13 +175,17 @@ module TestInotifyAgainstHost =
             [
                 2, Gen.elements [ false ; true ] |> Gen.map Op.Init
                 6, Gen.map3 (fun s p m -> Op.AddWatch (s, p, m)) slot (Gen.choose (0, paths.Length - 1)) mask
-                3, Gen.map2 (fun s w -> Op.RmWatch (s, w)) slot (Gen.choose (-1, 6))
+                3,
+                Gen.map2
+                    (fun s w -> Op.RmWatch (s, w))
+                    slot
+                    (Gen.frequency [ 4, Gen.choose (1, 3) ; 1, Gen.elements [ -1 ; 0 ; 4 ; 6 ] ])
                 3,
                 Gen.map3
                     (fun s c m -> Op.Read (s, c, m))
                     slot
                     (Gen.elements [ 0 ; 15 ; 16 ; 17 ; 32 ; 48 ; 4096 ])
-                    (Gen.frequency [ 5, Gen.constant true ; 1, Gen.constant false ])
+                    (Gen.frequency [ 3, Gen.constant true ; 1, Gen.constant false ])
                 2,
                 Gen.map2
                     (fun s e -> Op.Poll (s, e))
@@ -238,7 +252,7 @@ module TestInotifyAgainstHost =
                         seed
                     |> Launched.bootWith (Launched.credentials owner) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-                let property (ops : Op list) : unit =
+                let property (cover : HostLabel -> unit) (ops : Op list) : unit =
                     // Each slot: the host's descriptor and the model's, while open.
                     let slots = Array.create 4 None
                     let mutable system = initial
@@ -325,6 +339,9 @@ module TestInotifyAgainstHost =
                                     | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                                         system <- after
 
+                                        if bytes.Length > 0 then
+                                            cover HostLabel.RecordRead
+
                                         match host with
                                         | Ok n ->
                                             let hostBytes = buffer.[0 .. int n - 1]
@@ -337,6 +354,12 @@ module TestInotifyAgainstHost =
                                         Ok (int64 bytes.Length)
                                     | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) ->
                                         system <- after
+
+                                        match error with
+                                        | UnixError.EINVAL when modelFd <> 999 -> cover HostLabel.ReadTooSmall
+                                        | UnixError.EFAULT -> cover HostLabel.ReadFaulted
+                                        | _ -> ()
+
                                         Error error
                                     | other -> failwith $"%A{op}: %A{other}"
 
@@ -359,6 +382,9 @@ module TestInotifyAgainstHost =
                                         system
                                 with
                                 | Ok (PollOutcome.Answered ([ revents ], count), _) ->
+                                    if count > 0 && slots.[slot].IsSome then
+                                        cover HostLabel.Readable
+
                                     (hostCount, fds.[0].Revents) |> shouldEqual (count, revents)
                                 | other -> failwith $"%A{op}: %A{other}"
                             | Op.BytesAvailable slot ->
@@ -434,12 +460,38 @@ module TestInotifyAgainstHost =
 
                 let gen =
                     gen {
-                        // Begin with an instance, so that most calls reach one.
+                        // Begin with an instance, so that most calls reach one,
+                        // and half the time with two removed watches' records
+                        // queued on it, so that many reads find records.
+                        let! queued = Gen.elements [ false ; true ]
+
+                        let opening =
+                            if queued then
+                                [
+                                    Op.AddWatch (0, 0, 0x100u)
+                                    Op.AddWatch (0, 1, 0x100u)
+                                    Op.RmWatch (0, 1)
+                                    Op.RmWatch (0, 2)
+                                ]
+                            else
+                                []
+
                         let! rest = Gen.listOf opGen |> Gen.resize 30
-                        return Op.Init false :: rest
+                        return Op.Init false :: opening @ rest
                     }
 
-                Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen gen) property)
+                let coverage =
+                    CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen gen) property
+
+                for label in
+                    [
+                        HostLabel.RecordRead
+                        HostLabel.ReadTooSmall
+                        HostLabel.ReadFaulted
+                        HostLabel.Readable
+                    ] do
+                    if coverage.Count label < 20 then
+                        failwith $"the fixed sample reached %A{label} only %d{coverage.Count label} times"
             finally
                 File.SetUnixFileMode (
                     Path.Combine (root, "nr"),
