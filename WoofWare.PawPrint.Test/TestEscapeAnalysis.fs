@@ -3089,8 +3089,9 @@ public static class Runners
             escapes.Assumes.Contains Assumption.StackTracePreserved |> shouldEqual true
 
     /// `int32[,]`'s constructor taking lower bounds and lengths raises `ArgumentOutOfRangeException`
-    /// for bounds whose upper end overflows; the one taking lengths alone does not. C# spells
-    /// neither, so the calls are emitted directly.
+    /// for bounds whose upper end overflows; the one taking lengths alone does not. Each, and
+    /// `newarr`, raises what making each of its exceptions runs. C# spells neither constructor, so
+    /// the calls are emitted directly.
     [<Test>]
     let ``a multidimensional array constructor taking lower bounds can reject them`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -3134,6 +3135,13 @@ public static class Runners
                 (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
                 metadata.GetOrAddString "System",
                 metadata.GetOrAddString "Object"
+            )
+
+        let int32Ref =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Int32"
             )
 
         let rankTwo =
@@ -3202,6 +3210,25 @@ public static class Runners
         let lowerBounds = addMethod "LowerBounds" 4
         addMethod "Lengths" 2 |> ignore<MethodDefinitionHandle>
 
+        let vector =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadConstantI4 1
+            code.OpCode ILOpCode.Newarr
+            code.Token (TypeReferenceHandle.op_Implicit int32Ref : EntityHandle)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        metadata.AddMethodDefinition (
+            MethodAttributes.Public ||| MethodAttributes.Static,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "Vector",
+            staticVoid,
+            vector,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
+
         metadata.AddTypeDefinition (
             TypeAttributes.Class,
             Unchecked.defaultof<StringHandle>,
@@ -3253,6 +3280,35 @@ public static class Runners
         withBounds |> shouldContain "=System.OverflowException"
         withoutBounds |> shouldNotContain "=System.ArgumentOutOfRangeException"
         withoutBounds |> shouldContain "=System.OverflowException"
+
+        let made (fullName : string) =
+            let next, escapes = making analysis fullName
+            analysis <- next
+            Set.add ("=" + fullName) escapes
+
+        // The runtime looks up the message of the `ArgumentOutOfRangeException` by its resource name
+        // once its constructor has run.
+        let lookup =
+            let next, escapes =
+                EscapeAnalysis.escapes
+                    analysis
+                    (methodNamed (hostCoreLib ()) "System.Environment" "GetResourceStringLocal")
+
+            analysis <- next
+            render analysis escapes
+
+        let allocating =
+            Set.union (made "System.OverflowException") (made "System.OutOfMemoryException")
+
+        withBounds
+        |> shouldEqual (
+            allocating
+            |> Set.union (made "System.ArgumentOutOfRangeException")
+            |> Set.union lookup
+        )
+
+        withoutBounds |> shouldEqual allocating
+        answer "Vector" |> shouldEqual allocating
 
     /// `ldvirtftn` of an interface method, on an object implementing `IDynamicInterfaceCastable`,
     /// asks that object's `GetInterfaceImplementation`, which may throw anything; of a class's

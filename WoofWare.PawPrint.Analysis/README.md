@@ -97,13 +97,16 @@ The answer is an over-approximation: whatever a run can let escape is in it, nam
 The runtime makes most of the exceptions it raises by itself (a null dereference's, a bounds
 check's, a failed cast's, an overflow's) by running the exception's parameterless constructor,
 which looks up its message, so what that constructor can raise is in the answer too:
-`ThreadInterruptedException`, for one, from the lookup's lock. `OutOfMemoryException` and
-`StackOverflowException` it allocated in advance, and makes without running anything. It makes
-the exception of a failure to bind a member (`MissingMethodException`, `MissingFieldException`)
-or to dispatch a call (`AmbiguousImplementationException`, `EntryPointNotFoundException`) the
-same way. What the runtime runs to make an exception with arguments is not followed: a failed type
-binding's `TypeLoadException`, and a multidimensional array constructor's
-`ArgumentOutOfRangeException`.
+`ThreadInterruptedException`, for one, from the lookup's lock. `OutOfMemoryException` for an
+exhausted heap, and `StackOverflowException`, it allocated in advance, and makes without running
+anything; an array allocation's `OutOfMemoryException` for lengths too large to allocate it makes
+by the constructor. It makes the exception of a failure to bind a member
+(`MissingMethodException`, `MissingFieldException`) or to dispatch a call
+(`AmbiguousImplementationException`, `EntryPointNotFoundException`) the same way. A
+multidimensional array constructor's `ArgumentOutOfRangeException` it makes the same way too, and
+then looks up its message by a resource name (`Environment.GetResourceStringLocal`), which the
+analysis follows as well. What the runtime runs to make an exception with arguments, a failed type
+binding's `TypeLoadException`, is not followed.
 
 Where a type initializer fails, the runtime runs `TypeInitializationException`'s
 `(string, Exception)` constructor around what the initializer raised. Should that constructor fail,

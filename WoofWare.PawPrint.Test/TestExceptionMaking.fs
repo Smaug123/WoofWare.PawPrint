@@ -14,25 +14,31 @@ open WoofWare.PawPrint.Analysis
 [<Parallelizable(ParallelScope.All)>]
 module TestExceptionMaking =
 
-    /// Triggers the fault its first argument names, under a current UI culture whose name cannot be
-    /// read when its second argument is "nameless". Looking up a CoreLib exception's message reads
-    /// that name, so where the runtime runs the exception's constructor, the culture's exception is
-    /// raised in the fault's place. Exits 1 if the exception its third argument names escaped the
-    /// fault, 2 if the culture's did, 3 if another did, and 0 if none did.
+    /// Triggers the fault its first argument names, under a current UI culture whose name, as its
+    /// second argument says, can always be read ("named"), can never be read ("nameless"), or can be
+    /// read only as often as making the exception its third argument names by its parameterless
+    /// constructor reads it ("after-constructor"). Looking up a CoreLib exception's message reads
+    /// that name, so where the runtime looks one up, the culture's exception is raised in the fault's
+    /// place. Exits 1 if the exception its third argument names escaped the fault, 2 if the culture's
+    /// did, 3 if another did, and 0 if none did. Given "twice" instead, triggers the fault twice and
+    /// exits 1 if the same exception escaped both times, 4 if two distinct ones did, 3 if another
+    /// did, and 0 if none did.
     let private guest : string =
         """
 using System;
 using System.Globalization;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Threading;
 
-sealed class NamelessCulture : CultureInfo
+sealed class CountingCulture : CultureInfo
 {
-    public NamelessCulture() : base("") { }
-    public bool Nameless;
-    public override string Name => Nameless ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
+    public CountingCulture() : base("") { }
+    public int Reads;
+    public int ThrowFrom = int.MaxValue;
+    public override string Name => ++Reads >= ThrowFrom ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
 }
 
 sealed class Cell { public int Value; }
@@ -72,6 +78,33 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static string Repeat(int count) => new string('a', count);
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long[] Length(int length) => new long[length];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long[,] Extent(int length) => new long[length, length];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[,] Negative(int length) => new int[1, length];
+
+    // C# spells no constructor of a multidimensional array taking lower bounds, so this emits a call
+    // to `int[,]`'s.
+    static Func<int, int, int, int, object> bounds;
+
+    static Func<int, int, int, int, object> Bounds()
+    {
+        var parameters = new[] { typeof(int), typeof(int), typeof(int), typeof(int) };
+        var method = new DynamicMethod("Bounds", typeof(object), parameters);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
+        il.Emit(OpCodes.Ldarg_3);
+        il.Emit(OpCodes.Newobj, typeof(int[,]).GetConstructor(parameters));
+        il.Emit(OpCodes.Ret);
+        return method.CreateDelegate<Func<int, int, int, int, object>>();
+    }
+
     static void Run(string fault)
     {
         switch (fault)
@@ -85,22 +118,66 @@ static class Program
             case "Exchange": Exchange(); break;
             case "Load": Load(); break;
             case "Repeat": Repeat(int.MaxValue); break;
+            case "Length": Length(0x7FFFFFF0); break;
+            case "Extent": Extent(0x10000); break;
+            case "Negative": Negative(-1); break;
+            case "Bounds": bounds(int.MaxValue, 2, 0, 1); break;
             default: throw new ArgumentException(fault);
+        }
+    }
+
+    static Exception Raise(string fault)
+    {
+        try
+        {
+            Run(fault);
+            return null;
+        }
+        catch (Exception e)
+        {
+            return e;
         }
     }
 
     static int Main(string[] args)
     {
-        var culture = new NamelessCulture();
-        if (args[1] == "nameless")
+        string fault = args[0], mode = args[1], expected = args[2];
+        bounds = Bounds();
+
+        if (mode == "twice")
+        {
+            Exception first = Raise(fault), second = Raise(fault);
+            if (first == null || second == null) return 0;
+            if (first.GetType().FullName != expected || second.GetType().FullName != expected) return 3;
+            return ReferenceEquals(first, second) ? 1 : 4;
+        }
+
+        var culture = new CountingCulture();
+        if (mode != "named")
         {
             CultureInfo.CurrentUICulture = culture;
-            culture.Nameless = true;
+            if (mode == "after-constructor")
+            {
+                // Each read once, so that what is left is what every making reads.
+                Raise(fault);
+                var exceptionType = typeof(object).Assembly.GetType(expected, true);
+                for (int i = 0; i < 3; i++)
+                {
+                    culture.Reads = 0;
+                    Activator.CreateInstance(exceptionType);
+                }
+                culture.ThrowFrom = culture.Reads + 1;
+            }
+            else
+            {
+                culture.ThrowFrom = 1;
+            }
+            culture.Reads = 0;
         }
 
         try
         {
-            Run(args[0]);
+            Run(fault);
             return 0;
         }
         catch (TimeZoneNotFoundException)
@@ -109,8 +186,8 @@ static class Program
         }
         catch (Exception e)
         {
-            culture.Nameless = false;
-            return e.GetType().FullName == args[2] ? 1 : 3;
+            culture.ThrowFrom = int.MaxValue;
+            return e.GetType().FullName == expected ? 1 : 3;
         }
     }
 }
@@ -118,12 +195,63 @@ static class Program
 
     let private image : Lazy<byte[]> = lazy (Roslyn.compile [ guest ])
 
+    /// How `ExceptionMaking` says the runtime makes `fault`'s exception at each instruction that
+    /// raises it by itself in the method of this name in `image`.
+    let private makingsIn (image : byte[]) (methodName : string) (fault : OpcodeFault) : ExceptionMaking list =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Guest.dll") (new MemoryStream (image))
+
+        let method =
+            assembly.Methods.Values
+            |> Seq.filter (fun m -> m.Name = methodName)
+            |> Seq.exactlyOne
+
+        match MethodInfo.tryIlBody method with
+        | None -> failwith $"the guest's %s{methodName} has no IL body"
+        | Some body ->
+            body.Instructions
+            |> List.choose (fun (op, _) ->
+                match OpcodeFaults.ofIlOp op with
+                | OpcodeFaults.Raises faults when List.contains fault faults ->
+                    Some (ExceptionMaking.ofOpcodeFault op fault)
+                | OpcodeFaults.Raises _
+                | OpcodeFaults.Unmodelled -> None
+            )
+
+    /// How `ExceptionMaking` says the runtime makes `fault`'s exception where the guest's method of
+    /// this name raises it: at the one instruction of the method that raises it by itself.
+    let private atInstruction (methodName : string) (fault : OpcodeFault) : Lazy<ExceptionMaking> =
+        lazy
+            match makingsIn image.Value methodName fault with
+            | [ making ] -> making
+            | makings ->
+                failwith $"expected one instruction of %s{methodName} to raise %A{fault}, found %d{makings.Length}"
+
+    /// How `ExceptionMaking` says the runtime makes the exception of this full name, where a method
+    /// it supplies on `arrayType` raises it.
+    let private ofArrayMethod
+        (arrayType : TypeDefn)
+        (accessor : ArrayAccessor)
+        (exceptionName : string)
+        : Lazy<ExceptionMaking>
+        =
+        lazy
+            match
+                ExceptionMaking.ofArrayMethod arrayType accessor
+                |> List.filter (fun (name, _) -> name = exceptionName)
+            with
+            | [ _, making ] -> making
+            | found ->
+                failwith $"expected %O{arrayType}'s %A{accessor} to raise %s{exceptionName} once, found %A{found}"
+
     /// A fault the guest triggers: how `ExceptionMaking` says the runtime makes its exception, the
     /// exception, and whether the CPU may report it on some target, so that a constructor that
     /// raises ends the process rather than raising in the fault's place.
     type private Case =
         {
-            Making : ExceptionMaking
+            Making : Lazy<ExceptionMaking>
             Exception : string
             MayEndProcess : bool
         }
@@ -133,55 +261,93 @@ static class Program
             [
                 "Field",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.NullReference
+                    Making = atInstruction "Field" OpcodeFault.NullReference
                     Exception = "System.NullReferenceException"
                     MayEndProcess = true
                 }
                 "Element",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.IndexOutOfRange
+                    Making = atInstruction "Element" OpcodeFault.IndexOutOfRange
                     Exception = "System.IndexOutOfRangeException"
                     MayEndProcess = false
                 }
                 "Store",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.ArrayTypeMismatch
+                    Making = atInstruction "Store" OpcodeFault.ArrayTypeMismatch
                     Exception = "System.ArrayTypeMismatchException"
                     MayEndProcess = false
                 }
                 "Cast",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.InvalidCast
+                    Making = atInstruction "Cast" OpcodeFault.InvalidCast
                     Exception = "System.InvalidCastException"
                     MayEndProcess = false
                 }
                 "Sum",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.Overflow
+                    Making = atInstruction "Sum" OpcodeFault.Overflow
                     Exception = "System.OverflowException"
                     MayEndProcess = false
                 }
                 // x64 divides in hardware, which reports a zero divisor.
                 "Quotient",
                 {
-                    Making = ExceptionMaking.ofOpcodeFault OpcodeFault.DivideByZero
+                    Making = atInstruction "Quotient" OpcodeFault.DivideByZero
                     Exception = "System.DivideByZeroException"
                     MayEndProcess = true
                 }
                 "Exchange",
                 {
-                    Making = ExceptionMaking.ofPrimitiveFault PrimitiveFault.NullReference
+                    Making = lazy ExceptionMaking.ofPrimitiveFault PrimitiveFault.NullReference
                     Exception = "System.NullReferenceException"
                     MayEndProcess = true
                 }
                 "Load",
                 {
                     Making =
-                        match ExceptionMaking.ofInstructionFault InstructionFault.NullAddress with
-                        | Some making -> making
-                        | None -> failwith "ExceptionMaking says the runtime does not make a null address's exception"
+                        lazy
+                            match ExceptionMaking.ofInstructionFault InstructionFault.NullAddress with
+                            | Some making -> making
+                            | None ->
+                                failwith "ExceptionMaking says the runtime does not make a null address's exception"
                     Exception = "System.NullReferenceException"
                     MayEndProcess = true
+                }
+                "Length",
+                {
+                    Making = atInstruction "Length" OpcodeFault.OutOfMemory
+                    Exception = "System.OutOfMemoryException"
+                    MayEndProcess = false
+                }
+                "Extent",
+                {
+                    Making =
+                        ofArrayMethod
+                            (TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Int64, 2))
+                            (ArrayAccessor.Constructor 2)
+                            "System.OutOfMemoryException"
+                    Exception = "System.OutOfMemoryException"
+                    MayEndProcess = false
+                }
+                "Negative",
+                {
+                    Making =
+                        ofArrayMethod
+                            (TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Int32, 2))
+                            (ArrayAccessor.Constructor 2)
+                            "System.OverflowException"
+                    Exception = "System.OverflowException"
+                    MayEndProcess = false
+                }
+                "Bounds",
+                {
+                    Making =
+                        ofArrayMethod
+                            (TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Int32, 2))
+                            (ArrayAccessor.Constructor 4)
+                            "System.ArgumentOutOfRangeException"
+                    Exception = "System.ArgumentOutOfRangeException"
+                    MayEndProcess = false
                 }
             ]
 
@@ -221,30 +387,42 @@ static class Program
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
         let case = cases.[fault]
 
+        let run (mode : string) : RealRuntimeResult =
+            RealRuntime.executeWithRealRuntime [| fault ; mode ; case.Exception |] image.Value
+
+        let expect (mode : string) (what : string) (expected : RealRuntimeResult) : unit =
+            match run mode with
+            | actual when actual = expected -> ()
+            // SIGABRT: the VM's handler for a fault the CPU reported met the culture's exception.
+            | RealRuntimeResult.NormalExit 134 when case.MayEndProcess && mode <> "named" && mode <> "twice" -> ()
+            | actual -> failwith $"%s{fault} (%s{mode}): expected %s{what}, %A{expected}; got %A{actual}"
+
         // The guest does raise this fault.
-        match RealRuntime.executeWithRealRuntime [| fault ; "named" ; case.Exception |] image.Value with
-        | RealRuntimeResult.NormalExit 1 -> ()
-        | other -> failwith $"%s{fault} with a well-behaved culture: expected its own exception, got %A{other}"
+        expect "named" "its own exception" (RealRuntimeResult.NormalExit 1)
 
-        let nameless =
-            RealRuntime.executeWithRealRuntime [| fault ; "nameless" ; case.Exception |] image.Value
-
-        match case.Making with
+        match case.Making.Force () with
         | ExceptionMaking.ParameterlessConstructor ->
-            match nameless with
-            | RealRuntimeResult.NormalExit 2 -> ()
-            // SIGABRT: the VM's handler for a fault the CPU reported met the constructor's exception.
-            | RealRuntimeResult.NormalExit 134 when case.MayEndProcess -> ()
-            | other ->
-                failwith
-                    $"%s{fault} under a culture whose name throws: expected the culture's exception in place of %s{case.Exception}, got %A{other}"
+            expect "twice" "a new exception each time" (RealRuntimeResult.NormalExit 4)
+
+            expect
+                "after-constructor"
+                "nothing but the constructor to read the culture"
+                (RealRuntimeResult.NormalExit 1)
+
+            match case.Exception with
+            // Its constructor reads its message from the runtime's native resources, not the
+            // culture's.
+            | "System.OutOfMemoryException" ->
+                expect "nameless" "a constructor that reads no culture" (RealRuntimeResult.NormalExit 1)
+            | _ -> expect "nameless" "the culture's exception" (RealRuntimeResult.NormalExit 2)
+        | ExceptionMaking.ResourceMessage ->
+            expect "twice" "a new exception each time" (RealRuntimeResult.NormalExit 4)
+            expect "after-constructor" "the message lookup to read the culture" (RealRuntimeResult.NormalExit 2)
+            expect "nameless" "the culture's exception" (RealRuntimeResult.NormalExit 2)
         // Running no managed code, the runtime never reads the culture.
         | ExceptionMaking.Preallocated ->
-            match nameless with
-            | RealRuntimeResult.NormalExit 1 -> ()
-            | other ->
-                failwith
-                    $"%s{fault} under a culture whose name throws: expected %s{case.Exception} itself, got %A{other}"
+            expect "twice" "the same exception each time" (RealRuntimeResult.NormalExit 1)
+            expect "nameless" "the exception itself" (RealRuntimeResult.NormalExit 1)
         | ExceptionMaking.InitializerFailure -> failwith $"%s{fault}: no case here raises a TypeInitializationException"
 
     /// The provider a binding guest is compiled against: it declares a field and a method, an
@@ -488,8 +666,12 @@ static class Program
 
     [<Test>]
     let ``a type initializer's failure raises what ExceptionMaking says`` () : unit =
-        ExceptionMaking.ofOpcodeFault OpcodeFault.TypeInitialization
-        |> shouldEqual ExceptionMaking.InitializerFailure
+        let makings = makingsIn initializerImage.Value "Main" OpcodeFault.TypeInitialization
+
+        makings |> shouldNotEqual []
+
+        for making in makings do
+            making |> shouldEqual ExceptionMaking.InitializerFailure
 
         let touch (culture : string) : RealRuntimeResult =
             RealRuntime.executeWithRealRuntime [| culture |] initializerImage.Value

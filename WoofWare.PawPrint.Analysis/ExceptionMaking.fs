@@ -12,6 +12,11 @@ type internal ExceptionMaking =
     /// message, so what that constructor raises can escape in place of the exception. (Where the
     /// CPU reported the fault, a constructor that raises ends the process instead.)
     | ParameterlessConstructor
+    /// It allocates the exception, runs its parameterless constructor, and then looks up its
+    /// message by a resource name through `Environment.GetResourceStringLocal`
+    /// (`EEResourceException`), so what either of those raises can escape in place of the
+    /// exception.
+    | ResourceMessage
     /// It runs `TypeInitializationException`'s `(string, Exception)` constructor around what a type
     /// initializer raised, and should that constructor fail, raises what the initializer raised
     /// instead, throwing it again: that runs `Exception.InternalPreserveStackTrace` on it, whose
@@ -21,8 +26,8 @@ type internal ExceptionMaking =
 [<RequireQualifiedAccess>]
 module internal ExceptionMaking =
 
-    /// How CoreCLR makes the exception of a fault an instruction raises by itself.
-    let ofOpcodeFault (fault : OpcodeFault) : ExceptionMaking =
+    /// How CoreCLR makes the exception of a fault `op` raises by itself.
+    let ofOpcodeFault (op : IlOp) (fault : OpcodeFault) : ExceptionMaking =
         match fault with
         // The JIT throws these by calling CoreLib's helpers (`ThrowHelpers`, `CastHelpers`), each
         // of which does `throw new`, or the CPU reports them and the VM makes the exception
@@ -33,11 +38,54 @@ module internal ExceptionMaking =
         | OpcodeFault.InvalidCast
         | OpcodeFault.Overflow
         | OpcodeFault.DivideByZero -> ExceptionMaking.ParameterlessConstructor
-        // `CLRException::GetBestOutOfMemoryException` and `GetPreallocatedStackOverflowException`.
-        | OpcodeFault.OutOfMemory
+        | OpcodeFault.OutOfMemory ->
+            match op with
+            // `AllocateSzArray` makes one for a length too large to allocate
+            // (`ThrowOutOfMemoryDimensionsExceeded`), as well as raising the preallocated one when
+            // the heap is exhausted; running the constructor runs all that either does.
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, _) -> ExceptionMaking.ParameterlessConstructor
+            // `CLRException::GetBestOutOfMemoryException`.
+            | _ -> ExceptionMaking.Preallocated
+        // `GetPreallocatedStackOverflowException`.
         | OpcodeFault.StackOverflow -> ExceptionMaking.Preallocated
         // `CreateTypeInitializationExceptionObject`.
         | OpcodeFault.TypeInitialization -> ExceptionMaking.InitializerFailure
+
+    /// The exceptions CoreCLR raises by itself, by full name, from a method it supplies on
+    /// `arrayType`, and how it makes each.
+    let ofArrayMethod (arrayType : TypeDefn) (accessor : ArrayAccessor) : (string * ExceptionMaking) list =
+        let lowerBounds =
+            match arrayType, accessor with
+            | TypeDefn.Array (_, rank), ArrayAccessor.Constructor arity -> arity = 2 * rank
+            | _ -> false
+
+        match accessor with
+        // Those of the instructions they stand in for, `ldelem`, `stelem.ref` and `ldelema`, made as
+        // `ofOpcodeFault` says those instructions' are.
+        | ArrayAccessor.Get ->
+            [
+                "System.NullReferenceException", ExceptionMaking.ParameterlessConstructor
+                "System.IndexOutOfRangeException", ExceptionMaking.ParameterlessConstructor
+            ]
+        | ArrayAccessor.Set
+        | ArrayAccessor.Address ->
+            [
+                "System.NullReferenceException", ExceptionMaking.ParameterlessConstructor
+                "System.IndexOutOfRangeException", ExceptionMaking.ParameterlessConstructor
+                "System.ArrayTypeMismatchException", ExceptionMaking.ParameterlessConstructor
+            ]
+        // The JIT calls `Array.CreateInstanceMDArray`, whose QCall's `AllocateArrayEx` raises
+        // `OverflowException` for a negative length; `OutOfMemoryException` for lengths too large to
+        // allocate (`ThrowOutOfMemoryDimensionsExceeded`), or the preallocated one when the heap is
+        // exhausted; and, given lower bounds, `ArgumentOutOfRangeException` for a dimension whose
+        // upper end overflows, by `COMPlusThrow` with a resource name.
+        | ArrayAccessor.Constructor _ ->
+            [
+                "System.OverflowException", ExceptionMaking.ParameterlessConstructor
+                "System.OutOfMemoryException", ExceptionMaking.ParameterlessConstructor
+                if lowerBounds then
+                    "System.ArgumentOutOfRangeException", ExceptionMaking.ResourceMessage
+            ]
 
     /// How CoreCLR makes the exception of a fault one of its own operations raises: the CPU reports
     /// each, and the VM makes the exception (`EEException::CreateThrowable`).
