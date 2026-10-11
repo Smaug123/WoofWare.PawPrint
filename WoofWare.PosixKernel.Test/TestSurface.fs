@@ -12,7 +12,7 @@ open WoofWare.PosixKernel
 /// library embeds. A change to the API fails the first test until the baseline is regenerated
 /// by `Update API surface` and committed, so every API change shows up in review as a diff of
 /// that file. The baseline also records the tag of each case of each public union, and a union
-/// that gains a case anywhere but at its end, or loses or reorders cases, fails a second test.
+/// that loses or reorders cases, or gains a case anywhere but at its end, fails a second test.
 /// A public record that is new since the baseline, or a field a committed record gains, may not
 /// reuse a field label that another committed record has, which a third test checks.
 [<TestFixture>]
@@ -45,9 +45,9 @@ module TestSurface =
                 "Public unions no longer keep the cases SurfaceBaseline.txt records at the tags it records:\n"
                 + listed
                 + "\nAn F# client compiled against the committed API may identify a case by its tag, which is "
-                + "its position, so it would run the wrong arm for these. From 1.0 a union may only gain cases "
-                + "at its end (README, \"Unions that gain cases\"). Before 1.0 such a change may be made "
-                + "deliberately: regenerate the baseline with `nix develop -c dotnet test "
+                + "its position, so for these it would run the wrong arm even for cases it already knew, which "
+                + "an appended case does not make it do. From 1.0 either is a major version (README, \"Unions "
+                + "that gain cases\"). Before 1.0 such a change may be made deliberately: regenerate the baseline with `nix develop -c dotnet test "
                 + "WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "
                 + "\"FullyQualifiedName~TestSurface&Name~Update\"` and commit it with the change."
             )

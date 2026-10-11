@@ -30,7 +30,8 @@ type CaseOrderViolation =
     /// the committed union's is one of the compiled union's: its case was renamed or replaced.
     | ReplacedOnlyCase of union : string * committed : Set<string> * current : Set<string>
 
-/// Whether each public union only gained cases at its end, comparing two ApiSurface listings.
+/// Whether each public union keeps every case it had at the same tag, comparing two ApiSurface
+/// listings: that is, whether it gained cases only at its end.
 /// An F# client compiled against the earlier listing may identify a case by its tag, which is its
 /// position, so a case inserted before another, a reordering or a removal makes that client run
 /// the wrong arm.
@@ -110,7 +111,8 @@ module UnionCaseOrder =
         )
 
     /// The unions of `committed` whose cases `current` does not keep at the same tags. A union only
-    /// in `current` is new, and a union may gain any cases at its end.
+    /// in `current` is new, and a union may gain any cases at its end, since that changes no tag
+    /// the union already had.
     let violations
         (committed : Map<string, RecordedUnion>)
         (current : Map<string, RecordedUnion>)
