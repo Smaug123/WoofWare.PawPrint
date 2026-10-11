@@ -3102,7 +3102,7 @@ module UnixReadWrite =
             Error (WriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
             Error (WriteRefusal.UnmeasuredSetIdChange (inode, refusal))
-        | Ok filesystem ->
+        | Ok mutation ->
 
         // At the description's own offset, and advancing it by what moved — the
         // entire difference from `pwrite`, which takes the offset as an argument
@@ -3119,10 +3119,7 @@ module UnixReadWrite =
                     (offset + int64 bytes.Length)
                     (UnixSystemState.fileDescriptors system))
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 })
 
     /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
@@ -4270,17 +4267,14 @@ module UnixReadWrite =
             Error (PWriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
             Error (PWriteRefusal.UnmeasuredSetIdChange (inode, refusal))
-        | Ok filesystem ->
+        | Ok mutation ->
 
         // The description is left exactly where it was — the whole of what
         // `pwrite` does differently from `write`, and measured on both flavours.
         Ok (
             WriteAnswer.Completed (int64 bytes.Length),
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 
@@ -4475,7 +4469,7 @@ module UnixReadWrite =
                 Error (CopyFileRangeRefusal.ExceedsRepresentableLength (destinationInode, offset, count))
             | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
                 Error (CopyFileRangeRefusal.UnmeasuredSetIdChange (destinationInode, refusal))
-            | Ok filesystem ->
+            | Ok mutation ->
 
             let registry =
                 registry
@@ -4485,10 +4479,7 @@ module UnixReadWrite =
             Ok (
                 SyscallAnswer.Completed (int64 count),
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
                 |> UnixSystemState.withFileDescriptors registry
             )

@@ -293,17 +293,11 @@ module TestLinkCount =
             | Error error -> failwith $"expected success, got %O{error}"
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory
-                root
-                (name "d")
-                SeedEntry.defaultPermsForDirectory
-                Owners.linuxDefault
-                now
-                vfs
+            GraphMutators.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory Owners.linuxDefault now vfs
             |> ok
 
         let _, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 directory
                 (name "s")
                 SeedEntry.defaultPermsForDirectory
@@ -313,7 +307,7 @@ module TestLinkCount =
             |> ok
 
         let link, vfs =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 directory
                 (name "l")
                 SymlinkModes.linux
@@ -323,7 +317,7 @@ module TestLinkCount =
                 vfs
             |> ok
 
-        let vfs = VirtualFileSystem.hardLink directory (name "l2") link now vfs |> ok
+        let vfs = GraphMutators.hardLink directory (name "l2") link now vfs |> ok
 
         for platform in [ linux ; darwin ] do
             let system = systemOn platform
@@ -332,7 +326,7 @@ module TestLinkCount =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -361,7 +355,7 @@ module TestLinkCount =
             | Error error -> failwith $"expected success, got %O{error}"
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 (VirtualFileSystem.root vfs)
                 (DirectoryEntryName.parseOrFail context "d")
                 SeedEntry.defaultPermsForDirectory
@@ -373,7 +367,7 @@ module TestLinkCount =
         let vfs =
             (vfs, [ 0 .. count - 1 ])
             ||> List.fold (fun vfs i ->
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     directory
                     (DirectoryEntryName.parseOrFail context $"e%d{i}")
                     SeedEntry.defaultPermsForDirectory
@@ -409,7 +403,7 @@ module TestLinkCount =
                     { system with
                         Machine =
                             { system.Machine with
-                                FileSystem = vfs
+                                CommittedFileSystem = CommittedFileSystem.initial vfs
                             }
                     }
 

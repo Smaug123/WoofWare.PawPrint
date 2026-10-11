@@ -243,6 +243,31 @@ type VirtualFileSystemDefect =
     /// device that `CharacterDevice.all` does not list.
     | ReservedContent of inode : InodeNumber
 
+/// What a `VirtualFileSystem` mutator answers: the graph it was applied to,
+/// the graph after it, and the changes it made between the two, in the order
+/// it made them.
+///
+/// Only the mutators in `VirtualFileSystem` make one, so a change list is
+/// always the one the mutator that produced its graph reported.
+type internal VfsMutation =
+    private
+        {
+            Before : VirtualFileSystem
+            After : VirtualFileSystem
+            Changes : FsChange list
+        }
+
+[<RequireQualifiedAccess>]
+module internal VfsMutation =
+    /// The graph the mutator was applied to.
+    let before (mutation : VfsMutation) : VirtualFileSystem = mutation.Before
+
+    /// The graph after the mutation.
+    let after (mutation : VfsMutation) : VirtualFileSystem = mutation.After
+
+    /// What the mutator changed, in the order it changed it.
+    let changes (mutation : VfsMutation) : FsChange list = mutation.Changes
+
 /// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
 [<RequireQualifiedAccess>]
 type internal MountFault =
@@ -793,6 +818,18 @@ module VirtualFileSystem =
         | Some _
         | None -> None
 
+    let private mutation
+        (before : VirtualFileSystem)
+        (after : VirtualFileSystem)
+        (changes : FsChange list)
+        : VfsMutation
+        =
+        {
+            Before = before
+            After = after
+            Changes = changes
+        }
+
     let private allocate
         (content : InodeContent)
         (owner : InodeOwner)
@@ -1018,7 +1055,7 @@ module VirtualFileSystem =
         (owner : InodeOwner)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        : Result<InodeNumber * VfsMutation, UnixError>
         =
         match ensureBindable directory name vfs with
         | Error error -> Error error
@@ -1036,7 +1073,8 @@ module VirtualFileSystem =
                 now
                 vfs
 
-        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
+        bind directory name inode now allocated
+        |> Result.map (fun after -> inode, mutation vfs after [ FsChange.EntryAdded (directory, name, inode) ])
 
     /// Create a regular file with the given contents, owned by `owner`. Mirrors
     /// `open(2)` with `O_CREAT | O_EXCL`.
@@ -1048,7 +1086,7 @@ module VirtualFileSystem =
         (now : UnixTimestamp)
         (contents : ImmutableArray<byte>)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        : Result<InodeNumber * VfsMutation, UnixError>
         =
         // `ImmutableArray` is a struct wrapping an array, so `default` carries a
         // null one: it stores happily, passes `checkInvariants`, and throws only
@@ -1068,7 +1106,8 @@ module VirtualFileSystem =
         let inode, allocated =
             allocate (InodeContent.RegularFile (contents, permissions)) owner now vfs
 
-        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
+        bind directory name inode now allocated
+        |> Result.map (fun after -> inode, mutation vfs after [ FsChange.EntryAdded (directory, name, inode) ])
 
     /// Create a regular file under `name` in `directory` holding the contents of
     /// the regular file at `source`, with `permissions` and owned by `owner`,
@@ -1086,7 +1125,7 @@ module VirtualFileSystem =
         (owner : InodeOwner)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        : Result<InodeNumber * VfsMutation, UnixError>
         =
         let contents, sourceTimes =
             match Map.tryFind source vfs.Inodes with
@@ -1127,7 +1166,8 @@ module VirtualFileSystem =
                         allocated.Inodes
             }
 
-        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
+        bind directory name inode now allocated
+        |> Result.map (fun after -> inode, mutation vfs after [ FsChange.EntryAdded (directory, name, inode) ])
 
     /// Create a symbolic link holding `target` verbatim, with permission bits
     /// `permissions`, owned by `owner`. Mirrors `symlink(2)`, including that the
@@ -1145,7 +1185,7 @@ module VirtualFileSystem =
         (now : UnixTimestamp)
         (target : SymlinkTarget)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        : Result<InodeNumber * VfsMutation, UnixError>
         =
         let target = SymlinkTarget.assertValid "VirtualFileSystem.createSymlink" target
 
@@ -1159,19 +1199,23 @@ module VirtualFileSystem =
         let inode, allocated =
             allocate (InodeContent.Symlink (target, permissions)) owner now vfs
 
-        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
+        bind directory name inode now allocated
+        |> Result.map (fun after -> inode, mutation vfs after [ FsChange.EntryAdded (directory, name, inode) ])
 
     /// Bind an existing inode under a second name. Mirrors `link(2)`, including
     /// its refusal to hard-link a directory (EPERM): that would make the graph
     /// a non-tree, and a directory's `Parent` could then name only one of its
     /// containers.
+    ///
+    /// Reports the target's new link (`FsChange.AttributesChanged`) and then
+    /// the name.
     let internal hardLink
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (target : InodeNumber)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<VirtualFileSystem, UnixError>
+        : Result<VfsMutation, UnixError>
         =
         assertOnRootFileSystem "hardLink" directory vfs
         assertOnRootFileSystem "hardLink" target vfs
@@ -1203,7 +1247,7 @@ module VirtualFileSystem =
                 // which is a change to the inode even though its contents are
                 // untouched. Its `mtime` does not. (`bind` has already moved the
                 // *directory's* pair.)
-                Ok
+                let after =
                     { bound with
                         Inodes =
                             Map.add
@@ -1214,6 +1258,16 @@ module VirtualFileSystem =
                                 bound.Inodes
                     }
 
+                Ok (
+                    mutation
+                        vfs
+                        after
+                        [
+                            FsChange.AttributesChanged target
+                            FsChange.EntryAdded (directory, name, target)
+                        ]
+                )
+
     /// Remove `name` from `directory`, answering the inode it named. Mirrors
     /// the *naming* half of `unlink(2)` and `rmdir(2)`: ENOENT if `directory`
     /// is absent or does not hold `name`, ENOTDIR if `directory` is not a
@@ -1222,6 +1276,9 @@ module VirtualFileSystem =
     /// `effect` says what the removal did to the inode that lost the name, which
     /// the two syscalls do not agree on: see `UnbindTargetEffect`. The directory
     /// losing the entry is stamped the same way either way.
+    ///
+    /// Reports the name's removal, preceded, for an inode that is no directory,
+    /// by its lost link (`FsChange.AttributesChanged`) whatever `effect` is.
     ///
     /// Removing the last name an inode has does **not** remove the inode, and
     /// this function deliberately cannot: a real kernel keeps an unlinked inode
@@ -1243,7 +1300,7 @@ module VirtualFileSystem =
         (name : DirectoryEntryName)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        : Result<InodeNumber * VfsMutation, UnixError>
         =
         // As in `bind`, so that a forged `default(FileName)` is stopped at the
         // one chokepoint through which a directory ever loses an entry rather
@@ -1316,19 +1373,33 @@ module VirtualFileSystem =
                 failwith
                     $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
-        Ok (
-            target,
+        let targetIsDirectory = isDirectoryIn inodes target
+
+        let after =
             { vfs with
                 Inodes = inodes
                 BindingCounts = adjustBindingCount target -1 vfs.BindingCounts
                 SortedNames = removeSortedName directory name vfs.SortedNames
                 SubdirectoryCounts =
-                    if isDirectoryIn inodes target then
+                    if targetIsDirectory then
                         adjustSubdirectoryCount directory -1 vfs.SubdirectoryCounts
                     else
                         vfs.SubdirectoryCounts
             }
-        )
+
+        // A non-directory losing a name has lost a hard link, whatever
+        // `effect` says of its `ctime`. A directory has no hard links: losing
+        // its one name is its removal, which the entry change says in full.
+        let changes =
+            if targetIsDirectory then
+                [ FsChange.EntryRemoved (directory, name, target) ]
+            else
+                [
+                    FsChange.AttributesChanged target
+                    FsChange.EntryRemoved (directory, name, target)
+                ]
+
+        Ok (target, mutation vfs after changes)
 
     /// How many directory entries name `inode`.
     ///
@@ -1494,7 +1565,7 @@ module VirtualFileSystem =
         (destinationName : DirectoryEntryName)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<RenameOutcome * VirtualFileSystem, UnixError>
+        : Result<RenameOutcome * VfsMutation, UnixError>
         =
         // As in `bind` and `unbind`, so that a forged `default(FileName)` is
         // stopped before it becomes an entry no path could name.
@@ -1707,12 +1778,24 @@ module VirtualFileSystem =
             {
                 Displaced = displaced
             },
-            { vfs with
-                Inodes = inodes
-                BindingCounts = counts
-                SortedNames = sortedNames
-                SubdirectoryCounts = subdirectoryCounts
-            }
+            mutation
+                vfs
+                { vfs with
+                    Inodes = inodes
+                    BindingCounts = counts
+                    SortedNames = sortedNames
+                    SubdirectoryCounts = subdirectoryCounts
+                }
+                [
+                    FsChange.EntryMoved (
+                        sourceDirectory,
+                        sourceName,
+                        destinationDirectory,
+                        destinationName,
+                        moved,
+                        displaced
+                    )
+                ]
         )
 
     /// The next entry an open directory stream over `directory` hands back, and
@@ -1812,7 +1895,7 @@ module VirtualFileSystem =
     /// strand what it holds.
     ///
     /// The number is not reused; see `VirtualFileSystem.NextInode`.
-    let internal forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    let internal forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VfsMutation =
         if not (Map.containsKey inode vfs.Inodes) then
             failwith
                 $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is a bug in the caller of VirtualFileSystem.forget)."
@@ -1834,9 +1917,12 @@ module VirtualFileSystem =
         // nothing either.
         match bindingCount inode vfs with
         | 0 ->
-            { vfs with
-                Inodes = Map.remove inode vfs.Inodes
-            }
+            mutation
+                vfs
+                { vfs with
+                    Inodes = Map.remove inode vfs.Inodes
+                }
+                [ FsChange.InodeForgotten inode ]
         | count ->
             failwith
                 $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
@@ -1883,7 +1969,7 @@ module VirtualFileSystem =
                 match tryGetDirectory existing vfs with
                 | Some content when Map.isEmpty content.Entries && not (Map.containsKey existing vfs.Mounts) ->
                     match unbind UnbindTargetEffect.LostALink vfs.Root name now vfs with
-                    | Ok (_, unbound) -> Ok (existing, forget existing unbound)
+                    | Ok (_, unbound) -> Ok (existing, (forget existing unbound.After).After)
                     | Error error ->
                         failwith
                             $"VirtualFileSystem.mountAtRoot: unbinding \"%s{DirectoryEntryName.toEscaped name}\" from the root was refused with %O{error}, though the root binds it (this is a bug in this library)."
@@ -1961,6 +2047,9 @@ module VirtualFileSystem =
     /// timestamp and strips no bit, so treating it as an ordinary write of nothing
     /// would restamp the inode for a call a real kernel makes no record of. The
     /// caller short-circuits it.
+    ///
+    /// Reports `FsChange.ContentChanged`, preceded by `AttributesChanged` when
+    /// the write stripped a set-ID bit.
     let internal writeFile
         (inode : InodeNumber)
         (offset : int64)
@@ -1969,7 +2058,7 @@ module VirtualFileSystem =
         (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<VirtualFileSystem, FileWriteRefusal>
+        : Result<VfsMutation, FileWriteRefusal>
         =
         if bytes.IsDefault then
             failwith
@@ -2023,19 +2112,27 @@ module VirtualFileSystem =
         // the `ctime` above covers both.
         match PermissionBits.afterContentChangingWrite rule (Standing.toward credentials entry.Owner) permissions with
         | Error refusal -> Error (FileWriteRefusal.UnmeasuredSetIdChange refusal)
-        | Ok permissions ->
+        | Ok stripped ->
 
-        Ok
+        let after =
             { vfs with
                 Inodes =
                     Map.add
                         inode
                         { entry with
-                            Content = InodeContent.RegularFile (updated, permissions)
+                            Content = InodeContent.RegularFile (updated, stripped)
                             Times = InodeTimes.contentsChangedAt now entry.Times
                         }
                         vfs.Inodes
             }
+
+        let changes =
+            if stripped = permissions then
+                [ FsChange.ContentChanged inode ]
+            else
+                [ FsChange.AttributesChanged inode ; FsChange.ContentChanged inode ]
+
+        Ok (mutation vfs after changes)
 
     /// Set the length of the regular file at `inode` to `length`, moving its
     /// `mtime` and `ctime` and clearing whichever of its set-user-ID and
@@ -2054,6 +2151,9 @@ module VirtualFileSystem =
     /// never moves, measured on both. A truncation that *fails* moves nothing,
     /// which falls out of this returning an error rather than a filesystem.
     ///
+    /// Reports `FsChange.ContentChanged` even when the length is unchanged,
+    /// preceded by `AttributesChanged` when the truncation stripped a set-ID bit.
+    ///
     /// Partial in the inode, which must name a regular file this filesystem
     /// contains, for the reason `writeFile` gives: a caller arrives having
     /// resolved a descriptor open for writing, and `open(2)` answers EISDIR for
@@ -2066,7 +2166,7 @@ module VirtualFileSystem =
         (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : Result<VirtualFileSystem, FileTruncationRefusal>
+        : Result<VfsMutation, FileTruncationRefusal>
         =
         // A hard check rather than a `Debug.Assert`, which a Release build
         // compiles out: a negative length reaches `Array.Take` as an empty
@@ -2119,19 +2219,27 @@ module VirtualFileSystem =
         // two platforms, and the `ctime` below covers both either way.
         match PermissionBits.afterTruncation rule (Standing.toward credentials entry.Owner) permissions with
         | Error refusal -> Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal)
-        | Ok permissions ->
+        | Ok stripped ->
 
-        Ok
+        let after =
             { vfs with
                 Inodes =
                     Map.add
                         inode
                         { entry with
-                            Content = InodeContent.RegularFile (updated, permissions)
+                            Content = InodeContent.RegularFile (updated, stripped)
                             Times = InodeTimes.contentsChangedAt now entry.Times
                         }
                         vfs.Inodes
             }
+
+        let changes =
+            if stripped = permissions then
+                [ FsChange.ContentChanged inode ]
+            else
+                [ FsChange.AttributesChanged inode ; FsChange.ContentChanged inode ]
+
+        Ok (mutation vfs after changes)
 
     /// Give the regular file or directory at `inode` the permission bits `bits`,
     /// and move its `ctime`.
@@ -2148,7 +2256,7 @@ module VirtualFileSystem =
         (bits : PermissionBits)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : VirtualFileSystem
+        : VfsMutation
         =
         // Measured on both platforms (`chmod-rules.c`): `chmod` and `fchmod` to
         // a different mode, to the same mode, and to one the kernel then
@@ -2175,16 +2283,19 @@ module VirtualFileSystem =
                     }
             | InodeContent.Symlink (target, _) -> InodeContent.Symlink (target, bits)
 
-        { vfs with
-            Inodes =
-                Map.add
-                    inode
-                    { entry with
-                        Content = content
-                        Times = InodeTimes.statusChangedAt now entry.Times
-                    }
-                    vfs.Inodes
-        }
+        mutation
+            vfs
+            { vfs with
+                Inodes =
+                    Map.add
+                        inode
+                        { entry with
+                            Content = content
+                            Times = InodeTimes.statusChangedAt now entry.Times
+                        }
+                        vfs.Inodes
+            }
+            [ FsChange.AttributesChanged inode ]
 
     /// Give the inode at `inode`, of any kind, the owner `owner`, and move its
     /// `ctime`.
@@ -2198,7 +2309,7 @@ module VirtualFileSystem =
         (owner : InodeOwner)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
-        : VirtualFileSystem
+        : VfsMutation
         =
         // Measured on both platforms (`chown-rules.c`): a successful `chown`,
         // `lchown` or `fchown` moves `ctime` and neither `atime` nor `mtime`,
@@ -2210,37 +2321,43 @@ module VirtualFileSystem =
                 $"VirtualFileSystem.setOwner: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
         | Some entry ->
 
-        { vfs with
-            Inodes =
-                Map.add
-                    inode
-                    { entry with
-                        Owner = owner
-                        Times = InodeTimes.statusChangedAt now entry.Times
-                    }
-                    vfs.Inodes
-        }
+        mutation
+            vfs
+            { vfs with
+                Inodes =
+                    Map.add
+                        inode
+                        { entry with
+                            Owner = owner
+                            Times = InodeTimes.statusChangedAt now entry.Times
+                        }
+                        vfs.Inodes
+            }
+            [ FsChange.AttributesChanged inode ]
 
     /// Give the inode at `inode` exactly the timestamps `times`, birth time
     /// included. The caller decides which of them a change moves.
     ///
     /// Partial in the inode, which must be one this filesystem contains.
-    let internal setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    let internal setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VfsMutation =
         match Map.tryFind inode vfs.Inodes with
         | None ->
             failwith
                 $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
         | Some entry ->
 
-        { vfs with
-            Inodes =
-                Map.add
-                    inode
-                    { entry with
-                        Times = times
-                    }
-                    vfs.Inodes
-        }
+        mutation
+            vfs
+            { vfs with
+                Inodes =
+                    Map.add
+                        inode
+                        { entry with
+                            Times = times
+                        }
+                        vfs.Inodes
+            }
+            [ FsChange.AttributesChanged inode ]
 
     // ------------------------------------------------------------ resolution
 
@@ -2709,7 +2826,7 @@ module VirtualFileSystem =
                         let owner = owner |> Option.defaultValue defaultOwner
 
                         match createFile directory name permissions owner createdAt contents vfs with
-                        | Ok (_, vfs) -> vfs
+                        | Ok (_, created) -> created.After
                         | Error error ->
                             failwith
                                 $"ofFileSystemSeed: could not create the file %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
@@ -2717,7 +2834,7 @@ module VirtualFileSystem =
                         let owner = owner |> Option.defaultValue defaultOwner
 
                         match createSymlink directory name symlinkPermissions owner createdAt target vfs with
-                        | Ok (_, vfs) -> vfs
+                        | Ok (_, created) -> created.After
                         | Error error ->
                             failwith
                                 $"ofFileSystemSeed: could not create the symlink %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
@@ -2725,7 +2842,7 @@ module VirtualFileSystem =
                         let owner = owner |> Option.defaultValue defaultOwner
 
                         match createDirectory directory name permissions owner createdAt vfs with
-                        | Ok (inode, vfs) -> install inode children vfs
+                        | Ok (inode, created) -> install inode children created.After
                         | Error error ->
                             failwith
                                 $"ofFileSystemSeed: could not create the directory %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."

@@ -220,14 +220,14 @@ module TestModeChange =
     let private directory (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
+        GraphMutators.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
         |> ok
         |> snd
 
     let private file (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (inodeAt vfs parent)
             (name child)
             (mode bits)
@@ -241,7 +241,7 @@ module TestModeChange =
     let private symlink (p : string) (target : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createSymlink
+        GraphMutators.createSymlink
             (inodeAt vfs parent)
             (name child)
             SymlinkModes.linux
@@ -272,7 +272,7 @@ module TestModeChange =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =

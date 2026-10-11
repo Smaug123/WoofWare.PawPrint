@@ -291,7 +291,7 @@ module TestUTimensAt =
             initialised caller
             |> List.fold
                 (fun vfs path ->
-                    VirtualFileSystem.setTimes
+                    GraphMutators.setTimes
                         (inodeAt caller path system)
                         {
                             Access = initialAccess
@@ -306,7 +306,7 @@ module TestUTimensAt =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = fileSystem
+                    CommittedFileSystem = CommittedFileSystem.initial fileSystem
                 }
         }
 

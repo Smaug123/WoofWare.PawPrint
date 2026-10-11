@@ -274,7 +274,7 @@ module TestResolutionSplit =
     // ------------------------------------------------------ a fixed corpus
 
     let private makeDirectory (parent : InodeNumber) (n : string) (mode : int) (vfs : VirtualFileSystem) =
-        VirtualFileSystem.createDirectory
+        GraphMutators.createDirectory
             parent
             (name n)
             (PermissionBits.parseOrFail "test" mode)
@@ -300,7 +300,7 @@ module TestResolutionSplit =
         let _, vfs = makeDirectory d "sub" 0o700 vfs |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 d
                 (name "f")
                 (PermissionBits.parseOrFail "test" 0o600)
@@ -313,7 +313,7 @@ module TestResolutionSplit =
         let nosearch, vfs = makeDirectory root "nosearch" 0o600 vfs |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 nosearch
                 (name "kid")
                 (PermissionBits.parseOrFail "test" 0o600)
@@ -324,7 +324,7 @@ module TestResolutionSplit =
             |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 root
                 (name "f")
                 (PermissionBits.parseOrFail "test" 0o600)
@@ -335,7 +335,7 @@ module TestResolutionSplit =
             |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 root
                 (name longName)
                 (PermissionBits.parseOrFail "test" 0o600)
@@ -346,7 +346,7 @@ module TestResolutionSplit =
             |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 root
                 (name wideName)
                 (PermissionBits.parseOrFail "test" 0o600)
@@ -357,7 +357,7 @@ module TestResolutionSplit =
             |> orFail
 
         let link (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 (VirtualFileSystem.root vfs)
                 (name n)
                 SymlinkModes.linux
@@ -596,7 +596,7 @@ module TestResolutionSplit =
         let outcome =
             match step with
             | Step.MakeDirectory (p, n, m) ->
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     (pick p)
                     (name n)
                     (PermissionBits.parseOrFail "test" m)
@@ -605,7 +605,7 @@ module TestResolutionSplit =
                     vfs
                 |> Result.map snd
             | Step.MakeFile (p, n) ->
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (pick p)
                     (name n)
                     (PermissionBits.parseOrFail "test" 0o600)
@@ -615,7 +615,7 @@ module TestResolutionSplit =
                     vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     (pick p)
                     (name n)
                     SymlinkModes.linux

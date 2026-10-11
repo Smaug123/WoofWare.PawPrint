@@ -155,7 +155,7 @@ module TestBindingCount =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -416,7 +416,7 @@ module TestBindingCount =
             | Some content ->
 
             record (if cascaded then Reached.ForgetCascade else Reached.Forget)
-            let vfs = VirtualFileSystem.forget inode vfs
+            let vfs = GraphMutators.forget inode vfs
 
             match content with
             | InodeContent.Directory directory -> go true directory.Parent vfs
@@ -443,7 +443,7 @@ module TestBindingCount =
             | None -> vfs, pinned
             | Some directory ->
                 match
-                    VirtualFileSystem.createFile
+                    GraphMutators.createFile
                         directory
                         (name n)
                         filePerms
@@ -460,7 +460,7 @@ module TestBindingCount =
             match pick living d with
             | None -> vfs, pinned
             | Some directory ->
-                match VirtualFileSystem.createDirectory directory (name n) dirPerms Owners.linuxDefault now vfs with
+                match GraphMutators.createDirectory directory (name n) dirPerms Owners.linuxDefault now vfs with
                 | Ok (_, vfs) ->
                     record Reached.MakeDirectory
                     vfs, pinned
@@ -470,7 +470,7 @@ module TestBindingCount =
             | None -> vfs, pinned
             | Some directory ->
                 match
-                    VirtualFileSystem.createSymlink
+                    GraphMutators.createSymlink
                         directory
                         (name n)
                         SymlinkModes.linux
@@ -498,7 +498,7 @@ module TestBindingCount =
 
             match pick living d, pick named f with
             | Some directory, Some file ->
-                match VirtualFileSystem.hardLink directory (name n) file now vfs with
+                match GraphMutators.hardLink directory (name n) file now vfs with
                 | Ok vfs ->
                     record Reached.Link
                     vfs, pinned
@@ -518,7 +518,7 @@ module TestBindingCount =
             | None -> vfs, pinned
             | Some (directory, entry, _) ->
                 let removed, vfs =
-                    VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory entry now vfs
+                    GraphMutators.unbind UnbindTargetEffect.LostALink directory entry now vfs
                     |> ok "unlink"
 
                 record Reached.Unlink
@@ -542,8 +542,7 @@ module TestBindingCount =
                     else
                         UnbindTargetEffect.LostALink
 
-                let removed, vfs =
-                    VirtualFileSystem.unbind effect directory entry now vfs |> ok "rmdir"
+                let removed, vfs = GraphMutators.unbind effect directory entry now vfs |> ok "rmdir"
 
                 record Reached.RemoveDirectory
                 reap record pinned removed vfs, pinned
@@ -587,7 +586,7 @@ module TestBindingCount =
                 else
 
                 let outcome, vfs =
-                    VirtualFileSystem.rename sourceDirectory sourceName destinationDirectory destinationName now vfs
+                    GraphMutators.rename sourceDirectory sourceName destinationDirectory destinationName now vfs
                     |> ok "rename"
 
                 if sourceDirectory = destinationDirectory then
@@ -636,7 +635,7 @@ module TestBindingCount =
             | None -> vfs, pinned
             | Some inode ->
                 record Reached.Chmod
-                VirtualFileSystem.setPermissions inode (PermissionBits.parseOrFail "test" 0o700) now vfs, pinned
+                GraphMutators.setPermissions inode (PermissionBits.parseOrFail "test" 0o700) now vfs, pinned
         | Op.Release i ->
             match pick (Set.toList pinned) i with
             | None -> vfs, pinned
@@ -746,17 +745,10 @@ module TestBindingCount =
         let root = VirtualFileSystem.root vfs
 
         let file, vfs =
-            VirtualFileSystem.createFile
-                root
-                (name "f")
-                filePerms
-                Owners.linuxDefault
-                buildTime
-                ImmutableArray.Empty
-                vfs
+            GraphMutators.createFile root (name "f") filePerms Owners.linuxDefault buildTime ImmutableArray.Empty vfs
             |> ok "create"
 
-        let vfs = VirtualFileSystem.hardLink root (name "g") file buildTime vfs |> ok "link"
+        let vfs = GraphMutators.hardLink root (name "g") file buildTime vfs |> ok "link"
 
         VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual []
 
@@ -789,15 +781,15 @@ module TestBindingCount =
         let root = VirtualFileSystem.root vfs
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
             |> ok "mkdir d"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory directory (name "e") dirPerms Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory directory (name "e") dirPerms Owners.linuxDefault buildTime vfs
             |> ok "mkdir d/e"
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 directory
                 (name "f")
                 filePerms
@@ -844,17 +836,10 @@ module TestBindingCount =
         let root = VirtualFileSystem.root vfs
 
         let file, vfs =
-            VirtualFileSystem.createFile
-                root
-                (name "f")
-                filePerms
-                Owners.linuxDefault
-                buildTime
-                ImmutableArray.Empty
-                vfs
+            GraphMutators.createFile root (name "f") filePerms Owners.linuxDefault buildTime ImmutableArray.Empty vfs
             |> ok "create"
 
-        let vfs = VirtualFileSystem.hardLink root (name "g") file buildTime vfs |> ok "link"
+        let vfs = GraphMutators.hardLink root (name "g") file buildTime vfs |> ok "link"
 
         let forged =
             VirtualFileSystem.Unchecked.ofParts
@@ -866,7 +851,7 @@ module TestBindingCount =
         forged |> shouldEqual vfs
 
         let _, withDirectory =
-            VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
             |> ok "mkdir"
 
         let forged =
@@ -886,11 +871,11 @@ module TestBindingCount =
         let root = VirtualFileSystem.root vfs
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
             |> ok "mkdir"
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 directory
                 (name "f")
                 filePerms
@@ -901,10 +886,10 @@ module TestBindingCount =
             |> ok "create"
 
         let _, vfs =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink root (name "d") buildTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink root (name "d") buildTime vfs
             |> ok "unbind"
 
         let thrown =
-            Assert.Throws<exn> (fun () -> VirtualFileSystem.forget directory vfs |> ignore<VirtualFileSystem>)
+            Assert.Throws<exn> (fun () -> GraphMutators.forget directory vfs |> ignore<VirtualFileSystem>)
 
         thrown.Message |> shouldContainText "still holds"
