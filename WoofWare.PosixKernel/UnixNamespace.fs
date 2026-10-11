@@ -4,7 +4,7 @@ open System.Collections.Immutable
 
 /// A bit of `open(2)`'s flag word that the simulated flavour defines and this
 /// kernel does not model. `UnixNamespace.openPath` refuses a word holding any
-/// of them (`OpenRefusal.UnmodelledFlags`) rather than ignore what the caller
+/// of them (`OpenRefusal.Reason.UnmodelledFlags`) rather than ignore what the caller
 /// asked for.
 [<RequireQualifiedAccess>]
 type UnmodelledOpenFlag =
@@ -135,18 +135,47 @@ type internal OpenFlags =
     }
 
 /// Why this kernel will not answer a `readlink(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ReadLinkRefusal.Reason`, and ends its match with a wildcard, where
+/// `ReadLinkRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ReadLinkRefusal =
-    /// The destination buffer has no answer at the step the call reached.
+    internal
+    /// See `ReadLinkRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// This kernel will not resolve the path.
+    /// See `ReadLinkRefusal.Reason.Path`.
     | Path of PathRefusal
-    /// Whether the caller may read the symbolic link at `inode` has not been
-    /// measured for this caller.
+    /// See `ReadLinkRefusal.Reason.UnmeasuredLinkRead`.
     | UnmeasuredLinkRead of inode : InodeNumber * refusal : LinkReadRefusal
 
 [<RequireQualifiedAccess>]
 module ReadLinkRefusal =
+    /// The reasons this kernel refuses a `readlink(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The destination buffer has no answer at the step the call reached.
+        /// Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : ReadLinkRefusal) : BufferRefusal option =
+            match refusal with
+            | ReadLinkRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : ReadLinkRefusal) : PathRefusal option =
+            match refusal with
+            | ReadLinkRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// Whether the caller may read the symbolic link has not been measured
+        /// for this caller. Gives the link's inode, then the `LinkReadRefusal`.
+        let (|UnmeasuredLinkRead|_|) (refusal : ReadLinkRefusal) : (InodeNumber * LinkReadRefusal) option =
+            match refusal with
+            | ReadLinkRefusal.UnmeasuredLinkRead (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : ReadLinkRefusal) : string =
@@ -232,20 +261,45 @@ type ReadDirectoryAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not say what reading a directory descriptor yields.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ReadDirectoryRefusal.Reason`, and ends its match with a wildcard, where
+/// `ReadDirectoryRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ReadDirectoryRefusal =
-    /// `lseek` moved the description to a nonzero offset (see
-    /// `DirectoryPosition.Unenumerable`), and what each filesystem yields from
-    /// an offset it did not hand out is its own.
+    internal
+    /// See `ReadDirectoryRefusal.Reason.UnenumerablePosition`.
     | UnenumerablePosition of inode : InodeNumber * offset : int64
-    /// The description is onto `inode`, a directory of the device filesystem.
-    /// A real one lists a node for every device the machine has and this
-    /// kernel's holds only the nodes of the devices it has drivers for, so a
-    /// listing would leave out names a real one reports.
+    /// See `ReadDirectoryRefusal.Reason.DeviceFileSystem`.
     | DeviceFileSystem of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module ReadDirectoryRefusal =
+    /// The reasons this kernel will not say what reading a directory descriptor
+    /// yields, one partial pattern each. A match over them is never complete:
+    /// end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// `lseek` moved the description to a nonzero offset (see
+        /// `DirectoryPosition.Unenumerable`), and what each filesystem yields
+        /// from an offset it did not hand out is its own. Gives the directory's
+        /// inode, then the offset.
+        let (|UnenumerablePosition|_|) (refusal : ReadDirectoryRefusal) : (InodeNumber * int64) option =
+            match refusal with
+            | ReadDirectoryRefusal.UnenumerablePosition (inode, offset) -> Some (inode, offset)
+            | _ -> None
+
+        /// The description is onto a directory of the device filesystem. A real
+        /// one lists a node for every device the machine has and this kernel's
+        /// holds only the nodes of the devices it has drivers for, so a listing
+        /// would leave out names a real one reports. Gives the directory's
+        /// inode.
+        let (|DeviceFileSystem|_|) (refusal : ReadDirectoryRefusal) : InodeNumber option =
+            match refusal with
+            | ReadDirectoryRefusal.DeviceFileSystem inode -> Some inode
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : ReadDirectoryRefusal) : string =
@@ -304,22 +358,60 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
     | NeedsDestination of paused : PausedRename<'Task, 'Handler>
 
 /// Why this kernel will not answer a `rename(2)` or `renameat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `RenameRefusal.Reason`, and ends its match with a wildcard, where
+/// `RenameRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type RenameRefusal =
-    /// A sticky directory whose rule Darwin has not been measured to apply to
-    /// this caller.
+    internal
+    /// See `RenameRefusal.Reason.Sticky`.
     | Sticky of refusal : StickyRefusal
-    /// This kernel will not resolve one of the paths.
+    /// See `RenameRefusal.Reason.Path`.
     | Path of refusal : PathRefusal
-    /// One of the paths names `mountRoot`, the root of a mounted filesystem,
-    /// in a combination whose answer has not been measured.
+    /// See `RenameRefusal.Reason.MountPoint`.
     | MountPoint of mountRoot : InodeNumber
-    /// The call would move `name` out of `directory`, on the device
-    /// filesystem, which no name can be removed from here.
+    /// See `RenameRefusal.Reason.DeviceFileSystem`.
     | DeviceFileSystem of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
 module RenameRefusal =
+    /// The reasons this kernel refuses a `rename(2)` or `renameat(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A sticky directory whose rule Darwin has not been measured to apply
+        /// to this caller. Gives the `StickyRefusal`.
+        let (|Sticky|_|) (refusal : RenameRefusal) : StickyRefusal option =
+            match refusal with
+            | RenameRefusal.Sticky refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not resolve one of the paths. Gives the
+        /// `PathRefusal`.
+        let (|Path|_|) (refusal : RenameRefusal) : PathRefusal option =
+            match refusal with
+            | RenameRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// One of the paths names the root of a mounted filesystem, in a
+        /// combination whose answer has not been measured. Gives the root's
+        /// inode.
+        let (|MountPoint|_|) (refusal : RenameRefusal) : InodeNumber option =
+            match refusal with
+            | RenameRefusal.MountPoint mountRoot -> Some mountRoot
+            | _ -> None
+
+        /// The call would move a name out of a directory on the device
+        /// filesystem, which no name can be removed from here. Gives the
+        /// directory, then the name.
+        let (|DeviceFileSystem|_|) (refusal : RenameRefusal) : (InodeNumber * DirectoryEntryName) option =
+            match refusal with
+            | RenameRefusal.DeviceFileSystem (directory, name) -> Some (directory, name)
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which paths.
     let describe (refusal : RenameRefusal) : string =
@@ -332,33 +424,92 @@ module RenameRefusal =
             $"the call would move \"%s{DirectoryEntryName.toEscaped name}\" out of inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 
 /// Why this kernel will not answer a `clonefile(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CloneFileRefusal.Reason`, and ends its match with a wildcard, where
+/// `CloneFileRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type CloneFileRefusal =
-    /// This kernel is not Darwin-flavoured, and only Darwin has `clonefile`.
+    internal
+    /// See `CloneFileRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// The machine's mount is of this type, where whether a file can be cloned
-    /// is unmeasured.
+    /// See `CloneFileRefusal.Reason.UnmeasuredFileSystem`.
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
-    /// `flags` asks for `CLONE_NOFOLLOW`, `CLONE_NOFOLLOW_ANY` or
-    /// `CLONE_RESOLVE_BENEATH`, which change how a pathname resolves in ways
-    /// this kernel does not model.
+    /// See `CloneFileRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// The caller is privileged, which changes who owns the clone and which
-    /// permission bits it keeps, unmeasured.
+    /// See `CloneFileRefusal.Reason.PrivilegedCaller`.
     | PrivilegedCaller
-    /// The source is the directory at `inode`; cloning one copies its whole
-    /// tree, which this kernel does not model.
+    /// See `CloneFileRefusal.Reason.DirectorySource`.
     | DirectorySource of inode : InodeNumber
-    /// The source at `inode` carries set-ID or sticky bits, and the caller
-    /// stands towards it as `standing`: which of those bits a clone keeps has
-    /// been measured only for an owner in the source's group, and for an
-    /// owner outside it without `S_ISGID`.
+    /// See `CloneFileRefusal.Reason.UnmeasuredSpecialBits`.
     | UnmeasuredSpecialBits of inode : InodeNumber * standing : Standing * permissions : PermissionBits
-    /// This kernel will not resolve one of the paths.
+    /// See `CloneFileRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module CloneFileRefusal =
+    /// The reasons this kernel refuses a `clonefile(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Darwin-flavoured, and only Darwin has
+        /// `clonefile`. Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : CloneFileRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | CloneFileRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// The machine's mount is of a type where whether a file can be cloned
+        /// is unmeasured. Gives the mount's type.
+        let (|UnmeasuredFileSystem|_|) (refusal : CloneFileRefusal) : EmulatedFileSystemType option =
+            match refusal with
+            | CloneFileRefusal.UnmeasuredFileSystem fileSystem -> Some fileSystem
+            | _ -> None
+
+        /// The flag word asks for `CLONE_NOFOLLOW`, `CLONE_NOFOLLOW_ANY` or
+        /// `CLONE_RESOLVE_BENEATH`, which change how a pathname resolves in
+        /// ways this kernel does not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : CloneFileRefusal) : int option =
+            match refusal with
+            | CloneFileRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// The caller is privileged, which changes who owns the clone and which
+        /// permission bits it keeps, unmeasured.
+        let (|PrivilegedCaller|_|) (refusal : CloneFileRefusal) : unit option =
+            match refusal with
+            | CloneFileRefusal.PrivilegedCaller -> Some ()
+            | _ -> None
+
+        /// The source is a directory; cloning one copies its whole tree, which
+        /// this kernel does not model. Gives the directory's inode.
+        let (|DirectorySource|_|) (refusal : CloneFileRefusal) : InodeNumber option =
+            match refusal with
+            | CloneFileRefusal.DirectorySource inode -> Some inode
+            | _ -> None
+
+        /// The source carries set-ID or sticky bits, and which of those bits a
+        /// clone keeps has been measured only for an owner in the source's
+        /// group, and for an owner outside it without `S_ISGID`. Gives the
+        /// source's inode, then how the caller stands towards it, then its
+        /// permission bits.
+        let (|UnmeasuredSpecialBits|_|)
+            (refusal : CloneFileRefusal)
+            : (InodeNumber * Standing * PermissionBits) option
+            =
+            match refusal with
+            | CloneFileRefusal.UnmeasuredSpecialBits (inode, standing, permissions) ->
+                Some (inode, standing, permissions)
+            | _ -> None
+
+        /// This kernel will not resolve one of the paths. Gives the
+        /// `PathRefusal`.
+        let (|Path|_|) (refusal : CloneFileRefusal) : PathRefusal option =
+            match refusal with
+            | CloneFileRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which paths.
     let describe (refusal : CloneFileRefusal) : string =
@@ -434,17 +585,42 @@ type CloneFileProgress<'Task, 'Handler when 'Task : comparison and 'Handler : eq
     | NeedsDestination of paused : PausedCloneFile<'Task, 'Handler>
 
 /// Why this kernel will not answer a `symlink(2)` or `symlinkat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SymlinkRefusal.Reason`, and ends its match with a wildcard, where
+/// `SymlinkRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SymlinkRefusal =
-    /// This kernel will not resolve the link's pathname.
+    internal
+    /// See `SymlinkRefusal.Reason.Path`.
     | Path of refusal : PathRefusal
-    /// The call would create a link whose target is empty, which Darwin does
-    /// and this library does not represent: see `SymlinkTargetError.Empty`.
-    /// Every check that would fail the call has already passed.
+    /// See `SymlinkRefusal.Reason.EmptyTarget`.
     | EmptyTarget
 
 [<RequireQualifiedAccess>]
 module SymlinkRefusal =
+    /// The reasons this kernel refuses a `symlink(2)` or `symlinkat(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel will not resolve the link's pathname. Gives the
+        /// `PathRefusal`.
+        let (|Path|_|) (refusal : SymlinkRefusal) : PathRefusal option =
+            match refusal with
+            | SymlinkRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The call would create a link whose target is empty, which Darwin
+        /// does and this library does not represent: see
+        /// `SymlinkTargetError.Empty`. Every check that would fail the call has
+        /// already passed.
+        let (|EmptyTarget|_|) (refusal : SymlinkRefusal) : unit option =
+            match refusal with
+            | SymlinkRefusal.EmptyTarget -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which pathnames.
     let describe (refusal : SymlinkRefusal) : string =
@@ -482,31 +658,76 @@ type SymlinkProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equa
     | NeedsPath of paused : PausedSymlink<'Task, 'Handler>
 
 /// Why this kernel will not answer a `link(2)` or `linkat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LinkRefusal.Reason`, and ends its match with a wildcard, where
+/// `LinkRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LinkRefusal =
-    /// This kernel will not resolve one of the pathnames.
+    internal
+    /// See `LinkRefusal.Reason.Path`.
     | Path of refusal : PathRefusal
-    /// The flag word `flags` carries flags the flavour accepts and this library
-    /// does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
-    /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000).
+    /// See `LinkRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// Linux's `AT_EMPTY_PATH`, from a caller that is not privileged, with a
-    /// path (an empty one included) relative to a descriptor. Linux then
-    /// answers `ENOENT` unless the descriptor was opened with the very
-    /// credentials the caller now holds: compared by identity, so that a fork,
-    /// or a change of credentials that keeps every ID, fails it. This library
-    /// does not record the credentials a descriptor was opened with.
+    /// See `LinkRefusal.Reason.OpenTimeCredentials`.
     | OpenTimeCredentials
-    /// `AT_EMPTY_PATH` names `inode`, which has no name left and is not a
-    /// regular file: which of the call's refusals such an inode meets first
-    /// has not been measured.
+    /// See `LinkRefusal.Reason.NamelessSource`.
     | NamelessSource of inode : InodeNumber
-    /// The source is on a `fileSystem` whose rules for `link(2)`, its ceiling
-    /// on a file's names among them, have not been measured.
+    /// See `LinkRefusal.Reason.UnmeasuredFileSystem`.
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
 
 [<RequireQualifiedAccess>]
 module LinkRefusal =
+    /// The reasons this kernel refuses a `link(2)` or `linkat(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel will not resolve one of the pathnames. Gives the
+        /// `PathRefusal`.
+        let (|Path|_|) (refusal : LinkRefusal) : PathRefusal option =
+            match refusal with
+            | LinkRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The flag word carries flags the flavour accepts and this library
+        /// does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
+        /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000). Gives the
+        /// whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : LinkRefusal) : int option =
+            match refusal with
+            | LinkRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// Linux's `AT_EMPTY_PATH`, from a caller that is not privileged, with
+        /// a path (an empty one included) relative to a descriptor. Linux then
+        /// answers `ENOENT` unless the descriptor was opened with the very
+        /// credentials the caller now holds: compared by identity, so that a
+        /// fork, or a change of credentials that keeps every ID, fails it. This
+        /// library does not record the credentials a descriptor was opened
+        /// with.
+        let (|OpenTimeCredentials|_|) (refusal : LinkRefusal) : unit option =
+            match refusal with
+            | LinkRefusal.OpenTimeCredentials -> Some ()
+            | _ -> None
+
+        /// `AT_EMPTY_PATH` names an inode which has no name left and is not a
+        /// regular file: which of the call's refusals such an inode meets first
+        /// has not been measured. Gives the inode.
+        let (|NamelessSource|_|) (refusal : LinkRefusal) : InodeNumber option =
+            match refusal with
+            | LinkRefusal.NamelessSource inode -> Some inode
+            | _ -> None
+
+        /// The source is on a filesystem whose rules for `link(2)`, its ceiling
+        /// on a file's names among them, have not been measured. Gives the
+        /// filesystem's type.
+        let (|UnmeasuredFileSystem|_|) (refusal : LinkRefusal) : EmulatedFileSystemType option =
+            match refusal with
+            | LinkRefusal.UnmeasuredFileSystem fileSystem -> Some fileSystem
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which pathnames.
     let describe (refusal : LinkRefusal) : string =
@@ -549,33 +770,84 @@ type LinkProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
     | NeedsDestination of paused : PausedLink<'Task, 'Handler>
 
 /// Why this kernel will not answer an `open(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `OpenRefusal.Reason`, and ends its match with a wildcard, where
+/// `OpenRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type OpenRefusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `OpenRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// An `O_TRUNC` open of the file at `inode`, whose effect on the file's
-    /// set-ID bits has not been measured for this caller. Nothing was changed.
+    /// See `OpenRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// The flag word `flags` holds bits the simulated flavour defines and this
-    /// kernel does not model, named in `unmodelled` in ascending order of bit.
-    /// Nothing was read or changed.
+    /// See `OpenRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int * unmodelled : UnmodelledOpenFlag list
-    /// The flag word `flags` asks for Linux's access mode 3, which opens a
-    /// descriptor that can neither read nor write and serves only `ioctl(2)`
-    /// and the calls that need no access mode. This kernel's descriptions
-    /// permit reading, writing or both. Nothing was read or changed.
+    /// See `OpenRefusal.Reason.IoctlOnlyAccessMode`.
     | IoctlOnlyAccessMode of flags : int
-    /// The flag word `flags` asks for `O_DIRECTORY` with a write access mode,
-    /// `O_TRUNC` or `O_NOFOLLOW`. This kernel models `O_DIRECTORY` only as
-    /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
-    /// changed.
+    /// See `OpenRefusal.Reason.UnmodelledDirectoryOpen`.
     | UnmodelledDirectoryOpen of flags : int
-    /// This kernel will not resolve the path. Nothing was read or changed.
+    /// See `OpenRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module OpenRefusal =
+    /// The reasons this kernel refuses an `open(2)`, one partial pattern each.
+    /// A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : OpenRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | OpenRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// An `O_TRUNC` open of a file, whose effect on the file's set-ID bits
+        /// has not been measured for this caller. Nothing was changed. Gives
+        /// the file's inode, then the `SetIdChangeRefusal`.
+        let (|UnmeasuredSetIdChange|_|) (refusal : OpenRefusal) : (InodeNumber * SetIdChangeRefusal) option =
+            match refusal with
+            | OpenRefusal.UnmeasuredSetIdChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// The flag word holds bits the simulated flavour defines and this
+        /// kernel does not model. Nothing was read or changed. Gives the whole
+        /// flag word, then the unmodelled flags in it, in ascending order of
+        /// bit.
+        let (|UnmodelledFlags|_|) (refusal : OpenRefusal) : (int * UnmodelledOpenFlag list) option =
+            match refusal with
+            | OpenRefusal.UnmodelledFlags (flags, unmodelled) -> Some (flags, unmodelled)
+            | _ -> None
+
+        /// The flag word asks for Linux's access mode 3, which opens a
+        /// descriptor that can neither read nor write and serves only
+        /// `ioctl(2)` and the calls that need no access mode. This kernel's
+        /// descriptions permit reading, writing or both. Nothing was read or
+        /// changed. Gives the whole flag word.
+        let (|IoctlOnlyAccessMode|_|) (refusal : OpenRefusal) : int option =
+            match refusal with
+            | OpenRefusal.IoctlOnlyAccessMode flags -> Some flags
+            | _ -> None
+
+        /// The flag word asks for `O_DIRECTORY` with a write access mode,
+        /// `O_TRUNC` or `O_NOFOLLOW`. This kernel models `O_DIRECTORY` only as
+        /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
+        /// changed. Gives the whole flag word.
+        let (|UnmodelledDirectoryOpen|_|) (refusal : OpenRefusal) : int option =
+            match refusal with
+            | OpenRefusal.UnmodelledDirectoryOpen flags -> Some flags
+            | _ -> None
+
+        /// This kernel will not resolve the path. Nothing was read or changed.
+        /// Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : OpenRefusal) : PathRefusal option =
+            match refusal with
+            | OpenRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : OpenRefusal) : string =
@@ -1216,7 +1488,7 @@ module UnixNamespace =
     /// which differs between Linux's architectures as well as between
     /// flavours. A bit the flavour does not define is ignored, as both
     /// kernels ignore it. A bit it defines is either one this kernel models
-    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
+    /// or a refusal naming it (`OpenRefusal.Reason.UnmodelledFlags`), never silently
     /// dropped.
     ///
     /// The word is screened before the path is copied in, so its EINVAL comes
@@ -1436,7 +1708,7 @@ module UnixNamespace =
     /// (`SimulatedUnixPlatform.linkReadRule`): never on Linux, and on Darwin a
     /// caller whose standing selects a triple without the read bit gets
     /// EACCES, ahead of a size of zero and of the buffer. A privileged Darwin
-    /// caller is refused an answer (`ReadLinkRefusal.UnmeasuredLinkRead`).
+    /// caller is refused an answer (`ReadLinkRefusal.Reason.UnmeasuredLinkRead`).
     ///
     /// `path` is the argument's bytes, copied in after that screen and before
     /// anything else: EFAULT if they were unreadable, ENAMETOOLONG if they run

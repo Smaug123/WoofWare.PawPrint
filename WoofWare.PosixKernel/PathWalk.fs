@@ -108,31 +108,75 @@ type internal FinalNavigation =
     | Parent
 
 /// Why this kernel will not say what a path resolves to.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PathRefusal.Reason`, and ends its match with a wildcard, where
+/// `PathRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PathRefusal =
-    /// The walk reached `mountRoot`, the root of a filesystem this kernel does
-    /// not model: Darwin's devfs.
+    internal
+    /// See `PathRefusal.Reason.UnmodelledFileSystem`.
     | UnmodelledFileSystem of mountRoot : InodeNumber * fileSystem : MountedFileSystem
-    /// The walk looked `name` up in `directory`, which is on a device
-    /// filesystem and does not bind it. This kernel's device filesystem holds
-    /// a node for each device it has a driver for and nothing else, where a
-    /// real one holds many more, so whether a real one binds `name` is unknown.
+    /// See `PathRefusal.Reason.UnmodelledDeviceName`.
     | UnmodelledDeviceName of directory : InodeNumber * name : DirectoryEntryName
-    /// The path is empty and the call is about the object `fd` names, which is
-    /// not a filesystem object: a pipe, a socket or an event queue. What a
-    /// kernel answers about such an object through an empty path has not been
-    /// measured.
+    /// See `PathRefusal.Reason.UnmodelledStartingObject`.
     | UnmodelledStartingObject of fd : int
-    /// Linux's `fs.protected_symlinks` forbids the walk to follow `link`, a
-    /// final symbolic link in the sticky, world-writable `directory`, and that
-    /// link is the walk's `traversal`-th of the `limit` it may make. Within the
-    /// first half of the budget a kernel answers EACCES; this far down a chain
-    /// it answers EACCES or ELOOP according to the state of its dentry cache,
-    /// which this kernel does not model.
+    /// See `PathRefusal.Reason.ProtectedSymlinkCacheDependent`.
     | ProtectedSymlinkCacheDependent of directory : InodeNumber * link : InodeNumber * traversal : int * limit : int
 
 [<RequireQualifiedAccess>]
 module PathRefusal =
+    /// The reasons this kernel will not say what a path resolves to, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The walk reached the root of a filesystem this kernel does not
+        /// model: Darwin's devfs. Gives the root's inode, then the filesystem
+        /// mounted there.
+        let (|UnmodelledFileSystem|_|) (refusal : PathRefusal) : (InodeNumber * MountedFileSystem) option =
+            match refusal with
+            | PathRefusal.UnmodelledFileSystem (mountRoot, fileSystem) -> Some (mountRoot, fileSystem)
+            | _ -> None
+
+        /// The walk looked a name up in a directory on a device filesystem,
+        /// which does not bind it. This kernel's device filesystem holds a node
+        /// for each device it has a driver for and nothing else, where a real
+        /// one holds many more, so whether a real one binds the name is
+        /// unknown. Gives the directory, then the name.
+        let (|UnmodelledDeviceName|_|) (refusal : PathRefusal) : (InodeNumber * DirectoryEntryName) option =
+            match refusal with
+            | PathRefusal.UnmodelledDeviceName (directory, name) -> Some (directory, name)
+            | _ -> None
+
+        /// The path is empty and the call is about the object a descriptor
+        /// names, which is not a filesystem object: a pipe, a socket or an
+        /// event queue. What a kernel answers about such an object through an
+        /// empty path has not been measured. Gives the descriptor's number.
+        let (|UnmodelledStartingObject|_|) (refusal : PathRefusal) : int option =
+            match refusal with
+            | PathRefusal.UnmodelledStartingObject fd -> Some fd
+            | _ -> None
+
+        /// Linux's `fs.protected_symlinks` forbids the walk to follow a final
+        /// symbolic link in a sticky, world-writable directory, and following
+        /// it would be a traversal in the second half of the walk's budget.
+        /// Within the first half of the budget a kernel answers EACCES; this
+        /// far down a chain it answers EACCES or ELOOP according to the state
+        /// of its dentry cache, which this kernel does not model. Gives the
+        /// directory, then the link, then which of the walk's traversals
+        /// following the link would be, counting from 1, then how many
+        /// traversals the walk may make.
+        let (|ProtectedSymlinkCacheDependent|_|)
+            (refusal : PathRefusal)
+            : (InodeNumber * InodeNumber * int * int) option
+            =
+            match refusal with
+            | PathRefusal.ProtectedSymlinkCacheDependent (directory, link, traversal, limit) ->
+                Some (directory, link, traversal, limit)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, for a client
     /// composing a diagnostic.
     let describe (refusal : PathRefusal) : string =
@@ -924,7 +968,7 @@ module PathWalk =
     /// once the traversal budget has admitted it. Interior links are never
     /// screened. When that refusal falls on a traversal past half the budget,
     /// Linux's answer depends on its dentry cache, and the walk is refused
-    /// instead (`PathRefusal.ProtectedSymlinkCacheDependent`).
+    /// instead (`PathRefusal.Reason.ProtectedSymlinkCacheDependent`).
     let internal resolveParent
         (limits : PathLimits)
         (credentials : Credentials)

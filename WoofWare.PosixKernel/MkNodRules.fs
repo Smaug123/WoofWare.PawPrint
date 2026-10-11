@@ -75,33 +75,80 @@ type internal MkNodNode =
     | BlockDevice of dev : uint32
 
 /// Why this kernel will not answer a `mknod(2)` or `mknodat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `MkNodRefusal.Reason`, and ends its match with a wildcard, where
+/// `MkNodRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type MkNodRefusal =
-    /// This kernel will not resolve the pathname.
+    internal
+    /// See `MkNodRefusal.Reason.Path`.
     | Path of refusal : PathRefusal
-    /// The call would make a FIFO, which this library does not model. On
-    /// Linux every check that would fail the call has already passed. On
-    /// Darwin the call is `mkfifo(2)`, whose rules this library has not
-    /// measured, and it is refused before the path is read.
+    /// See `MkNodRefusal.Reason.Fifo`.
     | Fifo
-    /// The call would make a socket inode, which this library does not model.
-    /// Every check that would fail the call has already passed.
+    /// See `MkNodRefusal.Reason.Socket`.
     | Socket
-    /// The call would make a character device node for the raw device number
-    /// `dev`: by a privileged caller, or, for `dev` 0, which Linux makes for
-    /// anyone as an overlay filesystem's whiteout, by any caller. Every check
-    /// that would fail the call has already passed.
+    /// See `MkNodRefusal.Reason.CharacterDevice`.
     | CharacterDevice of dev : uint32
-    /// The call would make a block device node for the raw device number
-    /// `dev`, by a privileged caller. Every check that would fail the call
-    /// has already passed.
+    /// See `MkNodRefusal.Reason.BlockDevice`.
     | BlockDevice of dev : uint32
-    /// A privileged caller on Darwin asked for a type other than a FIFO,
-    /// which has not been measured. Refused before the path is read.
+    /// See `MkNodRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller
 
 [<RequireQualifiedAccess>]
 module MkNodRefusal =
+    /// The reasons this kernel refuses a `mknod(2)` or `mknodat(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel will not resolve the pathname. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : MkNodRefusal) : PathRefusal option =
+            match refusal with
+            | MkNodRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The call would make a FIFO, which this library does not model. On
+        /// Linux every check that would fail the call has already passed. On
+        /// Darwin the call is `mkfifo(2)`, whose rules this library has not
+        /// measured, and it is refused before the path is read.
+        let (|Fifo|_|) (refusal : MkNodRefusal) : unit option =
+            match refusal with
+            | MkNodRefusal.Fifo -> Some ()
+            | _ -> None
+
+        /// The call would make a socket inode, which this library does not
+        /// model. Every check that would fail the call has already passed.
+        let (|Socket|_|) (refusal : MkNodRefusal) : unit option =
+            match refusal with
+            | MkNodRefusal.Socket -> Some ()
+            | _ -> None
+
+        /// The call would make a character device node: by a privileged caller,
+        /// or, for device number 0, which Linux makes for anyone as an overlay
+        /// filesystem's whiteout, by any caller. Every check that would fail
+        /// the call has already passed. Gives the raw device number.
+        let (|CharacterDevice|_|) (refusal : MkNodRefusal) : uint32 option =
+            match refusal with
+            | MkNodRefusal.CharacterDevice dev -> Some dev
+            | _ -> None
+
+        /// The call would make a block device node, by a privileged caller.
+        /// Every check that would fail the call has already passed. Gives the
+        /// raw device number.
+        let (|BlockDevice|_|) (refusal : MkNodRefusal) : uint32 option =
+            match refusal with
+            | MkNodRefusal.BlockDevice dev -> Some dev
+            | _ -> None
+
+        /// A privileged caller on Darwin asked for a type other than a FIFO,
+        /// which has not been measured. Refused before the path is read.
+        let (|UnmeasuredPrivilegedCaller|_|) (refusal : MkNodRefusal) : unit option =
+            match refusal with
+            | MkNodRefusal.UnmeasuredPrivilegedCaller -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which pathname.
     let describe (refusal : MkNodRefusal) : string =

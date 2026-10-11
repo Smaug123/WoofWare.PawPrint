@@ -925,7 +925,7 @@ type OpenFileTarget =
     /// A FIFO (a named pipe), opened through its inode.
     ///
     /// Reserved: nothing in this version makes one, since nothing makes a FIFO
-    /// inode to open (`mknodat` of `S_IFIFO` answers `MkNodRefusal.Fifo`).
+    /// inode to open (`mknodat` of `S_IFIFO` answers `MkNodRefusal.Reason.Fifo`).
     /// `FileDescriptorRegistry.checkInvariants` reports a description naming
     /// one as `FileDescriptorRegistryDefect.ReservedTarget`. The case exists so
     /// that a client's matches already handle it when FIFOs arrive.
@@ -971,7 +971,7 @@ module internal ReservedFifo =
 /// A three-case DU rather than a readable/writable pair of booleans, because
 /// this kernel opens no fourth: Darwin answers EINVAL for access mode 3, and
 /// Linux's descriptor that permits neither is refused before one exists (see
-/// `OpenRefusal.IoctlOnlyAccessMode`).
+/// `OpenRefusal.Reason.IoctlOnlyAccessMode`).
 ///
 /// Fixed when the description is created and never changed afterwards — POSIX
 /// offers no way to alter one, and Linux's nearest equivalent (reopening through

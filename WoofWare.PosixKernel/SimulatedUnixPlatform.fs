@@ -199,7 +199,7 @@ type GetCwdDestinationFault =
     /// kills the process instead of producing an errno.
     ///
     /// A kernel cannot answer this, and neither can this library: see
-    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
+    /// `GetCwdRefusal.Reason.FatalToTheProcess` for what it says instead.
     | FatalToTheProcess
 
 /// What a `getsockname(2)` that faults copying the address out has already put

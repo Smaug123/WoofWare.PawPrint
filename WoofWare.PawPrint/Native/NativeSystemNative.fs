@@ -194,12 +194,9 @@ module NativeSystemNative =
     /// refusal of an unmeasured Darwin sticky row.
     let private describeUnlinkAtRefusal (refusal : UnlinkAtRefusal) : string =
         match refusal with
-        | UnlinkAtRefusal.Removal (RemovalRefusal.Sticky refusal) ->
+        | UnlinkAtRefusal.Reason.Removal (RemovalRefusal.Reason.Sticky refusal) ->
             $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-        | UnlinkAtRefusal.Removal (RemovalRefusal.Path _)
-        | UnlinkAtRefusal.Removal (RemovalRefusal.MountPoint _)
-        | UnlinkAtRefusal.Removal (RemovalRefusal.DeviceFileSystem _)
-        | UnlinkAtRefusal.UnmodelledFlags _ -> UnlinkAtRefusal.describe refusal
+        | _ -> UnlinkAtRefusal.describe refusal
 
     /// The failure a handler raises when the kernel library will not hand out a
     /// descriptor at or above its bound.
@@ -1209,15 +1206,15 @@ module NativeSystemNative =
     let private fstatRefusalMessage (operation : string) (fd : int) (refusal : FStatRefusal) : string =
         let reachability =
             match refusal with
-            | FStatRefusal.LaunchedPipe _ ->
-                "PawPrint launches every guest with its standard streams on pipes, and does not say who made them or when. The BCL reaches FStat on a standard stream only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision about the launcher's owner and timestamps rather than a guess."
-            | FStatRefusal.EventQueue
-            | FStatRefusal.Socket _ ->
-                "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
-            | FStatRefusal.NfsDirectorySize _ -> nfsDirectoryReachability
-            | FStatRefusal.DeviceFileSystemRoot _ -> ""
+            | FStatRefusal.Reason.LaunchedPipe _ ->
+                " PawPrint launches every guest with its standard streams on pipes, and does not say who made them or when. The BCL reaches FStat on a standard stream only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision about the launcher's owner and timestamps rather than a guess."
+            | FStatRefusal.Reason.EventQueue
+            | FStatRefusal.Reason.Socket _ ->
+                " Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
+            | FStatRefusal.Reason.NfsDirectorySize _ -> $" %s{nfsDirectoryReachability}"
+            | _ -> ""
 
-        $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
+        $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal}%s{reachability}"
 
     /// One pathname argument's *bytes*: the pointer and the scan up to its NUL,
     /// and no more than that.
@@ -1315,7 +1312,7 @@ module NativeSystemNative =
 
         let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, RenameRefusal>) =
             match outcome with
-            | Error (RenameRefusal.Sticky refusal) ->
+            | Error (RenameRefusal.Reason.Sticky refusal) ->
                 failwith
                     $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Error refusal -> failwith $"%s{operation}: %s{RenameRefusal.describe refusal}"
@@ -3032,12 +3029,14 @@ module NativeSystemNative =
                     (uint64 bufferSize)
                     state.Kernel.System
             with
-            | Error (GetCwdRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage bufferPointer refusal)
-            | Error (GetCwdRefusal.FatalToTheProcess as refusal) ->
+            | Error (GetCwdRefusal.Reason.Buffer refusal) ->
+                failwith (BufferPointer.refusalMessage bufferPointer refusal)
+            | Error (GetCwdRefusal.Reason.FatalToTheProcess as refusal) ->
                 // The library says what it measured; PawPrint says which
                 // argument carried it and what a caller could do instead.
                 failwith
                     $"%s{operation}: `buffer` is %O{bufferPointer}, and %s{GetCwdRefusal.describe refusal} Pass a buffer that names guest storage."
+            | Error refusal -> failwith $"%s{operation}: %s{GetCwdRefusal.describe refusal}"
             | Ok answer ->
 
             match answer with
@@ -3244,7 +3243,7 @@ module NativeSystemNative =
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             match UnixNamespace.openPath ctx.Thread openFlags path mode state.Kernel.System with
-            | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
+            | Error (OpenRefusal.Reason.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Ok (SyscallOutcome.WouldBlock condition, _) ->
@@ -3370,14 +3369,14 @@ module NativeSystemNative =
                     |> Result.mapError (fun refusal ->
                         let advice =
                             match refusal with
-                            | FChModAtRefusal.ChMod (ChModRefusal.UnmeasuredModeChange _) ->
-                                "Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
-                            | FChModAtRefusal.ChMod (ChModRefusal.Path _) -> ""
-                            | FChModAtRefusal.UnmodelledFlags _
-                            | FChModAtRefusal.Descriptor _ ->
-                                "chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."
+                            | FChModAtRefusal.Reason.ChMod (ChModRefusal.Reason.UnmeasuredModeChange _) ->
+                                " Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                            | FChModAtRefusal.Reason.UnmodelledFlags _
+                            | FChModAtRefusal.Reason.Descriptor _ ->
+                                " chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."
+                            | _ -> ""
 
-                        $"FChModAtRefusal: %s{FChModAtRefusal.describe refusal} %s{advice}"
+                        $"FChModAtRefusal: %s{FChModAtRefusal.describe refusal}%s{advice}"
                     )
                 )
                 state
@@ -3419,15 +3418,15 @@ module NativeSystemNative =
             | Error refusal ->
                 let advice =
                     match refusal with
-                    | AccessRefusal.UnmeasuredExecution _ ->
-                        "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
-                    | AccessRefusal.ExtendedRights _ ->
-                        "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
-                    | AccessRefusal.UnmodelledFlags _ ->
-                        "access(2) takes no flags, so this is a bug in the kernel library."
-                    | AccessRefusal.Path _ -> ""
+                    | AccessRefusal.Reason.UnmeasuredExecution _ ->
+                        " Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
+                    | AccessRefusal.Reason.ExtendedRights _ ->
+                        " Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
+                    | AccessRefusal.Reason.UnmodelledFlags _ ->
+                        " access(2) takes no flags, so this is a bug in the kernel library."
+                    | _ -> ""
 
-                failwith $"%s{operation}: AccessRefusal: %s{AccessRefusal.describe refusal} %s{advice}"
+                failwith $"%s{operation}: AccessRefusal: %s{AccessRefusal.describe refusal}%s{advice}"
             | Ok (SyscallAnswer.Failed error) ->
                 withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -3500,7 +3499,7 @@ module NativeSystemNative =
             let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
 
             match UnixNamespace.openPath ctx.Thread flags path 0 state.Kernel.System with
-            | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
+            | Error (OpenRefusal.Reason.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models, and not for O_TRUNC, whose set-ID change is the only other thing it refuses an open for (this is an interpreter bug)."
@@ -3827,13 +3826,14 @@ module NativeSystemNative =
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
             match UnixPathResolution.fchmod fd mode state.Kernel.System with
-            | Error (FChModRefusal.UnmeasuredModeChange _ as refusal) ->
+            | Error (FChModRefusal.Reason.UnmeasuredModeChange _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
-            | Error (FChModRefusal.LaunchedPipe _ as refusal)
-            | Error (FChModRefusal.Socket _ as refusal) ->
+            | Error (FChModRefusal.Reason.LaunchedPipe _ as refusal)
+            | Error (FChModRefusal.Reason.Socket _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} The BCL reaches FChMod only through a SafeFileHandle, which a guest can wrap around a standard stream or a socket by hand; decide who owns them (issue #956) rather than guessing."
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -4519,10 +4519,9 @@ module NativeSystemNative =
             match
                 UnixNamespace.readlink path (BufferPointer.toUserBuffer destination) bufferSize state.Kernel.System
             with
-            | Error (ReadLinkRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage destination refusal)
-            | Error (ReadLinkRefusal.Path refusal) -> failwith $"%s{operation}: %s{PathRefusal.describe refusal}"
-            | Error (ReadLinkRefusal.UnmeasuredLinkRead _ as refusal) ->
-                failwith $"%s{operation}: %s{ReadLinkRefusal.describe refusal}"
+            | Error (ReadLinkRefusal.Reason.Buffer refusal) ->
+                failwith (BufferPointer.refusalMessage destination refusal)
+            | Error refusal -> failwith $"%s{operation}: %s{ReadLinkRefusal.describe refusal}"
             | Ok (ReadLinkAnswer.Failed error) -> fail error
             | Ok (ReadLinkAnswer.Reported written) ->
 

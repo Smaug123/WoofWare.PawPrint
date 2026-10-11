@@ -7,36 +7,68 @@ namespace WoofWare.PosixKernel
 /// Each case carries the sticky directory, the entry the call would remove or
 /// replace, and how the caller stands towards that entry, which it owns
 /// neither of.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `StickyRefusal.Reason`, and ends its match with a wildcard, where
+/// `StickyRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type StickyRefusal =
-    /// A privileged caller, on Darwin. Whether Darwin's sticky rule exempts
-    /// root has not been measured: that needs root and a second user.
+    internal
+    /// See `StickyRefusal.Reason.DarwinPrivilegedCaller`.
     | DarwinPrivilegedCaller of directory : InodeNumber * entry : InodeNumber * standing : Standing
-    /// A `rename(2)` on Darwin in which a directory displaces the directory
-    /// `entry`. Darwin consults the displaced directory's own write bit there
-    /// rather than its parent's, and whether it consults the parent's sticky
-    /// bit at all has not been measured.
+    /// See `StickyRefusal.Reason.DarwinDirectoryDisplacingDirectory`.
     | DarwinDirectoryDisplacingDirectory of directory : InodeNumber * entry : InodeNumber * standing : Standing
 
 /// Why this kernel will not answer an `unlink(2)` or an `rmdir(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `RemovalRefusal.Reason`, and ends its match with a wildcard, where
+/// `RemovalRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type RemovalRefusal =
-    /// Darwin's sticky rule has not been measured for this caller.
+    internal
+    /// See `RemovalRefusal.Reason.Sticky`.
     | Sticky of StickyRefusal
-    /// This kernel will not resolve the path.
+    /// See `RemovalRefusal.Reason.Path`.
     | Path of PathRefusal
-    /// The call would remove `name` from `directory`, on the device
-    /// filesystem, which no name can be removed from here: a real one would
-    /// then answer for that name as it answers for any it does not hold, and
-    /// this one refuses every name it does not hold.
+    /// See `RemovalRefusal.Reason.DeviceFileSystem`.
     | DeviceFileSystem of directory : InodeNumber * name : DirectoryEntryName
-    /// The path names `mountRoot`, the root of a mounted filesystem, in a
-    /// sticky directory. The sticky rule consults the covered directory's
-    /// owner, which this kernel does not hold.
+    /// See `RemovalRefusal.Reason.MountPoint`.
     | MountPoint of mountRoot : InodeNumber
 
 [<RequireQualifiedAccess>]
 module StickyRefusal =
+    /// The reasons this kernel will not say what a sticky directory's rule
+    /// does, one partial pattern each. A match over them is never complete: end
+    /// it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged caller, on Darwin. Whether Darwin's sticky rule exempts
+        /// root has not been measured: that needs root and a second user. Gives
+        /// the sticky directory, then the entry, then how the caller stands
+        /// towards the entry.
+        let (|DarwinPrivilegedCaller|_|) (refusal : StickyRefusal) : (InodeNumber * InodeNumber * Standing) option =
+            match refusal with
+            | StickyRefusal.DarwinPrivilegedCaller (directory, entry, standing) -> Some (directory, entry, standing)
+            | _ -> None
+
+        /// A `rename(2)` on Darwin in which a directory displaces the entry,
+        /// itself a directory. Darwin consults the displaced directory's own
+        /// write bit there rather than its parent's, and whether it consults
+        /// the parent's sticky bit at all has not been measured. Gives the
+        /// sticky directory, then the entry, then how the caller stands towards
+        /// the entry.
+        let (|DarwinDirectoryDisplacingDirectory|_|)
+            (refusal : StickyRefusal)
+            : (InodeNumber * InodeNumber * Standing) option
+            =
+            match refusal with
+            | StickyRefusal.DarwinDirectoryDisplacingDirectory (directory, entry, standing) ->
+                Some (directory, entry, standing)
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which paths.
     let describe (refusal : StickyRefusal) : string =
@@ -48,6 +80,42 @@ module StickyRefusal =
 
 [<RequireQualifiedAccess>]
 module RemovalRefusal =
+    /// The reasons this kernel refuses an `unlink(2)` or an `rmdir(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Darwin's sticky rule has not been measured for this caller. Gives
+        /// the `StickyRefusal`.
+        let (|Sticky|_|) (refusal : RemovalRefusal) : StickyRefusal option =
+            match refusal with
+            | RemovalRefusal.Sticky refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : RemovalRefusal) : PathRefusal option =
+            match refusal with
+            | RemovalRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The call would remove a name from a directory on the device
+        /// filesystem, which no name can be removed from here: a real one would
+        /// then answer for that name as it answers for any it does not hold,
+        /// and this one refuses every name it does not hold. Gives the
+        /// directory, then the name.
+        let (|DeviceFileSystem|_|) (refusal : RemovalRefusal) : (InodeNumber * DirectoryEntryName) option =
+            match refusal with
+            | RemovalRefusal.DeviceFileSystem (directory, name) -> Some (directory, name)
+            | _ -> None
+
+        /// The path names the root of a mounted filesystem, in a sticky
+        /// directory. The sticky rule consults the covered directory's owner,
+        /// which this kernel does not hold. Gives the root's inode.
+        let (|MountPoint|_|) (refusal : RemovalRefusal) : InodeNumber option =
+            match refusal with
+            | RemovalRefusal.MountPoint mountRoot -> Some mountRoot
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : RemovalRefusal) : string =
@@ -79,16 +147,39 @@ type internal UnlinkAtScreen =
     | Unmodelled of flags : int
 
 /// Why this kernel will not answer an `unlinkat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `UnlinkAtRefusal.Reason`, and ends its match with a wildcard, where
+/// `UnlinkAtRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type UnlinkAtRefusal =
-    /// The flag word carries flags the flavour accepts and this library does
-    /// not model. `flags` is the whole word.
+    internal
+    /// See `UnlinkAtRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// The flag word asked for a removal, and this kernel will not answer it.
+    /// See `UnlinkAtRefusal.Reason.Removal`.
     | Removal of RemovalRefusal
 
 [<RequireQualifiedAccess>]
 module UnlinkAtRefusal =
+    /// The reasons this kernel refuses an `unlinkat(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags the flavour accepts and this library
+        /// does not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : UnlinkAtRefusal) : int option =
+            match refusal with
+            | UnlinkAtRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// The flag word asked for a removal, and this kernel will not answer
+        /// it. Gives the `RemovalRefusal`.
+        let (|Removal|_|) (refusal : UnlinkAtRefusal) : RemovalRefusal option =
+            match refusal with
+            | UnlinkAtRefusal.Removal refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : UnlinkAtRefusal) : string =
@@ -123,7 +214,7 @@ module UnlinkAtRules =
     ///
     /// Linux accepts only `AT_REMOVEDIR` (0x200). Darwin accepts
     /// `AT_REMOVEDIR` (0x80) and six flags this library does not model (see
-    /// `UnlinkAtRefusal.UnmodelledFlags`). Each answers EINVAL for a word
+    /// `UnlinkAtRefusal.Reason.UnmodelledFlags`). Each answers EINVAL for a word
     /// carrying any other bit, even beside a flag it accepts; a word whose
     /// bits Darwin accepts and which carries one of the six is
     /// `UnlinkAtScreen.Unmodelled`.

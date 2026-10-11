@@ -14,7 +14,7 @@ type SymlinkProtection =
     /// a path when the directory holding the link is sticky and world-writable,
     /// unless the follower owns the link or the directory's owner does. Past
     /// half the traversal budget Linux's answer depends on its dentry cache,
-    /// so such a walk is refused (`PathRefusal.ProtectedSymlinkCacheDependent`).
+    /// so such a walk is refused (`PathRefusal.Reason.ProtectedSymlinkCacheDependent`).
     ///
     /// Many distributions set this through `sysctl.d`.
     | InWorldWritableStickyDirectories

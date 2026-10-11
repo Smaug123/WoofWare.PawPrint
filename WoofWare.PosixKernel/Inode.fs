@@ -200,7 +200,7 @@ type InodeContent =
     /// pathname `bind(2)` of a Unix-domain socket makes.
     ///
     /// Nothing in this version makes one: `mknodat` of `S_IFSOCK` answers
-    /// `MkNodRefusal.Socket`, and a Unix-domain `bind` answers
+    /// `MkNodRefusal.Reason.Socket`, and a Unix-domain `bind` answers
     /// `SockaddrCopyRefusal.UnmodelledDomain`.
     | Socket of permissions : PermissionBits
     /// A FIFO special file, or named pipe: what `stat(2)` reports as
@@ -210,7 +210,7 @@ type InodeContent =
     /// some end of the FIFO is open, and go at the last close.
     ///
     /// Nothing in this version makes one: `mknodat` of `S_IFIFO` answers
-    /// `MkNodRefusal.Fifo`.
+    /// `MkNodRefusal.Reason.Fifo`.
     | Fifo of permissions : PermissionBits
 
 [<RequireQualifiedAccess>]

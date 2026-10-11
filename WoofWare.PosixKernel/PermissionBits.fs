@@ -124,7 +124,7 @@ type SetGroupIdOnWrite =
     /// Only a writer who owns the file has been measured, and only a writer in the file's
     /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
     /// on behalf of any other writer, privileged or not, the write is refused
-    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c>) rather than guessed at.
+    /// (<c>SetIdChangeRefusal.Reason.UnmeasuredDarwinWrite</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -159,7 +159,7 @@ type SetIdBitsOnTruncation =
     /// Only a truncating process that owns the file has been measured, and only one in the
     /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
     /// file on behalf of any other process, privileged or not, the truncation is refused
-    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c>) rather than guessed at.
+    /// (<c>SetIdChangeRefusal.Reason.UnmeasuredDarwinTruncation</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// Darwin behaves this way.
@@ -197,17 +197,40 @@ type PermissionBits =
 /// Why this library will not say what a write or a truncation does to a file's
 /// set-user-ID and set-group-ID bits: the kernel's answer for that caller and
 /// that mode has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SetIdChangeRefusal.Reason`, and ends its match with a wildcard, where
+/// `SetIdChangeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SetIdChangeRefusal =
-    /// A content-changing write, under `SetGroupIdOnWrite.StripAlways`, by a
-    /// caller standing as `standing` towards a file whose bits are `bits`.
+    internal
+    /// See `SetIdChangeRefusal.Reason.UnmeasuredDarwinWrite`.
     | UnmeasuredDarwinWrite of standing : Standing * bits : PermissionBits
-    /// A truncation, under `SetIdBitsOnTruncation.Preserve`, by a caller
-    /// standing as `standing` towards a file whose bits are `bits`.
+    /// See `SetIdChangeRefusal.Reason.UnmeasuredDarwinTruncation`.
     | UnmeasuredDarwinTruncation of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module SetIdChangeRefusal =
+    /// The reasons this library will not say what a write or a truncation does
+    /// to a file's set-ID bits, one partial pattern each. A match over them is
+    /// never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A content-changing write, under `SetGroupIdOnWrite.StripAlways`.
+        /// Gives how the caller stands towards the file, then the file's bits.
+        let (|UnmeasuredDarwinWrite|_|) (refusal : SetIdChangeRefusal) : (Standing * PermissionBits) option =
+            match refusal with
+            | SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, bits) -> Some (standing, bits)
+            | _ -> None
+
+        /// A truncation, under `SetIdBitsOnTruncation.Preserve`. Gives how the
+        /// caller stands towards the file, then the file's bits.
+        let (|UnmeasuredDarwinTruncation|_|) (refusal : SetIdChangeRefusal) : (Standing * PermissionBits) option =
+            match refusal with
+            | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) -> Some (standing, bits)
+            | _ -> None
+
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which file it was.
     let describe (refusal : SetIdChangeRefusal) : string =
@@ -234,7 +257,7 @@ type PrivilegedExecution =
     /// This is Linux.
     | NeedsAnExecuteBit
     /// What a privileged caller is granted has not been measured, so a call
-    /// that asks is refused (`ExecutionRefusal.UnmeasuredPrivilegedCaller`)
+    /// that asks is refused (`ExecutionRefusal.Reason.UnmeasuredPrivilegedCaller`)
     /// rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
@@ -242,14 +265,30 @@ type PrivilegedExecution =
 
 /// Why this library will not say whether a caller may execute something: the
 /// kernel's answer for that caller has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ExecutionRefusal.Reason`, and ends its match with a wildcard, where
+/// `ExecutionRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ExecutionRefusal =
-    /// A privileged caller, under `PrivilegedExecution.Unmeasured`, standing
-    /// as `standing` towards an inode carrying `bits`.
+    internal
+    /// See `ExecutionRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module ExecutionRefusal =
+    /// The reasons this library will not say whether a caller may execute
+    /// something, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged caller, under `PrivilegedExecution.Unmeasured`. Gives
+        /// how the caller stands towards the inode, then the inode's bits.
+        let (|UnmeasuredPrivilegedCaller|_|) (refusal : ExecutionRefusal) : (Standing * PermissionBits) option =
+            match refusal with
+            | ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits) -> Some (standing, bits)
+
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : ExecutionRefusal) : string =
@@ -269,21 +308,37 @@ type LinkReadRule =
     /// An unprivileged caller is refused unless the triple its standing
     /// selects has the read bit. What a privileged caller is granted has not
     /// been measured, so a call that asks is refused
-    /// (`LinkReadRefusal.UnmeasuredPrivilegedCaller`) rather than guessed at.
+    /// (`LinkReadRefusal.Reason.UnmeasuredPrivilegedCaller`) rather than guessed at.
     ///
     /// This is Darwin, where measuring the privileged caller needs root.
     | ReadBitOfSelectedTriple
 
 /// Why this library will not say whether a caller may read a symbolic link's
 /// target: the kernel's answer for that caller has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LinkReadRefusal.Reason`, and ends its match with a wildcard, where
+/// `LinkReadRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LinkReadRefusal =
-    /// A privileged caller, under `LinkReadRule.ReadBitOfSelectedTriple`,
-    /// standing as `standing` towards a link carrying `bits`.
+    internal
+    /// See `LinkReadRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module LinkReadRefusal =
+    /// The reasons this library will not say whether a caller may read a
+    /// symbolic link's target, one partial pattern each. A match over them is
+    /// never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged caller, under `LinkReadRule.ReadBitOfSelectedTriple`.
+        /// Gives how the caller stands towards the link, then the link's bits.
+        let (|UnmeasuredPrivilegedCaller|_|) (refusal : LinkReadRefusal) : (Standing * PermissionBits) option =
+            match refusal with
+            | LinkReadRefusal.UnmeasuredPrivilegedCaller (standing, bits) -> Some (standing, bits)
+
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which link it was.
     let describe (refusal : LinkReadRefusal) : string =
@@ -304,7 +359,7 @@ type PrivilegedModeChange =
     /// This is Linux.
     | SetsRequestedBits
     /// What a privileged caller's mode change does has not been measured, so
-    /// the change is refused (`ModeChangeRefusal.UnmeasuredPrivilegedCaller`)
+    /// the change is refused (`ModeChangeRefusal.Reason.UnmeasuredPrivilegedCaller`)
     /// rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
@@ -322,14 +377,30 @@ type internal ModeChange =
 
 /// Why this library will not say what a `chmod(2)` or `fchmod(2)` does: the
 /// kernel's answer for that caller has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ModeChangeRefusal.Reason`, and ends its match with a wildcard, where
+/// `ModeChangeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ModeChangeRefusal =
-    /// A privileged caller, under `PrivilegedModeChange.Unmeasured`, standing
-    /// as `standing` towards the inode and asking for `requested`.
+    internal
+    /// See `ModeChangeRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller of standing : Standing * requested : PermissionBits
 
 [<RequireQualifiedAccess>]
 module ModeChangeRefusal =
+    /// The reasons this library will not say what a `chmod(2)` or `fchmod(2)`
+    /// does, one partial pattern each. A match over them is never complete: end
+    /// it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged caller, under `PrivilegedModeChange.Unmeasured`. Gives
+        /// how the caller stands towards the inode, then the bits it asked for.
+        let (|UnmeasuredPrivilegedCaller|_|) (refusal : ModeChangeRefusal) : (Standing * PermissionBits) option =
+            match refusal with
+            | ModeChangeRefusal.UnmeasuredPrivilegedCaller (standing, requested) -> Some (standing, requested)
+
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : ModeChangeRefusal) : string =
@@ -668,7 +739,7 @@ module PermissionBits =
     /// sticky bit is never touched on either. The whole of the disagreement is
     /// `S_ISGID` on a file that is not group-executable.
     ///
-    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> for a write whose answer under
+    /// Answers <c>SetIdChangeRefusal.Reason.UnmeasuredDarwinWrite</c> for a write whose answer under
     /// <c>SetGroupIdOnWrite.StripAlways</c> has not been measured; see that case.
     /// </remarks>
     /// <param name="rule">
@@ -744,7 +815,7 @@ module PermissionBits =
     /// (This is by contrast to the situation with <c>afterContentChangingWrite</c>, which
     /// explicitly only applies to writes of at least one byte.)
     ///
-    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> for a truncation whose answer
+    /// Answers <c>SetIdChangeRefusal.Reason.UnmeasuredDarwinTruncation</c> for a truncation whose answer
     /// under <c>SetIdBitsOnTruncation.Preserve</c> has not been measured; see that case.
     /// </remarks>
     let internal afterTruncation

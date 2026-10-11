@@ -65,24 +65,60 @@ type internal AccessArguments =
     }
 
 /// Why this kernel will not answer an `access(2)` or `faccessat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `AccessRefusal.Reason`, and ends its match with a wildcard, where
+/// `AccessRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type AccessRefusal =
-    /// The flag word carries flags this kernel accepts but whose meaning this
-    /// library does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
-    /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000). `flags` is the
-    /// whole word.
+    internal
+    /// See `AccessRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// The mode word asks for Darwin's extended rights (`rights` is those bits
-    /// of it) of the inode at `inode`, which this library does not model.
+    /// See `AccessRefusal.Reason.ExtendedRights`.
     | ExtendedRights of inode : InodeNumber * rights : int
-    /// Whether the caller may execute the inode at `inode` has not been
-    /// measured for this caller.
+    /// See `AccessRefusal.Reason.UnmeasuredExecution`.
     | UnmeasuredExecution of inode : InodeNumber * refusal : ExecutionRefusal
-    /// This kernel will not resolve the path.
+    /// See `AccessRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module AccessRefusal =
+    /// The reasons this kernel refuses an `access(2)` or `faccessat(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags this kernel accepts but whose meaning
+        /// this library does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY`
+        /// (0x800), `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000).
+        /// Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : AccessRefusal) : int option =
+            match refusal with
+            | AccessRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// The mode word asks for Darwin's extended rights of an inode, which
+        /// this library does not model. Gives the inode, then those bits of the
+        /// mode word.
+        let (|ExtendedRights|_|) (refusal : AccessRefusal) : (InodeNumber * int) option =
+            match refusal with
+            | AccessRefusal.ExtendedRights (inode, rights) -> Some (inode, rights)
+            | _ -> None
+
+        /// Whether the caller may execute the inode has not been measured for
+        /// this caller. Gives the inode, then the `ExecutionRefusal`.
+        let (|UnmeasuredExecution|_|) (refusal : AccessRefusal) : (InodeNumber * ExecutionRefusal) option =
+            match refusal with
+            | AccessRefusal.UnmeasuredExecution (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : AccessRefusal) : PathRefusal option =
+            match refusal with
+            | AccessRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : AccessRefusal) : string =
@@ -127,7 +163,7 @@ module internal AccessRules =
     /// any flag beyond `AT_SYMLINK_NOFOLLOW` (0x100), `AT_EACCESS` (0x200) and
     /// `AT_EMPTY_PATH` (0x1000). Darwin answers EINVAL for any flag beyond
     /// `AT_EACCESS` (0x10) and `AT_SYMLINK_NOFOLLOW` (0x20) and the three it
-    /// accepts but this library refuses (see `AccessRefusal.UnmodelledFlags`);
+    /// accepts but this library refuses (see `AccessRefusal.Reason.UnmodelledFlags`);
     /// it rejects no mode word, ignores bits 3 to 8 and 22 to 31, and reads
     /// bits 9 to 21 as its extended rights.
     let screen (flavour : SimulatedUnixFlavour) (mode : int) (flags : int) : AccessScreen =

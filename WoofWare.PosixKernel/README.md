@@ -252,7 +252,10 @@ The library cannot answer, either because its model of the domain is not complet
 Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
 Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
 A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
-`BindRefusal` is open in this way; each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+`BindRefusal` is open in this way.
+So are the refusals of the calls that walk a path or change the namespace: `PathRefusal`, which the others carry when the walk itself is refused, `OpenRefusal`, `StatRefusal`, `FStatRefusal`, `FStatAtRefusal`, `AccessRefusal`, `ReadLinkRefusal`, `ReadDirectoryRefusal`, `GetCwdRefusal`, `MkNodRefusal`, `SymlinkRefusal`, `LinkRefusal`, `RenameRefusal`, `CloneFileRefusal`, `RemovalRefusal`, `UnlinkAtRefusal`, `StickyRefusal`, `ChModRefusal`, `FChModRefusal`, `FChModAtRefusal`, `ChOwnRefusal`, `FChOwnRefusal`, `FChOwnAtRefusal` and `UTimensAtRefusal`, with the permission refusals they carry, `SetIdChangeRefusal`, `ExecutionRefusal`, `LinkReadRefusal`, `ModeChangeRefusal` and `OwnerChangeRefusal`.
+A client matches them nested, as `UnlinkAtRefusal.Reason.Removal (RemovalRefusal.Reason.Sticky (StickyRefusal.Reason.DarwinPrivilegedCaller (directory, entry, standing)))`.
+Each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
 
 ```fsharp
 open System.Collections.Immutable
@@ -401,7 +404,7 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
 
 An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`, or a FIFO (`InodeContent.Fifo`), which a directory entry reports as `DirectoryEntryKind.Fifo`.
-Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Fifo`.
+Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Reason.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Reason.Fifo`.
 The cases exist so that a client's matches already handle them when pathname sockets and FIFOs arrive.
 
 #### Reading and writing

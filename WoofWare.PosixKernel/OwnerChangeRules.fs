@@ -103,23 +103,52 @@ type internal OwnerChange =
 
 /// Why this library will not say what a `chown(2)`-family call does: the
 /// kernel's answer for that caller and that inode has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `OwnerChangeRefusal.Reason`, and ends its match with a wildcard, where
+/// `OwnerChangeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type OwnerChangeRefusal =
-    /// A privileged caller, under `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`,
-    /// standing as `standing` towards an inode carrying `bits`, asking
-    /// `request`.
+    internal
+    /// See `OwnerChangeRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller of standing : Standing * request : OwnerChangeRequest * bits : PermissionBits
-    /// An unprivileged caller, under
-    /// `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`, standing as `standing`
-    /// towards an inode carrying `bits` and asking `request`, where an
-    /// ordinary user could not set up the inode to measure: an owner outside
-    /// the inode's group, of an inode with `S_ISGID`; a non-owner naming an ID
-    /// of an inode with either set-ID bit; or a non-owner asking nothing of an
-    /// inode with `S_ISGID`.
+    /// See `OwnerChangeRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of standing : Standing * request : OwnerChangeRequest * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module OwnerChangeRefusal =
+    /// The reasons this library will not say what a `chown(2)`-family call
+    /// does, one partial pattern each. A match over them is never complete: end
+    /// it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged caller, under
+        /// `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`. Gives how the caller
+        /// stands towards the inode, then what it asked, then the inode's bits.
+        let (|UnmeasuredPrivilegedCaller|_|)
+            (refusal : OwnerChangeRefusal)
+            : (Standing * OwnerChangeRequest * PermissionBits) option
+            =
+            match refusal with
+            | OwnerChangeRefusal.UnmeasuredPrivilegedCaller (standing, request, bits) -> Some (standing, request, bits)
+            | _ -> None
+
+        /// An unprivileged caller, under
+        /// `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`, where an ordinary user
+        /// could not set up the inode to measure: an owner outside the inode's
+        /// group, of an inode with `S_ISGID`; a non-owner naming an ID of an
+        /// inode with either set-ID bit; or a non-owner asking nothing of an
+        /// inode with `S_ISGID`. Gives how the caller stands towards the inode,
+        /// then what it asked, then the inode's bits.
+        let (|UnmeasuredSetIdChange|_|)
+            (refusal : OwnerChangeRefusal)
+            : (Standing * OwnerChangeRequest * PermissionBits) option
+            =
+            match refusal with
+            | OwnerChangeRefusal.UnmeasuredSetIdChange (standing, request, bits) -> Some (standing, request, bits)
+            | _ -> None
+
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : OwnerChangeRefusal) : string =

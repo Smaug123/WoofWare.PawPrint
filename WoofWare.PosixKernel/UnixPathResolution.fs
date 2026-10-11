@@ -85,21 +85,51 @@ type FileStatus =
     }
 
 /// Why this kernel refused to report a `struct stat` for a path.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `StatRefusal.Reason`, and ends its match with a wildcard, where
+/// `StatRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type StatRefusal =
-    /// The path names a directory on an NFS mount. Its `st_size` and its
-    /// `st_nlink` are what the NFS server's GETATTR reports, and nothing in
-    /// this machine determines them.
+    internal
+    /// See `StatRefusal.Reason.NfsDirectorySize`.
     | NfsDirectorySize of inode : InodeNumber
-    /// The path names the root of the device filesystem. Its `st_size` and
-    /// `st_nlink` count every node and subdirectory a real one holds, and this
-    /// kernel's holds only the nodes of the devices it has drivers for.
+    /// See `StatRefusal.Reason.DeviceFileSystemRoot`.
     | DeviceFileSystemRoot of inode : InodeNumber
-    /// This kernel will not resolve the path.
+    /// See `StatRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module StatRefusal =
+    /// The reasons this kernel will not report a `struct stat` for a path, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The path names a directory on an NFS mount. Its `st_size` and its
+        /// `st_nlink` are what the NFS server's GETATTR reports, and nothing in
+        /// this machine determines them. Gives the directory's inode.
+        let (|NfsDirectorySize|_|) (refusal : StatRefusal) : InodeNumber option =
+            match refusal with
+            | StatRefusal.NfsDirectorySize inode -> Some inode
+            | _ -> None
+
+        /// The path names the root of the device filesystem. Its `st_size` and
+        /// `st_nlink` count every node and subdirectory a real one holds, and
+        /// this kernel's holds only the nodes of the devices it has drivers
+        /// for. Gives the root's inode.
+        let (|DeviceFileSystemRoot|_|) (refusal : StatRefusal) : InodeNumber option =
+            match refusal with
+            | StatRefusal.DeviceFileSystemRoot inode -> Some inode
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : StatRefusal) : PathRefusal option =
+            match refusal with
+            | StatRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : StatRefusal) : string =
@@ -116,45 +146,78 @@ module StatRefusal =
 /// <remarks>
 /// WoofWare.PosixKernel doesn't have an inode for some specific types of file descriptor, so can't provide
 /// an answer to <c>fstat</c>.
+/// <para>
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// <c>FStatRefusal.Reason</c>, and ends its match with a wildcard, where
+/// <c>FStatRefusal.describe</c> says what was refused.
+/// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
 type FStatRefusal =
-    /// <summary>
-    /// An end of a pipe that the process was launched with, rather than one it made.
-    /// </summary>
-    /// <remarks>
-    /// The pipe's owner and timestamps are those of whoever launched the process, which the launch table
-    /// <c>UnixSystem.initial</c> took does not state.
-    /// </remarks>
+    internal
+    /// See `FStatRefusal.Reason.LaunchedPipe`.
     | LaunchedPipe of pipe : PipeId
-    /// <summary>
-    /// An event queue: an anonymous kernel object, an epoll instance, a kqueue
-    /// or an inotify instance.
-    /// </summary>
+    /// See `FStatRefusal.Reason.EventQueue`.
     | EventQueue
-    /// <summary>
-    /// A socket, which has an identity in WoofWare.PosixKernel, but not an inode-shaped one.
-    /// </summary>
+    /// See `FStatRefusal.Reason.Socket`.
     | Socket of socket : SocketId
-    /// <summary>
-    /// A directory on an NFS mount.
-    /// </summary>
-    /// <remarks>
-    /// Its <c>st_size</c> and its <c>st_nlink</c> are what the NFS server's GETATTR reports, and nothing in
-    /// this machine determines them.
-    /// </remarks>
+    /// See `FStatRefusal.Reason.NfsDirectorySize`.
     | NfsDirectorySize of inode : InodeNumber
-    /// <summary>
-    /// The root of the device filesystem.
-    /// </summary>
-    /// <remarks>
-    /// Its <c>st_size</c> and <c>st_nlink</c> count every node and subdirectory a real one holds, and this
-    /// kernel's holds only the nodes of the devices it has drivers for.
-    /// </remarks>
+    /// See `FStatRefusal.Reason.DeviceFileSystemRoot`.
     | DeviceFileSystemRoot of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module FStatRefusal =
+    /// The reasons this kernel will not report a `struct stat` for a
+    /// descriptor, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// An end of a pipe that the process was launched with, rather than one
+        /// it made. Gives the pipe.
+        ///
+        /// The pipe's owner and timestamps are those of whoever launched the
+        /// process, which the launch table `UnixSystem.initial` took does not
+        /// state.
+        let (|LaunchedPipe|_|) (refusal : FStatRefusal) : PipeId option =
+            match refusal with
+            | FStatRefusal.LaunchedPipe pipe -> Some pipe
+            | _ -> None
+
+        /// An event queue: an anonymous kernel object, an epoll instance, a
+        /// kqueue or an inotify instance.
+        let (|EventQueue|_|) (refusal : FStatRefusal) : unit option =
+            match refusal with
+            | FStatRefusal.EventQueue -> Some ()
+            | _ -> None
+
+        /// A socket, which has an identity in WoofWare.PosixKernel, but not an
+        /// inode-shaped one. Gives the socket.
+        let (|Socket|_|) (refusal : FStatRefusal) : SocketId option =
+            match refusal with
+            | FStatRefusal.Socket socket -> Some socket
+            | _ -> None
+
+        /// A directory on an NFS mount. Gives the directory's inode.
+        ///
+        /// Its `st_size` and its `st_nlink` are what the NFS server's GETATTR
+        /// reports, and nothing in this machine determines them.
+        let (|NfsDirectorySize|_|) (refusal : FStatRefusal) : InodeNumber option =
+            match refusal with
+            | FStatRefusal.NfsDirectorySize inode -> Some inode
+            | _ -> None
+
+        /// The root of the device filesystem. Gives the root's inode.
+        ///
+        /// Its `st_size` and `st_nlink` count every node and subdirectory a
+        /// real one holds, and this kernel's holds only the nodes of the
+        /// devices it has drivers for.
+        let (|DeviceFileSystemRoot|_|) (refusal : FStatRefusal) : InodeNumber option =
+            match refusal with
+            | FStatRefusal.DeviceFileSystemRoot inode -> Some inode
+            | _ -> None
+
     /// <summary>Human-readable description.</summary>
     let describe (refusal : FStatRefusal) : string =
         match refusal with
@@ -168,23 +231,60 @@ module FStatRefusal =
         | FStatRefusal.DeviceFileSystemRoot inode -> StatRefusal.describe (StatRefusal.DeviceFileSystemRoot inode)
 
 /// Why this kernel will not answer an `fstatat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FStatAtRefusal.Reason`, and ends its match with a wildcard, where
+/// `FStatAtRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FStatAtRefusal =
-    /// The flag word carries flags the flavour accepts and this library does
-    /// not model. `flags` is the whole word.
+    internal
+    /// See `FStatAtRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// Linux's `AT_EMPTY_PATH`, with a pathname the caller could not read.
-    /// Linux reads a NULL pathname under `AT_EMPTY_PATH` as the empty one, and
-    /// reports what `dirfd` names; `PathArgumentBytes.Unreadable` does not say
-    /// whether the pathname was NULL or some other address it could not read.
+    /// See `FStatAtRefusal.Reason.UnreadableEmptyPath`.
     | UnreadableEmptyPath
-    /// The path resolved, or would have, and `stat(2)` refuses what it names.
+    /// See `FStatAtRefusal.Reason.Stat`.
     | Stat of StatRefusal
-    /// The empty path named `dirfd` itself, and `fstat(2)` refuses it.
+    /// See `FStatAtRefusal.Reason.Descriptor`.
     | Descriptor of FStatRefusal
 
 [<RequireQualifiedAccess>]
 module FStatAtRefusal =
+    /// The reasons this kernel refuses an `fstatat(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags the flavour accepts and this library
+        /// does not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : FStatAtRefusal) : int option =
+            match refusal with
+            | FStatAtRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// Linux's `AT_EMPTY_PATH`, with a pathname the caller could not read.
+        /// Linux reads a NULL pathname under `AT_EMPTY_PATH` as the empty one,
+        /// and reports what `dirfd` names; `PathArgumentBytes.Unreadable` does
+        /// not say whether the pathname was NULL or some other address it could
+        /// not read.
+        let (|UnreadableEmptyPath|_|) (refusal : FStatAtRefusal) : unit option =
+            match refusal with
+            | FStatAtRefusal.UnreadableEmptyPath -> Some ()
+            | _ -> None
+
+        /// The path resolved, or would have, and `stat(2)` refuses what it
+        /// names. Gives the `StatRefusal`.
+        let (|Stat|_|) (refusal : FStatAtRefusal) : StatRefusal option =
+            match refusal with
+            | FStatAtRefusal.Stat refusal -> Some refusal
+            | _ -> None
+
+        /// The empty path named `dirfd` itself, and `fstat(2)` refuses it.
+        /// Gives the `FStatRefusal`.
+        let (|Descriptor|_|) (refusal : FStatAtRefusal) : FStatRefusal option =
+            match refusal with
+            | FStatAtRefusal.Descriptor refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FStatAtRefusal) : string =
@@ -198,16 +298,39 @@ module FStatAtRefusal =
 
 /// Why this kernel will not answer a `chmod(2)`, or an `fchmodat(2)` that
 /// walks its path.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ChModRefusal.Reason`, and ends its match with a wildcard, where
+/// `ChModRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ChModRefusal =
-    /// What the mode change would do to the inode at `inode` has not been
-    /// measured for this caller.
+    internal
+    /// See `ChModRefusal.Reason.UnmeasuredModeChange`.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
-    /// This kernel will not resolve the path.
+    /// See `ChModRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module ChModRefusal =
+    /// The reasons this kernel refuses a `chmod(2)`, or an `fchmodat(2)` that
+    /// walks its path, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// What the mode change would do to the inode has not been measured for
+        /// this caller. Gives the inode, then the `ModeChangeRefusal`.
+        let (|UnmeasuredModeChange|_|) (refusal : ChModRefusal) : (InodeNumber * ModeChangeRefusal) option =
+            match refusal with
+            | ChModRefusal.UnmeasuredModeChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : ChModRefusal) : PathRefusal option =
+            match refusal with
+            | ChModRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : ChModRefusal) : string =
@@ -217,22 +340,51 @@ module ChModRefusal =
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// Why this kernel will not answer an `fchmod(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FChModRefusal.Reason`, and ends its match with a wildcard, where
+/// `FChModRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FChModRefusal =
-    /// What the mode change would do to the inode at `inode` has not been
-    /// measured for this caller.
+    internal
+    /// See `FChModRefusal.Reason.UnmeasuredModeChange`.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
-    /// The descriptor is an end of a pipe the process was launched with, on a
-    /// flavour where `fchmod` changes a pipe's mode if the caller may. Whether
-    /// it may depends on the pipe's owner, which is the launcher's, and the
-    /// launch table does not state it.
+    /// See `FChModRefusal.Reason.LaunchedPipe`.
     | LaunchedPipe of pipe : PipeId
-    /// The descriptor is a socket, on a flavour whose sockets have a mode that
-    /// `fchmod` changes. This kernel holds no such mode.
+    /// See `FChModRefusal.Reason.Socket`.
     | Socket of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module FChModRefusal =
+    /// The reasons this kernel refuses an `fchmod(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// What the mode change would do to the inode has not been measured for
+        /// this caller. Gives the inode, then the `ModeChangeRefusal`.
+        let (|UnmeasuredModeChange|_|) (refusal : FChModRefusal) : (InodeNumber * ModeChangeRefusal) option =
+            match refusal with
+            | FChModRefusal.UnmeasuredModeChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// The descriptor is an end of a pipe the process was launched with, on
+        /// a flavour where `fchmod` changes a pipe's mode if the caller may.
+        /// Whether it may depends on the pipe's owner, which is the launcher's,
+        /// and the launch table does not state it. Gives the pipe.
+        let (|LaunchedPipe|_|) (refusal : FChModRefusal) : PipeId option =
+            match refusal with
+            | FChModRefusal.LaunchedPipe pipe -> Some pipe
+            | _ -> None
+
+        /// The descriptor is a socket, on a flavour whose sockets have a mode
+        /// that `fchmod` changes. This kernel holds no such mode. Gives the
+        /// socket.
+        let (|Socket|_|) (refusal : FChModRefusal) : SocketId option =
+            match refusal with
+            | FChModRefusal.Socket socket -> Some socket
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptor.
     let describe (refusal : FChModRefusal) : string =
@@ -245,19 +397,48 @@ module FChModRefusal =
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
 
 /// Why this kernel will not answer an `fchmodat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FChModAtRefusal.Reason`, and ends its match with a wildcard, where
+/// `FChModAtRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FChModAtRefusal =
-    /// The flag word carries flags the flavour accepts and this library does
-    /// not model. `flags` is the whole word.
+    internal
+    /// See `FChModAtRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// The call walked its path, and `chmod(2)` refuses what it reached.
+    /// See `FChModAtRefusal.Reason.ChMod`.
     | ChMod of ChModRefusal
-    /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself, and
-    /// `fchmod(2)` refuses it.
+    /// See `FChModAtRefusal.Reason.Descriptor`.
     | Descriptor of FChModRefusal
 
 [<RequireQualifiedAccess>]
 module FChModAtRefusal =
+    /// The reasons this kernel refuses an `fchmodat(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags the flavour accepts and this library
+        /// does not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : FChModAtRefusal) : int option =
+            match refusal with
+            | FChModAtRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// The call walked its path, and `chmod(2)` refuses what it reached.
+        /// Gives the `ChModRefusal`.
+        let (|ChMod|_|) (refusal : FChModAtRefusal) : ChModRefusal option =
+            match refusal with
+            | FChModAtRefusal.ChMod refusal -> Some refusal
+            | _ -> None
+
+        /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself,
+        /// and `fchmod(2)` refuses it. Gives the `FChModRefusal`.
+        let (|Descriptor|_|) (refusal : FChModAtRefusal) : FChModRefusal option =
+            match refusal with
+            | FChModAtRefusal.Descriptor refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FChModAtRefusal) : string =
@@ -269,16 +450,39 @@ module FChModAtRefusal =
 
 /// Why this kernel will not answer a `chown(2)` or `lchown(2)`, or an
 /// `fchownat(2)` that walks its path.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ChOwnRefusal.Reason`, and ends its match with a wildcard, where
+/// `ChOwnRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ChOwnRefusal =
-    /// What the owner change would do to the inode at `inode` has not been
-    /// measured for this caller.
+    internal
+    /// See `ChOwnRefusal.Reason.UnmeasuredOwnerChange`.
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
-    /// This kernel will not resolve the path.
+    /// See `ChOwnRefusal.Reason.Path`.
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module ChOwnRefusal =
+    /// The reasons this kernel refuses a `chown(2)` or `lchown(2)`, or an
+    /// `fchownat(2)` that walks its path, one partial pattern each. A match
+    /// over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// What the owner change would do to the inode has not been measured
+        /// for this caller. Gives the inode, then the `OwnerChangeRefusal`.
+        let (|UnmeasuredOwnerChange|_|) (refusal : ChOwnRefusal) : (InodeNumber * OwnerChangeRefusal) option =
+            match refusal with
+            | ChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : ChOwnRefusal) : PathRefusal option =
+            match refusal with
+            | ChOwnRefusal.Path refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : ChOwnRefusal) : string =
@@ -288,22 +492,51 @@ module ChOwnRefusal =
         | ChOwnRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// Why this kernel will not answer an `fchown(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FChOwnRefusal.Reason`, and ends its match with a wildcard, where
+/// `FChOwnRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FChOwnRefusal =
-    /// What the owner change would do to the inode at `inode` has not been
-    /// measured for this caller.
+    internal
+    /// See `FChOwnRefusal.Reason.UnmeasuredOwnerChange`.
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
-    /// The descriptor is an end of a pipe the process was launched with, on a
-    /// flavour where `fchown` changes a pipe's owner if the caller may. Whether
-    /// it may depends on the pipe's owner, which is the launcher's, and the
-    /// launch table does not state it.
+    /// See `FChOwnRefusal.Reason.LaunchedPipe`.
     | LaunchedPipe of pipe : PipeId
-    /// The descriptor is a socket, on a flavour whose sockets have an owner
-    /// that `fchown` changes. This kernel holds no such owner.
+    /// See `FChOwnRefusal.Reason.Socket`.
     | Socket of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module FChOwnRefusal =
+    /// The reasons this kernel refuses an `fchown(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// What the owner change would do to the inode has not been measured
+        /// for this caller. Gives the inode, then the `OwnerChangeRefusal`.
+        let (|UnmeasuredOwnerChange|_|) (refusal : FChOwnRefusal) : (InodeNumber * OwnerChangeRefusal) option =
+            match refusal with
+            | FChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// The descriptor is an end of a pipe the process was launched with, on
+        /// a flavour where `fchown` changes a pipe's owner if the caller may.
+        /// Whether it may depends on the pipe's owner, which is the launcher's,
+        /// and the launch table does not state it. Gives the pipe.
+        let (|LaunchedPipe|_|) (refusal : FChOwnRefusal) : PipeId option =
+            match refusal with
+            | FChOwnRefusal.LaunchedPipe pipe -> Some pipe
+            | _ -> None
+
+        /// The descriptor is a socket, on a flavour whose sockets have an owner
+        /// that `fchown` changes. This kernel holds no such owner. Gives the
+        /// socket.
+        let (|Socket|_|) (refusal : FChOwnRefusal) : SocketId option =
+            match refusal with
+            | FChOwnRefusal.Socket socket -> Some socket
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptor.
     let describe (refusal : FChOwnRefusal) : string =
@@ -316,20 +549,48 @@ module FChOwnRefusal =
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
 
 /// Why this kernel will not answer an `fchownat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FChOwnAtRefusal.Reason`, and ends its match with a wildcard, where
+/// `FChOwnAtRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FChOwnAtRefusal =
-    /// The flag word carries flags the flavour accepts and this library does
-    /// not model. `flags` is the whole word.
+    internal
+    /// See `FChOwnAtRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// The call walked its path, and `chown(2)` or `lchown(2)` refuses what it
-    /// reached.
+    /// See `FChOwnAtRefusal.Reason.ChOwn`.
     | ChOwn of ChOwnRefusal
-    /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself, and
-    /// `fchown(2)` refuses it.
+    /// See `FChOwnAtRefusal.Reason.Descriptor`.
     | Descriptor of FChOwnRefusal
 
 [<RequireQualifiedAccess>]
 module FChOwnAtRefusal =
+    /// The reasons this kernel refuses an `fchownat(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags the flavour accepts and this library
+        /// does not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : FChOwnAtRefusal) : int option =
+            match refusal with
+            | FChOwnAtRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// The call walked its path, and `chown(2)` or `lchown(2)` refuses what
+        /// it reached. Gives the `ChOwnRefusal`.
+        let (|ChOwn|_|) (refusal : FChOwnAtRefusal) : ChOwnRefusal option =
+            match refusal with
+            | FChOwnAtRefusal.ChOwn refusal -> Some refusal
+            | _ -> None
+
+        /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself,
+        /// and `fchown(2)` refuses it. Gives the `FChOwnRefusal`.
+        let (|Descriptor|_|) (refusal : FChOwnAtRefusal) : FChOwnRefusal option =
+            match refusal with
+            | FChOwnAtRefusal.Descriptor refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FChOwnAtRefusal) : string =
@@ -340,38 +601,97 @@ module FChOwnAtRefusal =
         | FChOwnAtRefusal.Descriptor refusal -> FChOwnRefusal.describe refusal
 
 /// Why this kernel will not answer a `utimensat(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `UTimensAtRefusal.Reason`, and ends its match with a wildcard, where
+/// `UTimensAtRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type UTimensAtRefusal =
-    /// The flag word carries flags the flavour reads and this library does
-    /// not model. `flags` is the whole word.
+    internal
+    /// See `UTimensAtRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : int
-    /// Darwin, with a `times` pointer the caller could not read. Darwin's
-    /// `utimensat` is its libc's, which reads the times itself before it
-    /// makes any syscall, so the fault is the caller's own: no errno.
+    /// See `UTimensAtRefusal.Reason.UnreadableTimes`.
     | UnreadableTimes
-    /// This kernel will not resolve the path.
+    /// See `UTimensAtRefusal.Reason.Path`.
     | Path of PathRefusal
-    /// The call reached a socket, whose times Linux sets; this kernel holds
-    /// none for a socket.
+    /// See `UTimensAtRefusal.Reason.Socket`.
     | Socket of socket : SocketId
-    /// The call reached an end of a pipe the process was launched with,
-    /// whose owner, mode and times are the launcher's, which the launch
-    /// table does not state.
+    /// See `UTimensAtRefusal.Reason.LaunchedPipe`.
     | LaunchedPipe of pipe : PipeId
-    /// The call would set a time on a file of this filesystem, whose server
-    /// decides what it stores.
+    /// See `UTimensAtRefusal.Reason.UnmeasuredFileSystem`.
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
-    /// Darwin, a privileged caller, and an inode it does not own: what
-    /// Darwin's root may do here is unmeasured.
+    /// See `UTimensAtRefusal.Reason.UnmeasuredPrivilegedCaller`.
     | UnmeasuredPrivilegedCaller of inode : InodeNumber
-    /// Darwin, `AT_SYMLINK_NOFOLLOW` at a symbolic link the caller does not
-    /// own but may write, and both times now: measured, Darwin answers EPERM
-    /// for another user's link where it answers EACCES for a file, and no
-    /// link the caller may write but does not own was available to measure.
+    /// See `UTimensAtRefusal.Reason.UnmeasuredSymlinkWrite`.
     | UnmeasuredSymlinkWrite of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module UTimensAtRefusal =
+    /// The reasons this kernel refuses a `utimensat(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The flag word carries flags the flavour reads and this library does
+        /// not model. Gives the whole flag word.
+        let (|UnmodelledFlags|_|) (refusal : UTimensAtRefusal) : int option =
+            match refusal with
+            | UTimensAtRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// Darwin, with a `times` pointer the caller could not read. Darwin's
+        /// `utimensat` is its libc's, which reads the times itself before it
+        /// makes any syscall, so the fault is the caller's own: no errno.
+        let (|UnreadableTimes|_|) (refusal : UTimensAtRefusal) : unit option =
+            match refusal with
+            | UTimensAtRefusal.UnreadableTimes -> Some ()
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : UTimensAtRefusal) : PathRefusal option =
+            match refusal with
+            | UTimensAtRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The call reached a socket, whose times Linux sets; this kernel holds
+        /// none for a socket. Gives the socket.
+        let (|Socket|_|) (refusal : UTimensAtRefusal) : SocketId option =
+            match refusal with
+            | UTimensAtRefusal.Socket socket -> Some socket
+            | _ -> None
+
+        /// The call reached an end of a pipe the process was launched with,
+        /// whose owner, mode and times are the launcher's, which the launch
+        /// table does not state. Gives the pipe.
+        let (|LaunchedPipe|_|) (refusal : UTimensAtRefusal) : PipeId option =
+            match refusal with
+            | UTimensAtRefusal.LaunchedPipe pipe -> Some pipe
+            | _ -> None
+
+        /// The call would set a time on a file of a filesystem whose server
+        /// decides what it stores. Gives the filesystem's type.
+        let (|UnmeasuredFileSystem|_|) (refusal : UTimensAtRefusal) : EmulatedFileSystemType option =
+            match refusal with
+            | UTimensAtRefusal.UnmeasuredFileSystem fileSystem -> Some fileSystem
+            | _ -> None
+
+        /// Darwin, a privileged caller, and an inode it does not own: what
+        /// Darwin's root may do here is unmeasured. Gives the inode.
+        let (|UnmeasuredPrivilegedCaller|_|) (refusal : UTimensAtRefusal) : InodeNumber option =
+            match refusal with
+            | UTimensAtRefusal.UnmeasuredPrivilegedCaller inode -> Some inode
+            | _ -> None
+
+        /// Darwin, `AT_SYMLINK_NOFOLLOW` at a symbolic link the caller does not
+        /// own but may write, and both times now: measured, Darwin answers
+        /// EPERM for another user's link where it answers EACCES for a file,
+        /// and no link the caller may write but does not own was available to
+        /// measure. Gives the inode.
+        let (|UnmeasuredSymlinkWrite|_|) (refusal : UTimensAtRefusal) : InodeNumber option =
+            match refusal with
+            | UTimensAtRefusal.UnmeasuredSymlinkWrite inode -> Some inode
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : UTimensAtRefusal) : string =
@@ -429,28 +749,50 @@ type GetCwdAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `getcwd`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetCwdRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetCwdRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetCwdRefusal =
-    /// The buffer has no answer at the step this `getcwd` reached — which is
-    /// always the copy, never a screen: measured, neither flavour checks the
-    /// destination's address before comparing sizes, so `getcwd(high, 1)` is
-    /// ERANGE rather than EFAULT on both.
+    internal
+    /// See `GetCwdRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The destination names no writable storage, on a platform whose `getcwd`
-    /// stores from user space. That is a fatal signal rather than an errno, and
-    /// this kernel has no way to deliver one; answering EFAULT would turn a
-    /// crash into a plausible wrong answer.
-    ///
-    /// Reported for every capacity of 2 or more, including calls that would
-    /// have failed for another reason — because such a flavour may store before
-    /// it decides which failure to report, and whether it has depends on a libc
-    /// route this library cannot observe. It therefore over-refuses rather than
-    /// answer some cells and die in others; the measurements are in
-    /// `docs/divergences.md`.
+    /// See `GetCwdRefusal.Reason.FatalToTheProcess`.
     | FatalToTheProcess
 
 [<RequireQualifiedAccess>]
 module GetCwdRefusal =
+    /// The reasons this kernel refuses a `getcwd`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step this `getcwd` reached — which
+        /// is always the copy, never a screen: measured, neither flavour checks
+        /// the destination's address before comparing sizes, so `getcwd(high,
+        /// 1)` is ERANGE rather than EFAULT on both. Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : GetCwdRefusal) : BufferRefusal option =
+            match refusal with
+            | GetCwdRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The destination names no writable storage, on a platform whose
+        /// `getcwd` stores from user space. That is a fatal signal rather than
+        /// an errno, and this kernel has no way to deliver one; answering
+        /// EFAULT would turn a crash into a plausible wrong answer.
+        ///
+        /// Reported for every capacity of 2 or more, including calls that would
+        /// have failed for another reason — because such a flavour may store
+        /// before it decides which failure to report, and whether it has
+        /// depends on a libc route this library cannot observe. It therefore
+        /// over-refuses rather than answer some cells and die in others; the
+        /// measurements are in `docs/divergences.md`.
+        let (|FatalToTheProcess|_|) (refusal : GetCwdRefusal) : unit option =
+            match refusal with
+            | GetCwdRefusal.FatalToTheProcess -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer a `getcwd`. The client
     /// supplies its own half — which entry point, and what the destination
     /// actually was, neither of which this library ever saw.
@@ -574,7 +916,7 @@ module UnixPathResolution =
     /// device as well as a directory.
     ///
     /// Refuses an empty path naming a pipe, a socket or an event queue; see
-    /// `PathRefusal.UnmodelledStartingObject`.
+    /// `PathRefusal.Reason.UnmodelledStartingObject`.
     let internal startOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (directory : AtDirectory)
         (emptyPath : EmptyPathMeaning)
