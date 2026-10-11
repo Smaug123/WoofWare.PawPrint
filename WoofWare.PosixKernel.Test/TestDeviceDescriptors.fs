@@ -79,6 +79,8 @@ module TestDeviceDescriptors =
         match device with
         | CharacterDevice.Null -> "/dev/null"
         | CharacterDevice.URandom -> "/dev/urandom"
+        | CharacterDevice.Zero -> "/dev/zero"
+        | CharacterDevice.Random -> "/dev/random"
 
     let private openWith
         (flags : OpenFlags)
@@ -101,8 +103,7 @@ module TestDeviceDescriptors =
     let private assertSound (system : UnixSystem<int, string>) : unit =
         UnixSystem.checkInvariants system |> shouldEqual []
 
-    let private deviceGen : Gen<CharacterDevice> =
-        Gen.elements [ CharacterDevice.Null ; CharacterDevice.URandom ]
+    let private deviceGen : Gen<CharacterDevice> = Gen.elements CharacterDevice.all
 
     let private accessGen : Gen<FileAccessMode> =
         Gen.elements
@@ -295,6 +296,37 @@ module TestDeviceDescriptors =
         |> snd
         |> withRegistry
         |> assertSound
+
+    [<Test>]
+    let ``a description of a device this kernel has no driver for breaks the invariants`` () : unit =
+        // No node names such a device (`VirtualFileSystem.checkInvariants`
+        // reports one as `ReservedContent`), so a description naming one names
+        // a node of some other device.
+        let urandom =
+            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/dev/urandom") booted with
+            | Ok (FileStatusAnswer.Reported status) -> status.Inode
+            | other -> failwith $"stat /dev/urandom: %A{other}"
+
+        for device in [ CharacterDevice.Zero ; CharacterDevice.Random ] do
+            let fd, registry =
+                FileDescriptorRegistry.openCharacterDevice
+                    urandom
+                    device
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors booted)
+
+            let system = UnixSystemState.withFileDescriptors registry booted
+
+            let description =
+                match FileDescriptorRegistry.tryFindId fd registry with
+                | Some description -> description
+                | None -> failwith $"fd %d{fd} was not installed"
+
+            UnixSystem.checkInvariants system
+            |> shouldEqual [ UnixSystemDefect.DescriptionKindMismatch (description, urandom) ]
+
+            VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) system.Machine.FileSystem
+            |> shouldEqual []
 
     [<Test>]
     let ``fstatfs through a device's descriptor is statfs of its path`` () : unit =
@@ -621,6 +653,8 @@ module TestDeviceDescriptors =
             | CharacterDevice.Null, Ok bytes -> bytes.IsEmpty |> shouldEqual true
             | CharacterDevice.URandom, Ok bytes ->
                 Seq.toList bytes |> shouldEqual (Seq.toList (fst (getRandomOf count system)))
+            | CharacterDevice.Zero, _
+            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | _, Error error -> failwith $"pread %d{count}@%d{offset}: %O{error}"
 
         let offsetGen =
@@ -766,6 +800,8 @@ module TestDeviceDescriptors =
             else
 
             match device, admission with
+            | CharacterDevice.Zero, _
+            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | CharacterDevice.Null, _ ->
                 admission
                 |> shouldEqual (PWriteAdmission.Answered (WriteAnswer.Completed (int64 count)))
