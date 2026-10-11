@@ -3,45 +3,78 @@ namespace WoofWare.PosixKernel
 /// Why this kernel will not release an open file description nothing references
 /// any more: what the release would do to an object the description was the
 /// last reference to has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `DescriptionReleaseRefusal.Reason`, and ends its match with a wildcard,
+/// where `DescriptionReleaseRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type DescriptionReleaseRefusal =
-    /// The description is the last reference to the connected stream socket
-    /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
-    /// connection `connection` is still referenced: by its peer, or by a
-    /// listener's accept queue.
-    ///
-    /// A real kernel closes such a socket abortively, resetting the connection
-    /// rather than shutting it down in order, and the peer reads ECONNRESET
-    /// from `SO_ERROR` (measured on both). This kernel's close resets a
-    /// connection only when bytes are left unread, and otherwise sends a FIN.
+    internal
+    /// See `DescriptionReleaseRefusal.Reason.AbortiveClose`.
     | AbortiveClose of socket : SocketId * connection : ConnectionId
-    /// The description is the last reference to the connected stream socket
-    /// `socket`, whose `SO_LINGER` is on with a time greater than zero, and
-    /// `unsent` bytes it wrote to its connection `connection` are still in its
-    /// send buffer; under Darwin, the description is also blocking.
-    ///
-    /// Measured on both, with the peer open and nothing left unread, a real
-    /// kernel's close then waits, for up to the linger time, for those bytes
-    /// to go: on Linux whether or not the description is non-blocking, on
-    /// Darwin only when it is blocking. This kernel models no close that
-    /// waits, and refuses whenever bytes are unsent, whatever else the close
-    /// would do. With nothing unsent, or through a non-blocking description
-    /// under Darwin, the close is the ordinary one.
+    /// See `DescriptionReleaseRefusal.Reason.LingeringClose`.
     | LingeringClose of socket : SocketId * connection : ConnectionId * unsent : int
-    /// The description is the last reference to the connected stream socket
-    /// `socket`, under Darwin: the socket shut its send side while bytes it
-    /// wrote to `connection` were still unsent, so its FIN waits behind them,
-    /// the peer's FIN has arrived, and bytes are left unread.
-    ///
-    /// Measured (`tcp-shutdown-exchange.c` in
-    /// docs/plans/2026-10-08-tcp-shutdown-linger, section G), the close then
-    /// sends no reset, and neither the rest of the bytes nor the FIN reach the
-    /// peer, which reads what it holds and then EAGAIN, still 2 s later: only
-    /// a TCP timer ends that, and this kernel keeps none.
+    /// See `DescriptionReleaseRefusal.Reason.DarwinCloseBehindQueuedFin`.
     | DarwinCloseBehindQueuedFin of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module DescriptionReleaseRefusal =
+    /// The reasons this kernel refuses to release an open file description
+    /// nothing references any more, one partial pattern each. A match over them
+    /// is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The description is the last reference to a connected stream socket
+        /// whose `SO_LINGER` is on with a time of zero, and its connection is
+        /// still referenced: by its peer, or by a listener's accept queue.
+        /// Gives the socket, then the connection.
+        ///
+        /// A real kernel closes such a socket abortively, resetting the
+        /// connection rather than shutting it down in order, and the peer reads
+        /// ECONNRESET from `SO_ERROR` (measured on both). This kernel's close
+        /// resets a connection only when bytes are left unread, and otherwise
+        /// sends a FIN.
+        let (|AbortiveClose|_|) (refusal : DescriptionReleaseRefusal) : (SocketId * ConnectionId) option =
+            match refusal with
+            | DescriptionReleaseRefusal.AbortiveClose (socket, connection) -> Some (socket, connection)
+            | _ -> None
+
+        /// The description is the last reference to a connected stream socket
+        /// whose `SO_LINGER` is on with a time greater than zero, and bytes it
+        /// wrote to its connection are still in its send buffer; under Darwin,
+        /// the description is also blocking. Gives the socket, then the
+        /// connection, then how many bytes are unsent.
+        ///
+        /// Measured on both, with the peer open and nothing left unread, a real
+        /// kernel's close then waits, for up to the linger time, for those
+        /// bytes to go: on Linux whether or not the description is
+        /// non-blocking, on Darwin only when it is blocking. This kernel models
+        /// no close that waits, and refuses whenever bytes are unsent, whatever
+        /// else the close would do. With nothing unsent, or through a
+        /// non-blocking description under Darwin, the close is the ordinary
+        /// one.
+        let (|LingeringClose|_|) (refusal : DescriptionReleaseRefusal) : (SocketId * ConnectionId * int) option =
+            match refusal with
+            | DescriptionReleaseRefusal.LingeringClose (socket, connection, unsent) -> Some (socket, connection, unsent)
+            | _ -> None
+
+        /// The description is the last reference to a connected stream socket,
+        /// under Darwin: the socket shut its send side while bytes it wrote to
+        /// its connection were still unsent, so its FIN waits behind them, the
+        /// peer's FIN has arrived, and bytes are left unread. Gives the socket,
+        /// then the connection.
+        ///
+        /// Measured (`tcp-shutdown-exchange.c` in
+        /// docs/plans/2026-10-08-tcp-shutdown-linger, section G), the close
+        /// then sends no reset, and neither the rest of the bytes nor the FIN
+        /// reach the peer, which reads what it holds and then EAGAIN, still 2 s
+        /// later: only a TCP timer ends that, and this kernel keeps none.
+        let (|DarwinCloseBehindQueuedFin|_|) (refusal : DescriptionReleaseRefusal) : (SocketId * ConnectionId) option =
+            match refusal with
+            | DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (socket, connection) -> Some (socket, connection)
+            | _ -> None
+
     /// What this kernel knows about why it cannot release the description. The
     /// client supplies its own half: which call let go of the last reference.
     let describe (refusal : DescriptionReleaseRefusal) : string =
@@ -171,8 +204,8 @@ module ObjectLifetime =
         | Some parent -> forgetIfUnheld parent freed
 
     /// Whether `SO_LINGER` could make this kernel refuse to release the last
-    /// reference to `socket` (`DescriptionReleaseRefusal.AbortiveClose`,
-    /// `DescriptionReleaseRefusal.LingeringClose`) in some state it can reach
+    /// reference to `socket` (`DescriptionReleaseRefusal.Reason.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.Reason.LingeringClose`) in some state it can reach
     /// with no descriptor naming it: its `SO_LINGER` is on, whatever the time,
     /// and it is an end of a connection. Whether either refusal is made turns
     /// on the peer and the bytes unsent, which can change while a call holds
@@ -191,10 +224,10 @@ module ObjectLifetime =
     /// whatever the closer had sent it, or a reset if the closer left bytes
     /// unread, and its waiters the wake that raises. A close that `SO_LINGER`
     /// would make reset the connection or wait is refused
-    /// (`DescriptionReleaseRefusal.AbortiveClose`,
-    /// `DescriptionReleaseRefusal.LingeringClose`), and so is a Darwin close
+    /// (`DescriptionReleaseRefusal.Reason.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.Reason.LingeringClose`), and so is a Darwin close
     /// whose outcome waits on a timer
-    /// (`DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin`).
+    /// (`DescriptionReleaseRefusal.Reason.DarwinCloseBehindQueuedFin`).
     ///
     /// Destroying a listener's description resets every connection still in
     /// its accept queue, oldest first (`TcpTransfer.abort` of the server

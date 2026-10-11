@@ -201,9 +201,9 @@ type SocketOptions =
         /// close of a connected socket where it would differ from the ordinary
         /// close. With a linger time of zero that close is a reset instead of
         /// an orderly shutdown, refused while the connection is still
-        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
+        /// referenced (`DescriptionReleaseRefusal.Reason.AbortiveClose`); with a
         /// positive time it waits for bytes still in the send buffer, refused
-        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
+        /// where a real kernel waits (`DescriptionReleaseRefusal.Reason.LingeringClose`).
         Linger : SocketLinger
     }
 
@@ -558,7 +558,7 @@ type OpenFileObject =
     /// Not `AnonymousInode`, which is a fact about Linux's `anon_inodefs`.
     /// Nothing contends on this: measured, `flock` on a kqueue is ENOTSUP for
     /// every operation, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinKqueue`) ahead of any contention test.
+    /// (`FLockRefusal.Reason.DarwinKqueue`) ahead of any contention test.
     | Kqueue of kqueue : OpenFileDescriptionId
     /// One socket. Carries an identity, and that is a `flock` fact rather than
     /// an aesthetic one — it is exactly where a socket differs from
@@ -570,7 +570,7 @@ type OpenFileObject =
     ///
     /// Darwin never reaches this: measured, `flock` on any socket there is
     /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinSocket`) ahead of any contention test.
+    /// (`FLockRefusal.Reason.DarwinSocket`) ahead of any contention test.
     | Socket of SocketId
     /// One pipe, both of its ends together. Measured on Linux 6.18.5: with
     /// `LOCK_EX|LOCK_NB` held through a pipe's read end, the same request
@@ -579,7 +579,7 @@ type OpenFileObject =
     ///
     /// Darwin never reaches this: measured, `flock` on any pipe there is
     /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinPipe`) ahead of any contention test.
+    /// (`FLockRefusal.Reason.DarwinPipe`) ahead of any contention test.
     | Pipe of PipeId
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is

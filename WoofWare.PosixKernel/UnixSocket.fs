@@ -2287,12 +2287,12 @@ module UnixSocket =
     /// belongs with `close`, which does not model it yet. A close
     /// of a connected socket that it changes is refused: with a time of zero,
     /// a reset rather than an orderly shutdown
-    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
+    /// (`DescriptionReleaseRefusal.Reason.AbortiveClose`); with a positive time, a
     /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
     /// is and on Darwin through a blocking description
-    /// (`DescriptionReleaseRefusal.LingeringClose`). So is any close of its
+    /// (`DescriptionReleaseRefusal.Reason.LingeringClose`). So is any close of its
     /// last descriptor while a call in flight that the close does not end
-    /// holds it, whatever the time (`CloseRefusal.LingeringCloseDeferredToCall`).
+    /// holds it, whatever the time (`CloseRefusal.Reason.LingeringCloseDeferredToCall`).
     /// Every other close is the one it would be anyway: a FIN, or a reset if
     /// bytes were left unread.
     ///

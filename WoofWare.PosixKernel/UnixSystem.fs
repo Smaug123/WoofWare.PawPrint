@@ -305,10 +305,10 @@ type UnixSystemDefect<'Task> =
     /// No descriptor names the open file description of the connected stream
     /// socket `socket`, whose `SO_LINGER` is on, and only syscalls in flight
     /// hold it. The socket is closed when the last of those calls returns, and
-    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.AbortiveClose`,
-    /// `DescriptionReleaseRefusal.LingeringClose`), which a call's return has
+    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.Reason.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.Reason.LingeringClose`), which a call's return has
     /// no way to answer. `close` refuses the close that would leave the socket
-    /// so (`CloseRefusal.LingeringCloseDeferredToCall`).
+    /// so (`CloseRefusal.Reason.LingeringCloseDeferredToCall`).
     | LingeringSocketHeldOnlyByCalls of description : OpenFileDescriptionId * socket : SocketId
     /// A task is parked in an `epoll_wait` on a description that is not an
     /// epoll instance, which no wait could have produced.

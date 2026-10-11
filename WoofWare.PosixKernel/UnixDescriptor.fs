@@ -22,23 +22,54 @@ type private SeekEndBasis =
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LSeekRefusal.Reason`, and ends its match with a wildcard, where
+/// `LSeekRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LSeekRefusal =
-    /// `SEEK_DATA` or `SEEK_HOLE` on a seekable file.
+    internal
+    /// See `LSeekRefusal.Reason.Sparseness`.
     | Sparseness of whence : int * meaning : SeekExtension
-    /// `SEEK_END` on a directory whose size this kernel cannot state: one on an
-    /// NFS mount.
+    /// See `LSeekRefusal.Reason.DirectoryEnd`.
     | DirectoryEnd of inode : InodeNumber
-    /// `SEEK_CUR` on a directory that has been read part of the way through.
-    ///
-    /// Both kernels answer, but with a value only their own filesystem mints:
-    /// tmpfs reports the offset of the next entry it will yield, APFS a count of
-    /// entries returned under a per-directory sequence number in the high 32
-    /// bits. This kernel's position is a name, and no number stands for it.
+    /// See `LSeekRefusal.Reason.DirectoryPosition`.
     | DirectoryPosition of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module LSeekRefusal =
+    /// The reasons this kernel refuses an `lseek`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// `SEEK_DATA` or `SEEK_HOLE` on a seekable file. Gives the raw
+        /// `whence`, then the extension it names on the simulated platform.
+        let (|Sparseness|_|) (refusal : LSeekRefusal) : (int * SeekExtension) option =
+            match refusal with
+            | LSeekRefusal.Sparseness (whence, meaning) -> Some (whence, meaning)
+            | _ -> None
+
+        /// `SEEK_END` on a directory whose size this kernel cannot state: one
+        /// on an NFS mount. Gives the inode.
+        let (|DirectoryEnd|_|) (refusal : LSeekRefusal) : InodeNumber option =
+            match refusal with
+            | LSeekRefusal.DirectoryEnd inode -> Some inode
+            | _ -> None
+
+        /// `SEEK_CUR` on a directory that has been read part of the way
+        /// through. Gives the inode.
+        ///
+        /// Both kernels answer, but with a value only their own filesystem
+        /// mints: tmpfs reports the offset of the next entry it will yield,
+        /// APFS a count of entries returned under a per-directory sequence
+        /// number in the high 32 bits. This kernel's position is a name, and no
+        /// number stands for it.
+        let (|DirectoryPosition|_|) (refusal : LSeekRefusal) : InodeNumber option =
+            match refusal with
+            | LSeekRefusal.DirectoryPosition inode -> Some inode
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic. The client supplies its own half — which entry point, which
     /// descriptor — because those are things it decoded and this library never
@@ -64,26 +95,76 @@ module LSeekRefusal =
 /// unmodelled not because its return codes are unknown — they are measured,
 /// and named in each case's description — but because what they leave the
 /// *lock state* as is not, which is what a model would have to commit to.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FLockRefusal.Reason`, and ends its match with a wildcard, where
+/// `FLockRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FLockRefusal =
-    /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
+    internal
+    /// See `FLockRefusal.Reason.DarwinMalformedOperation`.
     | DarwinMalformedOperation of operation : int
-    /// A pipe.
+    /// See `FLockRefusal.Reason.DarwinPipe`.
     | DarwinPipe of pipe : PipeId
-    /// A kqueue.
+    /// See `FLockRefusal.Reason.DarwinKqueue`.
     | DarwinKqueue
+    /// See `FLockRefusal.Reason.DarwinSocket`.
     | DarwinSocket of socket : SocketId
-    /// An acquire by a description that already holds a lock. Only a conversion
-    /// can expose the keep-versus-drop divergence, and only when it fails —
-    /// refused on the request rather than on the outcome, so that the refusal is
-    /// a property of what was asked rather than of who else held a lock.
+    /// See `FLockRefusal.Reason.DarwinConversion`.
     | DarwinConversion
-    /// The acquisition was asleep and a signal is pending for the task, and this
-    /// library will not say how the signal ends it.
+    /// See `FLockRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module FLockRefusal =
+    /// The reasons this kernel refuses an `flock`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
+        /// Gives the operation.
+        let (|DarwinMalformedOperation|_|) (refusal : FLockRefusal) : int option =
+            match refusal with
+            | FLockRefusal.DarwinMalformedOperation operation -> Some operation
+            | _ -> None
+
+        /// A pipe. Gives the pipe.
+        let (|DarwinPipe|_|) (refusal : FLockRefusal) : PipeId option =
+            match refusal with
+            | FLockRefusal.DarwinPipe pipe -> Some pipe
+            | _ -> None
+
+        /// A kqueue.
+        let (|DarwinKqueue|_|) (refusal : FLockRefusal) : unit option =
+            match refusal with
+            | FLockRefusal.DarwinKqueue -> Some ()
+            | _ -> None
+
+        /// A socket. Gives the socket.
+        let (|DarwinSocket|_|) (refusal : FLockRefusal) : SocketId option =
+            match refusal with
+            | FLockRefusal.DarwinSocket socket -> Some socket
+            | _ -> None
+
+        /// An acquire by a description that already holds a lock. Only a
+        /// conversion can expose the keep-versus-drop divergence, and only when
+        /// it fails — refused on the request rather than on the outcome, so
+        /// that the refusal is a property of what was asked rather than of who
+        /// else held a lock.
+        let (|DarwinConversion|_|) (refusal : FLockRefusal) : unit option =
+            match refusal with
+            | FLockRefusal.DarwinConversion -> Some ()
+            | _ -> None
+
+        /// The acquisition was asleep and a signal is pending for the task, and
+        /// this library will not say how the signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : FLockRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | FLockRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half — which entry point, and which of its callers could have
     /// reached it.
@@ -102,15 +183,31 @@ module FLockRefusal =
         | FLockRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// Why this kernel will not answer a `posix_fadvise(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PosixFadviseRefusal.Reason`, and ends its match with a wildcard, where
+/// `PosixFadviseRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PosixFadviseRefusal =
-    /// The simulated platform's libc has no `posix_fadvise`
-    /// (`SimulatedUnixPlatform.providesPosixFadvise` is `false`), so no program
-    /// could have made the call and there is no answer to give.
+    internal
+    /// See `PosixFadviseRefusal.Reason.NotProvided`.
     | NotProvided
 
 [<RequireQualifiedAccess>]
 module PosixFadviseRefusal =
+    /// The reasons this kernel refuses a `posix_fadvise(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The simulated platform's libc has no `posix_fadvise`
+        /// (`SimulatedUnixPlatform.providesPosixFadvise` is `false`), so no
+        /// program could have made the call and there is no answer to give.
+        let (|NotProvided|_|) (refusal : PosixFadviseRefusal) : unit option =
+            match refusal with
+            | PosixFadviseRefusal.NotProvided -> Some ()
+
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : PosixFadviseRefusal) : string =
         match refusal with
@@ -132,20 +229,44 @@ type FileAdviceAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not commit a truncation.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `TruncationRefusal.Reason`, and ends its match with a wildcard, where
+/// `TruncationRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type TruncationRefusal =
-    /// Longer than this kernel can represent. A real filesystem answers without
-    /// difficulty — measured on ext4 and APFS alike, `ftruncate` to three
-    /// gigabytes succeeds and leaves a sparse file — so this is a limit of the
-    /// model, and refusing beats reporting an errno no kernel would produce for
-    /// that length.
+    internal
+    /// See `TruncationRefusal.Reason.ExceedsRepresentableLength`.
     | ExceedsRepresentableLength of inode : InodeNumber * length : int64
-    /// What truncating the file at `inode` would do to its set-ID bits has
-    /// not been measured for this process.
+    /// See `TruncationRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
 module TruncationRefusal =
+    /// The reasons this kernel refuses to commit a truncation, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Longer than this kernel can represent. A real filesystem answers
+        /// without difficulty — measured on ext4 and APFS alike, `ftruncate` to
+        /// three gigabytes succeeds and leaves a sparse file — so this is a
+        /// limit of the model, and refusing beats reporting an errno no kernel
+        /// would produce for that length. Gives the inode, then the length.
+        let (|ExceedsRepresentableLength|_|) (refusal : TruncationRefusal) : (InodeNumber * int64) option =
+            match refusal with
+            | TruncationRefusal.ExceedsRepresentableLength (inode, length) -> Some (inode, length)
+            | _ -> None
+
+        /// What truncating the file at the inode would do to its set-ID bits
+        /// has not been measured for this process. Gives the inode, then the
+        /// `SetIdChangeRefusal`.
+        let (|UnmeasuredSetIdChange|_|) (refusal : TruncationRefusal) : (InodeNumber * SetIdChangeRefusal) option =
+            match refusal with
+            | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
     let describe (refusal : TruncationRefusal) : string =
         match refusal with
         | TruncationRefusal.ExceedsRepresentableLength (inode, length) ->
@@ -156,18 +277,49 @@ module TruncationRefusal =
 /// Why a Darwin close that ends a sleeping pipe `write` cannot be answered: the
 /// write raises `SIGPIPE` for the process as it returns, before the close does,
 /// and what that signal does is something a close has no way to report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `EndedWriteSignalRefusal.Reason`, and ends its match with a wildcard, where
+/// `EndedWriteSignalRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type EndedWriteSignalRefusal =
-    /// `SIGPIPE`'s disposition is the default, so the signal ends the process.
+    internal
+    /// See `EndedWriteSignalRefusal.Reason.TerminatesProcess`.
     | TerminatesProcess
-    /// The process is process ID 1, and what an init process does with a
-    /// signal it has no handler for is not modelled.
+    /// See `EndedWriteSignalRefusal.Reason.InitProcess`.
     | InitProcess
-    /// Which task would take the signal is not modelled.
+    /// See `EndedWriteSignalRefusal.Reason.Receiver`.
     | Receiver of SignalReceiverRefusal
 
 [<RequireQualifiedAccess>]
 module EndedWriteSignalRefusal =
+    /// The reasons this kernel cannot say what the `SIGPIPE` raised by a pipe
+    /// `write` that a Darwin close ends does, one partial pattern each. A match
+    /// over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// `SIGPIPE`'s disposition is the default, so the signal ends the
+        /// process.
+        let (|TerminatesProcess|_|) (refusal : EndedWriteSignalRefusal) : unit option =
+            match refusal with
+            | EndedWriteSignalRefusal.TerminatesProcess -> Some ()
+            | _ -> None
+
+        /// The process is process ID 1, and what an init process does with a
+        /// signal it has no handler for is not modelled.
+        let (|InitProcess|_|) (refusal : EndedWriteSignalRefusal) : unit option =
+            match refusal with
+            | EndedWriteSignalRefusal.InitProcess -> Some ()
+            | _ -> None
+
+        /// Which task would take the signal is not modelled. Gives the
+        /// `SignalReceiverRefusal`.
+        let (|Receiver|_|) (refusal : EndedWriteSignalRefusal) : SignalReceiverRefusal option =
+            match refusal with
+            | EndedWriteSignalRefusal.Receiver refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot say what the `SIGPIPE`
     /// that the ended write raises does.
     let describe (refusal : EndedWriteSignalRefusal) : string =
@@ -192,59 +344,116 @@ module EndedWriteSignalRefusal =
 /// pipe `read`, pipe `write` or `kevent` was made through ends the call, which
 /// is modelled, so it is served; the Darwin cases here are the ones this
 /// kernel does not model.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CloseRefusal.Reason`, and ends its match with a wildcard, where
+/// `CloseRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type CloseRefusal<'Task> =
-    /// Releasing the description destroys an object in a state this kernel
-    /// has not measured.
+    internal
+    /// See `CloseRefusal.Reason.Release`.
     | Release of DescriptionReleaseRefusal
-    /// Any descriptor onto an open file description that `task` is parked on
-    /// an `flock` of, under the Darwin flavour.
+    /// See `CloseRefusal.Reason.DarwinFlockedDescriptorWithWaiter`.
     | DarwinFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
-    /// The descriptor `fd`, which `task` is parked in a Linux-flavoured
-    /// `poll(2)` watching.
-    ///
-    /// Refused because Linux's sleeping poll keeps the file it found, which
-    /// this kernel represents, but when it wakes it looks the number up again
-    /// and reports what the number names by then, and it is woken only by the
-    /// files it found: a wake that finds nothing ready under the number sleeps
-    /// again until the next one. This kernel's wake conditions are levels, not
-    /// edges, so such a poll would be woken again at once, for ever. A Darwin
-    /// poll's watched descriptor closes: the close removes the filters
-    /// registered through it from the kqueue the poll made, as Darwin does.
+    /// See `CloseRefusal.Reason.PolledDescriptor`.
     | PolledDescriptor of fd : int * task : 'Task
-    /// The descriptor a `read` or `write` of a pipe or a connected socket by
-    /// `task`, asleep on the open file description `description`, was made
-    /// through, under the Darwin flavour, when the call has something besides
-    /// the close to answer: bytes to read, room to write into, a FIN or a
-    /// reset, a signal with a handler to take, or (a pipe write whose
-    /// description has become non-blocking) a read to give up at.
-    ///
-    /// Darwin's close ends such a call (a pipe read with end of file, a pipe
-    /// write with `EPIPE`, a socket's either with `EBADF`), and which of the
-    /// close and what had already woken the call it answers is unmeasured.
+    /// See `CloseRefusal.Reason.DarwinWokenTransfer`.
     | DarwinWokenTransfer of description : OpenFileDescriptionId * task : 'Task
-    /// The close would end the pipe `write` `task` is asleep in, under the
-    /// Darwin flavour, and the `SIGPIPE` that write raises as it returns is one
-    /// this kernel cannot answer (`refusal`).
+    /// See `CloseRefusal.Reason.DarwinEndedWriteSignal`.
     | DarwinEndedWriteSignal of task : 'Task * refusal : EndedWriteSignalRefusal
-    /// The descriptor is the last one onto the open file description of the
-    /// connected stream socket `socket`, whose `SO_LINGER` is on, and `task`'s
-    /// call in flight still holds that description, so the close would leave
-    /// the socket to be closed when that call returns.
-    ///
-    /// Under Linux a close of the last descriptor onto a socket a `read` or
-    /// `write` sleeps on answers 0 and leaves the call holding the socket
-    /// (measured, `tcp-blocking.c` sections R-close and W-close). This kernel
-    /// refuses some closes under `SO_LINGER` (`DescriptionReleaseRefusal.AbortiveClose`,
-    /// `DescriptionReleaseRefusal.LingeringClose`), and whether such a close
-    /// would be refused depends on state that changes before the call returns:
-    /// the peer, and the bytes still unsent. A call's return has no refusal to
-    /// answer with, so the close is refused here instead, whatever the linger
-    /// time.
+    /// See `CloseRefusal.Reason.LingeringCloseDeferredToCall`.
     | LingeringCloseDeferredToCall of socket : SocketId * task : 'Task
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
+    /// The reasons this kernel refuses to close a descriptor, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Releasing the description destroys an object in a state this kernel
+        /// has not measured. Gives the `DescriptionReleaseRefusal`.
+        let (|Release|_|) (refusal : CloseRefusal<'Task>) : DescriptionReleaseRefusal option =
+            match refusal with
+            | CloseRefusal.Release refusal -> Some refusal
+            | _ -> None
+
+        /// Any descriptor onto an open file description that a task is parked
+        /// on an `flock` of, under the Darwin flavour. Gives the description,
+        /// then the task.
+        let (|DarwinFlockedDescriptorWithWaiter|_|)
+            (refusal : CloseRefusal<'Task>)
+            : (OpenFileDescriptionId * 'Task) option
+            =
+            match refusal with
+            | CloseRefusal.DarwinFlockedDescriptorWithWaiter (description, task) -> Some (description, task)
+            | _ -> None
+
+        /// The descriptor, which a task is parked in a Linux-flavoured
+        /// `poll(2)` watching. Gives the descriptor's number, then the task.
+        ///
+        /// Refused because Linux's sleeping poll keeps the file it found, which
+        /// this kernel represents, but when it wakes it looks the number up
+        /// again and reports what the number names by then, and it is woken
+        /// only by the files it found: a wake that finds nothing ready under
+        /// the number sleeps again until the next one. This kernel's wake
+        /// conditions are levels, not edges, so such a poll would be woken
+        /// again at once, for ever. A Darwin poll's watched descriptor closes:
+        /// the close removes the filters registered through it from the kqueue
+        /// the poll made, as Darwin does.
+        let (|PolledDescriptor|_|) (refusal : CloseRefusal<'Task>) : (int * 'Task) option =
+            match refusal with
+            | CloseRefusal.PolledDescriptor (fd, task) -> Some (fd, task)
+            | _ -> None
+
+        /// The descriptor a `read` or `write` of a pipe or a connected socket
+        /// by a task, asleep on an open file description, was made through,
+        /// under the Darwin flavour, when the call has something besides the
+        /// close to answer: bytes to read, room to write into, a FIN or a
+        /// reset, a signal with a handler to take, or (a pipe write whose
+        /// description has become non-blocking) a read to give up at. Gives the
+        /// description, then the task.
+        ///
+        /// Darwin's close ends such a call (a pipe read with end of file, a
+        /// pipe write with `EPIPE`, a socket's either with `EBADF`), and which
+        /// of the close and what had already woken the call it answers is
+        /// unmeasured.
+        let (|DarwinWokenTransfer|_|) (refusal : CloseRefusal<'Task>) : (OpenFileDescriptionId * 'Task) option =
+            match refusal with
+            | CloseRefusal.DarwinWokenTransfer (description, task) -> Some (description, task)
+            | _ -> None
+
+        /// The close would end the pipe `write` a task is asleep in, under the
+        /// Darwin flavour, and the `SIGPIPE` that write raises as it returns is
+        /// one this kernel cannot answer. Gives the task, then the
+        /// `EndedWriteSignalRefusal`.
+        let (|DarwinEndedWriteSignal|_|) (refusal : CloseRefusal<'Task>) : ('Task * EndedWriteSignalRefusal) option =
+            match refusal with
+            | CloseRefusal.DarwinEndedWriteSignal (task, refusal) -> Some (task, refusal)
+            | _ -> None
+
+        /// The descriptor is the last one onto the open file description of a
+        /// connected stream socket whose `SO_LINGER` is on, and a task's call
+        /// in flight still holds that description, so the close would leave the
+        /// socket to be closed when that call returns. Gives the socket, then
+        /// the task.
+        ///
+        /// Under Linux a close of the last descriptor onto a socket a `read` or
+        /// `write` sleeps on answers 0 and leaves the call holding the socket
+        /// (measured, `tcp-blocking.c` sections R-close and W-close). This
+        /// kernel refuses some closes under `SO_LINGER`
+        /// (`DescriptionReleaseRefusal.Reason.AbortiveClose`,
+        /// `DescriptionReleaseRefusal.Reason.LingeringClose`), and whether such
+        /// a close would be refused depends on state that changes before the
+        /// call returns: the peer, and the bytes still unsent. A call's return
+        /// has no refusal to answer with, so the close is refused here instead,
+        /// whatever the linger time.
+        let (|LingeringCloseDeferredToCall|_|) (refusal : CloseRefusal<'Task>) : (SocketId * 'Task) option =
+            match refusal with
+            | CloseRefusal.LingeringCloseDeferredToCall (socket, task) -> Some (socket, task)
+            | _ -> None
+
     /// What this kernel knows about why it cannot close the descriptor. The
     /// client supplies its own half — which entry point, which descriptor
     /// number, and what it would have to build to lift the refusal.
@@ -286,20 +495,51 @@ module UnmodelledStatusFlag =
         | UnmodelledStatusFlag.NoAccessTime -> "O_NOATIME"
 
 /// Why this kernel will not answer an `fcntl(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FcntlRefusal.Reason`, and ends its match with a wildcard, where
+/// `FcntlRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FcntlRefusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `FcntlRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// The command is none of `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
-    /// `F_SETFD`, `F_GETFL` and `F_SETFL` in the flavour's numbering.
+    /// See `FcntlRefusal.Reason.UnmodelledCommand`.
     | UnmodelledCommand of command : int
-    /// An `F_SETFL` word would set these flags, which change what later calls
-    /// on the description do, in ways this kernel does not model.
+    /// See `FcntlRefusal.Reason.UnmodelledStatusFlags`.
     | UnmodelledStatusFlags of word : int * flags : UnmodelledStatusFlag list
 
 [<RequireQualifiedAccess>]
 module FcntlRefusal =
+    /// The reasons this kernel refuses an `fcntl(2)`, one partial pattern each.
+    /// A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : FcntlRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | FcntlRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// The command is none of `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
+        /// `F_SETFD`, `F_GETFL` and `F_SETFL` in the flavour's numbering. Gives
+        /// the command.
+        let (|UnmodelledCommand|_|) (refusal : FcntlRefusal) : int option =
+            match refusal with
+            | FcntlRefusal.UnmodelledCommand command -> Some command
+            | _ -> None
+
+        /// An `F_SETFL` word would set flags which change what later calls on
+        /// the description do, in ways this kernel does not model. Gives the
+        /// word, then those flags.
+        let (|UnmodelledStatusFlags|_|) (refusal : FcntlRefusal) : (int * UnmodelledStatusFlag list) option =
+            match refusal with
+            | FcntlRefusal.UnmodelledStatusFlags (word, flags) -> Some (word, flags)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : FcntlRefusal) : string =
@@ -312,18 +552,41 @@ module FcntlRefusal =
             $"F_SETFL with 0x%x{word} would set %s{names}, which change what later reads and writes on the description do (or, for O_NOATIME and O_DIRECT, answer EPERM or EINVAL depending on the file's owner and filesystem), and this kernel models none of that."
 
 /// Why this kernel will not answer a `dup2(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `Dup2Refusal.Reason`, and ends its match with a wildcard, where
+/// `Dup2Refusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type Dup2Refusal<'Task> =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `Dup2Refusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// The target is open, and this kernel will not close it (`refusal`): a
-    /// `dup2` onto an open descriptor closes it as `close(2)` does, sleeping
-    /// calls and all.
+    /// See `Dup2Refusal.Reason.ClosingTarget`.
     | ClosingTarget of refusal : CloseRefusal<'Task>
 
 [<RequireQualifiedAccess>]
 module Dup2Refusal =
+    /// The reasons this kernel refuses a `dup2(2)`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : Dup2Refusal<'Task>) : DescriptorLimitRefusal option =
+            match refusal with
+            | Dup2Refusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// The target is open, and this kernel will not close it: a `dup2` onto
+        /// an open descriptor closes it as `close(2)` does, sleeping calls and
+        /// all. Gives the `CloseRefusal`.
+        let (|ClosingTarget|_|) (refusal : Dup2Refusal<'Task>) : CloseRefusal<'Task> option =
+            match refusal with
+            | Dup2Refusal.ClosingTarget refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup2Refusal<'Task>) : string =
         match refusal with
@@ -332,18 +595,47 @@ module Dup2Refusal =
             $"the target descriptor is open, and dup2 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
 
 /// Why this kernel will not answer a `dup3(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `Dup3Refusal.Reason`, and ends its match with a wildcard, where
+/// `Dup3Refusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type Dup3Refusal<'Task> =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `Dup3Refusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// The flavour has no `dup3`.
+    /// See `Dup3Refusal.Reason.NotProvided`.
     | NotProvided of flavour : SimulatedUnixFlavour
-    /// As `Dup2Refusal.ClosingTarget`.
+    /// See `Dup3Refusal.Reason.ClosingTarget`.
     | ClosingTarget of refusal : CloseRefusal<'Task>
 
 [<RequireQualifiedAccess>]
 module Dup3Refusal =
+    /// The reasons this kernel refuses a `dup3(2)`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : Dup3Refusal<'Task>) : DescriptorLimitRefusal option =
+            match refusal with
+            | Dup3Refusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// The flavour has no `dup3`. Gives the flavour.
+        let (|NotProvided|_|) (refusal : Dup3Refusal<'Task>) : SimulatedUnixFlavour option =
+            match refusal with
+            | Dup3Refusal.NotProvided flavour -> Some flavour
+            | _ -> None
+
+        /// As `Dup2Refusal.Reason.ClosingTarget`. Gives the `CloseRefusal`.
+        let (|ClosingTarget|_|) (refusal : Dup3Refusal<'Task>) : CloseRefusal<'Task> option =
+            match refusal with
+            | Dup3Refusal.ClosingTarget refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup3Refusal<'Task>) : string =
         match refusal with
@@ -376,16 +668,41 @@ type BytesAvailableAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer an `ioctl(FIONREAD)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `BytesAvailableRefusal.Reason`, and ends its match with a wildcard, where
+/// `BytesAvailableRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type BytesAvailableRefusal =
-    /// The destination has no answer at the copy.
+    internal
+    /// See `BytesAvailableRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The descriptor `fd` names something other than a pipe or a connected
-    /// TCP socket, for which what `FIONREAD` answers is not modelled.
+    /// See `BytesAvailableRefusal.Reason.UnmodelledTarget`.
     | UnmodelledTarget of fd : int
 
 [<RequireQualifiedAccess>]
 module BytesAvailableRefusal =
+    /// The reasons this kernel refuses an `ioctl(FIONREAD)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The destination has no answer at the copy. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : BytesAvailableRefusal) : BufferRefusal option =
+            match refusal with
+            | BytesAvailableRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The descriptor names something other than a pipe or a connected TCP
+        /// socket, for which what `FIONREAD` answers is not modelled. Gives the
+        /// descriptor's number.
+        let (|UnmodelledTarget|_|) (refusal : BytesAvailableRefusal) : int option =
+            match refusal with
+            | BytesAvailableRefusal.UnmodelledTarget fd -> Some fd
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked.
     let describe (refusal : BytesAvailableRefusal) : string =
@@ -418,17 +735,39 @@ type GetGroupsAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `getgroups(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetGroupsRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetGroupsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetGroupsRefusal =
-    /// The buffer has no answer at the copy, which is the only step that
-    /// reads it.
+    internal
+    /// See `GetGroupsRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// This flavour's list for these credentials has not been measured; see
-    /// `GroupListReport.Unmeasured`.
+    /// See `GetGroupsRefusal.Reason.UnmeasuredGroupList`.
     | UnmeasuredGroupList of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module GetGroupsRefusal =
+    /// The reasons this kernel refuses a `getgroups(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the copy, which is the only step that
+        /// reads it. Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : GetGroupsRefusal) : BufferRefusal option =
+            match refusal with
+            | GetGroupsRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// This flavour's list for these credentials has not been measured; see
+        /// `GroupListReport.Unmeasured`. Gives the flavour.
+        let (|UnmeasuredGroupList|_|) (refusal : GetGroupsRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | GetGroupsRefusal.UnmeasuredGroupList flavour -> Some flavour
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and what the buffer was.
     let describe (refusal : GetGroupsRefusal) : string =
@@ -438,16 +777,40 @@ module GetGroupsRefusal =
             $"which groups %O{flavour}'s getgroups(2) reports for these credentials has not been measured. It depends on what setgroups(2) does with the list it is given, and setting that needs root. A login process reports its effective group first and the rest unsorted, which fits both of two rules (the effective group added in front of the supplementary groups, or a list that already began with it reported as given), and the two disagree about every other list."
 
 /// Why this kernel will not answer an `ioctl(2)` of `FICLONE`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FileCloneRefusal.Reason`, and ends its match with a wildcard, where
+/// `FileCloneRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FileCloneRefusal =
-    /// This kernel is not Linux-flavoured, and `FICLONE` is a Linux request.
+    internal
+    /// See `FileCloneRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// Both descriptors name regular files on a mount of this type, whose
-    /// answer to a clone request is unmeasured.
+    /// See `FileCloneRefusal.Reason.UnmeasuredFileSystem`.
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
 
 [<RequireQualifiedAccess>]
 module FileCloneRefusal =
+    /// The reasons this kernel refuses an `ioctl(2)` of `FICLONE`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Linux-flavoured, and `FICLONE` is a Linux
+        /// request. Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : FileCloneRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | FileCloneRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// Both descriptors name regular files on a mount of a type whose
+        /// answer to a clone request is unmeasured. Gives the mount's type.
+        let (|UnmeasuredFileSystem|_|) (refusal : FileCloneRefusal) : EmulatedFileSystemType option =
+            match refusal with
+            | FileCloneRefusal.UnmeasuredFileSystem fileSystem -> Some fileSystem
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptors.
     let describe (refusal : FileCloneRefusal) : string =
@@ -1694,7 +2057,7 @@ module UnixDescriptor =
     /// close under a sleeping call is served, and the call sleeps on: the
     /// description goes when the call returns, which is when its finishing call
     /// releases it. That is refused for a connected socket whose `SO_LINGER`
-    /// is on (`CloseRefusal.LingeringCloseDeferredToCall`), whose close this
+    /// is on (`CloseRefusal.Reason.LingeringCloseDeferredToCall`), whose close this
     /// kernel may refuse when the call returns. Under Darwin a close of the
     /// descriptor a `kevent` sleeps through is served too, and drains the
     /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
@@ -1714,9 +2077,9 @@ module UnixDescriptor =
     /// (`SleepTarget.EndedByClose`): the description goes at the close if no
     /// descriptor names it, the pipe's timestamps move as the call's return
     /// moves them, an ended write's `SIGPIPE` is generated for the process
-    /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
+    /// (refused where that would end the process, `CloseRefusal.Reason.DarwinEndedWriteSignal`),
     /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
-    /// already woken is refused (`CloseRefusal.DarwinWokenTransfer`).
+    /// already woken is refused (`CloseRefusal.Reason.DarwinWokenTransfer`).
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
     /// the process owns (`KqueueState.Owner`) and in the kqueue of every
@@ -2381,7 +2744,7 @@ module UnixDescriptor =
     ///   and `O_DSYNC` too, and ignores every other bit the flavour does not
     ///   change, the access mode included; so a word `F_GETFL` reported may be
     ///   given back. A word that would set `O_APPEND` or `O_ASYNC`, or Linux's
-    ///   `O_DIRECT` or `O_NOATIME`, is refused (`FcntlRefusal.UnmodelledStatusFlags`).
+    ///   `O_DIRECT` or `O_NOATIME`, is refused (`FcntlRefusal.Reason.UnmodelledStatusFlags`).
     ///   On a Darwin kqueue the flags are stored and the call answers `ENOTTY`.
     /// - `F_GETFD` answers the descriptor's `FD_CLOEXEC` (1), and on Darwin its
     ///   `FD_CLOFORK` (2); `F_SETFD` sets them from those bits of `argument`
@@ -2393,9 +2756,9 @@ module UnixDescriptor =
     ///
     /// An `F_DUPFD` whose descriptor would lie at or above the bound
     /// (`SimulatedUnixPlatform.descriptorBound`) is refused
-    /// (`FcntlRefusal.DescriptorLimit`), after `EBADF` and a negative
+    /// (`FcntlRefusal.Reason.DescriptorLimit`), after `EBADF` and a negative
     /// argument's `EINVAL`. Every other command is refused
-    /// (`FcntlRefusal.UnmodelledCommand`).
+    /// (`FcntlRefusal.Reason.UnmodelledCommand`).
     let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (command : int)
@@ -2599,11 +2962,11 @@ module UnixDescriptor =
     /// nothing, its flags included. An open `newFd` is closed first as
     /// `close(2)` closes it, with everything that does to the description it
     /// named and to calls asleep through it, and is refused where `close` is
-    /// (`Dup2Refusal.ClosingTarget`); so is one naming the same description as
+    /// (`Dup2Refusal.Reason.ClosingTarget`); so is one naming the same description as
     /// `oldFd`, whose flags the `dup2` then clears.
     ///
     /// A `newFd` at or above the bound (`SimulatedUnixPlatform.descriptorBound`)
-    /// is refused (`Dup2Refusal.DescriptorLimit`), after the `EBADF`s.
+    /// is refused (`Dup2Refusal.Reason.DescriptorLimit`), after the `EBADF`s.
     let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)

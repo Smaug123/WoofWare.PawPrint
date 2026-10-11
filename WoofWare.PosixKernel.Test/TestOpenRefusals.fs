@@ -19,7 +19,23 @@ module TestOpenRefusals =
 
     /// The refusals whose cases are hidden. A union converted to an open one
     /// joins this list and leaves `unconverted`.
-    let private openRefusals : Type list = [ typeof<BindRefusal> ]
+    let private openRefusals : Type list =
+        [
+            typeof<BindRefusal>
+            typeof<BytesAvailableRefusal>
+            typeof<CloseRefusal<int>>
+            typeof<DescriptionReleaseRefusal>
+            typeof<Dup2Refusal<int>>
+            typeof<Dup3Refusal<int>>
+            typeof<EndedWriteSignalRefusal>
+            typeof<FLockRefusal>
+            typeof<FcntlRefusal>
+            typeof<FileCloneRefusal>
+            typeof<GetGroupsRefusal>
+            typeof<LSeekRefusal>
+            typeof<PosixFadviseRefusal>
+            typeof<TruncationRefusal>
+        ]
 
     /// Public unions named `*Refusal` that are closed by what they are: a
     /// client's own buffer, the error of a parser, or a flavour's rule. They
@@ -41,20 +57,14 @@ module TestOpenRefusals =
                 "AcceptRefusal"
                 "AccessRefusal"
                 "BootTimeRefusal"
-                "BytesAvailableRefusal"
                 "CapacityRefusal"
                 "ChModRefusal"
                 "ChOwnRefusal"
                 "ClockGettimeRefusal"
                 "CloneFileRefusal"
-                "CloseRefusal"
                 "ConnectRefusal"
                 "CopyFileRangeRefusal"
                 "CredentialsRefusal"
-                "DescriptionReleaseRefusal"
-                "Dup2Refusal"
-                "Dup3Refusal"
-                "EndedWriteSignalRefusal"
                 "EphemeralPortRangeRefusal"
                 "EpollCreateRefusal"
                 "EpollCtlRefusal"
@@ -64,17 +74,13 @@ module TestOpenRefusals =
                 "FChModRefusal"
                 "FChOwnAtRefusal"
                 "FChOwnRefusal"
-                "FLockRefusal"
                 "FStatAtRefusal"
                 "FStatRefusal"
-                "FcntlRefusal"
-                "FileCloneRefusal"
                 "FileSystemIdRefusal"
                 "GeometryRefusal"
                 "GetCpuRefusal"
                 "GetCwdRefusal"
                 "GetEntropyRefusal"
-                "GetGroupsRefusal"
                 "GetIdsRefusal"
                 "GetRandomRefusal"
                 "GetSockNameRefusal"
@@ -84,7 +90,6 @@ module TestOpenRefusals =
                 "KeventRefusal"
                 "KillRefusal"
                 "KqueueRefusal"
-                "LSeekRefusal"
                 "LaunchRefusal"
                 "LaunchTableRefusal"
                 "LeaderThreadIdRefusal"
@@ -103,7 +108,6 @@ module TestOpenRefusals =
                 "Pipe2Refusal"
                 "PipeDeviceRefusal"
                 "PollRefusal"
-                "PosixFadviseRefusal"
                 "ProcessCreationRefusal"
                 "ProcessEndRefusal"
                 "ProcessIdRefusal"
@@ -138,7 +142,6 @@ module TestOpenRefusals =
                 "TcpSendSpaceRefusal"
                 "ThreadExitRefusal"
                 "ThreadKillRefusal"
-                "TruncationRefusal"
                 "UTimensAtRefusal"
                 "UmaskRefusal"
                 "UnlinkAtRefusal"

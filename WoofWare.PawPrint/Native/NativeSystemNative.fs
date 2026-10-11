@@ -520,24 +520,25 @@ module NativeSystemNative =
     let private closeRefusalMessage (operation : string) (fd : int) (refusal : CloseRefusal<ThreadId>) : string =
         let remedy =
             match refusal with
-            | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
-                "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
-            | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
-                "Model the reset a zero-linger close sends, or close the peer first."
-            | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _) ->
-                "Model the TCP timer that ends a Darwin close behind its own queued FIN, or read what the peer sent before closing, or configure a Linux platform."
-            | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
-                "Model a close that waits, on the virtual clock, for its unsent bytes to reach the peer, or let the peer read them before the close."
-            | CloseRefusal.PolledDescriptor _ ->
-                "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
-            | CloseRefusal.DarwinEndedWriteSignal _ ->
-                "The runtime ignores SIGPIPE, so a guest reaches this only by setting its disposition itself; model a close that can end the process before closing a pipe end under a sleeping write then."
-            | CloseRefusal.DarwinWokenTransfer _ ->
-                "Measure which of the close and what had woken it a Darwin read or write answers when the descriptor it was made through closes before it runs, or configure a Linux platform."
-            | CloseRefusal.LingeringCloseDeferredToCall _ ->
-                "Model the abortive and the waiting close SO_LINGER makes, so that a call's return can close the socket whatever state it is in, or end the call before closing the socket's last descriptor."
+            | CloseRefusal.Reason.DarwinFlockedDescriptorWithWaiter _ ->
+                " Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
+            | CloseRefusal.Reason.Release (DescriptionReleaseRefusal.Reason.AbortiveClose _) ->
+                " Model the reset a zero-linger close sends, or close the peer first."
+            | CloseRefusal.Reason.Release (DescriptionReleaseRefusal.Reason.DarwinCloseBehindQueuedFin _) ->
+                " Model the TCP timer that ends a Darwin close behind its own queued FIN, or read what the peer sent before closing, or configure a Linux platform."
+            | CloseRefusal.Reason.Release (DescriptionReleaseRefusal.Reason.LingeringClose _) ->
+                " Model a close that waits, on the virtual clock, for its unsent bytes to reach the peer, or let the peer read them before the close."
+            | CloseRefusal.Reason.PolledDescriptor _ ->
+                " Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
+            | CloseRefusal.Reason.DarwinEndedWriteSignal _ ->
+                " The runtime ignores SIGPIPE, so a guest reaches this only by setting its disposition itself; model a close that can end the process before closing a pipe end under a sleeping write then."
+            | CloseRefusal.Reason.DarwinWokenTransfer _ ->
+                " Measure which of the close and what had woken it a Darwin read or write answers when the descriptor it was made through closes before it runs, or configure a Linux platform."
+            | CloseRefusal.Reason.LingeringCloseDeferredToCall _ ->
+                " Model the abortive and the waiting close SO_LINGER makes, so that a call's return can close the socket whatever state it is in, or end the call before closing the socket's last descriptor."
+            | _ -> ""
 
-        $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
+        $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal}%s{remedy}"
 
     /// The `int32_t` a shim's transfer entry point returns for a kernel answer
     /// of `written` bytes, when it was asked to move `bufferSize`.
@@ -3155,10 +3156,11 @@ module NativeSystemNative =
                 |> Some
 
             match UnixDescriptor.getgroups (BufferPointer.toUserBuffer buffer) size state.Kernel.System with
-            | Error (GetGroupsRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Error (GetGroupsRefusal.UnmeasuredGroupList _ as refusal) ->
+            | Error (GetGroupsRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (GetGroupsRefusal.Reason.UnmeasuredGroupList _ as refusal) ->
                 failwith
                     $"%s{operation}: GetGroupsRefusal.UnmeasuredGroupList: %s{GetGroupsRefusal.describe refusal} CoreLib reaches this from `File.GetAttributes` and every other read-only check, for a file this user does not own whose group is not its effective group: on Darwin, that is a seeded entry owned by another user and group (`KernelConfig.FileSystem`)."
+            | Error refusal -> failwith $"%s{operation}: %s{GetGroupsRefusal.describe refusal}"
             | Ok (GetGroupsAnswer.Counted count) -> answered count state
             | Ok (GetGroupsAnswer.Failed error) -> withErrnoOnly ctx error state |> answered -1
             | Ok (GetGroupsAnswer.Copied []) ->
@@ -3799,7 +3801,7 @@ module NativeSystemNative =
             let length = NativeCall.int64Argument operation instruction.Arguments.[1]
 
             match UnixDescriptor.ftruncate fd length state.Kernel.System with
-            | Error (TruncationRefusal.UnmeasuredSetIdChange _ as refusal) ->
+            | Error (TruncationRefusal.Reason.UnmeasuredSetIdChange _ as refusal) ->
                 failwith
                     $"%s{operation}: TruncationRefusal.UnmeasuredSetIdChange: %s{TruncationRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
@@ -3896,9 +3898,10 @@ module NativeSystemNative =
                 match UnixDescriptor.posixFadvise fd offset length advice state.Kernel.System with
                 | Ok FileAdviceAnswer.Completed -> 0
                 | Ok (FileAdviceAnswer.Failed error) -> UnixError.toRawErrnoUnder numbering error
-                | Error PosixFadviseRefusal.NotProvided ->
+                | Error PosixFadviseRefusal.Reason.NotProvided ->
                     failwith
                         $"%s{operation}: the library refused posix_fadvise as not provided on %O{state.Kernel.UnixPlatform}, but this handler answered that platform's missing call itself (ENOTSUP) before asking. The two disagree about which platforms provide it; this is a bug in PawPrint."
+                | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{PosixFadviseRefusal.describe refusal}"
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim returned)) ctx.Thread
@@ -3983,14 +3986,14 @@ module NativeSystemNative =
                 // across; PawPrint says which managed caller could have asked,
                 // which is a fact about CoreLib rather than about any kernel.
                 match refusal with
-                | FLockRefusal.Interruption _ -> failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal}"
-                | FLockRefusal.DarwinMalformedOperation _
-                | FLockRefusal.DarwinPipe _
-                | FLockRefusal.DarwinKqueue
-                | FLockRefusal.DarwinSocket _
-                | FLockRefusal.DarwinConversion ->
+                | FLockRefusal.Reason.DarwinMalformedOperation _
+                | FLockRefusal.Reason.DarwinPipe _
+                | FLockRefusal.Reason.DarwinKqueue
+                | FLockRefusal.Reason.DarwinSocket _
+                | FLockRefusal.Reason.DarwinConversion ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} Configure a Linux platform, or model Darwin's flock (issue #956)."
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal}"
 
             // A re-entry is told apart from a first entry by the record, not by
             // anything about the frame: the wake leaves the call site exactly as
@@ -4433,13 +4436,14 @@ module NativeSystemNative =
                 // client rather than about any kernel.
                 let reachability =
                     match refusal with
-                    | LSeekRefusal.Sparseness _ ->
-                        "CoreLib never sends these -- Interop.Sys.SeekWhence is 0, 1, 2 -- so this is a hand-rolled P/Invoke."
-                    | LSeekRefusal.DirectoryEnd _
-                    | LSeekRefusal.DirectoryPosition _ ->
-                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir, whose descriptor no CoreLib code asks for."
+                    | LSeekRefusal.Reason.Sparseness _ ->
+                        " CoreLib never sends these -- Interop.Sys.SeekWhence is 0, 1, 2 -- so this is a hand-rolled P/Invoke."
+                    | LSeekRefusal.Reason.DirectoryEnd _
+                    | LSeekRefusal.Reason.DirectoryPosition _ ->
+                        " No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir, whose descriptor no CoreLib code asks for."
+                    | _ -> ""
 
-                failwith $"%s{operation}: fd %d{fd}: %s{LSeekRefusal.describe refusal} %s{reachability}"
+                failwith $"%s{operation}: fd %d{fd}: %s{LSeekRefusal.describe refusal}%s{reachability}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim -1L)) ctx.Thread

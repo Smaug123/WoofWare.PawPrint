@@ -252,7 +252,9 @@ The library cannot answer, either because its model of the domain is not complet
 Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
 Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
 A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
-`BindRefusal` is open in this way; each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+`BindRefusal` is open in this way.
+So are the refusals of the descriptor calls: `LSeekRefusal`, `FLockRefusal`, `PosixFadviseRefusal`, `TruncationRefusal`, `FcntlRefusal`, `Dup2Refusal`, `Dup3Refusal`, `BytesAvailableRefusal`, `GetGroupsRefusal`, `FileCloneRefusal` and `CloseRefusal`, with the `DescriptionReleaseRefusal` and `EndedWriteSignalRefusal` that a `CloseRefusal` can carry, which a client matches nested, as `CloseRefusal.Reason.Release (DescriptionReleaseRefusal.Reason.AbortiveClose (socket, connection))`.
+Each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
 
 ```fsharp
 open System.Collections.Immutable
