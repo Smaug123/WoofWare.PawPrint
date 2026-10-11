@@ -102,10 +102,10 @@ interpreter is a change of its own, which unparks it.
 
 Stage 1 comes first (`TestOpcodeFaultsOnPawPrint`). On its first run, 46 of the
 60 instructions raised exactly what the host raised on every input. The other
-14 are parked, and every disagreement is a refusal rather than a wrong
-exception:
+14 were parked, and every disagreement was a refusal rather than a wrong
+exception. `add.ovf.un` and `sub.ovf.un` were unimplemented, and are now done.
+The other 12 are still parked:
 
-- `add.ovf.un` and `sub.ovf.un` are unimplemented.
 - `CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer,
   which is what a C# array initialiser leaves in an element it does not store.
   `add`, `sub` and `mul` compute with it as 0, but `div`, `div.un`, `rem`,
