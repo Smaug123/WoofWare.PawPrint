@@ -1324,7 +1324,7 @@ module UnixSystem =
                 | OpenFileTarget.Fifo (inode, _) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
-                    // No inode holds a FIFO in this version.
+                    | Some (InodeContent.Fifo _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.CharacterDevice _)

@@ -2793,6 +2793,22 @@ module VirtualFileSystem =
                     | Some count -> Map.add directory count vfs.SubdirectoryCounts
             }
 
+        /// `vfs` with the inode `inode`'s content replaced by `content`, and
+        /// nothing else touched. Fails if there is no such inode.
+        let setContent (inode : InodeNumber) (content : InodeContent) (vfs : VirtualFileSystem) : VirtualFileSystem =
+            match Map.tryFind inode vfs.Inodes with
+            | None -> failwith $"VirtualFileSystem.Unchecked.setContent: no inode %O{inode}"
+            | Some entry ->
+                { vfs with
+                    Inodes =
+                        Map.add
+                            inode
+                            { entry with
+                                Content = content
+                            }
+                            vfs.Inodes
+                }
+
         /// `vfs` with the mount whose root is `root` replaced by `mount`, `None`
         /// recording no mount there, and the graph untouched.
         let setMount (root : InodeNumber) (mount : Mount option) (vfs : VirtualFileSystem) : VirtualFileSystem =
