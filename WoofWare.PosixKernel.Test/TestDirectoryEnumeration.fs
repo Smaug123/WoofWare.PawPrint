@@ -26,7 +26,7 @@ module TestDirectoryEnumeration =
         | Error error -> failwith $"expected success, got %O{error}"
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             parent
             (name n)
             SeedEntry.defaultPermsForRegularFile
@@ -38,7 +38,7 @@ module TestDirectoryEnumeration =
         |> snd
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory
+        GraphMutators.createDirectory
             parent
             (name n)
             SeedEntry.defaultPermsForDirectory
@@ -49,7 +49,7 @@ module TestDirectoryEnumeration =
         |> snd
 
     let private unbind (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.unbind UnbindTargetEffect.LostALink parent (name n) buildTime vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink parent (name n) buildTime vfs
         |> ok
         |> snd
 
@@ -84,7 +84,7 @@ module TestDirectoryEnumeration =
         let root = VirtualFileSystem.root vfs
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 root
                 (name "d")
                 SeedEntry.defaultPermsForDirectory

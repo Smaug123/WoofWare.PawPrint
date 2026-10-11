@@ -170,12 +170,12 @@ module TestProtectedFiles =
         let root = VirtualFileSystem.root vfs
 
         let vfs =
-            VirtualFileSystem.createFile root (name "f") (mode 0o666) by epoch ImmutableArray.Empty vfs
+            GraphMutators.createFile root (name "f") (mode 0o666) by epoch ImmutableArray.Empty vfs
             |> ok
             |> snd
 
         let vfs =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 root
                 (name "l")
                 SymlinkModes.linux
@@ -187,7 +187,7 @@ module TestProtectedFiles =
             |> snd
 
         let vfs =
-            VirtualFileSystem.createDirectory root (name "d") (mode 0o777) by epoch vfs
+            GraphMutators.createDirectory root (name "d") (mode 0o777) by epoch vfs
             |> ok
             |> snd
 
@@ -411,14 +411,14 @@ module TestProtectedFiles =
     let private directory (p : string) (by : uint32) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createDirectory (inodeAt vfs parent) (name child) (mode bits) (owner by) epoch vfs
+        GraphMutators.createDirectory (inodeAt vfs parent) (name child) (mode bits) (owner by) epoch vfs
         |> ok
         |> snd
 
     let private file (p : string) (by : uint32) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (inodeAt vfs parent)
             (name child)
             (mode bits)
@@ -432,7 +432,7 @@ module TestProtectedFiles =
     let private symlink (p : string) (by : uint32) (target : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createSymlink
+        GraphMutators.createSymlink
             (inodeAt vfs parent)
             (name child)
             SymlinkModes.linux
@@ -461,7 +461,7 @@ module TestProtectedFiles =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Process =
                 { system.Process with

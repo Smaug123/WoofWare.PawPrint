@@ -722,14 +722,14 @@ module TestOwnerChange =
     let private directory (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
+        GraphMutators.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
         |> ok
         |> snd
 
     let private file (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (inodeAt vfs parent)
             (name child)
             (mode bits)
@@ -743,7 +743,7 @@ module TestOwnerChange =
     let private symlink (p : string) (by : InodeOwner) (target : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createSymlink
+        GraphMutators.createSymlink
             (inodeAt vfs parent)
             (name child)
             SymlinkModes.linux
@@ -774,7 +774,7 @@ module TestOwnerChange =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
@@ -806,7 +806,8 @@ module TestOwnerChange =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = VirtualFileSystem.setPermissions inode (mode bits) epoch vfs
+                    CommittedFileSystem =
+                        CommittedFileSystem.initial (GraphMutators.setPermissions inode (mode bits) epoch vfs)
                 }
         }
 

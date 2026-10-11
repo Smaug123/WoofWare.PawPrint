@@ -1096,9 +1096,9 @@ module UnixPathResolution =
             SyscallAnswer.Completed 0L,
             { system with
                 Machine =
-                    { system.Machine with
-                        FileSystem = VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem
-                    }
+                    UnixMachineState.commitFileSystem
+                        (VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem)
+                        system.Machine
             }
         )
 
@@ -1315,23 +1315,25 @@ module UnixPathResolution =
                 Group = defaultArg group entry.Owner.Group
             }
 
-        let vfs = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
+        let machine =
+            UnixMachineState.commitFileSystem
+                (VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem)
+                system.Machine
 
         // Measured on Darwin (`chmod-chown-at.c`, LINKSETID): a link's set-ID
         // bits go exactly as a regular file's do.
-        let vfs =
+        let machine =
             if changed = bits then
-                vfs
+                machine
             else
-                VirtualFileSystem.setPermissions inode changed now vfs
+                UnixMachineState.commitFileSystem
+                    (VirtualFileSystem.setPermissions inode changed now machine.FileSystem)
+                    machine
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = vfs
-                    }
+                Machine = machine
             }
         )
 
@@ -1718,9 +1720,9 @@ module UnixPathResolution =
                 SyscallAnswer.Completed 0L,
                 { system with
                     Machine =
-                        { system.Machine with
-                            FileSystem = VirtualFileSystem.setTimes inode times system.Machine.FileSystem
-                        }
+                        UnixMachineState.commitFileSystem
+                            (VirtualFileSystem.setTimes inode times system.Machine.FileSystem)
+                            system.Machine
                 }
             )
         | OpenFileObject.Socket socket -> Error (UTimensAtRefusal.Socket socket)
