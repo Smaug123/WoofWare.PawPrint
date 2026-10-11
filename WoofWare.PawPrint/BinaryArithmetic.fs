@@ -1066,13 +1066,19 @@ module ArithmeticOperation =
                 failwith
                     $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
 
-    /// `int - &` is not in the ECMA-335 table, so this only tolerates the
-    /// degenerate null case, where the byref contributes the bit pattern 0 and
-    /// the result is just the integer.
-    let private subOffsetManagedPtr (val1 : int64) (ptr2 : ManagedPointerSource) : Choice<ManagedPointerSource, int64> =
-        match ptr2 with
-        | ManagedPointerSource.Null -> Choice2Of2 val1
-        | _ -> failwith "refusing to subtract a pointer"
+    /// `int - &` is not in the ECMA-335 table, so this only tolerates a right operand whose bits are
+    /// known: null, which is also a native int's zero here, and a pointer of raw bits, which is how
+    /// a native int computed from one is held. Either is a number, and the result is the integer
+    /// difference.
+    let private subOffsetManagedPtr
+        (behaviour : OverflowBehaviour)
+        (val1 : int64)
+        (ptr2 : ManagedPointerSource)
+        : Choice<ManagedPointerSource, int64>
+        =
+        match ManagedPointerSource.tryBitPatternBits ptr2 with
+        | ValueSome bits -> subPlaceholderBits behaviour val1 bits |> Choice2Of2
+        | ValueNone -> failwith "refusing to subtract a pointer"
 
     let private subOffsetFromManagedPtr
         (behaviour : OverflowBehaviour)
@@ -1119,7 +1125,8 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 ptr2
 
-            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.Wrap val1 ptr2
 
             member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
                 subOffsetFromManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 val2
@@ -1162,7 +1169,8 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 ptr2
 
-            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.Trap val1 ptr2
 
             member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
                 subOffsetFromManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 val2
@@ -1224,7 +1232,8 @@ module ArithmeticOperation =
                         $"refusing to sub.ovf.un pointers into different storage (%O{other}): whether it overflows depends on their addresses, which PawPrint does not model"
                 | Choice1Of2 ptr -> Choice1Of2 ptr
 
-            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 =
+                subOffsetManagedPtr OverflowBehaviour.TrapUnsigned val1 ptr2
 
             member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
                 subOffsetFromManagedPtr OverflowBehaviour.TrapUnsigned baseClassTypes state ptr1 val2

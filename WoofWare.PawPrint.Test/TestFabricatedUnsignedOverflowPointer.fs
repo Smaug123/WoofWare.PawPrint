@@ -28,6 +28,8 @@ module TestFabricatedUnsignedOverflowPointer =
     ///   `sub.ovf.un`. PawPrint holds a default native int as a null pointer, and that plus an
     ///   offset as a pointer of raw bits, so these reach its bit-pattern arms, where the int32 must
     ///   be zero-extended as CoreCLR does.
+    /// * `Sub(a, b)`, `SubOvf(a, b)` and `SubOvfUn(a, b)`: two native ints under `sub`, `sub.ovf`
+    ///   and `sub.ovf.un`, for a right operand that PawPrint holds as a pointer of raw bits.
     let private fabricate () : byte[] =
         let builder = PersistedAssemblyBuilder (AssemblyName "U", typeof<obj>.Assembly)
         let modul = builder.DefineDynamicModule "U"
@@ -66,6 +68,18 @@ module TestFabricatedUnsignedOverflowPointer =
 
         for name, opcode in [ "AddInt", OpCodes.Add_Ovf_Un ; "SubInt", OpCodes.Sub_Ovf_Un ] do
             let il = define name typeof<nativeint> [| typeof<nativeint> ; typeof<int> |]
+            il.Emit OpCodes.Ldarg_0
+            il.Emit OpCodes.Ldarg_1
+            il.Emit opcode
+            il.Emit OpCodes.Ret
+
+        for name, opcode in
+            [
+                "Sub", OpCodes.Sub
+                "SubOvf", OpCodes.Sub_Ovf
+                "SubOvfUn", OpCodes.Sub_Ovf_Un
+            ] do
+            let il = define name typeof<nativeint> [| typeof<nativeint> ; typeof<nativeint> |]
             il.Emit OpCodes.Ldarg_0
             il.Emit OpCodes.Ldarg_1
             il.Emit opcode
@@ -132,6 +146,15 @@ public static class Driver
         if (Raises(() => U.SubInt(zero, -1)) != 1) return 10;
         if (Raises(() => U.SubInt(eight, 9)) != 1) return 11;
         if ((long)U.SubInt(eight, 8) != 0) return 12;
+
+        // A native int held as raw bits on the right of a subtraction.
+        nint one = U.AddInt(zero, 1);
+        if ((long)U.Sub((nint)2, one) != 1) return 13;
+        if ((long)U.SubOvf((nint)2, one) != 1) return 14;
+        if ((long)U.SubOvfUn((nint)2, one) != 1) return 15;
+        if ((long)U.Sub((nint)0, one) != -1) return 16;
+        if ((long)U.SubOvf((nint)0, one) != -1) return 17;
+        if (Raises(() => U.SubOvfUn((nint)0, one)) != 1) return 18;
 
         return 0;
     }
