@@ -99,7 +99,7 @@ module TestBootImage =
                     "withFileSystem"
                     "withIpv6OnlyByDefault"
                     "withLeaderThreadId"
-                    "withLocalAddresses"
+                    "withLocalIpv4Addresses"
                     "withMount"
                     "withPipeDevice"
                     "withProcessId"

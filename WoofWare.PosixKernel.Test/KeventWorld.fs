@@ -26,8 +26,8 @@ module KeventWorld =
 
     let private inet : int option = Some SimulatedUnixPlatform.internetAddressFamily
 
-    let loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let withRegistry (registry : FileDescriptorRegistry) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         UnixSystemState.withFileDescriptors registry system

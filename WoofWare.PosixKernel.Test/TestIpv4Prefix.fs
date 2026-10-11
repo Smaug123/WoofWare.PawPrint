@@ -8,7 +8,7 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// `Ipv4Prefix.create` admits exactly the prefixes Linux's `rtm_to_fib_config`
-/// admits for a route, and `withLocalAddresses` stores whatever lists of them
+/// admits for a route, and `withLocalIpv4Addresses` stores whatever lists of them
 /// it is given. The oracles here read one bit at a time, so they share no
 /// shift or mask arithmetic with the code under test.
 [<TestFixture>]
@@ -84,7 +84,7 @@ module TestIpv4Prefix =
         }
 
     let private prefixOrFail (network : uint32) (bits : int) : Ipv4Prefix =
-        match Ipv4Prefix.create network bits with
+        match Ipv4Prefix.create (Ipv4Address network) bits with
         | Ok prefix -> prefix
         | Error refusal ->
             failwith $"test bug: a prefix the test means to be valid: %s{Ipv4PrefixRefusal.describe refusal}"
@@ -104,18 +104,19 @@ module TestIpv4Prefix =
         let property (network : uint32, bits : int) : unit =
             let inRange = bits >= 0 && bits <= 32
 
-            match Ipv4Prefix.create network bits with
+            match Ipv4Prefix.create (Ipv4Address network) bits with
             | Ok prefix ->
                 if not (inRange && hostBitsClear network bits) then
                     failwith $"0x%08X{network}/%d{bits} was admitted"
 
-                Ipv4Prefix.network prefix |> shouldEqual network
+                Ipv4Prefix.network prefix |> shouldEqual (Ipv4Address network)
                 Ipv4Prefix.bits prefix |> shouldEqual bits
             | Error refusal ->
                 if not inRange then
                     refusal |> shouldEqual (Ipv4PrefixRefusal.LengthOutOfRange bits)
                 elif not (hostBitsClear network bits) then
-                    refusal |> shouldEqual (Ipv4PrefixRefusal.HostBitsSet (network, bits))
+                    refusal
+                    |> shouldEqual (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address network, bits))
                 else
                     failwith $"0x%08X{network}/%d{bits} was refused: %s{Ipv4PrefixRefusal.describe refusal}"
 
@@ -123,33 +124,35 @@ module TestIpv4Prefix =
 
     [<Test>]
     let ``create's boundaries`` () : unit =
-        let outcome (network : uint32) (bits : int) : Result<uint32 * int, Ipv4PrefixRefusal> =
-            Ipv4Prefix.create network bits
+        let outcome (network : uint32) (bits : int) : Result<Ipv4Address * int, Ipv4PrefixRefusal> =
+            Ipv4Prefix.create (Ipv4Address network) bits
             |> Result.map (fun prefix -> Ipv4Prefix.network prefix, Ipv4Prefix.bits prefix)
 
         outcome 0u -1 |> shouldEqual (Error (Ipv4PrefixRefusal.LengthOutOfRange -1))
-        outcome 0u 0 |> shouldEqual (Ok (0u, 0))
-        outcome 1u 0 |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (1u, 0)))
+        outcome 0u 0 |> shouldEqual (Ok (Ipv4Address 0u, 0))
+
+        outcome 1u 0
+        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address 1u, 0)))
 
         outcome 0x80000000u 0
-        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (0x80000000u, 0)))
+        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address 0x80000000u, 0)))
 
-        outcome 0x80000000u 1 |> shouldEqual (Ok (0x80000000u, 1))
+        outcome 0x80000000u 1 |> shouldEqual (Ok (Ipv4Address 0x80000000u, 1))
 
         outcome 0x40000000u 1
-        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (0x40000000u, 1)))
+        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address 0x40000000u, 1)))
 
-        outcome 0x7F000000u 8 |> shouldEqual (Ok (0x7F000000u, 8))
+        outcome 0x7F000000u 8 |> shouldEqual (Ok (Ipv4Address 0x7F000000u, 8))
 
         outcome 0x7F000001u 8
-        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (0x7F000001u, 8)))
+        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address 0x7F000001u, 8)))
 
-        outcome 0xFFFFFFFEu 31 |> shouldEqual (Ok (0xFFFFFFFEu, 31))
+        outcome 0xFFFFFFFEu 31 |> shouldEqual (Ok (Ipv4Address 0xFFFFFFFEu, 31))
 
         outcome UInt32.MaxValue 31
-        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (UInt32.MaxValue, 31)))
+        |> shouldEqual (Error (Ipv4PrefixRefusal.HostBitsSet (Ipv4Address UInt32.MaxValue, 31)))
 
-        outcome UInt32.MaxValue 32 |> shouldEqual (Ok (UInt32.MaxValue, 32))
+        outcome UInt32.MaxValue 32 |> shouldEqual (Ok (Ipv4Address UInt32.MaxValue, 32))
         outcome 0u 33 |> shouldEqual (Error (Ipv4PrefixRefusal.LengthOutOfRange 33))
         // Out of range is reported before the host bits, which a length
         // outside [0, 32] does not define.
@@ -159,7 +162,7 @@ module TestIpv4Prefix =
     [<Test>]
     let ``contains holds exactly for an address agreeing with the network on the first bits`` () : unit =
         let property (prefix : Ipv4Prefix, address : uint32, agree : bool) : unit =
-            let network = Ipv4Prefix.network prefix
+            let (Ipv4Address network) = Ipv4Prefix.network prefix
             let bits = Ipv4Prefix.bits prefix
 
             // Half the time, an address inside the prefix by construction: an
@@ -174,7 +177,7 @@ module TestIpv4Prefix =
                 seq { 0 .. bits - 1 }
                 |> Seq.forall (fun index -> leadingBit address index = leadingBit network index)
 
-            Ipv4Prefix.contains address prefix |> shouldEqual expected
+            Ipv4Prefix.contains (Ipv4Address address) prefix |> shouldEqual expected
 
         let gen =
             gen {
@@ -188,37 +191,38 @@ module TestIpv4Prefix =
 
     /// A prefix is a struct, so a client can always conjure its default
     /// without `create`; that default must be a prefix `create` admits, or
-    /// `withLocalAddresses` could be handed a route no machine has.
+    /// `withLocalIpv4Addresses` could be handed a route no machine has.
     [<Test>]
     let ``the default prefix is 0.0.0.0/0, which create admits`` () : unit =
         let forged = Unchecked.defaultof<Ipv4Prefix>
-        Ipv4Prefix.create 0u 0 |> shouldEqual (Ok forged)
-        Ipv4Prefix.contains 0x08080808u forged |> shouldEqual true
+        Ipv4Prefix.create (Ipv4Address 0u) 0 |> shouldEqual (Ok forged)
+        Ipv4Prefix.contains (Ipv4Address 0x08080808u) forged |> shouldEqual true
 
     [<Test>]
     let ``loopbackNetwork is 127.0.0.0/8`` () : unit =
-        Ipv4Prefix.create 0x7F000000u 8 |> shouldEqual (Ok Ipv4Prefix.loopbackNetwork)
+        Ipv4Prefix.create (Ipv4Address 0x7F000000u) 8
+        |> shouldEqual (Ok Ipv4Prefix.loopbackNetwork)
 
     /// Overlapping and repeated entries are what real machines hold: every
     /// Linux's local table has `127.0.0.0/8` and `127.0.0.1/32`, and an address
     /// assigned to two interfaces is two routes to one prefix. So the setter
     /// stores the lists as given, whatever they are.
     [<Test>]
-    let ``withLocalAddresses stores any lists of addresses and prefixes as given`` () : unit =
-        let property (platform : SimulatedUnixPlatform, addresses : uint32 list, routes : Ipv4Prefix list) : unit =
+    let ``withLocalIpv4Addresses stores any lists of addresses and prefixes as given`` () : unit =
+        let property (platform : SimulatedUnixPlatform, addresses : Ipv4Address list, routes : Ipv4Prefix list) : unit =
             let machine =
                 (UnixSystem.initial<int, string> platform
-                 |> UnixBootImage.withLocalAddresses addresses routes
+                 |> UnixBootImage.withLocalIpv4Addresses addresses routes
                  |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                     .Machine
 
-            machine.LocalAddresses |> shouldEqual addresses
+            machine.LocalIpv4Addresses |> shouldEqual addresses
             machine.LocalRoutes |> shouldEqual routes
 
         let gen =
             gen {
                 let! platform = Gen.elements [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
-                let! addresses = Gen.listOf anyAddress
+                let! addresses = Gen.listOf (Gen.map Ipv4Address anyAddress)
                 let! routes = Gen.listOf validPrefix
                 // Repeat some of them, so that duplicates are reached every run.
                 let! addresses = Gen.elements [ addresses ; addresses @ addresses ]
@@ -229,4 +233,4 @@ module TestIpv4Prefix =
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen gen) property)
 
         let overlapping = [ Ipv4Prefix.loopbackNetwork ; prefixOrFail 0x7F000001u 32 ]
-        property (SimulatedUnixPlatform.linuxX64, [ InternetEndpoint.LoopbackAddress ], overlapping)
+        property (SimulatedUnixPlatform.linuxX64, [ Ipv4Address.loopback ], overlapping)

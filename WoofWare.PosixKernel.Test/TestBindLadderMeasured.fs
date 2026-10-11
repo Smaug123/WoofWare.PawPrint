@@ -30,7 +30,7 @@ module TestBindLadderMeasured =
             Kind : SocketKind
             State : State
             Family : int
-            Endpoint : InternetEndpoint
+            Endpoint : Ipv4Endpoint
             Length : uint32
             /// The errno's name, or `OK`.
             Answer : string
@@ -39,13 +39,13 @@ module TestBindLadderMeasured =
             Left : (string * string) option
         }
 
-    let private address (text : string) : uint32 =
+    let private address (text : string) : Ipv4Address =
         match text with
-        | "0.0.0.0" -> 0u
-        | "127.0.0.1" -> InternetEndpoint.LoopbackAddress
-        | "8.8.8.8" -> 0x08080808u
-        | "224.0.0.1" -> 0xE0000001u
-        | "255.255.255.255" -> System.UInt32.MaxValue
+        | "0.0.0.0" -> Ipv4Address 0u
+        | "127.0.0.1" -> Ipv4Address.loopback
+        | "8.8.8.8" -> Ipv4Address 0x08080808u
+        | "224.0.0.1" -> Ipv4Address 0xE0000001u
+        | "255.255.255.255" -> Ipv4Address System.UInt32.MaxValue
         | other -> failwith $"unknown address %s{other}"
 
     let private calls (flavour : string) (platform : SimulatedUnixPlatform) : Call list =
@@ -136,7 +136,7 @@ module TestBindLadderMeasured =
                             Kind = kindOf mm.Groups.["kind"].Value
                             State = parseState mm.Groups.["state"].Value
                             Family = familyNamed mm.Groups.["fam"].Value
-                            Endpoint = InternetEndpoint.ofParts (address mm.Groups.["addr0"].Value) closedPort
+                            Endpoint = Ipv4Endpoint.ofParts (address mm.Groups.["addr0"].Value) closedPort
                             Length = length
                             Answer = mm.Groups.["ans"].Value
                             Left = left mm
@@ -150,7 +150,7 @@ module TestBindLadderMeasured =
                             State = parseState zm.Groups.["state"].Value
                             Family = familyNamed zm.Groups.["fam"].Value
                             Endpoint =
-                                InternetEndpoint.ofParts
+                                Ipv4Endpoint.ofParts
                                     (address zm.Groups.["addr0"].Value)
                                     (if zm.Groups.["port"].Value = "P" then closedPort else 0us)
                             Length = 16u

@@ -100,7 +100,7 @@ module TestKernelConfigSplit =
         |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace >> ok)
         |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax >> ok)
         |> machine (UnixBootImage.withProtectedFiles config.ProtectedFiles >> ok)
-        |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
+        |> machine (UnixBootImage.withLocalIpv4Addresses config.LocalIpv4Addresses config.LocalRoutes)
         |> launch (ProcessLaunch.withUmask config.Umask >> ok)
         |> machine (UnixBootImage.withProcessId config.ProcessId >> ok)
         |> machine (fun image ->
@@ -267,7 +267,7 @@ module TestKernelConfigSplit =
                     TcpReceiveSpace = tcpReceiveSpace
                     TcpSendSpaceMax = tcpSendSpaceMax
                     ProtectedFiles = protectedFiles
-                    LocalAddresses = UnixSystem.defaultLocalAddresses
+                    LocalIpv4Addresses = UnixSystem.defaultLocalIpv4Addresses
                     LocalRoutes = UnixSystem.defaultLocalRoutes
                     InheritedSignalIgnores = Set.ofList ignores
                     StandardStreams =

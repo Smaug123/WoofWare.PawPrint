@@ -47,17 +47,17 @@ module TestSocketBinding =
          |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
 
-    let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
+    let private endpoint (address : Ipv4Address) (port : uint16) : Ipv4Endpoint = Ipv4Endpoint.ofParts address port
 
-    let private binding (address : uint32) (port : uint16) : SocketBinding =
+    let private binding (address : Ipv4Address) (port : uint16) : SocketBinding =
         {
             Endpoint = endpoint address port
             LockedAddress = None
             LockedPort = false
         }
 
-    let private loopback = InternetEndpoint.LoopbackAddress
-    let private wildcard = InternetEndpoint.WildcardAddress
+    let private loopback = Ipv4Address.loopback
+    let private wildcard = Ipv4Address.any
 
     /// Every fault, so a truncated order cannot pass unnoticed.
     let private allFaults =
@@ -169,7 +169,14 @@ module TestSocketBinding =
                 "wildcard unlistened, then specific", wildcard, idle, true, loopback, true, false, false
                 "specific listening, then wildcard", loopback, listeningPhase, true, wildcard, true, true, false
                 // No overlap at all, so nothing to refuse.
-                "different specific addresses", loopback, listeningPhase, true, 0x7F000002u, true, false, false
+                "different specific addresses",
+                loopback,
+                listeningPhase,
+                true,
+                Ipv4Address 0x7F000002u,
+                true,
+                false,
+                false
                 // An established socket's pcb is keyed by its full peer tuple:
                 // a reuse-carrying rebind over it passes on both flavours (a
                 // replacement listener over accepted children — measured), and
@@ -232,10 +239,10 @@ module TestSocketBinding =
     /// assigned.
     [<Test>]
     let ``the flavours read one address list differently`` () : unit =
-        let addresses = UnixSystem.defaultLocalAddresses
+        let addresses = UnixSystem.defaultLocalIpv4Addresses
         let routes = UnixSystem.defaultLocalRoutes
 
-        let bindable (platform : SimulatedUnixPlatform) (address : uint32) : bool =
+        let bindable (platform : SimulatedUnixPlatform) (address : Ipv4Address) : bool =
             SimulatedUnixPlatform.isBindableAddress platform addresses routes address
 
         for platform in platforms do
@@ -243,11 +250,14 @@ module TestSocketBinding =
             bindable platform wildcard |> shouldEqual true
             bindable platform loopback |> shouldEqual true
             // 8.8.8.8 is nobody's.
-            bindable platform 0x08080808u |> shouldEqual false
+            bindable platform (Ipv4Address 0x08080808u) |> shouldEqual false
 
         // 127.9.9.9.
-        bindable SimulatedUnixPlatform.linuxX64 0x7F090909u |> shouldEqual true
-        bindable SimulatedUnixPlatform.macOsArm64 0x7F090909u |> shouldEqual false
+        bindable SimulatedUnixPlatform.linuxX64 (Ipv4Address 0x7F090909u)
+        |> shouldEqual true
+
+        bindable SimulatedUnixPlatform.macOsArm64 (Ipv4Address 0x7F090909u)
+        |> shouldEqual false
 
     /// A broadcast or multicast address is one this kernel never records a
     /// binding to: a bind of one that would succeed is refused, and every other
@@ -257,20 +267,22 @@ module TestSocketBinding =
     /// binding nothing downstream can honour.
     [<Test>]
     let ``a group address is never bound however the host configures the machine`` () : unit =
-        let multicast = 0xE0000001u // 224.0.0.1
-        let broadcast = System.UInt32.MaxValue // 255.255.255.255
+        let multicast = Ipv4Address 0xE0000001u // 224.0.0.1
+        let broadcast = Ipv4Address System.UInt32.MaxValue // 255.255.255.255
 
-        let prefix (network : uint32) (bits : int) : Ipv4Prefix =
+        let prefix (network : Ipv4Address) (bits : int) : Ipv4Prefix =
             match Ipv4Prefix.create network bits with
             | Ok prefix -> prefix
             | Error refusal -> failwith $"test bug: %s{Ipv4PrefixRefusal.describe refusal}"
 
-        let hostile : (string * uint32 list * Ipv4Prefix list) list =
+        let hostile : (string * Ipv4Address list * Ipv4Prefix list) list =
             [
                 "as configured by default", [ loopback ], []
                 "listed among this machine's addresses", [ loopback ; multicast ; broadcast ], []
-                "covered by a local route", [ loopback ], [ prefix 0xE0000000u 4 ; prefix 0u 0 ]
-                "both", [ loopback ; multicast ; broadcast ], [ prefix 0u 0 ]
+                "covered by a local route",
+                [ loopback ],
+                [ prefix (Ipv4Address 0xE0000000u) 4 ; prefix (Ipv4Address 0u) 0 ]
+                "both", [ loopback ; multicast ; broadcast ], [ prefix (Ipv4Address 0u) 0 ]
             ]
 
         for name, addresses, routes in hostile do
@@ -279,7 +291,7 @@ module TestSocketBinding =
                     for address in [ multicast ; broadcast ] do
                         let system =
                             UnixSystem.initial<int, string> platform
-                            |> UnixBootImage.withLocalAddresses addresses routes
+                            |> UnixBootImage.withLocalIpv4Addresses addresses routes
                             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                         let protocol =
@@ -295,7 +307,7 @@ module TestSocketBinding =
                         with
                         | Ok (BindAnswer.Bound _, _) ->
                             failwith
-                                $"%s{name}: %O{platform} %O{kind} bound %s{InternetEndpoint.toString (endpoint address 5000us)}"
+                                $"%s{name}: %O{platform} %O{kind} bound %s{Ipv4Endpoint.toString (endpoint address 5000us)}"
                         | Ok (BindAnswer.Failed _, _)
                         | Error (BindRefusal.UnmodelledMulticast _) -> ()
                         | Error refusal -> failwith $"%s{name}: unexpected refusal %s{BindRefusal.describe refusal}"
@@ -308,7 +320,7 @@ module TestSocketBinding =
                 SimulatedUnixPlatform.bindAddressFaults platform kind [ loopback ] [] loopback
                 |> shouldEqual false
 
-                SimulatedUnixPlatform.bindAddressFaults platform kind [ loopback ] [] 0x08080808u
+                SimulatedUnixPlatform.bindAddressFaults platform kind [ loopback ] [] (Ipv4Address 0x08080808u)
                 |> shouldEqual true
 
     /// Whether `listen(2)` re-runs the port admission rule for a socket that is

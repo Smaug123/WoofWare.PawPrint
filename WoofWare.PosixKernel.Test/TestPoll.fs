@@ -144,9 +144,9 @@ module TestPoll =
 
         fd, UnixSystemState.withFileDescriptors registry system
 
-    let private peer : InternetEndpoint =
+    let private peer : Ipv4Endpoint =
         {
-            Address = 0x7F000001u
+            Address = Ipv4Address 0x7F000001u
             Port = 5555us
         }
 

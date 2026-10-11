@@ -20,10 +20,10 @@ module TestDatagramDissolve =
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
-    let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
+    let private endpoint (address : Ipv4Address) (port : uint16) : Ipv4Endpoint = Ipv4Endpoint.ofParts address port
 
-    let private loopback : uint32 = InternetEndpoint.LoopbackAddress
-    let private wildcard : uint32 = InternetEndpoint.WildcardAddress
+    let private loopback : Ipv4Address = Ipv4Address.loopback
+    let private wildcard : Ipv4Address = Ipv4Address.any
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system : UnixBootImage<int, string> = UnixSystem.initial platform
@@ -49,7 +49,7 @@ module TestDatagramDissolve =
     /// connected to 127.0.0.1:9000 if `connected`.
     let private datagram
         (platform : SimulatedUnixPlatform)
-        (bindTo : InternetEndpoint option)
+        (bindTo : Ipv4Endpoint option)
         (connected : bool)
         : int * UnixSystem<int, string>
         =
@@ -64,7 +64,7 @@ module TestDatagramDissolve =
                     CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system
                 with
                 | Ok (BindAnswer.Bound _, system) -> system
-                | other -> failwith $"bind to %s{InternetEndpoint.toString endpoint}: %A{other}"
+                | other -> failwith $"bind to %s{Ipv4Endpoint.toString endpoint}: %A{other}"
 
         let system =
             if not connected then
@@ -92,7 +92,7 @@ module TestDatagramDissolve =
                 (CopyIn.mapped
                     (UnixSystem.platform system)
                     16u
-                    (CopyIn.blob (UnixSystem.platform system) 0 (InternetEndpoint.ofParts 0u 0us)))
+                    (CopyIn.blob (UnixSystem.platform system) 0 (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us)))
                 system
         with
         | Ok answer -> answer
@@ -104,9 +104,9 @@ module TestDatagramDissolve =
     [<RequireQualifiedAccess>]
     type private Left =
         | Unbound
-        | At of address : uint32 * KeepsPort : bool * port : uint16 option
+        | At of address : Ipv4Address * KeepsPort : bool * port : uint16 option
 
-    let private linuxRows : (InternetEndpoint option * bool * Left) list =
+    let private linuxRows : (Ipv4Endpoint option * bool * Left) list =
         [
             Some (endpoint wildcard 5555us), true, Left.At (wildcard, true, Some 5555us)
             Some (endpoint wildcard 0us), true, Left.Unbound
@@ -224,7 +224,7 @@ module TestDatagramDissolve =
                     actual.Port |> shouldNotEqual 0us
 
                 UnixSystem.checkInvariants after |> shouldEqual []
-            | other -> failwith $"rebind to %s{InternetEndpoint.toString rebind}: %A{other}"
+            | other -> failwith $"rebind to %s{Ipv4Endpoint.toString rebind}: %A{other}"
 
     [<Test>]
     let ``a socket that kept its port cannot rebind, on either flavour`` () : unit =

@@ -32,8 +32,8 @@ module TestSyscallInterruption =
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// The task that holds the lock the sleeper waits for. Never the sleeper.
     let private holder : int = 3

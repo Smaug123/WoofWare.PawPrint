@@ -130,7 +130,7 @@ module TestSockNameFaultLength =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        let endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+        let endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
 
         match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> fd, system
@@ -177,7 +177,7 @@ module TestSockNameFaultLength =
         let client, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        let endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+        let endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
 
         match CopyIn.connect client UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
         | Ok (ConnectOutcome.Completed, system) -> client, system
@@ -356,7 +356,7 @@ module TestSockNameFaultLengthAgainstHost =
 
     /// `sockaddr_in` for 127.0.0.1, port 0, as `platform` lays it out.
     let private loopbackAnyPort (platform : SimulatedUnixPlatform) : byte[] =
-        CopyIn.inet platform (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 0us)
+        CopyIn.inet platform (Ipv4Endpoint.ofParts Ipv4Address.loopback 0us)
 
     /// The errno and the length cell after one host call.
     let private hostCall (fd : int) (address : nativeint) (declared : uint32) : int * uint32 =

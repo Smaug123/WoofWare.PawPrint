@@ -134,14 +134,14 @@ type SocketBinding =
         /// Where the socket is bound, with any source-address resolution a
         /// connect performed already applied: a wildcard-bound or unbound
         /// socket that connects over loopback reads back 127.0.0.1 here.
-        Endpoint : InternetEndpoint
+        Endpoint : Ipv4Endpoint
         /// The address the process's own `bind(2)` gave the socket, or `None`
         /// when the binding arose implicitly (a connect or listen minted it).
         /// The kernel state Linux calls SOCK_BINDADDR_LOCK: a Linux refusal
         /// delivery reverts `Endpoint`'s address to this (the wildcard when
         /// `None`) while keeping the port — measured for all three
         /// provenances — where Darwin keeps the resolved address.
-        LockedAddress : uint32 option
+        LockedAddress : Ipv4Address option
         /// Whether the process's own `bind(2)` chose the port: true only when it
         /// asked for a non-zero one. The kernel state Linux calls
         /// SOCK_BINDPORT_LOCK: a datagram `connect(AF_UNSPEC)` there keeps a
@@ -314,7 +314,7 @@ type SocketPhase =
     /// nothing yet — no receive path exists — but re-connect re-targets it
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
     /// visible to the process through the return codes.
-    | DatagramPeer of peer : InternetEndpoint
+    | DatagramPeer of peer : Ipv4Endpoint
 
 [<RequireQualifiedAccess>]
 module SocketPhase =
@@ -405,7 +405,7 @@ module SocketAddressing =
         | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), None -> addressing
         | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), Some binding ->
             failwith
-                $"SocketAddressing.replaceBinding: %A{addressing} has no IPv4 transport, so it cannot be bound at %s{InternetEndpoint.toString binding.Endpoint} (this is a bug in the caller)."
+                $"SocketAddressing.replaceBinding: %A{addressing} has no IPv4 transport, so it cannot be bound at %s{Ipv4Endpoint.toString binding.Endpoint} (this is a bug in the caller)."
 
 /// A socket, as the emulated kernel's socket table holds it.
 ///

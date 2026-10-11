@@ -923,7 +923,7 @@ module TestSignalDispatch =
         let platform = state.Kernel.UnixPlatform
 
         let address =
-            InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+            Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
             |> SimulatedUnixPlatform.encodeInternetSockaddr platform
             |> ImmutableArray.Create<byte>
 

@@ -206,7 +206,7 @@ module TestUnixSystemInitial =
 
         let candidate (port : uint16) : SocketBinding =
             {
-                Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                 LockedAddress = None
                 LockedPort = false
             }

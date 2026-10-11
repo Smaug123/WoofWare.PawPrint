@@ -25,11 +25,11 @@ module TestSockOpt =
     let private darwin : SimulatedUnixPlatform = SimulatedUnixPlatform.macOsArm64
     let private platforms : SimulatedUnixPlatform list = [ linux ; darwin ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
-    let private wildcard (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+    let private wildcard (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.any port
 
     /// A descriptor number nothing in a fresh system has open.
     let private closedFd : int = 99
@@ -745,7 +745,7 @@ module TestSockOpt =
 
     let private bindAt
         (fd : int)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
@@ -753,7 +753,7 @@ module TestSockOpt =
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
-    let private boundAt (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private boundAt (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         match bindAt fd endpoint system with
         | BindAnswer.Bound _, system -> system
         | BindAnswer.Failed error, _ -> failwith $"expected the bind to succeed, got %O{error}"

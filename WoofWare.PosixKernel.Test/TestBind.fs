@@ -41,8 +41,8 @@ module TestBind =
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// The length of a well-formed `sockaddr_in`, which every row below declares
     /// unless it is testing the length itself.
@@ -98,7 +98,7 @@ module TestBind =
 
     let private bindOrFail
         (fd : int)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
@@ -108,7 +108,7 @@ module TestBind =
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
-    let private bound (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private bound (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         match bindOrFail fd endpoint system with
         | BindAnswer.Bound bound, system -> bound, system
         | BindAnswer.Failed error, _ -> failwith $"expected the bind to succeed, got %O{error}"
@@ -134,7 +134,7 @@ module TestBind =
                     Endpoint = loopback 5000us
                     // `bind(2)`'s own address is locked, so a later Linux refusal
                     // delivery reverts a connect's source resolution to exactly it.
-                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                    LockedAddress = Some Ipv4Address.loopback
                     LockedPort = true
                 }
         )
@@ -148,7 +148,7 @@ module TestBind =
 
         let low, high = system.Machine.EphemeralPortRange
         (where.Port >= low && where.Port <= high) |> shouldEqual true
-        where.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+        where.Address |> shouldEqual Ipv4Address.loopback
 
         // ...and the socket records where it landed, not the zero it asked for.
         match bindingOf (SocketId 0L) system with
@@ -160,9 +160,9 @@ module TestBind =
     let ``the wildcard address is always bindable`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = stream platform
 
-        bound fd (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us) system
+        bound fd (Ipv4Endpoint.ofParts Ipv4Address.any 5000us) system
         |> fst
-        |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us)
+        |> shouldEqual (Ipv4Endpoint.ofParts Ipv4Address.any 5000us)
 
     // ------------------------------------------------------------------
     // The individual faults
@@ -191,7 +191,7 @@ module TestBind =
 
         for platform, expected in rows do
             let fd, system = stream platform
-            let inside = InternetEndpoint.ofParts 0x7F000009u 5000us
+            let inside = Ipv4Endpoint.ofParts (Ipv4Address 0x7F000009u) 5000us
 
             match bindOrFail fd inside system |> fst, expected with
             | BindAnswer.Bound where, None -> where |> shouldEqual inside
@@ -300,7 +300,7 @@ module TestBind =
                     fd
                     UserBuffer.Mapped
                     exactLength
-                    (CopyIn.blob platform 0 (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us))
+                    (CopyIn.blob platform 0 (Ipv4Endpoint.ofParts Ipv4Address.any 5000us))
                     system
             with
             | Ok (BindAnswer.Bound _, _) -> ()
@@ -353,7 +353,7 @@ module TestBind =
     /// (`sockaddr-bind-ladder.c`, Z).
     [<Test>]
     let ``a multicast address on a bound stream socket is answered as measured`` () : unit =
-        let multicast = 0xE0000001u
+        let multicast = Ipv4Address 0xE0000001u
 
         let attempt (platform : SimulatedUnixPlatform) =
             let fd, system = stream platform
@@ -363,7 +363,7 @@ module TestBind =
                 fd
                 UserBuffer.Mapped
                 exactLength
-                (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
+                (CopyIn.inet platform (Ipv4Endpoint.ofParts multicast 5000us))
                 system
 
         match attempt SimulatedUnixPlatform.linuxX64 with
@@ -421,14 +421,14 @@ module TestBind =
     /// answers EAFNOSUPPORT instead, which needs no model of multicast.
     [<TestCaseSource(nameof platforms)>]
     let ``a multicast address that would bind is refused`` (platform : SimulatedUnixPlatform) : unit =
-        let multicast = 0xE0000001u
+        let multicast = Ipv4Address 0xE0000001u
 
         let attempt (fd : int) (system : UnixSystem<int, string>) =
             CopyIn.bind
                 fd
                 UserBuffer.Mapped
                 exactLength
-                (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
+                (CopyIn.inet platform (Ipv4Endpoint.ofParts multicast 5000us))
                 system
 
         let fd, system = stream platform

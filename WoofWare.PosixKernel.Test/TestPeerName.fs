@@ -26,17 +26,17 @@ module TestPeerName =
         | SimulatedUnixFlavour.Linux -> onLinux
         | SimulatedUnixFlavour.Darwin -> onDarwin
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
-    let private wildcard (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+    let private wildcard (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.any port
 
     let private listenerPort : uint16 = 5000us
     let private receiverPort : uint16 = 5001us
 
     /// Nothing listens or is bound here in any system these tests build.
-    let private nobody : InternetEndpoint = loopback 5999us
+    let private nobody : Ipv4Endpoint = loopback 5999us
 
     /// `(socklen_t)-1`, which Linux reads as the `int` -1.
     let private minus1 : uint32 = System.UInt32.MaxValue
@@ -45,7 +45,7 @@ module TestPeerName =
         UnixSystem.initial platform
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    let private endpointOf (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
+    let private endpointOf (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Binding with
@@ -59,7 +59,7 @@ module TestPeerName =
     let private datagram (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
-    let private bindAt (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private bindAt (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} to %O{endpoint} answered %A{other}"
@@ -69,7 +69,7 @@ module TestPeerName =
         | Ok answer -> answer
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
-    let private connect (fd : int) (destination : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private connect (fd : int) (destination : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         connectBlob fd (CopyIn.inet (UnixSystem.platform system) destination) system
 
     let private nonBlocking (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -77,7 +77,7 @@ module TestPeerName =
         | SetNonBlockingAnswer.Set, system -> system
         | other, _ -> failwith $"setting O_NONBLOCK on fd %d{fd} answered %A{other}"
 
-    let private listening (address : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private listening (address : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         let fd, system = stream system
         let system = bindAt fd address system
 
@@ -109,7 +109,7 @@ module TestPeerName =
 
     let private reported
         (platform : SimulatedUnixPlatform)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         : Result<GetSockNameAnswer, GetSockNameRefusal>
         =
         Ok (GetSockNameAnswer.Reported (CopyOut.expected platform endpoint 16u, 16))

@@ -187,8 +187,8 @@ module TestUnblockForAnotherTask =
             FullPipeWriteEnd : int
         }
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// A system with tasks 0 to 2; a blocking listener at loopback port 5000;
     /// an event port (on Linux an epoll instance holding the listener, on

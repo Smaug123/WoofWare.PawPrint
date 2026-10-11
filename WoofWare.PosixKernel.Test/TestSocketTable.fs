@@ -617,8 +617,8 @@ module TestSocketTable =
                                 [
                                     ConnectionId 0L,
                                     {
-                                        ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
-                                        ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+                                        ClientAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 5000us
+                                        ServerAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
                                         Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                     }
                                 ]
@@ -721,8 +721,8 @@ module TestSocketTable =
 
     // --- the connect(2) state machine ---
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
@@ -764,7 +764,7 @@ module TestSocketTable =
     let private connect
         (client : SocketId)
         (nonBlocking : bool)
-        (dest : InternetEndpoint)
+        (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
@@ -783,7 +783,7 @@ module TestSocketTable =
     /// will not model.
     let private connectRefused
         (client : SocketId)
-        (dest : InternetEndpoint)
+        (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
         : ConnectRefusal
         =
@@ -827,7 +827,7 @@ module TestSocketTable =
         match client.Binding with
         | None -> failwith "expected the connect to bind the client implicitly"
         | Some binding ->
-            binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+            binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
             let low, high = kernel.Machine.EphemeralPortRange
 
             (binding.Endpoint.Port >= low && binding.Endpoint.Port <= high)
@@ -1297,7 +1297,7 @@ module TestSocketTable =
                     (CopyIn.mapped
                         (UnixSystem.platform kernel)
                         16u
-                        (CopyIn.blob (UnixSystem.platform kernel) 0 (InternetEndpoint.ofParts 0u 0us)))
+                        (CopyIn.blob (UnixSystem.platform kernel) 0 (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us)))
                     kernel
             with
             | Ok answer -> answer
@@ -1338,7 +1338,7 @@ module TestSocketTable =
                     (CopyIn.mapped
                         (UnixSystem.platform darwin)
                         16u
-                        (CopyIn.blob (UnixSystem.platform darwin) 0 (InternetEndpoint.ofParts 0u 0us)))
+                        (CopyIn.blob (UnixSystem.platform darwin) 0 (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us)))
                     darwin
             with
             | Ok answer -> answer
@@ -1666,8 +1666,7 @@ module TestSocketTable =
                                         SocketAddressing.replaceBinding
                                             (Some
                                                 {
-                                                    Endpoint =
-                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
+                                                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any 5000us
                                                     LockedAddress = None
                                                     LockedPort = false
                                                 })
@@ -1772,8 +1771,7 @@ module TestSocketTable =
                                         SocketAddressing.replaceBinding
                                             (Some
                                                 {
-                                                    Endpoint =
-                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
+                                                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any 4444us
                                                     LockedAddress = None
                                                     LockedPort = false
                                                 })
@@ -1835,21 +1833,21 @@ module TestSocketTable =
         let provenances =
             [
                 // (pre-connect binding, Linux post-delivery address)
-                None, InternetEndpoint.WildcardAddress
+                None, Ipv4Address.any
                 Some
                     {
                         Endpoint = loopback 4444us
-                        LockedAddress = Some InternetEndpoint.LoopbackAddress
+                        LockedAddress = Some Ipv4Address.loopback
                         LockedPort = true
                     },
-                InternetEndpoint.LoopbackAddress
+                Ipv4Address.loopback
                 Some
                     {
-                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
-                        LockedAddress = Some InternetEndpoint.WildcardAddress
+                        Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any 4444us
+                        LockedAddress = Some Ipv4Address.any
                         LockedPort = true
                     },
-                InternetEndpoint.WildcardAddress
+                Ipv4Address.any
             ]
 
         for preBinding, linuxAddress in provenances do
@@ -1890,7 +1888,7 @@ module TestSocketTable =
                     | Some binding -> binding
                     | None -> failwith "expected the pending attempt to have bound the socket"
 
-                pending.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                pending.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                 (pending.Endpoint.Port > 0us) |> shouldEqual true
 
                 let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
@@ -1907,19 +1905,14 @@ module TestSocketTable =
                 delivered.Endpoint.Port |> shouldEqual pending.Endpoint.Port
 
                 delivered.Endpoint.Address
-                |> shouldEqual (
-                    if darwin then
-                        InternetEndpoint.LoopbackAddress
-                    else
-                        linuxAddress
-                )
+                |> shouldEqual (if darwin then Ipv4Address.loopback else linuxAddress)
 
                 if darwin then
                     let outcome, blocked = connect (SocketId 0L) false (loopback 9999us) start
                     outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
                     match (UnixMachineState.socket (SocketId 0L) blocked.Machine).Binding with
-                    | Some binding -> binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                    | Some binding -> binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                     | None -> failwith "expected the blocking refusal to keep the socket bound"
 
     /// Darwin drops a SYN only for a port held by a *bound but unconnected*
@@ -1943,7 +1936,7 @@ module TestSocketTable =
                                     (Some
                                         {
                                             Endpoint = loopback 5000us
-                                            LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                            LockedAddress = Some Ipv4Address.loopback
                                             LockedPort = true
                                         })
                                     someSocket.Addressing
@@ -2027,9 +2020,8 @@ module TestSocketTable =
                                         SocketAddressing.replaceBinding
                                             (Some
                                                 {
-                                                    Endpoint =
-                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
-                                                    LockedAddress = Some InternetEndpoint.WildcardAddress
+                                                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any 5000us
+                                                    LockedAddress = Some Ipv4Address.any
                                                     LockedPort = true
                                                 })
                                             (UnixMachineState.socket (SocketId 0L) kernel.Machine).Addressing
@@ -2042,7 +2034,7 @@ module TestSocketTable =
                                             (Some
                                                 {
                                                     Endpoint = loopback 5000us
-                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedAddress = Some Ipv4Address.loopback
                                                     LockedPort = true
                                                 })
                                             someSocket.Addressing
@@ -2072,7 +2064,7 @@ module TestSocketTable =
                                             (Some
                                                 {
                                                     Endpoint = loopback 4444us
-                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedAddress = Some Ipv4Address.loopback
                                                     LockedPort = true
                                                 })
                                             someSocket.Addressing
@@ -2159,7 +2151,7 @@ module TestSocketTable =
                                             (Some
                                                 {
                                                     Endpoint = loopback 4444us
-                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedAddress = Some Ipv4Address.loopback
                                                     LockedPort = true
                                                 })
                                             someSocket.Addressing

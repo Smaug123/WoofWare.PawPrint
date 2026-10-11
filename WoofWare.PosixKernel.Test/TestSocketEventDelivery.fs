@@ -14,8 +14,8 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketEventDelivery =
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
@@ -164,7 +164,7 @@ module TestSocketEventDelivery =
     let private connect
         (client : SocketId)
         (nonBlocking : bool)
-        (dest : InternetEndpoint)
+        (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =

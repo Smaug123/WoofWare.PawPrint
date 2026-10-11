@@ -537,7 +537,7 @@ module TestSocketOptions =
                     fd
                     UserBuffer.Mapped
                     16u
-                    (CopyIn.inet platform (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us))
+                    (CopyIn.inet platform (Ipv4Endpoint.ofParts Ipv4Address.loopback 5000us))
                     system
             with
             | Ok (BindAnswer.Bound _, system) -> system
@@ -555,7 +555,7 @@ module TestSocketOptions =
                 fd
                 UserBuffer.Mapped
                 16u
-                (CopyIn.inet platform (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port))
+                (CopyIn.inet platform (Ipv4Endpoint.ofParts Ipv4Address.loopback port))
                 system
         with
         | Ok (_, system) -> system
@@ -631,7 +631,7 @@ module TestSocketOptions =
         let bound =
             Some
                 {
-                    Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
+                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback 5000us
                     LockedAddress = None
                     LockedPort = true
                 }

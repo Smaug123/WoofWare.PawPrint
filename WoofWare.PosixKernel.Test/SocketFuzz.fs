@@ -346,10 +346,7 @@ module SocketFuzz =
                                             SocketAddressing.replaceBinding
                                                 (Some
                                                     {
-                                                        Endpoint =
-                                                            InternetEndpoint.ofParts
-                                                                InternetEndpoint.LoopbackAddress
-                                                                port
+                                                        Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback port
                                                         LockedAddress = None
                                                         LockedPort = false
                                                     })
@@ -416,7 +413,7 @@ module SocketFuzz =
                         16u
                         (CopyIn.inetCopy
                             (UnixSystem.platform state.Kernel)
-                            (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
+                            (Ipv4Endpoint.ofParts Ipv4Address.loopback 1us))
                         state.Kernel
                 with
                 | Ok answer -> answer

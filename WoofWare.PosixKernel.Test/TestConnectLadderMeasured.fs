@@ -33,7 +33,7 @@ module TestConnectLadderMeasured =
             Kind : SocketKind
             State : State
             Family : int
-            Endpoint : InternetEndpoint
+            Endpoint : Ipv4Endpoint
             Length : uint32
             /// The errno's name, or `OK`.
             Answer : string
@@ -126,7 +126,7 @@ module TestConnectLadderMeasured =
 
                     let endpoint =
                         if um.Groups.["dest"].Value = "zero" then
-                            InternetEndpoint.ofParts 0u 0us
+                            Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us
                         else
                             loopback (peerPort kind)
 
@@ -148,12 +148,12 @@ module TestConnectLadderMeasured =
 
                     let endpoint =
                         match zm.Groups.["dest"].Value with
-                        | "0.0.0.0:0" -> InternetEndpoint.ofParts 0u 0us
+                        | "0.0.0.0:0" -> Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us
                         | "127.0.0.1:0" -> loopback 0us
-                        | "0.0.0.0:lst" -> InternetEndpoint.ofParts 0u (peerPort kind)
+                        | "0.0.0.0:lst" -> Ipv4Endpoint.ofParts (Ipv4Address 0u) (peerPort kind)
                         | "127.0.0.1:lst" -> loopback (peerPort kind)
-                        | "127.0.0.2:0" -> InternetEndpoint.ofParts 0x7F000002u 0us
-                        | "8.8.8.8:0" -> InternetEndpoint.ofParts 0x08080808u 0us
+                        | "127.0.0.2:0" -> Ipv4Endpoint.ofParts (Ipv4Address 0x7F000002u) 0us
+                        | "8.8.8.8:0" -> Ipv4Endpoint.ofParts (Ipv4Address 0x08080808u) 0us
                         | other -> failwith $"unknown destination %s{other}"
 
                     [

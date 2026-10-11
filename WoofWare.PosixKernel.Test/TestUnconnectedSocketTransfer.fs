@@ -289,7 +289,7 @@ module TestUnconnectedSocketTransfer =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
-        let connectTo (endpoint : InternetEndpoint) (family : int) (system : UnixSystem<int, string>) =
+        let connectTo (endpoint : Ipv4Endpoint) (family : int) (system : UnixSystem<int, string>) =
             match
                 CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.blob system.Machine.UnixPlatform family endpoint) system
             with
@@ -297,7 +297,7 @@ module TestUnconnectedSocketTransfer =
             | other -> failwith $"connect did not complete: %A{other}"
 
         let loopbackAt (port : uint16) =
-            InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+            Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
         let system =
             match
@@ -323,7 +323,7 @@ module TestUnconnectedSocketTransfer =
                     (CopyIn.mapped
                         (UnixSystem.platform system)
                         16u
-                        (CopyIn.blob (UnixSystem.platform system) 0 (InternetEndpoint.ofParts 0u 0us)))
+                        (CopyIn.blob (UnixSystem.platform system) 0 (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us)))
                     system
             with
             | Ok (ConnectOutcome.Completed, system) -> system
@@ -339,7 +339,7 @@ module TestUnconnectedSocketTransfer =
 
             match after.Machine.Sockets.[socketId].Binding with
             | Some binding ->
-                binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
 
                 (binding.Endpoint.Port >= low && binding.Endpoint.Port <= high)
                 |> shouldEqual true
@@ -369,8 +369,8 @@ module TestUnconnectedSocketTransfer =
                 }
         }
 
-    let private loopbackAnyPort : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 0us
+    let private loopbackAnyPort : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback 0us
 
     /// The socket a row describes, made in the kernel, or `None` where the kernel
     /// cannot make one in that phase.
@@ -449,7 +449,7 @@ module TestUnconnectedSocketTransfer =
 
             match socketAfter.Binding with
             | Some binding ->
-                binding.Endpoint.Address = InternetEndpoint.WildcardAddress
+                binding.Endpoint.Address = Ipv4Address.any
                 && binding.Endpoint.Port >= low
                 && binding.Endpoint.Port <= high
                 && binding.LockedAddress = None

@@ -1242,8 +1242,9 @@ module SimulatedUnixPlatform =
     /// it models no group membership and no interface to receive or broadcast
     /// on, so such a binding would become a lie the moment a transfer landed.
     /// Every bind of one that fails has its measured errno.
-    let internal isBroadcastOrMulticast (address : uint32) : bool =
-        address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
+    let internal isBroadcastOrMulticast (address : Ipv4Address) : bool =
+        let (Ipv4Address bits) = address
+        address = Ipv4Address.broadcast || (bits >>> 28) = 0xEu
 
     /// May a socket bind to this address, given the addresses this machine holds?
     ///
@@ -1257,12 +1258,12 @@ module SimulatedUnixPlatform =
     /// rules on apart from its address list: see `bindGroupAddressRule`.
     let internal isBindableAddress
         (platform : SimulatedUnixPlatform)
-        (localAddresses : uint32 list)
+        (localAddresses : Ipv4Address list)
         (localRoutes : Ipv4Prefix list)
-        (address : uint32)
+        (address : Ipv4Address)
         : bool
         =
-        if address = InternetEndpoint.WildcardAddress then
+        if address = Ipv4Address.any then
             true
         elif List.contains address localAddresses then
             // An address this machine holds binds on either flavour.
@@ -1289,7 +1290,7 @@ module SimulatedUnixPlatform =
     let internal bindGroupAddressRule
         (platform : SimulatedUnixPlatform)
         (kind : SocketKind)
-        (address : uint32)
+        (address : Ipv4Address)
         : BindGroupAddressRule option
         =
         if not (isBroadcastOrMulticast address) then
@@ -1299,7 +1300,7 @@ module SimulatedUnixPlatform =
         match flavour platform, kind with
         | SimulatedUnixFlavour.Linux, _ -> Some BindGroupAddressRule.Accepted
         | SimulatedUnixFlavour.Darwin, SocketKind.Stream -> Some BindGroupAddressRule.RejectedWithTheFamily
-        | SimulatedUnixFlavour.Darwin, _ when address = System.UInt32.MaxValue -> Some BindGroupAddressRule.NotLocal
+        | SimulatedUnixFlavour.Darwin, _ when address = Ipv4Address.broadcast -> Some BindGroupAddressRule.NotLocal
         | SimulatedUnixFlavour.Darwin, _ -> Some BindGroupAddressRule.Accepted
 
     /// Whether `bind(2)` rules on the address itself, on a socket of `kind`, as
@@ -1308,9 +1309,9 @@ module SimulatedUnixPlatform =
     let internal bindAddressFaults
         (platform : SimulatedUnixPlatform)
         (kind : SocketKind)
-        (localAddresses : uint32 list)
+        (localAddresses : Ipv4Address list)
         (localRoutes : Ipv4Prefix list)
-        (address : uint32)
+        (address : Ipv4Address)
         : bool
         =
         match bindGroupAddressRule platform kind address with
@@ -1355,7 +1356,7 @@ module SimulatedUnixPlatform =
         =
         if existing.Endpoint.Port <> candidate.Endpoint.Port then
             false
-        elif not (InternetEndpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
+        elif not (Ipv4Endpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
             false
         else
 
@@ -1635,7 +1636,7 @@ module SimulatedUnixPlatform =
                         span.Slice (InternetSockaddr.address.Offset, InternetSockaddr.address.Width)
                     )
 
-                Some (InternetEndpoint.ofParts address port)
+                Some (Ipv4Endpoint.ofParts (Ipv4Address address) port)
             else
                 None
 
@@ -1650,7 +1651,7 @@ module SimulatedUnixPlatform =
                     if offset + i < copied.Length then
                         word.[i] <- copied.[offset + i]
 
-                BinaryPrimitives.ReadUInt32BigEndian (System.ReadOnlySpan<byte> word)
+                Ipv4Address (BinaryPrimitives.ReadUInt32BigEndian (System.ReadOnlySpan<byte> word))
         }
 
     /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
@@ -1667,7 +1668,7 @@ module SimulatedUnixPlatform =
     /// Answers the struct's full length for the platform; what a syscall copies
     /// out to a caller's shorter buffer is `copyOutInternetSockaddr`'s prefix
     /// of it.
-    let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
+    let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : Ipv4Endpoint) : byte[] =
         let realLength = internetSocketAddressSize
         let blob = Array.zeroCreate<byte> realLength
 
@@ -1676,9 +1677,11 @@ module SimulatedUnixPlatform =
             endpoint.Port
         )
 
+        let (Ipv4Address address) = endpoint.Address
+
         BinaryPrimitives.WriteUInt32BigEndian (
             System.Span<byte> (blob, InternetSockaddr.address.Offset, InternetSockaddr.address.Width),
-            endpoint.Address
+            address
         )
 
         let field = sockaddrFamilyField platform
@@ -1703,7 +1706,7 @@ module SimulatedUnixPlatform =
     /// struct and no more.
     let internal copyOutInternetSockaddr
         (platform : SimulatedUnixPlatform)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         (declaredLength : uint32)
         : ImmutableArray<byte>
         =
@@ -1759,7 +1762,7 @@ module SimulatedUnixPlatform =
 
                 if mapped then
                     let v4 = BinaryPrimitives.ReadUInt32BigEndian (address.AsSpan().Slice (12, 4))
-                    Some (Ipv6Destination.V4Mapped (InternetEndpoint.ofParts v4 port))
+                    Some (Ipv6Destination.V4Mapped (Ipv4Endpoint.ofParts (Ipv4Address v4) port))
                 else
                     Some (Ipv6Destination.Native (address, port))
             else
@@ -1784,11 +1787,17 @@ module SimulatedUnixPlatform =
     /// `SO_LINGER` {1, 0}. The peer's orderly close alone leaves the address
     /// v4-mapped. Measured (`docs/probes/dual-mode/dual-mode.c`, A, E, G and
     /// R).
-    let presentedIpv6Address (platform : SimulatedUnixPlatform) (connectionFailed : bool) (address : uint32) : byte[] =
+    let presentedIpv6Address
+        (platform : SimulatedUnixPlatform)
+        (connectionFailed : bool)
+        (address : Ipv4Address)
+        : byte[]
+        =
         let bytes = Array.zeroCreate<byte> 16
 
-        if address <> InternetEndpoint.WildcardAddress then
-            BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), address)
+        if address <> Ipv4Address.any then
+            let (Ipv4Address bits) = address
+            BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), bits)
 
             match flavour platform with
             | SimulatedUnixFlavour.Darwin when connectionFailed -> ()

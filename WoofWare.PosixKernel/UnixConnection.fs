@@ -153,24 +153,24 @@ type ConnectRefusal =
     /// loopback, and which source a kernel resolves for it is unmeasured.
     /// `boundToWildcard` says whether the socket was bound to the wildcard or
     /// not bound at all.
-    | SourceForNonLoopbackDestination of socket : SocketId * destination : InternetEndpoint * boundToWildcard : bool
+    | SourceForNonLoopbackDestination of socket : SocketId * destination : Ipv4Endpoint * boundToWildcard : bool
     /// The implicit bind found every port in the ephemeral range taken, and
     /// what a kernel answers then is unmeasured.
     | EphemeralPortsExhausted of range : uint16 * uint16
     /// The destination is not an address of this machine, and this library
     /// models no network to carry a packet anywhere else.
-    | DestinationNotLocal of destination : InternetEndpoint * kind : SocketKind
+    | DestinationNotLocal of destination : Ipv4Endpoint * kind : SocketKind
     /// The listener's accept queue is at its measured capacity: a real kernel
     /// leaves the SYN unanswered and the client retries on a timer.
-    | AcceptQueueFull of listener : SocketId * destination : InternetEndpoint * queued : int
+    | AcceptQueueFull of listener : SocketId * destination : Ipv4Endpoint * queued : int
     /// The resolved source equals the destination while a listener matched,
     /// which only a reuse-bound client can engineer; unmeasured.
-    | SelfTuple of endpoint : InternetEndpoint
+    | SelfTuple of endpoint : Ipv4Endpoint
     /// A connection between this source and destination already exists, or,
     /// under Darwin, another datagram socket is connected from this source to
     /// this destination, and how a kernel refuses the duplicate four-tuple is
     /// unmeasured.
-    | DuplicateFourTuple of source : InternetEndpoint * destination : InternetEndpoint
+    | DuplicateFourTuple of source : Ipv4Endpoint * destination : Ipv4Endpoint
     /// A Linux socket whose non-blocking connect completed, and whose
     /// connection was then reset before any connect reported the completion.
     /// Linux's retry would answer the reset's pending error, or ECONNABORTED
@@ -178,17 +178,17 @@ type ConnectRefusal =
     | ResetBeforeReport of socket : SocketId
     /// The destination is the socket's own bound address with nothing
     /// listening: TCP simultaneous open, which is unmodelled.
-    | SimultaneousOpen of destination : InternetEndpoint
+    | SimultaneousOpen of destination : Ipv4Endpoint
     /// Darwin drops the SYN to a bound but unlistened port, and the connect
     /// pends on a retransmission schedule this library cannot honour.
-    | DarwinSynDropped of destination : InternetEndpoint
+    | DarwinSynDropped of destination : Ipv4Endpoint
     /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle, whose
     /// `tcp_disconnect` consequences are unmeasured.
     | LinuxUnspecOnPhase of socket : SocketId * phase : SocketPhase
     /// A datagram connect to the broadcast address or a multicast group that
     /// would succeed. This library models no group membership and no
     /// interface to broadcast on, so it does not record such a peer.
-    | DatagramGroupDestination of socket : SocketId * destination : InternetEndpoint
+    | DatagramGroupDestination of socket : SocketId * destination : Ipv4Endpoint
     /// An IPv6 socket would connect to an IPv6 address that is not v4-mapped,
     /// which needs an IPv6 transport this kernel does not have. `address` is
     /// the sixteen bytes of `sin6_addr`.
@@ -205,9 +205,9 @@ module ConnectRefusal =
             $"socket %O{socket} is a %O{kind} socket, and what connect(2) does for one is unmeasured, so measure it rather than guessing."
         | ConnectRefusal.SourceForNonLoopbackDestination (socket, destination, boundToWildcard) ->
             if boundToWildcard then
-                $"socket %O{socket} is bound to the wildcard and is connecting to %s{InternetEndpoint.toString destination}, and which source address a kernel resolves the wildcard to for a destination other than 127.0.0.1 is unmeasured. Bind to a concrete address first, or connect to 127.0.0.1."
+                $"socket %O{socket} is bound to the wildcard and is connecting to %s{Ipv4Endpoint.toString destination}, and which source address a kernel resolves the wildcard to for a destination other than 127.0.0.1 is unmeasured. Bind to a concrete address first, or connect to 127.0.0.1."
             else
-                $"socket %O{socket} is unbound and is connecting to %s{InternetEndpoint.toString destination}, and which source address a kernel picks for a destination other than 127.0.0.1 is unmeasured. Bind the socket first, or connect to 127.0.0.1."
+                $"socket %O{socket} is unbound and is connecting to %s{Ipv4Endpoint.toString destination}, and which source address a kernel picks for a destination other than 127.0.0.1 is unmeasured. Bind the socket first, or connect to 127.0.0.1."
         | ConnectRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen the machine's EphemeralPortRange, or measure what a real kernel says here."
         | ConnectRefusal.DestinationNotLocal (destination, kind) ->
@@ -217,26 +217,26 @@ module ConnectRefusal =
                 | SocketKind.Datagram -> "a datagram"
                 | SocketKind.SeqPacket -> "a packet"
 
-            $"destination %s{InternetEndpoint.toString destination} is not a local address of this simulated machine, and this library models no network to carry %s{carried} anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+            $"destination %s{Ipv4Endpoint.toString destination} is not a local address of this simulated machine, and this library models no network to carry %s{carried} anywhere else. Add the address to the kernel's LocalIpv4Addresses/LocalRoutes if it should be local, or connect to loopback."
         | ConnectRefusal.AcceptQueueFull (listener, destination, queued) ->
-            $"the accept queue of listener %O{listener} at %s{InternetEndpoint.toString destination} already holds %d{queued} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer -- timing this library cannot honour deterministically -- so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
+            $"the accept queue of listener %O{listener} at %s{Ipv4Endpoint.toString destination} already holds %d{queued} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer -- timing this library cannot honour deterministically -- so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
         | ConnectRefusal.SelfTuple endpoint ->
-            $"the resolved source %s{InternetEndpoint.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
+            $"the resolved source %s{Ipv4Endpoint.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
         | ConnectRefusal.DuplicateFourTuple (source, destination) ->
-            $"a connection from %s{InternetEndpoint.toString source} to %s{InternetEndpoint.toString destination} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
+            $"a connection from %s{Ipv4Endpoint.toString source} to %s{Ipv4Endpoint.toString destination} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
         | ConnectRefusal.ResetBeforeReport socket ->
             $"socket %O{socket}'s non-blocking connect completed, and its connection was reset before any connect reported the completion. Linux's retry finds the socket closed and answers the reset's pending error, or ECONNABORTED once an SO_ERROR read has taken it, and disconnects the socket, as for a refused connect; what that leaves of the socket's binding is unmeasured."
         | ConnectRefusal.SimultaneousOpen destination ->
-            $"destination %s{InternetEndpoint.toString destination} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open -- connecting the socket to itself -- which this library does not model."
+            $"destination %s{Ipv4Endpoint.toString destination} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open -- connecting the socket to itself -- which this library does not model."
         | ConnectRefusal.DarwinSynDropped destination ->
-            $"destination %s{InternetEndpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
+            $"destination %s{Ipv4Endpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
         | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
             $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
         | ConnectRefusal.Ipv6Destination (socket, address, port) ->
             let text = System.Net.IPAddress(address.AsSpan ()).ToString ()
             $"IPv6 socket %O{socket} would connect to [%s{text}]:%d{port}. This kernel has no IPv6 transport: an IPv6 socket reaches only IPv4 peers, through v4-mapped addresses (::ffff:a.b.c.d), with IPV6_V6ONLY off."
         | ConnectRefusal.DatagramGroupDestination (socket, destination) ->
-            $"datagram socket %O{socket} would connect to %s{InternetEndpoint.toString destination}, a broadcast or multicast destination. This kernel models no group membership and no interface to broadcast on, so it does not record such a peer. Model multicast and broadcast before connecting to either."
+            $"datagram socket %O{socket} would connect to %s{Ipv4Endpoint.toString destination}, a broadcast or multicast destination. This kernel models no group membership and no interface to broadcast on, so it does not record such a peer. Model multicast and broadcast before connecting to either."
 
 /// What `connect(2)`'s ladder reads out of the sockaddr it copied in, from a
 /// `struct sockaddr_in` on an IPv4 socket and a `struct sockaddr_in6` on an
@@ -254,14 +254,14 @@ type internal ConnectAddress =
         LengthVerdict : BindLengthVerdict
         /// The IPv4 destination, a v4-mapped one on an IPv6 socket, when the
         /// copy reached it.
-        Destination : InternetEndpoint option
+        Destination : Ipv4Endpoint option
         /// On an IPv6 socket, a destination that is not v4-mapped: the sixteen
         /// bytes of `sin6_addr` and the port.
         NativeDestination : (ImmutableArray<byte> * uint16) option
         /// The IPv4 address read with every byte past the copy as zero, which
-        /// Darwin judges a broadcast or multicast destination by; 0 for a
+        /// Darwin judges a broadcast or multicast destination by; `Ipv4Address.any` for a
         /// native IPv6 destination.
-        ZeroFilledAddress : uint32
+        ZeroFilledAddress : Ipv4Address
     }
 
 [<RequireQualifiedAccess>]
@@ -382,26 +382,24 @@ module UnixConnection =
         // aims at loopback. Measured for stream and datagram sockets alike
         // (`sockaddr-dgram-reconnect.c`, and `sockaddr-dgram-connect.c`, D, for
         // a socket with no concrete address).
-        let resolveWildcard (dest : InternetEndpoint) : InternetEndpoint =
-            if dest.Address <> InternetEndpoint.WildcardAddress then
+        let resolveWildcard (dest : Ipv4Endpoint) : Ipv4Endpoint =
+            if dest.Address <> Ipv4Address.any then
                 dest
             else
 
             let address =
                 match flavour, sock.Binding with
-                | SimulatedUnixFlavour.Linux, Some binding when
-                    binding.Endpoint.Address <> InternetEndpoint.WildcardAddress
-                    ->
+                | SimulatedUnixFlavour.Linux, Some binding when binding.Endpoint.Address <> Ipv4Address.any ->
                     binding.Endpoint.Address
                 | SimulatedUnixFlavour.Linux, _
-                | SimulatedUnixFlavour.Darwin, _ -> InternetEndpoint.LoopbackAddress
+                | SimulatedUnixFlavour.Darwin, _ -> Ipv4Address.loopback
 
             { dest with
                 Address = address
             }
 
-        let destinationIsLocal (address : uint32) : bool =
-            List.contains address system.Machine.LocalAddresses
+        let destinationIsLocal (address : Ipv4Address) : bool =
+            List.contains address system.Machine.LocalIpv4Addresses
             || system.Machine.LocalRoutes |> List.exists (Ipv4Prefix.contains address)
 
         // What a refusal delivery leaves in the socket's binding. Measured
@@ -417,7 +415,7 @@ module UnixConnection =
                 { binding with
                     Endpoint =
                         { binding.Endpoint with
-                            Address = binding.LockedAddress |> Option.defaultValue InternetEndpoint.WildcardAddress
+                            Address = binding.LockedAddress |> Option.defaultValue Ipv4Address.any
                         }
                 }
 
@@ -430,7 +428,7 @@ module UnixConnection =
         // already reset it.
         let ensureBoundFrom
             (current : SocketBinding option)
-            (dest : InternetEndpoint)
+            (dest : Ipv4Endpoint)
             (system : UnixSystem<'Task, 'Handler>)
             : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
@@ -465,7 +463,7 @@ module UnixConnection =
                         }
                     )
                 | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
-            | Some binding when binding.Endpoint.Address <> InternetEndpoint.WildcardAddress -> Ok (binding, system)
+            | Some binding when binding.Endpoint.Address <> Ipv4Address.any -> Ok (binding, system)
             | Some binding ->
                 // A client bound to the wildcard gets a concrete source
                 // address at connect — measured on both kernels, TCP and UDP
@@ -475,7 +473,7 @@ module UnixConnection =
                 // rather than merely the connection's record of it. Which
                 // source a kernel picks for any other destination is
                 // unmeasured.
-                if dest.Address <> InternetEndpoint.LoopbackAddress then
+                if dest.Address <> Ipv4Address.loopback then
                     Error (ConnectRefusal.SourceForNonLoopbackDestination (socketId, dest, true))
                 else
 
@@ -483,20 +481,20 @@ module UnixConnection =
                     { binding with
                         Endpoint =
                             { binding.Endpoint with
-                                Address = InternetEndpoint.LoopbackAddress
+                                Address = Ipv4Address.loopback
                             }
                     },
                     system
                 )
             | None ->
 
-            if dest.Address <> InternetEndpoint.LoopbackAddress then
+            if dest.Address <> Ipv4Address.loopback then
                 Error (ConnectRefusal.SourceForNonLoopbackDestination (socketId, dest, false))
             else
 
             let candidate (port : uint16) : SocketBinding =
                 {
-                    Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback port
                     // No bind(2) ran: a Linux refusal delivery reverts the
                     // address all the way to the wildcard.
                     LockedAddress = None
@@ -522,7 +520,7 @@ module UnixConnection =
 
 
         let ensureBound
-            (dest : InternetEndpoint)
+            (dest : Ipv4Endpoint)
             (system : UnixSystem<'Task, 'Handler>)
             : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
@@ -530,10 +528,7 @@ module UnixConnection =
 
         // The established/refused attempt, shared by both flavours once the
         // per-flavour screens have let an idle stream socket through.
-        let attemptStream
-            (dest : InternetEndpoint)
-            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
-            =
+        let attemptStream (dest : Ipv4Endpoint) : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
             let dest = resolveWildcard dest
 
             if not (destinationIsLocal dest.Address) then
@@ -551,7 +546,7 @@ module UnixConnection =
                             other.Kind = SocketKind.Stream
                             && binding.Endpoint.Port = dest.Port
                             && (binding.Endpoint.Address = dest.Address
-                                || InternetEndpoint.isWildcard binding.Endpoint)
+                                || Ipv4Endpoint.isWildcard binding.Endpoint)
                             ->
                             Some (otherId, other, listenState, binding)
                         | _ -> None
@@ -565,7 +560,7 @@ module UnixConnection =
             let listener =
                 match
                     listeners
-                    |> List.tryFind (fun (_, _, _, binding) -> not (InternetEndpoint.isWildcard binding.Endpoint))
+                    |> List.tryFind (fun (_, _, _, binding) -> not (Ipv4Endpoint.isWildcard binding.Endpoint))
                 with
                 | Some found -> Some found
                 | None -> List.tryHead listeners
@@ -727,7 +722,7 @@ module UnixConnection =
                 match sock.Binding with
                 | Some binding when
                     binding.Endpoint.Port = dest.Port
-                    && InternetEndpoint.addressesOverlap binding.Endpoint dest
+                    && Ipv4Endpoint.addressesOverlap binding.Endpoint dest
                     ->
                     Error (ConnectRefusal.SimultaneousOpen dest)
                 | _ ->
@@ -752,7 +747,7 @@ module UnixConnection =
                             match other.Binding with
                             | Some binding ->
                                 binding.Endpoint.Port = dest.Port
-                                && InternetEndpoint.addressesOverlap binding.Endpoint dest
+                                && Ipv4Endpoint.addressesOverlap binding.Endpoint dest
                             | None -> false
                         )
                     )
@@ -1027,7 +1022,7 @@ module UnixConnection =
                     | None ->
                         let candidate (port : uint16) : SocketBinding =
                             {
-                                Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                                Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                                 // No bind(2) ran.
                                 LockedAddress = None
                                 LockedPort = false
@@ -1121,7 +1116,7 @@ module UnixConnection =
                                                         { binding with
                                                             Endpoint =
                                                                 { binding.Endpoint with
-                                                                    Address = InternetEndpoint.WildcardAddress
+                                                                    Address = Ipv4Address.any
                                                                 }
                                                         })
                                                     sock.Addressing
@@ -1160,7 +1155,7 @@ module UnixConnection =
                     | _, Some binding ->
                         let address =
                             match binding.LockedAddress with
-                            | Some locked when locked <> InternetEndpoint.WildcardAddress -> Some locked
+                            | Some locked when locked <> Ipv4Address.any -> Some locked
                             | Some _
                             | None -> None
 
@@ -1177,8 +1172,8 @@ module UnixConnection =
                                 Some
                                     { binding with
                                         Endpoint =
-                                            InternetEndpoint.ofParts
-                                                (address |> Option.defaultValue InternetEndpoint.WildcardAddress)
+                                            Ipv4Endpoint.ofParts
+                                                (address |> Option.defaultValue Ipv4Address.any)
                                                 (port |> Option.defaultValue 0us)
                                     }
 
@@ -1242,7 +1237,7 @@ module UnixConnection =
                                 }
                             | None ->
                                 {
-                                    Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                                    Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                                     // No bind(2) ran.
                                     LockedAddress = None
                                     LockedPort = false
@@ -1305,7 +1300,7 @@ module UnixConnection =
                 // (this library models no way to set it); every other such
                 // connect succeeds, aimed at a group or a broadcast this
                 // library cannot carry.
-                if flavour = SimulatedUnixFlavour.Linux && dest.Address = System.UInt32.MaxValue then
+                if flavour = SimulatedUnixFlavour.Linux && dest.Address = Ipv4Address.broadcast then
                     failPrepared UnixError.EACCES
                 else
                     Error (ConnectRefusal.DatagramGroupDestination (socketId, dest))
@@ -1413,7 +1408,7 @@ module UnixConnection =
                 ZeroFilledAddress =
                     destination
                     |> Option.map (fun endpoint -> endpoint.Address)
-                    |> Option.defaultValue 0u
+                    |> Option.defaultValue Ipv4Address.any
             }
         | SocketDomain.Unix ->
             failwith

@@ -134,8 +134,8 @@ type internal UnixMachineState =
             /// Only the Linux flavour reads it, through `TcpBufferSizing`.
             TcpSendSpaceMax : int
             /// The IPv4 addresses this machine holds. Host configuration; see
-            /// `UnixSystem.defaultLocalAddresses`.
-            LocalAddresses : uint32 list
+            /// `UnixSystem.defaultLocalIpv4Addresses`.
+            LocalIpv4Addresses : Ipv4Address list
             /// Prefixes this machine has a local route to, which Linux will bind any
             /// address inside and Darwin ignores. See
             /// `UnixSystem.defaultLocalRoutes`.
@@ -310,7 +310,7 @@ type internal EphemeralPortUse =
     /// four-tuple to `destination`: a real kernel selects a connect-time port
     /// from its connection table, so a port held towards another destination
     /// is free.
-    | ConnectTo of destination : InternetEndpoint
+    | ConnectTo of destination : Ipv4Endpoint
 
 [<RequireQualifiedAccess>]
 module UnixMachineState =
@@ -852,10 +852,10 @@ module UnixMachineState =
 
     /// Whether `first` and `second` name a common address: equal, or either
     /// the wildcard.
-    let private addressesOverlap (first : InternetEndpoint) (second : InternetEndpoint) : bool =
+    let private addressesOverlap (first : Ipv4Endpoint) (second : Ipv4Endpoint) : bool =
         first.Address = second.Address
-        || first.Address = InternetEndpoint.WildcardAddress
-        || second.Address = InternetEndpoint.WildcardAddress
+        || first.Address = Ipv4Address.any
+        || second.Address = Ipv4Address.any
 
     /// Whether a TCP connection endpoint whose socket has gone still occupies
     /// `endpoint`'s port.
@@ -869,8 +869,8 @@ module UnixMachineState =
     /// docs/plans/2026-10-07-tcp-byte-transfer), the endpoint of a socket
     /// that closed over unread bytes is free to a fresh bind, where after a
     /// FIN it is not.
-    let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
-        let heldFrom (connectionId : ConnectionId) (held : InternetEndpoint) (isServerEnd : bool) : bool =
+    let private orphanedConnectionOccupies (endpoint : Ipv4Endpoint) (machine : UnixMachineState) : bool =
+        let heldFrom (connectionId : ConnectionId) (held : Ipv4Endpoint) (isServerEnd : bool) : bool =
             machine.Sockets
             |> Map.exists (fun _ socket ->
                 match socket.Phase with
@@ -900,8 +900,8 @@ module UnixMachineState =
     /// `destination`, in either orientation. One a reset has reached does
     /// not (`resetReleasedTuple`).
     let private connectionOccupiesTuple
-        (source : InternetEndpoint)
-        (destination : InternetEndpoint)
+        (source : Ipv4Endpoint)
+        (destination : Ipv4Endpoint)
         (machine : UnixMachineState)
         : bool
         =

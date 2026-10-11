@@ -72,7 +72,7 @@ module TestUnixSystemInvariants =
         let kind = if stream then SocketKind.Stream else SocketKind.SeqPacket
 
         let phase =
-            SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us)
+            SocketPhase.DatagramPeer (Ipv4Endpoint.ofParts Ipv4Address.loopback 80us)
 
         let forged =
             (UnixSystemState.withFileDescriptors
@@ -163,10 +163,8 @@ module TestUnixSystemInvariants =
                                     [
                                         connection,
                                         {
-                                            ClientAddress =
-                                                InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
-                                            ServerAddress =
-                                                InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
+                                            ClientAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 40000us
+                                            ServerAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 80us
                                             // No socket is the server end: it has closed.
                                             Transfer =
                                                 TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
@@ -580,7 +578,7 @@ module TestUnixSystemInvariants =
     let private boundAt (port : uint16) : SocketBinding option =
         Some
             {
-                Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback port
                 LockedAddress = None
                 LockedPort = false
             }

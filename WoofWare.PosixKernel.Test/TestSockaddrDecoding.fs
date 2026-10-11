@@ -49,15 +49,15 @@ module TestSockaddrDecoding =
             | SimulatedUnixFlavour.Darwin -> int blob.[1]
             | SimulatedUnixFlavour.Linux -> int (BinaryPrimitives.ReadUInt16LittleEndian (ReadOnlySpan (blob, 0, 2)))
 
-        let private endpoint (blob : byte[]) : InternetEndpoint =
-            InternetEndpoint.ofParts
-                (BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan (blob, 4, 4)))
+        let private endpoint (blob : byte[]) : Ipv4Endpoint =
+            Ipv4Endpoint.ofParts
+                (Ipv4Address (BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan (blob, 4, 4))))
                 (BinaryPrimitives.ReadUInt16BigEndian (ReadOnlySpan (blob, 2, 2)))
 
         /// `sin_addr`, taking every byte the copy did not reach as zero.
-        let private zeroFilled (blob : byte[]) (length : int) : uint32 =
+        let private zeroFilled (blob : byte[]) (length : int) : Ipv4Address =
             let word = [| for i in 4..7 -> if i < length then blob.[i] else 0uy |]
-            BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan word)
+            Ipv4Address (BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan word))
 
         let decode (platform : SimulatedUnixPlatform) (blob : byte[]) (length : int) : CopiedInternetSockaddr =
             let zeroFilledAddress = zeroFilled blob length
@@ -89,8 +89,8 @@ module TestSockaddrDecoding =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// The socket a call is made on, before it is made.
     [<RequireQualifiedAccess>]
@@ -111,7 +111,7 @@ module TestSockaddrDecoding =
         =
         let system =
             UnixSystem.initial platform
-            |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
+            |> UnixBootImage.withLocalIpv4Addresses UnixSystem.defaultLocalIpv4Addresses []
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let listen (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -193,7 +193,7 @@ module TestSockaddrDecoding =
                         3,
                         Gen.elements [ loopback 6000us ; loopback 5000us ; loopback 0us ]
                         |> Gen.map Some
-                        1, Gen.constant (Some (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 6000us))
+                        1, Gen.constant (Some (Ipv4Endpoint.ofParts Ipv4Address.any 6000us))
                         1, Gen.constant None
                     ]
 

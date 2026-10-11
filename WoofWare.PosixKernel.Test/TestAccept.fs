@@ -31,7 +31,7 @@ module TestAccept =
         { system with
             Machine =
                 { system.Machine with
-                    LocalAddresses = []
+                    LocalIpv4Addresses = []
                     LocalRoutes = []
                 }
         }
@@ -40,11 +40,11 @@ module TestAccept =
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// The server address every listener below is bound at.
-    let private serverAddress : InternetEndpoint = loopback 5000us
+    let private serverAddress : Ipv4Endpoint = loopback 5000us
 
     /// Put `socket` in the table and open a descriptor onto it.
     ///

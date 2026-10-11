@@ -51,7 +51,7 @@ module SocketLadder =
         | other -> failwith $"unknown kind %s{other}"
 
     let loopback (port : uint16) =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// The port a row's call was aimed at, by kind: a listener for a stream
     /// socket, a bound socket for a datagram one.
@@ -75,10 +75,10 @@ module SocketLadder =
     let setUp (platform : SimulatedUnixPlatform) (kind : SocketKind) (state : State) : int * UnixSystem<int, string> =
         let system =
             UnixSystem.initial platform
-            |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
+            |> UnixBootImage.withLocalIpv4Addresses UnixSystem.defaultLocalIpv4Addresses []
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        let bindTo (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+        let bindTo (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"setUp: bind answered %A{other}"
@@ -108,7 +108,7 @@ module SocketLadder =
             match state with
             | State.Fresh -> system
             | State.Bound -> bindTo fd (loopback 0us) system
-            | State.WildcardBound -> bindTo fd (InternetEndpoint.ofParts 0u 0us) system
+            | State.WildcardBound -> bindTo fd (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us) system
             | State.Connected ->
                 match
                     CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform (loopback (peerPort kind))) system
@@ -124,10 +124,11 @@ module SocketLadder =
         | Some (OpenFileTarget.Socket socketId) -> UnixMachineState.socket socketId system.Machine
         | other -> failwith $"fd %d{fd} names %A{other}"
 
-    let local (socket : SocketDescription) : InternetEndpoint =
+    let local (socket : SocketDescription) : Ipv4Endpoint =
         match socket.Binding with
         | Some binding -> binding.Endpoint
-        | None -> InternetEndpoint.ofParts 0u 0us
+        | None -> Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us
 
-    let dotted (address : uint32) : string =
+    let dotted (address : Ipv4Address) : string =
+        let (Ipv4Address address) = address
         $"%d{address >>> 24}.%d{(address >>> 16) &&& 0xFFu}.%d{(address >>> 8) &&& 0xFFu}.%d{address &&& 0xFFu}"

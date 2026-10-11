@@ -30,8 +30,8 @@ module internal ForgedConnection =
                         Map.add
                             connection
                             {
-                                ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
-                                ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
+                                ClientAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 40000us
+                                ServerAddress = Ipv4Endpoint.ofParts Ipv4Address.loopback 80us
                                 Transfer = transfer
                             }
                             system.Machine.Connections

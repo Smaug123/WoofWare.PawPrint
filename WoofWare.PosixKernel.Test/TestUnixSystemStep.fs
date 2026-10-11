@@ -42,7 +42,7 @@ module TestUnixSystemStep =
     /// The boot image of a simulated process on the flavour asked for, on a
     /// machine with no addresses.
     let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
-        UnixSystem.initial platform |> UnixBootImage.withLocalAddresses [] []
+        UnixSystem.initial platform |> UnixBootImage.withLocalIpv4Addresses [] []
 
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
@@ -722,7 +722,7 @@ module TestUnixSystemStep =
             [
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
-                SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 9us)
+                SocketPhase.DatagramPeer (Ipv4Endpoint.ofParts Ipv4Address.loopback 9us)
             ]
 
         for platform in [ linux ; darwin ] do
@@ -4877,8 +4877,8 @@ module TestUnixSystemStep =
                     SocketAddressing.replaceBinding
                         (Some
                             {
-                                Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us
-                                LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback 8080us
+                                LockedAddress = Some Ipv4Address.loopback
                                 LockedPort = true
                             })
                         socketDescription.Addressing
@@ -4897,7 +4897,7 @@ module TestUnixSystemStep =
         | Ok (GetSockNameAnswer.Reported (copiedOut, reportedLength)) -> copiedOut, reportedLength
         | other -> failwith $"expected a reported address, got %O{other}"
 
-    let private sockNameReported (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : InternetEndpoint * int =
+    let private sockNameReported (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : Ipv4Endpoint * int =
         let copiedOut, reportedLength = sockNameCopied answer
         CopyOut.endpoint copiedOut, reportedLength
 
@@ -4915,7 +4915,7 @@ module TestUnixSystemStep =
 
             UnixSocket.getsockname fd UserBuffer.Mapped 16u system
             |> sockNameReported
-            |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us, 16)
+            |> shouldEqual (Ipv4Endpoint.ofParts Ipv4Address.any 0us, 16)
 
     [<Test>]
     let ``getsockname reports where a bound socket is bound`` () : unit =
@@ -4926,7 +4926,7 @@ module TestUnixSystemStep =
 
             UnixSocket.getsockname fd UserBuffer.Mapped 16u system
             |> sockNameReported
-            |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
+            |> shouldEqual (Ipv4Endpoint.ofParts Ipv4Address.loopback 8080us, 16)
 
     [<Test>]
     let ``the declared length bounds what is written and not what is reported`` () : unit =

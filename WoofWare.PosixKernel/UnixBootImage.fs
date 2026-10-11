@@ -633,7 +633,7 @@ module UnixBootImage =
         |> withMachine image
         |> Ok
 
-    /// Set the IPv4 addresses this machine holds (`addresses`, host order) and
+    /// Set the IPv4 addresses this machine holds (`addresses`) and
     /// the prefixes of its local routes (`routes`). Together they decide which
     /// addresses `bind(2)` takes, and which destinations `connect(2)` treats as
     /// this machine's own. The wildcard always binds. Beyond that the flavours
@@ -646,8 +646,8 @@ module UnixBootImage =
     /// repeat or overlap, as on a real machine: every Linux's local table holds
     /// both `127.0.0.0/8` and `127.0.0.1/32`, and an address assigned to two
     /// interfaces holds two routes to one prefix.
-    let withLocalAddresses<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (addresses : uint32 list)
+    let withLocalIpv4Addresses<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (addresses : Ipv4Address list)
         (routes : Ipv4Prefix list)
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
@@ -655,7 +655,7 @@ module UnixBootImage =
         let machine = image.Machine
 
         { machine with
-            LocalAddresses = addresses
+            LocalIpv4Addresses = addresses
             LocalRoutes = routes
         }
         |> withMachine image
