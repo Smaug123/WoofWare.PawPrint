@@ -976,16 +976,16 @@ module TestKqueue =
             |> fst
             |> shouldEqual (KeventOutcome.Failed UnixError.EINTR)
 
-        SyscallInterruption.ruleOf (
-            ParkedSyscall.Kevent
+        SyscallInterruption.ruleOf
+            SimulatedUnixFlavour.Darwin
+            (ParkedSyscall.Kevent
                 {
                     Kqueue = OpenFileDescriptionId 0L
                     Fd = 3
                     MaxEvents = 1
                     Buffer = UserBuffer.Mapped
                     Deadline = None
-                }
-        )
+                })
         |> shouldEqual SignalRestartRule.FailsWithEintr
 
     // ------------------------------------------------------------------

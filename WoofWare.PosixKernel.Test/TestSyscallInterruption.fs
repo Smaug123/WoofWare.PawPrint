@@ -650,13 +650,155 @@ module TestSyscallInterruption =
             | None -> failwith $"%O{sleep} did not park"
 
         for sleep in sleepsOn SimulatedUnixFlavour.Linux do
-            SyscallInterruption.ruleOf (parked sleep)
+            SyscallInterruption.ruleOf SimulatedUnixFlavour.Linux (parked sleep)
             |> shouldEqual (
                 if restartable sleep then
                     SignalRestartRule.RestartsUnderSaRestart
                 else
                     SignalRestartRule.FailsWithEintr
             )
+
+    /// One park of each `ParkedSyscall` case. `ruleOf` reads the case alone,
+    /// so one of each covers it.
+    let private oneParkOfEach : ParkedSyscall list =
+        let description = OpenFileDescriptionId 0L
+        let waiting = SleepTarget.Waiting (description, 3)
+
+        [
+            ParkedSyscall.EpollWait
+                {
+                    Epoll = description
+                    MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
+                    Deadline = None
+                }
+            ParkedSyscall.Kevent
+                {
+                    Kqueue = description
+                    Fd = 3
+                    MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
+                    Deadline = None
+                }
+            ParkedSyscall.Flock
+                {
+                    Requester = description
+                    Mode = FlockMode.Exclusive
+                }
+            ParkedSyscall.Poll
+                {
+                    Entries = [ ParkedPollEntry.Watched (3, description, 1s) ]
+                    Deadline = None
+                }
+            ParkedSyscall.KqueuePoll
+                {
+                    Entries =
+                        [
+                            {
+                                Fd = 3
+                                Events = 1s
+                            }
+                        ]
+                    Queue = PollQueueId 0L
+                    Deadline = None
+                }
+            ParkedSyscall.Accept
+                {
+                    Listener = waiting
+                    Destination = UserBuffer.Mapped
+                    DeclaredLength = 16u
+                }
+            ParkedSyscall.PipeRead
+                {
+                    Reader = waiting
+                    Buffer = UserBuffer.Mapped
+                    Count = 1
+                }
+            ParkedSyscall.PipeWrite
+                {
+                    Writer = waiting
+                    Buffer = UserBuffer.Mapped
+                    Count = 1
+                    Written = 0
+                    ReadsSeen = 0L
+                }
+            ParkedSyscall.ConnectionRead
+                {
+                    Socket = waiting
+                    Buffer = UserBuffer.Mapped
+                    Count = 1
+                    Call = TcpReceiveCall.Read
+                }
+            ParkedSyscall.ConnectionWrite
+                {
+                    Socket = waiting
+                    Buffer = UserBuffer.Mapped
+                    Count = 1
+                    Written = 0
+                    Call = TcpSendCall.Write
+                }
+            ParkedSyscall.SigSuspend
+            ParkedSyscall.Sleep
+                {
+                    Deadline = 1L
+                    Remainder = SleepRemainder.Unreported
+                }
+            ParkedSyscall.FifoOpen
+                {
+                    Opener = description
+                    Descriptor = 3
+                    PartnerOpens = 0L
+                }
+        ]
+
+    /// The measured rule, per flavour, stated here rather than read from
+    /// `ruleOf`: `flock` and `accept` as this module's docstring says, and so
+    /// pipe and connection transfers (`pipe-blocking.c` and `tcp-blocking.c`);
+    /// `poll`, `epoll_wait` and `kevent` as it says, and so `sigsuspend`
+    /// (`sigsuspend-mask.c`) and `nanosleep`; each the same on both flavours.
+    /// A FIFO open restarts under SA_RESTART on Linux 6.18.5, and answers
+    /// EINTR under it on Darwin 27.0.0.
+    let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
+        match parked with
+        | ParkedSyscall.Flock _
+        | ParkedSyscall.Accept _
+        | ParkedSyscall.PipeRead _
+        | ParkedSyscall.PipeWrite _
+        | ParkedSyscall.ConnectionRead _
+        | ParkedSyscall.ConnectionWrite _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.EpollWait _
+        | ParkedSyscall.Kevent _
+        | ParkedSyscall.Poll _
+        | ParkedSyscall.KqueuePoll _
+        | ParkedSyscall.SigSuspend
+        | ParkedSyscall.Sleep _ -> SignalRestartRule.FailsWithEintr
+        | ParkedSyscall.FifoOpen _ ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> SignalRestartRule.RestartsUnderSaRestart
+            | SimulatedUnixFlavour.Darwin -> SignalRestartRule.FailsWithEintr
+
+    [<Test>]
+    let ``the rule of every park on either flavour is the measured one`` () : unit =
+        let caseName (parked : ParkedSyscall) : string =
+            let case, _ =
+                Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields (parked, typeof<ParkedSyscall>)
+
+            case.Name
+
+        oneParkOfEach
+        |> List.map caseName
+        |> List.sort
+        |> shouldEqual (
+            Microsoft.FSharp.Reflection.FSharpType.GetUnionCases typeof<ParkedSyscall>
+            |> Seq.map (fun case -> case.Name)
+            |> Seq.sort
+            |> List.ofSeq
+        )
+
+        for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+            for parked in oneParkOfEach do
+                (flavour, caseName parked, SyscallInterruption.ruleOf flavour parked)
+                |> shouldEqual (flavour, caseName parked, measuredRule flavour parked)
 
     [<Test>]
     let ``a signal sent to the process interrupts the leader asleep in an accept`` () : unit =

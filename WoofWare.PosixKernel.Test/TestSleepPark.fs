@@ -71,8 +71,9 @@ module TestSleepPark =
 
             ParkedSyscall.descriptions parked |> shouldEqual []
 
-            SyscallInterruption.ruleOf parked
-            |> shouldEqual SignalRestartRule.FailsWithEintr
+            for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+                SyscallInterruption.ruleOf flavour parked
+                |> shouldEqual SignalRestartRule.FailsWithEintr
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen sleepGen) property)
 
