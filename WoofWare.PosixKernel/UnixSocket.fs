@@ -106,34 +106,71 @@ type BindAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `bind`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every
+/// one. It names the reasons it has something to add to through
+/// `BindRefusal.Reason`, and ends its match with a wildcard, where
+/// `BindRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type BindRefusal =
-    /// The screens every sockaddr-taking call shares had no answer.
+    internal
+    /// See `BindRefusal.Reason.Copy`.
     | Copy of SockaddrCopyRefusal
-    /// The caller asked to bind a broadcast or multicast address, and the bind
-    /// would succeed.
-    ///
-    /// Refused rather than recorded: this library models no group membership
-    /// and no interface to receive or broadcast on, so nothing downstream could
-    /// honour the binding. Every bind of such an address that fails is answered
-    /// with its measured errno.
+    /// See `BindRefusal.Reason.UnmodelledMulticast`.
     | UnmodelledMulticast of socket : SocketId * address : Ipv4Address
-    /// The bind asked for any free port and every port in the ephemeral range is
-    /// taken.
-    ///
-    /// A real kernel reports `EADDRINUSE` here, but that has not been measured
-    /// under this kernel's own allocator and inventing it would be a guess.
+    /// See `BindRefusal.Reason.EphemeralPortsExhausted`.
     | EphemeralPortsExhausted of range : uint16 * uint16
-    /// An IPv6 socket asked to bind an address this kernel cannot hold for
-    /// it, and nothing judged before the address answers: a native IPv6
-    /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
-    /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard `::ffff:0.0.0.0`,
-    /// whose conflicts with other sockets Darwin decides differently from the
-    /// IPv4 wildcard's (measured). `address` is `sin6_addr`.
+    /// See `BindRefusal.Reason.UnmodelledIpv6Address`.
     | UnmodelledIpv6Address of socket : SocketId * address : Ipv6Address
 
 [<RequireQualifiedAccess>]
 module BindRefusal =
+    /// The reasons this kernel refuses a `bind`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The screens every sockaddr-taking call shares had no answer, for
+        /// the reason given.
+        let (|Copy|_|) (refusal : BindRefusal) : SockaddrCopyRefusal option =
+            match refusal with
+            | BindRefusal.Copy refusal -> Some refusal
+            | _ -> None
+
+        /// The caller asked to bind a broadcast or multicast address, and the
+        /// bind would succeed. Gives the socket, then the address.
+        ///
+        /// Refused rather than recorded: this library models no group
+        /// membership and no interface to receive or broadcast on, so nothing
+        /// downstream could honour the binding. Every bind of such an address
+        /// that fails is answered with its measured errno.
+        let (|UnmodelledMulticast|_|) (refusal : BindRefusal) : (SocketId * Ipv4Address) option =
+            match refusal with
+            | BindRefusal.UnmodelledMulticast (socket, address) -> Some (socket, address)
+            | _ -> None
+
+        /// The bind asked for any free port and every port in the ephemeral
+        /// range is taken. Gives the range's lowest port, then its highest.
+        ///
+        /// A real kernel reports `EADDRINUSE` here, but that has not been
+        /// measured under this kernel's own allocator and inventing it would be
+        /// a guess.
+        let (|EphemeralPortsExhausted|_|) (refusal : BindRefusal) : (uint16 * uint16) option =
+            match refusal with
+            | BindRefusal.EphemeralPortsExhausted (low, high) -> Some (low, high)
+            | _ -> None
+
+        /// An IPv6 socket asked to bind an address this kernel cannot hold for
+        /// it, and nothing judged before the address answers: a native IPv6
+        /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
+        /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard
+        /// `::ffff:0.0.0.0`, whose conflicts with other sockets Darwin decides
+        /// differently from the IPv4 wildcard's (measured). Gives the socket,
+        /// then the address, which is `sin6_addr`.
+        let (|UnmodelledIpv6Address|_|) (refusal : BindRefusal) : (SocketId * Ipv6Address) option =
+            match refusal with
+            | BindRefusal.UnmodelledIpv6Address (socket, address) -> Some (socket, address)
+            | _ -> None
+
     /// What this kernel knows about why it cannot bind. The client supplies its
     /// own half -- which entry point asked, and which descriptor.
     let describe (refusal : BindRefusal) : string =

@@ -4989,11 +4989,10 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            let refuse (refusal : BindRefusal) : NativeHandlerResult option =
+            let refuseCopy (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
                 match refusal with
-                | BindRefusal.Copy (SockaddrCopyRefusal.Buffer refusal) ->
-                    failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (_, domain)) ->
+                | SockaddrCopyRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | SockaddrCopyRefusal.UnmodelledDomain (_, domain) ->
                     // The library says why no kernel answer exists; PawPrint says
                     // how a guest could be holding such a socket, which is a fact
                     // about CoreLib rather than about any kernel.
@@ -5005,13 +5004,15 @@ module NativeSystemNative =
                             failwith
                                 $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
 
-                    failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal} %s{reachedBy}"
-                | BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledInet6Kind _)
-                | BindRefusal.Copy (SockaddrCopyRefusal.DarwinShortInet6Sockaddr _)
-                | BindRefusal.UnmodelledIpv6Address _
-                | BindRefusal.UnmodelledMulticast _
-                | BindRefusal.EphemeralPortsExhausted _ ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
+                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
+                | SockaddrCopyRefusal.UnmodelledInet6Kind _
+                | SockaddrCopyRefusal.DarwinShortInet6Sockaddr _ ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
+
+            let refuse (refusal : BindRefusal) : NativeHandlerResult option =
+                match refusal with
+                | BindRefusal.Reason.Copy refusal -> refuseCopy refusal
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
 
             // The shim's `setsockopt`. Its value is the shim's own stack `int`,
             // so the value buffer is real storage holding 1 and its length is
@@ -5074,7 +5075,7 @@ module NativeSystemNative =
                     (uint32 declaredLength)
                     state.Kernel.System
             with
-            | Error refusal -> refuse (BindRefusal.Copy refusal)
+            | Error refusal -> refuseCopy refusal
             | Ok admission ->
 
             let copied =

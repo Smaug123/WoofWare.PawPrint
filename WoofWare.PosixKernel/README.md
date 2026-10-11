@@ -247,6 +247,54 @@ Every refusal type has a `describe`, which says in English what the library know
 The library does not know what the client called the value or which of its entry points made the call, so it names neither; the client does that.
 The errors of the parsers that build a value, such as `UnixByteString.ofString`'s, are not refusals, and say what was wrong with the input.
 
+A refusal is a feature request, not an outcome a client handles in normal operation.
+The library cannot answer, either because its model of the domain is not complete (a behaviour nobody has measured or modelled yet) or because the client asked for something it cannot represent.
+Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
+Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
+A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
+`BindRefusal` is open in this way; each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+
+```fsharp
+open System.Collections.Immutable
+open WoofWare.PosixKernel
+
+let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
+    match result with
+    | Ok value -> value
+    | Error refusal -> failwith (describe refusal)
+
+let system : UnixSystem<int, unit> =
+    let launch =
+        ProcessLaunch.create SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> orFail LaunchTableRefusal.describe
+
+    UnixSystem.initial SimulatedUnixPlatform.linuxX64
+    |> UnixBootImage.boot launch
+    |> orFail LaunchRefusal.describe
+
+// socket(AF_INET, SOCK_STREAM, 0), in Linux's numbering.
+let fd, socketSystem =
+    match UnixSocket.socket 2 1 0 system |> orFail SocketRefusal.describe with
+    | Ok (fd, system) -> fd, system
+    | Error error -> failwith $"socket failed with %O{error}"
+
+// bind to 224.0.0.1:5000, as Linux's struct sockaddr_in: the family in host order, then the
+// port and the address in network order.
+let multicast : ImmutableArray<byte> =
+    ImmutableArray.CreateRange [| 2uy ; 0uy ; 0x13uy ; 0x88uy ; 224uy ; 0uy ; 0uy ; 1uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy |]
+
+match UnixSocket.bind fd UserBuffer.Mapped 16u multicast socketSystem with
+| Error (BindRefusal.Reason.UnmodelledMulticast (_, address)) ->
+    printfn "no multicast here, so no bind of %s" (Ipv4Address.toString address)
+| Error refusal -> failwith (BindRefusal.describe refusal)
+| Ok (answer, _) -> printfn "bind answered %O" answer
+
+// Prints:
+// no multicast here, so no bind of 224.0.0.1
+```
+
+A few types whose names end in "Refusal" are not refusals in this sense, and keep public cases: `BufferRefusal`, which classifies the client's own buffer; `Ipv4PrefixRefusal` and `SignalMaskRefusal`, the errors of parsers; and `DirectorySourceRefusal`, a flavour's rule.
+
 A setter of the machine's boot configuration or of a process's launch refuses the same way.
 Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal`, `FileSystemSeedFault` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
 
@@ -255,11 +303,14 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 
 ### Unions that gain cases
 
-From version 1.0, adding a case to any public union is a breaking change, and comes only in a major version.
+From version 1.0, adding a case to any union whose cases are public is a breaking change, and comes only in a major version.
 F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
-The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a refusal case.
+The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a reason to refuse.
 Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` and `WakePrimitive.FifoPartnerOpened`.
 Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
+
+An open refusal type's cases are not public (see "Answers and refusals"), so a client built against an older version meets a reason added since in its wildcard, and a minor version may add one.
+Removing a reason's pattern, or changing what it hands back, is breaking; a reason the library no longer produces keeps a pattern that never matches.
 Before 1.0, any version may change anything.
 
 ### The syscalls

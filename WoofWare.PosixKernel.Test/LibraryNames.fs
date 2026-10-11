@@ -23,13 +23,26 @@ module LibraryNames =
         | -1 -> name
         | i -> name.Substring (0, i)
 
+    /// Whether a compiled name is a partial active pattern's, `|Name|_|`, which
+    /// the compiler marks as a special name.
+    let isPartialActivePattern (name : string) : bool =
+        name.Length > "||_|".Length && name.StartsWith "|" && name.EndsWith "|_|"
+
     /// The name a member has in F# source, where the compiler gave it another.
+    /// A partial active pattern, compiled as `|Name|_|`, is written `Name`.
     let sourceName (m : MemberInfo) : string =
         m.GetCustomAttributes (typeof<CompilationSourceNameAttribute>, false)
         |> Seq.cast<CompilationSourceNameAttribute>
         |> Seq.tryHead
         |> Option.map (fun (a : CompilationSourceNameAttribute) -> a.SourceName)
-        |> Option.defaultValue (withoutArity m.Name)
+        |> Option.defaultWith (fun () ->
+            let name = withoutArity m.Name
+
+            if isPartialActivePattern name then
+                name.Substring (1, name.Length - "|_|".Length - 1)
+            else
+                name
+        )
 
     /// A type's name as a docstring writes it: a module without the `Module`
     /// suffix the compiler adds when a type shares its name, and a nested type
@@ -81,7 +94,10 @@ module LibraryNames =
                         yield $"%s{typeName}.%s{sourceName p}", reachable t && getter.IsPublic
 
                 for m in t.GetMethods allMembers do
-                    if not m.IsSpecialName && not (m.Name.Contains "@") then
+                    if
+                        (not m.IsSpecialName || isPartialActivePattern m.Name)
+                        && not (m.Name.Contains "@")
+                    then
                         // A union case with fields is made by a method `New<Case>`.
                         let name =
                             if kindOf m = Some SourceConstructFlags.UnionCase && m.Name.StartsWith "New" then
