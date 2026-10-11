@@ -1028,8 +1028,12 @@ After an intended change to the API, regenerate the file and commit it with the 
 nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "FullyQualifiedName~TestSurface&Name~Update"
 ```
 
-(The NUnit adapter cannot parse a filter value containing spaces, so the test's full name `Update API surface` will not do.)
+(The NUnit adapter cannot parse a filter value containing spaces, so the filter cannot give the test's full name, which has them.)
 A conflict in `SurfaceBaseline.txt` after a rebase is resolved by regenerating the file, never by hand.
+
+The file also records the order of each union's cases: F# numbers the cases of a union of more than one case in a nested `Tags` class, and the file gives each tag's value, as in `WoofWare.PosixKernel.AbsoluteUnixPathError+Tags.ContainsNul [static field]: int = 2`.
+A second test fails if a union has gained a case anywhere but at its end, or has lost or reordered cases, since the version the file records (see "Unions that gain cases" above).
+Before 1.0 such a change may still be made deliberately, by the same command.
 
 ## Licence
 

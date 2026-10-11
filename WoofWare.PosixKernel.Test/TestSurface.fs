@@ -7,7 +7,9 @@ open WoofWare.PosixKernel
 
 /// The library's public API, held to `WoofWare.PosixKernel/SurfaceBaseline.txt`, which the
 /// library embeds. A change to the API fails the first test until the baseline is regenerated
-/// by the second and committed, so every API change shows up in review as a diff of that file.
+/// by `Update API surface` and committed, so every API change shows up in review as a diff of
+/// that file. The baseline also records the tag of each case of each public union, and a union
+/// that gains a case anywhere but at its end, or loses or reorders cases, fails a second test.
 [<TestFixture>]
 module TestSurface =
 
@@ -15,6 +17,35 @@ module TestSurface =
 
     [<Test>]
     let ``Ensure API surface has not been modified`` () : unit = ApiSurface.assertIdentical assembly
+
+    [<Test>]
+    let ``Every public union keeps its committed cases at their tags`` () : unit =
+        let committed =
+            ApiSurface.ofAssemblyBaseline assembly
+            |> ApiSurface.toString
+            |> UnionCaseOrder.parse
+
+        let current =
+            ApiSurface.ofAssembly assembly |> ApiSurface.toString |> UnionCaseOrder.parse
+
+        match UnionCaseOrder.violations committed current with
+        | [] -> ()
+        | violations ->
+            let listed =
+                violations
+                |> List.map (fun (v : CaseOrderViolation) -> "  " + UnionCaseOrder.describe v)
+                |> String.concat "\n"
+
+            Assert.Fail (
+                "Public unions no longer keep the cases SurfaceBaseline.txt records at the tags it records:\n"
+                + listed
+                + "\nAn F# client compiled against the committed API may identify a case by its tag, which is "
+                + "its position, so it would run the wrong arm for these. From 1.0 a union may only gain cases "
+                + "at its end (README, \"Unions that gain cases\"). Before 1.0 such a change may be made "
+                + "deliberately: regenerate the baseline with `nix develop -c dotnet test "
+                + "WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "
+                + "\"FullyQualifiedName~TestSurface&Name~Update\"` and commit it with the change."
+            )
 
     /// Rewrites the source tree's baseline from the built assembly, and touches nothing else.
     [<Test ; Explicit>]
