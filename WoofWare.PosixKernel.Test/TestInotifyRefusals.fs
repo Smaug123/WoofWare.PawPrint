@@ -162,6 +162,24 @@ module TestInotifyRefusals =
         drain instance system |> fst |> shouldEqual "(none)"
 
     [<Test>]
+    let ``a write clearing set-ID bits through a name since unlinked is refused under a watch with IN_EXCL_UNLINK asking for IN_ATTRIB``
+        ()
+        : unit
+        =
+        // Found by Codex, and measured (`inotify-delivery-probe.c` row Z
+        // write-unlinked-excl-unlink): IN_EXCL_UNLINK keeps out the write's
+        // IN_MODIFY, but not the IN_ATTRIB of the bits it clears.
+        let system =
+            boot unprivileged [ "z", directoryOwnedBy 1000u 0o777 [ "f", fileOwnedBy 1000u "x" ] ]
+
+        let system = chmod "z/f" 0o6755 system
+        let fd, system = openFd writable "z/f" 0 system
+        let system = unlink "z/f" system
+        let instance, system = init1 nonblock system
+        let _, system = watch instance "z" (attrib ||| modify ||| 0x04000000u) system
+        refused throughDescriptor (fun () -> write fd "y" system)
+
+    [<Test>]
     let ``fchmod is refused under a watch with IN_EXCL_UNLINK on a directory not naming the file`` () : unit =
         let _, fd, system = watchingThenOpen "u" (attrib ||| 0x04000000u)
 

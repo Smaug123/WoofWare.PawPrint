@@ -289,6 +289,20 @@ static void sectionZ(void)
             line("Z", single[i].name, "%s", drain(fd));
             close(fd);
         }
+        // A write through a name since unlinked, clearing set-ID bits, under a
+        // watch on the old directory with IN_EXCL_UNLINK.
+        fresh("z/d");
+        writeFile("z/d/f", "hello");
+        check("chmod", chmod("z/d/f", 06755));
+        int w = open("z/d/f", O_WRONLY);
+        check("open", w);
+        check("unlink", unlink("z/d/f"));
+        fd = inotify_init1(IN_NONBLOCK);
+        check("inotify_add_watch", inotify_add_watch(fd, "z/d", IN_ATTRIB | IN_MODIFY | IN_EXCL_UNLINK));
+        check("write", (int)write(w, "y", 1));
+        line("Z", "write-unlinked-excl-unlink", "%s", drain(fd));
+        close(w);
+        close(fd);
         _exit(0);
     }
     int status;

@@ -588,6 +588,7 @@ module TestInotifyDeliveryMeasured =
                 "truncate-dotnet"
                 "write"
                 "write-at-one-short"
+                "write-unlinked-excl-unlink"
             ]
 
         actual skipped produced |> shouldEqual (expected deliveryProbe "Z" skipped)
