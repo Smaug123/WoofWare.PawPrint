@@ -1339,6 +1339,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
+            | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 failwith
@@ -1759,6 +1760,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
+                    | ParkedSyscall.Sleep _
                     // A Darwin poll's filters go with the descriptor (below).
                     | ParkedSyscall.KqueuePoll _ -> None
                 )
@@ -1795,6 +1797,7 @@ module UnixDescriptor =
                 | ParkedSyscall.PipeRead _
                 | ParkedSyscall.PipeWrite _
                 | ParkedSyscall.SigSuspend
+                | ParkedSyscall.Sleep _
                 | ParkedSyscall.ConnectionRead _
                 | ParkedSyscall.ConnectionWrite _ -> None
             )
@@ -1828,6 +1831,7 @@ module UnixDescriptor =
                    | ParkedSyscall.PipeRead _
                    | ParkedSyscall.PipeWrite _
                    | ParkedSyscall.SigSuspend
+                   | ParkedSyscall.Sleep _
                    | ParkedSyscall.ConnectionRead _
                    | ParkedSyscall.ConnectionWrite _ -> false
                )
@@ -1900,6 +1904,7 @@ module UnixDescriptor =
             | ParkedSyscall.Flock _
             | ParkedSyscall.Poll _
             | ParkedSyscall.SigSuspend
+            | ParkedSyscall.Sleep _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2043,6 +2048,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
+                    | ParkedSyscall.Sleep _
                     | ParkedSyscall.KqueuePoll _ -> false
                 )
 
@@ -2143,6 +2149,7 @@ module UnixDescriptor =
                         | ParkedSyscall.PipeRead _
                         | ParkedSyscall.PipeWrite _
                         | ParkedSyscall.SigSuspend
+                        | ParkedSyscall.Sleep _
                         | ParkedSyscall.ConnectionRead _
                         | ParkedSyscall.ConnectionWrite _ -> false
                     )

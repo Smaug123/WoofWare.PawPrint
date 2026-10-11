@@ -543,6 +543,9 @@ A woken task finishes its call through its family's finishing function, which ma
 
 Each answers what the call that parked answered, as in the tables above.
 
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) is reserved: nothing parks a task in it yet, and it has no finishing function, so `UnixSystem.checkInvariants` reports a task parked in it as `UnixSystemDefect.ReservedPark`.
+The case exists so that a client's matches already handle it when sleeps arrive.
+
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.
 The earliest is when the first of those calls times out: the client advances the clock by it less `UnixSystem.nanosecondsSinceBoot`, and asks `UnixWait.wakes` again.
