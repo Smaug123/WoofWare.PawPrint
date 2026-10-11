@@ -1019,6 +1019,31 @@ We try very hard to return only values that we have observed from a real system 
 Where real platforms of a given flavour have been observed to disagree, we choose a permitted answer (generally an *inconvenient* one, since I want to help you avoid accidentally relying on unspecified behaviour).
 For example, directory enumeration order has been observed to be extremely odd on Linux: we've even seen `..` and `.` appear at the *end* of the enumeration, in the GitHub Actions ext4 runner!
 
+## Changing its API
+
+The library's public API is recorded in `SurfaceBaseline.txt`, beside its project file, and a test in `WoofWare.PosixKernel.Test` fails whenever the compiled API differs from it.
+After an intended change to the API, regenerate the file and commit it with the change:
+
+```sh
+nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "FullyQualifiedName~TestSurface&Name~Update"
+```
+
+(The NUnit adapter cannot parse a filter value containing spaces, so the filter cannot give the test's full name, which has them.)
+A conflict in `SurfaceBaseline.txt` after a rebase is resolved by regenerating the file, never by hand.
+
+The file also records the order of each union's cases: F# numbers the cases of a union of more than one case in a nested `Tags` class, and the file gives each tag's value, as in `WoofWare.PosixKernel.AbsoluteUnixPathError+Tags.ContainsNul [static field]: int = 2`.
+A second test fails if a union has lost or reordered cases, or has gained a case anywhere but at its end, since the version the file records.
+Code built against the recorded version would then misread the cases it already knew, which an appended case does not make it do.
+From 1.0 an appended case is a major version too (see "Unions that gain cases" above), and the first test already fails on one.
+It also fails if a union whose cases the file records as public no longer has public cases, which is expected when a refusal union becomes an open refusal type (see "Answers and refusals"), or when a union is deleted or renamed.
+Before 1.0 such a change may still be made deliberately, by the same command.
+
+A third test fails if a public record that the file does not list, or a field that a listed record has gained, uses a field label that another listed record already has.
+F# resolves a label that several records share to the most recently declared of them, in a record pattern, in a `x.Label` access on a value whose type is not yet inferred, and in a record expression whose labels do not single out one record.
+So a reused label can change which record a client's existing code means, and that code can stop compiling.
+Labels that listed records already share, such as `Address` in `Ipv4Endpoint` and `Ipv6Endpoint`, are allowed.
+Before 1.0 the fix is to rename the field; regenerating the file instead allows the collision from then on, and is a deliberate choice.
+
 ## Licence
 
 MIT.
