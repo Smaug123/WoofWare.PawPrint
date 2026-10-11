@@ -98,6 +98,7 @@
     <Compile Include="LibraryNames.fs" />
     <Compile Include="TestXmlDocumentation.fs" />
     <Compile Include="TestReadme.fs" />
+    <Compile Include="TestOpenRefusals.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />
     <Compile Include="TestOpenFlagWord.fs" />
