@@ -93,8 +93,11 @@ type internal InotifyNotification =
 type internal Unplaced =
     /// A change of `inode` through a descriptor, raising `events`: Linux
     /// reports them at the inode's own watch, and at the watch on the
-    /// directory of the name the descriptor was opened through.
-    | ThroughDescriptor of inode : InodeNumber * events : Set<InotifyEvent>
+    /// directory of the name the descriptor was opened through, which may
+    /// since have been unlinked. `write` says it is a write, which Linux does
+    /// not report through an unlinked name to a watch with `IN_EXCL_UNLINK`
+    /// (measured, `inotify-probe.c` row D write-unlinked-excl-unlink).
+    | ThroughDescriptor of inode : InodeNumber * events : Set<InotifyEvent> * write : bool
     /// A change of a directory whose last name has gone, through a path,
     /// raising `events`, which Linux reports at `oldParent`'s watch under
     /// the name the directory had there.
@@ -275,7 +278,7 @@ module internal InotifyDelivery =
             // the directory's own; only the second can be placed.
             | ReachedThrough.RemovedDirectory oldParent ->
                 throughPath mutation None inode events, [ Unplaced.AtOldParent (oldParent, events) ], nextCookie
-            | ReachedThrough.Descriptor -> [], [ Unplaced.ThroughDescriptor (inode, events) ], nextCookie
+            | ReachedThrough.Descriptor -> [], [ Unplaced.ThroughDescriptor (inode, events, false) ], nextCookie
         | ChangeNotice.Written ->
             // Linux's `file_remove_privs` raises `IN_ATTRIB` for the set-ID
             // bits a write clears, and the write `IN_MODIFY` (measured,
@@ -291,18 +294,20 @@ module internal InotifyDelivery =
                 ]
                 |> Set.ofList
 
-            [], [ Unplaced.ThroughDescriptor (inode, events) ], nextCookie
+            [], [ Unplaced.ThroughDescriptor (inode, events, true) ], nextCookie
 
     /// Fails, naming the name this kernel does not keep, if some watch in
     /// `openFiles` asks for an event of `unplaced` and could be one Linux
     /// reports it to, in `graph`, the filesystem after the change.
     ///
     /// For a change through a descriptor, that is a watch on the inode itself,
-    /// or on a directory holding a name of it; for an inode with no name left
-    /// (but the root and the root of a mounted filesystem, which no
-    /// directory's watch hears of), it is any watch, unless the inode is a
-    /// directory, whose old parent is known. For a change of a removed
-    /// directory through a path, it is a watch on its old parent.
+    /// or on the directory of the name the descriptor was opened through: for
+    /// a directory, its parent, whether or not it still names it; for any
+    /// other inode, any directory, the name having perhaps been unlinked, but
+    /// for a write one with `IN_EXCL_UNLINK` that names it nowhere. The root
+    /// and the root of a mounted filesystem are heard at their own watches
+    /// alone. For a change of a removed directory through a path, it is a
+    /// watch on its old parent.
     let refuseUnplaced (graph : VirtualFileSystem) (unplaced : Unplaced list) (openFiles : OpenFileTable) : unit =
         if not unplaced.IsEmpty then
             let watches =
@@ -333,25 +338,23 @@ module internal InotifyDelivery =
 
             for unplaced in unplaced do
                 match unplaced with
-                | Unplaced.ThroughDescriptor (inode, events) ->
+                | Unplaced.ThroughDescriptor (inode, events, write) ->
                     let unnamed =
                         inode = VirtualFileSystem.root graph
                         || (VirtualFileSystem.mountOf inode graph).IsSome
 
-                    let nameless = not unnamed && VirtualFileSystem.bindingCount inode graph = 0
-
-                    let hears (watched : InodeNumber) : bool =
-                        watched = inode
+                    let hears (watch : InotifyWatch) : bool =
+                        watch.Inode = inode
                         || not unnamed
-                           && (names watched inode
-                               || nameless
-                                  && (
-                                      match VirtualFileSystem.tryGetDirectory inode graph with
-                                      | Some directory -> watched = directory.Parent
-                                      | None -> true
-                                  ))
+                           && (
+                               match VirtualFileSystem.tryGetDirectory inode graph with
+                               | Some directory -> watch.Inode = directory.Parent
+                               | None ->
+                                   (VirtualFileSystem.tryGetDirectory watch.Inode graph).IsSome
+                                   && (names watch.Inode inode || not (write && watch.Mask.ExcludeUnlinked))
+                           )
 
-                    match asking events |> List.tryFind (fun (_, _, watch) -> hears watch.Inode) with
+                    match asking events |> List.tryFind (fun (_, _, watch) -> hears watch) with
                     | None -> ()
                     | Some (instance, wd, watch) ->
                         failwith

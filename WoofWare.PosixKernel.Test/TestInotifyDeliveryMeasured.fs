@@ -139,7 +139,15 @@ module TestInotifyDeliveryMeasured =
         row "chmod-watched-dir"
         system <- mkdir (p "sub") 0o755 system
         row "mkdir"
-        system <- writeFile (p "sub/inner") "x" system
+        // The write could have come through a name since unlinked from the
+        // watched directory, so this kernel refuses it under a watch asking
+        // for IN_MODIFY there, unless the watch has IN_EXCL_UNLINK.
+        system <-
+            if mask &&& 0x04000000u <> 0u then
+                writeFile (p "sub/inner") "x" system
+            else
+                writeFileRefused (p "sub/inner") "x" system
+
         row "write-in-unwatched-subdir"
         system <- unlink (p "sub/inner") system
         system <- rmdir (p "sub") system
