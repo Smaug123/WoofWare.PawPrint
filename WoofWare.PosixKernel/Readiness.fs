@@ -150,13 +150,13 @@ module internal LinuxReadiness =
                 $"LinuxReadiness.ofDescription: %O{targetId} is a kqueue, which only Darwin has, and Linux's readiness is asked only of a Linux-flavoured kernel (this is a bug in the caller's state construction)."
         | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "LinuxReadiness.ofDescription" inode
         | OpenFileTarget.Inotify state ->
-            // Measured (`inotify-probe.c` section P): IN alone while a record
-            // is queued, without RDNORM, and nothing once the queue drains; never
-            // OUT.
+            // Measured: IN and RDNORM while a record is queued, asked with
+            // every bit (`inotify-descriptor-probe.c` section P), and nothing
+            // once the queue drains; never OUT (`inotify-probe.c` section P).
             if InotifyQueue.isEmpty state.Queue then
                 0u
             else
-                EpollEvents.In
+                EpollEvents.In ||| EpollEvents.RdNorm
 
     /// What a Linux waiter's poll of the description `targetId` does besides
     /// reading its mask (`ofDescription`): a connected TCP socket it finds

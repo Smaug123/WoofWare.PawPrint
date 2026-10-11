@@ -11,6 +11,7 @@
 //   N  F_SETFL O_NONBLOCK on the description
 //   S  sleeping reads: woken by a record larger than the count; two sleepers
 //      on one record after the description became non-blocking
+//   P  readiness asked with every bit, through poll and epoll
 //
 // Build and run, from this directory:
 //   container run --rm -v "$PWD":/probe debian:trixie sh -c 'apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1 && gcc -Wall -O1 -pthread -o /tmp/probe-bin /probe/inotify-descriptor-probe.c && mkdir -p /tmp/run && cd /tmp/run && /tmp/probe-bin'
@@ -19,11 +20,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fs.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -189,11 +192,31 @@ static void sectionS(void)
     close(sharedFd);
 }
 
+static void sectionP(void)
+{
+    fresh("p");
+    int fd = inotify_init1(IN_NONBLOCK);
+    check("inotify_add_watch", inotify_add_watch(fd, "p", IN_CREATE));
+    touch("p/x");
+    struct pollfd p = { fd, (short)0xffff, 0 };
+    int r = poll(&p, 1, 0);
+    line("P", "poll-every-bit", "poll=%d revents=0x%x", r, p.revents);
+    int ep = epoll_create1(0);
+    struct epoll_event ev = { 0xffffffffu & ~(EPOLLEXCLUSIVE | EPOLLWAKEUP | EPOLLONESHOT | EPOLLET), { .u64 = 1 } };
+    line("P", "epoll-ctl-every-bit", "%s", rc(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev)));
+    struct epoll_event out[2];
+    int n = epoll_wait(ep, out, 2, 0);
+    line("P", "epoll-every-bit", "n=%d events=0x%x", n, n > 0 ? out[0].events : 0);
+    close(ep);
+    close(fd);
+}
+
 int main(void)
 {
     if (system("uname -rm") != 0) return 1;
     sectionD();
     sectionN();
     sectionS();
+    sectionP();
     return 0;
 }

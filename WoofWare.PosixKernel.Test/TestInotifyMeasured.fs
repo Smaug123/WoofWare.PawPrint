@@ -1448,3 +1448,47 @@ module TestInotifyMeasured =
         )
 
         List.ofSeq actual |> shouldEqual (rows descriptorProbe "S" [])
+
+    [<Test>]
+    let ``descriptor section P: readiness asked with every bit`` () : unit =
+        let mutable system = boot root [ "p", directory 0o755 [] ]
+        let fd, s = init1 nonblock system
+        let _, s = addWatch fd "p" create s
+        system <- queue fd (event 1 create "x") s
+        let polled = pollIn fd -1s system
+
+        let ep, s =
+            match UnixPoll.epollCreate1 0 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"%A{other}"
+
+        // The probe's registration is level-triggered, which this library's
+        // epoll does not model; an edge-triggered one reports the same first.
+        let every =
+            0xffffffffu
+            &&& ~~~(EpollEvents.Exclusive
+                    ||| EpollEvents.WakeUp
+                    ||| EpollEvents.OneShot
+                    ||| EpollEvents.EdgeTriggered)
+
+        let added, s =
+            match
+                UnixPoll.epollCtl ep 1 fd (EpollEventArgument.Readable (every ||| EpollEvents.EdgeTriggered, 1UL)) s
+            with
+            | Ok (EpollCtlAnswer.Changed, s) -> "0", s
+            | other -> failwith $"%A{other}"
+
+        let waited =
+            match UnixPoll.epollWait 0 ep 2 UserBuffer.Mapped 0 s with
+            | Ok (EpollWaitOutcome.Answered events, _) ->
+                match events with
+                | (_, mask) :: _ -> $"n=%d{events.Length} events=0x%x{mask}"
+                | [] -> "n=0 events=0x0"
+            | other -> failwith $"%A{other}"
+
+        [
+            "poll-every-bit", polled
+            "epoll-ctl-every-bit", added
+            "epoll-every-bit", waited
+        ]
+        |> shouldEqual (rows descriptorProbe "P" [])

@@ -19,6 +19,7 @@ open WoofWare.PosixKernel
 ///
 /// Nothing in a sequence changes the filesystem: this kernel reports no change
 /// to a watch yet, so the only records are the `IN_IGNORED` of a removed watch.
+/// It also holds `dup`, `lseek` and `write` through an instance to the host.
 /// Linux only: CI's x86-64 is what checks the record layout on the other
 /// architecture the library models. Elsewhere the tests are ignored.
 [<TestFixture>]
@@ -51,6 +52,15 @@ module TestInotifyAgainstHost =
 
     [<DllImport("libc", EntryPoint = "close")>]
     extern int private hostClose(int fd)
+
+    [<DllImport("libc", EntryPoint = "dup", SetLastError = true)>]
+    extern int private hostDup(int fd)
+
+    [<DllImport("libc", EntryPoint = "lseek", SetLastError = true)>]
+    extern int64 private hostLSeek(int fd, int64 offset, int whence)
+
+    [<DllImport("libc", EntryPoint = "write", SetLastError = true)>]
+    extern nativeint private hostWrite(int fd, byte[] buffer, unativeint count)
 
     [<DllImport("libc", EntryPoint = "geteuid")>]
     extern uint32 private hostGetEUid()
@@ -129,6 +139,9 @@ module TestInotifyAgainstHost =
         | Poll of slot : int * events : int16
         | BytesAvailable of slot : int
         | Close of slot : int
+        | Dup of slot : int
+        | LSeek of slot : int * offset : int64 * whence : int
+        | Write of slot : int
 
     let private opGen : Gen<Op> =
         let slot = Gen.choose (0, 3)
@@ -163,9 +176,17 @@ module TestInotifyAgainstHost =
                 Gen.map2
                     (fun s e -> Op.Poll (s, e))
                     slot
-                    (Gen.elements [ 0x1s ; 0x4s ; 0x1s ||| 0x4s ||| 0x2s ||| 0x2000s ])
+                    (Gen.elements [ 0x1s ; 0x4s ; 0x1s ||| 0x4s ||| 0x2s ||| 0x2000s ; -1s ])
                 1, slot |> Gen.map Op.BytesAvailable
                 1, slot |> Gen.map Op.Close
+                1, slot |> Gen.map Op.Dup
+                1,
+                Gen.map3
+                    (fun s o w -> Op.LSeek (s, o, w))
+                    slot
+                    (Gen.elements [ 0L ; 5L ; -1L ])
+                    (Gen.elements [ 0 ; 1 ; 2 ; 3 ; 4 ; 5 ])
+                1, slot |> Gen.map Op.Write
             ]
 
     [<Test>]
@@ -361,6 +382,48 @@ module TestInotifyAgainstHost =
                                     | other -> failwith $"%A{op}: %A{other}"
 
                                     slots.[slot] <- None
+                            | Op.Dup slot ->
+                                match slots.[slot], Array.tryFindIndex Option.isNone slots with
+                                | Some (hostFd, modelFd), Some free ->
+                                    let hostCopy = hostDup hostFd
+
+                                    if hostCopy < 0 then
+                                        failwith $"%A{op}: dup failed on the host"
+
+                                    match UnixDescriptor.dup modelFd system with
+                                    | Ok (SyscallAnswer.Completed copy, after) ->
+                                        system <- after
+                                        slots.[free] <- Some (hostCopy, int copy)
+                                    | other -> failwith $"%A{op}: %A{other}"
+                                | _ -> ()
+                            | Op.LSeek (slot, offset, whence) ->
+                                let hostFd, modelFd = slots.[slot] |> Option.defaultValue (999, 999)
+                                let host = hostAnswer numbering (nativeint (hostLSeek (hostFd, offset, whence)))
+
+                                let model =
+                                    match UnixDescriptor.lseek modelFd offset whence system with
+                                    | Ok (answer, _) -> modelAnswer answer
+                                    | Error refusal -> failwith $"%A{op}: %A{refusal}"
+
+                                compare op host model
+                            | Op.Write slot ->
+                                let hostFd, modelFd = slots.[slot] |> Option.defaultValue (999, 999)
+                                let host = hostAnswer numbering (hostWrite (hostFd, [| 0x78uy |], 1un))
+
+                                let model =
+                                    match
+                                        WriteOutcomes.admitThenWrite
+                                            0
+                                            modelFd
+                                            UserBuffer.Mapped
+                                            (ImmutableArray.Create<byte> 0x78uy)
+                                            system
+                                        |> WriteOutcomes.returned
+                                    with
+                                    | Ok (WriteAnswer.Failed error, _) -> Error error
+                                    | other -> failwith $"%A{op}: %A{other}"
+
+                                compare op host model
 
                         UnixSystem.checkInvariants system |> shouldEqual []
                     finally
