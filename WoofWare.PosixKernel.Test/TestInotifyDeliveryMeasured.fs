@@ -489,6 +489,33 @@ module TestInotifyDeliveryMeasured =
 
             system <- close fd system
 
+        // A watch asking for one of the two events the truncation raises, by
+        // uid 1000.
+        let mutable system = boot unprivileged [ "z", directoryOwnedBy 1000u 0o777 [] ]
+
+        for case, mask in [ "open-trunc-modify-watch", modify ; "open-trunc-attrib-watch", attrib ] do
+            let d = $"z/%s{case}"
+
+            system <-
+                system
+                |> mkdir d 0o777
+                |> writeFile $"%s{d}/f" "hello"
+                |> chmod $"%s{d}/f" 0o6755
+
+            let fd, s = init1 nonblock system
+            let _, s = watch fd d mask s
+
+            let truncate (system : UnixSystem<int, string>) =
+                let t, s =
+                    openFd (openFlags FileAccessMode.WriteOnly false false true) $"%s{d}/f" 0 system
+
+                close t s
+
+            system <- s |> truncate |> chmod $"%s{d}/f" 0o6755 |> truncate
+            let drained, s = drain fd system
+            system <- close fd s
+            produced.Add (case, drained)
+
         // `chown` by root.
         let mutable system = boot root [ "z", directory 0o777 [] ]
 

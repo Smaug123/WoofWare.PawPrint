@@ -22,6 +22,8 @@ Z	open-trunc-at-one-short	records=16384 overflows=0 (filled 16383)
 Z	write	mode 6755 -> 755: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=MODIFY cookie=0 len=16 name="f"
 Z	write-at-one-short	records=16385 overflows=1 (filled 16383)
 Z	truncate-dotnet	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	open-trunc-modify-watch	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	open-trunc-attrib-watch	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f" | wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
 Z	chown	mode 6755 -> 755: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
 Z	chown-at-one-short	records=16384 overflows=0 (filled 16383)
 Y	wds	parent=1 f=2 d=3

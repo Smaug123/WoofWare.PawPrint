@@ -10,8 +10,9 @@
 //   V  utimensat setting both times, one of them, or neither, under
 //      IN_ALL_EVENTS and under the mask .NET's FileSystemWatcher uses
 //   Z  a truncation or chown that strips set-ID bits, from uid 1000: the
-//      events, the mode left, and whether it is one record or two (a queue
-//      one short of full overflows on a second)
+//      events, the mode left, whether it is one record or two (a queue one
+//      short of full overflows on a second), and the bits its record carries
+//      to a watch asking for only one of them
 //   Y  a change of attributes or contents when the inode and its parent are
 //      both watched, by one instance: which records, in which order
 //   X  link counts: link and unlink of a name of a watched file, with the
@@ -268,6 +269,26 @@ static void sectionZ(void)
         check("truncate", truncate("z/d/f", 1));
         line("Z", "truncate-dotnet", "%s", drain(fd));
         close(fd);
+        // A watch asking for one of the two events: which bits the record carries.
+        struct { uint32_t mask; const char *name; } single[] = {
+            { IN_MODIFY, "open-trunc-modify-watch" }, { IN_ATTRIB, "open-trunc-attrib-watch" },
+        };
+        for (size_t i = 0; i < sizeof single / sizeof single[0]; i++) {
+            fresh("z/d");
+            writeFile("z/d/f", "hello");
+            check("chmod", chmod("z/d/f", 06755));
+            fd = inotify_init1(IN_NONBLOCK);
+            check("inotify_add_watch", inotify_add_watch(fd, "z/d", single[i].mask));
+            int t = open("z/d/f", O_WRONLY | O_TRUNC);
+            check("open", t);
+            close(t);
+            check("chmod", chmod("z/d/f", 06755));
+            t = open("z/d/f", O_WRONLY | O_TRUNC);
+            check("open", t);
+            close(t);
+            line("Z", single[i].name, "%s", drain(fd));
+            close(fd);
+        }
         _exit(0);
     }
     int status;
