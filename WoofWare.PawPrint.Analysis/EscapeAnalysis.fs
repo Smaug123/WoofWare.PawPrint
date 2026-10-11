@@ -307,9 +307,11 @@ type EscapeAnalysisState =
 ///
 /// The runtime makes most of the exceptions it raises by itself by running the exception's
 /// parameterless constructor, which looks up its message, so what that constructor can raise is in
-/// the answer too, a failure to bind a member or to dispatch a call among them. What it runs to make
-/// one with arguments is not followed: a failed type binding's <c>TypeLoadException</c>, and a
-/// multidimensional array constructor's <c>ArgumentOutOfRangeException</c>.
+/// the answer too, a failure to bind a member or to dispatch a call among them, and an array
+/// allocation's <c>OutOfMemoryException</c> for lengths too large to allocate. Where it then looks
+/// up the message by a resource name, as for a multidimensional array constructor's
+/// <c>ArgumentOutOfRangeException</c>, what the lookup can raise is in the answer too. What it runs
+/// to make one with arguments, a failed type binding's <c>TypeLoadException</c>, is not followed.
 ///
 /// A type initializer runs where CoreCLR's <c>CEEInfo::initClass</c> runs it: at an access to a
 /// static field of its type, and at a call to a method of its type that is static, a constructor, or
@@ -479,14 +481,36 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
 
+    /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
+    /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
+    let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System" "Environment"
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = "GetResourceStringLocal"
+                && m.IsStatic
+                && m.Signature.ParameterTypes.Length = 1
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
+
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
-    /// making it as `making` says: the exception, and the constructor it runs to make it, if it runs
-    /// one, whose own raises escape there too.
+    /// making it as `making` says: the exception, and the methods it runs to make it, whose own
+    /// raises escape there too.
     let private runtimeRaises
         (state : EscapeAnalysisState)
         (fullName : string)
         (making : ExceptionMaking)
-        : ThrownType * MethodKey option
+        : ThrownType * MethodKey list
         =
         let name =
             match ExceptionName.parse fullName with
@@ -496,8 +520,10 @@ module EscapeAnalysis =
         let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
 
         match making with
-        | ExceptionMaking.ParameterlessConstructor -> thrown, Some (parameterlessConstructor state name)
-        | ExceptionMaking.Preallocated -> thrown, None
+        | ExceptionMaking.ParameterlessConstructor -> thrown, [ parameterlessConstructor state name ]
+        | ExceptionMaking.ResourceMessage ->
+            thrown, [ parameterlessConstructor state name ; resourceMessageLookup state ]
+        | ExceptionMaking.Preallocated -> thrown, []
         | ExceptionMaking.InitializerFailure ->
             failwith
                 $"BUG: %s{fullName} is raised for a type initializer, which the site running it accounts for (`initializerFailure`)"
@@ -507,12 +533,18 @@ module EscapeAnalysis =
     /// exception, and that constructor.
     let private constructedRaise (state : EscapeAnalysisState) (fullName : string) : ThrownType * MethodKey =
         match runtimeRaises state fullName ExceptionMaking.ParameterlessConstructor with
-        | thrown, Some made -> thrown, made
-        | thrown, None -> failwith $"BUG: making %O{thrown} by its parameterless constructor runs no constructor"
+        | thrown, [ made ] -> thrown, made
+        | thrown, made ->
+            failwith $"BUG: making %O{thrown} by its parameterless constructor runs %d{made.Length} methods"
 
-    /// What the runtime raises for an `OpcodeFault` (`runtimeRaises`).
-    let private faultRaises (state : EscapeAnalysisState) (fault : OpcodeFault) : ThrownType * MethodKey option =
-        runtimeRaises state (OpcodeFault.typeName fault) (ExceptionMaking.ofOpcodeFault fault)
+    /// What the runtime raises for an `OpcodeFault` that `op` raises (`runtimeRaises`).
+    let private faultRaises
+        (state : EscapeAnalysisState)
+        (op : IlOp)
+        (fault : OpcodeFault)
+        : ThrownType * MethodKey list
+        =
+        runtimeRaises state (OpcodeFault.typeName fault) (ExceptionMaking.ofOpcodeFault op fault)
 
     /// A method the runtime runs by itself, which has no type variables.
     let private runtimeRuns (method : MethodKey) : CallSite =
@@ -523,20 +555,17 @@ module EscapeAnalysis =
             }
 
     /// What `runtimeRaises` says the runtime raises at `offset`, as raises and as calls to the
-    /// constructors it runs.
+    /// methods it runs to make them.
     let private raisedAt
         (offset : int)
-        (raised : (ThrownType * MethodKey option) list)
+        (raised : (ThrownType * MethodKey list) list)
         : (int * ThrownType) list * (int * CallSite * StackValue list) list
         =
         let raises = raised |> List.map (fun (thrown, _) -> offset, thrown)
 
         let calls =
             raised
-            |> List.choose (fun (_, constructor) ->
-                constructor
-                |> Option.map (fun constructor -> offset, runtimeRuns constructor, [])
-            )
+            |> List.collect (fun (_, made) -> made |> List.map (fun method -> offset, runtimeRuns method, []))
 
         raises, calls
 
@@ -1069,42 +1098,15 @@ module EscapeAnalysis =
         | Error _ -> None
 
     /// The runtime's own exceptions from one of the methods it supplies on an array type
-    /// (`runtimeRaises`): those of the instruction each stands in for, `ldelem`, `stelem.ref`,
-    /// `ldelema` and `newarr`, and for a multidimensional array's constructor taking lower bounds,
-    /// `ArgumentOutOfRangeException` for bounds whose upper end overflows.
+    /// (`ExceptionMaking.ofArrayMethod`, `runtimeRaises`).
     let private arrayAccessorRaises
         (state : EscapeAnalysisState)
         (arrayType : TypeDefn)
         (accessor : ArrayAccessor)
-        : (ThrownType * MethodKey option) list
+        : (ThrownType * MethodKey list) list
         =
-        let faults =
-            match accessor with
-            | ArrayAccessor.Get -> [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
-            | ArrayAccessor.Set ->
-                [
-                    OpcodeFault.NullReference
-                    OpcodeFault.IndexOutOfRange
-                    OpcodeFault.ArrayTypeMismatch
-                ]
-            | ArrayAccessor.Address ->
-                [
-                    OpcodeFault.NullReference
-                    OpcodeFault.IndexOutOfRange
-                    OpcodeFault.ArrayTypeMismatch
-                ]
-            | ArrayAccessor.Constructor _ -> [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
-
-        let lowerBounds =
-            match arrayType, accessor with
-            | TypeDefn.Array (_, rank), ArrayAccessor.Constructor arity when arity = 2 * rank ->
-                // The runtime makes it with a message, and what that runs is not followed.
-                [
-                    ThrownType.Exactly (corelibException state "ArgumentOutOfRangeException"), None
-                ]
-            | _ -> []
-
-        (faults |> List.map (faultRaises state)) @ lowerBounds
+        ExceptionMaking.ofArrayMethod arrayType accessor
+        |> List.map (fun (fullName, making) -> runtimeRaises state fullName making)
 
     /// Why binding a type reference fails, which decides what the binding throws.
     [<RequireQualifiedAccess>]
@@ -1875,7 +1877,7 @@ module EscapeAnalysis =
     let private contractRaises
         (state : EscapeAnalysisState)
         (contract : IntrinsicContract)
-        : (ThrownType * MethodKey option) list
+        : (ThrownType * MethodKey list) list
         =
         contract.Raises
         |> List.map (fun (fault, _) ->
@@ -1892,7 +1894,7 @@ module EscapeAnalysis =
     let private instructionRaises
         (state : EscapeAnalysisState)
         (fault : InstructionFault)
-        : (ThrownType * MethodKey option) option
+        : (ThrownType * MethodKey list) option
         =
         let made (fullName : string) =
             ExceptionMaking.ofInstructionFault fault
@@ -1977,7 +1979,7 @@ module EscapeAnalysis =
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
-            state, contracted (List.map fst raised) [] (List.choose snd raised)
+            state, contracted (List.map fst raised) [] (List.collect snd raised)
         | Runs.Native native ->
             // CoreCLR makes each exception a native raises by running its parameterless constructor
             // (`EEException::CreateThrowable`).
@@ -2243,7 +2245,7 @@ module EscapeAnalysis =
                             let state, raised, ran, hidden = initializerAt state op offset
                             state, raised @ raises, hidden @ opaque, ran @ calls
                         | _ ->
-                            let raised, constructed = raisedAt offset [ faultRaises state fault ]
+                            let raised, constructed = raisedAt offset [ faultRaises state op fault ]
                             state, raised @ raises, opaque, constructed @ calls
                     )
 
@@ -2324,7 +2326,7 @@ module EscapeAnalysis =
                         ->
                         // The body's call to itself, which the JIT expands where it stands
                         // (`gtIsRecursiveCall`): no call happens, so the raises are this offset's.
-                        let raisedHere (raised : (ThrownType * MethodKey option) list) =
+                        let raisedHere (raised : (ThrownType * MethodKey list) list) =
                             let raisedHere, constructed = raisedAt offset raised
                             state, raisedHere @ raises, opaque, constructed @ calls
 
