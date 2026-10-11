@@ -1568,3 +1568,130 @@ module TestCrossProcess =
 
         let machine = exitedOk a machine
         Machines.assertClean machine
+
+    // ------------------------------------------------------- inotify
+
+    /// `inotify_init1(flags)` and a watch of `path` for `mask`, in `view`: the
+    /// instance's descriptor.
+    let private watching
+        (flags : int)
+        (path : string)
+        (mask : uint32)
+        (view : UnixSystem<int, string>)
+        : int * UnixSystem<int, string>
+        =
+        let fd, view =
+            match UnixInotify.tryInotifyInit1 flags view with
+            | Ok (Ok created) -> created
+            | other -> failwith $"inotify_init1: %A{other}"
+
+        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText path) mask view with
+        | Ok (SyscallAnswer.Completed _, view) -> fd, view
+        | other -> failwith $"inotify_add_watch(%s{path}): %A{other}"
+
+    /// The bytes the instance `fd` of `pid` holds, as `FIONREAD` reports them.
+    let private queuedBytes (pid : ProcessId) (fd : int) (machine : SimulatedMachine<int, string>) : int =
+        match UnixDescriptor.tryBytesAvailable fd UserBuffer.Mapped (Machines.viewOf pid machine) with
+        | Ok (BytesAvailableAnswer.Reported count) -> count
+        | other -> failwith $"FIONREAD on %d{fd}: %A{other}"
+
+    /// `open(path, O_WRONLY|O_CREAT|O_EXCL)` and its close, in `view`.
+    let private create (path : string) (view : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match
+            OpenFlagWords.openPath
+                {
+                    Access = FileAccessMode.WriteOnly
+                    Create = true
+                    Exclusive = true
+                    Truncate = false
+                    NoFollow = false
+                    CloseOnExec = false
+                    Synchronous = false
+                    DataSynchronous = false
+                    Directory = false
+                }
+                (PathArg.ofText path)
+                0o644
+                view
+        with
+        | Ok (SyscallAnswer.Completed fd, view) -> KeventWorld.close (int fd) view
+        | other -> failwith $"open(%s{path}): %A{other}"
+
+    let private inCreate : uint32 = 0x100u
+
+    [<Test>]
+    let ``a file another process creates wakes a read asleep on an instance watching its directory`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        let machine =
+            Machines.doIn a (fun view -> Answered.mkdir (PathArg.ofText "/d") 0o755 view |> snd) machine
+
+        // Blocking, so that the read sleeps.
+        let fd, machine = Machines.inProcess a (watching 0 "/d" inCreate) machine
+
+        let machine =
+            Machines.doIn
+                a
+                (fun view ->
+                    match UnixReadWrite.tryRead 1 fd UserBuffer.Mapped 4096UL view with
+                    | Ok (ReadOutcome.WouldBlock _, view) -> view
+                    | other -> failwith $"read: expected to sleep, got %A{other}"
+                )
+                machine
+
+        Machines.assertClean machine
+        woken [ a, 1 ] machine |> shouldEqual []
+
+        let machine = Machines.doIn b (create "/d/x") machine
+        Machines.assertClean machine
+
+        let instance = KeventWorld.idOf fd (Machines.viewOf a machine)
+
+        woken [ a, 1 ] machine
+        |> shouldEqual [ (a, 1), Set.singleton (WakePrimitive.InotifyRecordQueued instance) ]
+
+        let records, machine =
+            Machines.inProcess
+                a
+                (fun view ->
+                    match UnixReadWrite.tryFinishRead 1 view with
+                    | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), view) ->
+                        InotifyReplay.parse bytes |> List.map InotifyReplay.render, view
+                    | other -> failwith $"finishRead: %A{other}"
+                )
+                machine
+
+        Machines.assertClean machine
+        records |> shouldEqual [ "wd=1 mask=CREATE cookie=0 len=16 name=\"x\"" ]
+
+    [<Test>]
+    let ``a change queues on each process's instance exactly when that instance watches it`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        let machine =
+            machine
+            |> Machines.doIn a (fun view -> Answered.mkdir (PathArg.ofText "/d") 0o755 view |> snd)
+            |> Machines.doIn a (fun view -> Answered.mkdir (PathArg.ofText "/e") 0o755 view |> snd)
+
+        let inA, machine = Machines.inProcess a (watching 0x800 "/d" inCreate) machine
+        let inB, machine = Machines.inProcess b (watching 0x800 "/e" inCreate) machine
+
+        // A change in a process's own view, to what its own instance watches,
+        // and to what the other process's instance watches.
+        let machine = Machines.doIn a (create "/d/x") machine
+        Machines.assertClean machine
+        queuedBytes a inA machine |> shouldEqual 32
+        queuedBytes b inB machine |> shouldEqual 0
+
+        let machine = Machines.doIn a (create "/e/y") machine
+        Machines.assertClean machine
+        queuedBytes a inA machine |> shouldEqual 32
+        queuedBytes b inB machine |> shouldEqual 32
+
+        // A change neither watches.
+        let machine = Machines.doIn b (create "/z") machine
+        Machines.assertClean machine
+        queuedBytes a inA machine |> shouldEqual 32
+        queuedBytes b inB machine |> shouldEqual 32
