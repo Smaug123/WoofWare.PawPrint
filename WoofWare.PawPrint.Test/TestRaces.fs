@@ -199,6 +199,8 @@ module TestRaces =
         | Program.ProgramStartResult.Ready prepared ->
             let rec loop (prepared : Program.PreparedProgram) (blocked : int) : int * int =
                 match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                    failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
                 | Program.ProgramStepOutcome.Completed outcome -> exitCodeOfOutcome sourceName seed outcome, blocked
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                     failwith $"%s{sourceName} (seed=%A{seed}) deadlocked with threads stuck: %s{stuck}"

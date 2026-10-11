@@ -26,19 +26,20 @@ module NativeLibcSignalMask =
     /// A non-null pointer naming no storage is refused rather than answered:
     /// glibc reads the set in user space before the kernel sees it, to screen
     /// its own 32 and 33, so a real run would fault there rather than answer
-    /// EFAULT.
+    /// EFAULT. `Error` with the first byte of the set nothing wrote, since the
+    /// call uses every one.
     let private readSet
         (ctx : NativeCallContext)
         (operation : string)
         (numbering : SignalNumbering)
         (argument : CliType)
         (state : IlMachineState)
-        : SignalMask option
+        : Result<SignalMask option, UndefinedValue>
         =
         let pointer = NativeSystemNative.bufferPointerArgument operation "set" argument
 
         match pointer with
-        | BufferPointer.RawAddress 0UL -> None
+        | BufferPointer.RawAddress 0UL -> Ok None
         | _ ->
 
         match BufferPointer.dereferenceable pointer with
@@ -46,15 +47,16 @@ module NativeLibcSignalMask =
             failwith
                 $"%s{operation}: `set` is %O{pointer}, which is not null but names no storage; the C library reads the set before the kernel does, so a real run would fault there, which PawPrint does not model. Pass a real sigset_t."
         | Some storage ->
-            let bytes =
-                NativeSystemNative.readBytesThrough ctx operation storage (sigsetBytes numbering) state
+            match NativeSystemNative.readBytesThrough ctx operation storage (sigsetBytes numbering) state with
+            | Error u -> Error u
+            | Ok bytes ->
 
             let word =
                 (0UL, Seq.indexed bytes)
                 ||> Seq.fold (fun word (index, b) -> word ||| (uint64 b <<< (8 * index)))
 
             match SignalMask.ofWord numbering word with
-            | Ok mask -> Some mask
+            | Ok mask -> Ok (Some mask)
             | Error refusal ->
                 failwith
                     $"%s{operation}: %d{sigsetBytes numbering} bytes read as a set that does not fit them (%s{SignalMaskRefusal.describe refusal}); this is an interpreter bug."
@@ -135,7 +137,10 @@ module NativeLibcSignalMask =
         let arguments = ctx.Instruction.Arguments
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
         let how = NativeCall.int32Argument operation arguments.[0]
-        let set = readSet ctx operation numbering arguments.[1] state
+
+        match readSet ctx operation numbering arguments.[1] state with
+        | Error u -> NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the signal set it reads" u
+        | Ok set ->
 
         match call ctx.Thread how set state.Kernel.System with
         | Ok (old, system) ->
@@ -199,7 +204,7 @@ module NativeLibcSignalMask =
 
         let answered =
             match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
-            | Some ParkedSyscall.SigSuspend -> UnixSignal.finishSigsuspend ctx.Thread state.Kernel.System
+            | Some ParkedSyscall.SigSuspend -> UnixSignal.finishSigsuspend ctx.Thread state.Kernel.System |> Ok
             | Some other ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
@@ -208,15 +213,21 @@ module NativeLibcSignalMask =
                     $"%s{operation}: thread %O{ctx.Thread} entered the call while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
                 match mask with
-                | None -> UnixSignal.pause ctx.Thread state.Kernel.System
+                | None -> UnixSignal.pause ctx.Thread state.Kernel.System |> Ok
                 | Some argument ->
                     let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
                     match readSet ctx operation numbering argument state with
-                    | Some mask -> UnixSignal.sigsuspend ctx.Thread mask state.Kernel.System
-                    | None ->
+                    | Error u -> Error u
+                    | Ok (Some mask) -> UnixSignal.sigsuspend ctx.Thread mask state.Kernel.System |> Ok
+                    | Ok None ->
                         failwith
                             $"%s{operation}: `mask` is NULL. The kernel answers EFAULT, which PawPrint does not model. Pass a real sigset_t."
+
+        match answered with
+        | Error u ->
+            NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the signal mask it waits under" u
+        | Ok answered ->
 
         match answered with
         | Error refusal -> failwith $"%s{operation}: %s{SigsuspendRefusal.describe refusal}"

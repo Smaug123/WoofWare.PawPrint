@@ -66,9 +66,13 @@ module DifferentialOracle =
         (pawPrintResult : RunEnd)
         : unit
         =
+        // A guest the real runtime runs to an answer has no undefined value in its control flow
+        // or its result, so a stop is never an agreement.
         let pawPrintResult =
             match pawPrintResult with
             | RunEnd.Ended outcome -> outcome
+            | RunEnd.StoppedAtUndefinedValue (_, _, observation) ->
+                failwith $"PawPrint: guest used an undefined value: %O{observation}"
 
         // NormalExit and ProcessExit both represent a clean process termination with
         // the latched exit code; the only difference is whether the guest returned from

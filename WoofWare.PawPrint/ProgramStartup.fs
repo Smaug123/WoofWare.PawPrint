@@ -446,6 +446,11 @@ module internal ProgramStartup =
 
                 failwith
                     $"TODO: initialising the entry point's declaring type aborted the process (%O{fatal.Code}): %s{message}"
+            | WhatWeDid.UndefinedValueObserved observation ->
+                // The class-initialisation phase ran the entry type's `.cctor` a tick at a time,
+                // and stopped there at any undefined value it used.
+                failwith
+                    $"logic error: installing Main used an undefined value (%O{observation}), but the entry type's class initialiser had already run"
             | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
             | WhatWeDid.SuspendedForManagedCall ->
                 failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"

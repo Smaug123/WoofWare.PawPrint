@@ -69,6 +69,8 @@ module TestSchedulerYieldFairness =
         | Program.ProgramStartResult.Ready prepared ->
             let rec loop (prepared : Program.PreparedProgram) : int * int64 =
                 match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                    failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
                 | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _, _)) ->
                     let code = state.LatchedExitCode
 

@@ -738,10 +738,12 @@ class Program
                     }
 
                 // Detecting a deadlock executes nothing, so it is not a step, and it ends the run.
-                if event.GetProperty("kind").GetString () = "deadlocked" then
-                    deadlock <- Some observed
-                else
-                    steps.Add observed
+                // Nor is a stop at an undefined value, which also changes nothing: the session
+                // stays at the state from before the step that would have used the value.
+                match event.GetProperty("kind").GetString () with
+                | "deadlocked" -> deadlock <- Some observed
+                | "stoppedAtUndefinedValue" -> ()
+                | _ -> steps.Add observed
 
             return
                 {
@@ -829,6 +831,41 @@ class Program
                 )
             )
             |> shouldEqual true
+        }
+
+    let private undefinedBranchSource =
+        """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        bool* flags = stackalloc bool[1];
+        if (flags[0]) return 1;
+        return 0;
+    }
+}
+"""
+
+    /// A stop at an undefined value ends the trace without a step, and without a deadlock: it
+    /// executed nothing and changed nothing.
+    [<Test>]
+    let ``a trace that stops at an undefined value records no deadlock`` () : Task =
+        task {
+            use tracedServer = startServerWith Roslyn.compile undefinedBranchSource
+            use tracedClient = client tracedServer
+            use steppedServer = startServerWith Roslyn.compile undefinedBranchSource
+            use steppedClient = client steppedServer
+
+            let! traced = traceWholeRun tracedClient (fun _ -> "maxSteps=5000&values=active")
+            let! stepped = singleStepWholeRun steppedClient
+
+            assertSameRun stepped traced
+            traced.Deadlock |> shouldEqual None
+            traced.Session |> shouldContainText "stoppedAtUndefinedValue"
         }
 
     [<Test>]

@@ -121,13 +121,17 @@ module internal Boxing =
     /// `Nullable<T>` arrives as `UserDefinedValueType`.
     ///
     /// Reference types are not accepted: boxing one is a no-op the caller can perform by itself.
+    ///
+    /// `Error` with the `hasValue` of a `Nullable<T>` that nothing wrote: which box it makes is
+    /// decided by that field, so boxing it is a use of undefined content, which the caller reports.
+    /// Any other undefined value is only moved into its box.
     let boxValue
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeHandle : ConcreteTypeHandle)
         (toBox : EvalStackValue)
         (state : IlMachineState)
-        : EvalStackValue * IlMachineState
+        : Result<EvalStackValue * IlMachineState, UndefinedValue>
         =
         let targetType =
             AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
@@ -142,7 +146,7 @@ module internal Boxing =
                     IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
 
                 match CliValueType.DereferenceFieldById hasValueField cvt with
-                | CliType.Bool 0uy -> EvalStackValue.NullObjectRef, state
+                | CliType.Bool 0uy -> Ok (EvalStackValue.NullObjectRef, state)
                 | CliType.Bool _ ->
                     let underlyingTypeHandle = targetType.Generics.[0]
 
@@ -166,9 +170,10 @@ module internal Boxing =
                                 (EvalStackValue.ofCliType value)
                                 state
 
-                    EvalStackValue.ObjectRef addr, state
+                    Ok (EvalStackValue.ObjectRef addr, state)
+                | CliType.Undefined u -> Error u
                 | other -> failwith $"boxValue: expected Bool for Nullable`1's hasValue field, got %O{other}"
             | other -> failwith $"boxValue: expected a Nullable`1 to arrive as UserDefinedValueType, got %O{other}"
         else
             let addr, state = boxValueType loggerFactory baseClassTypes typeHandle toBox state
-            EvalStackValue.ObjectRef addr, state
+            Ok (EvalStackValue.ObjectRef addr, state)

@@ -1441,6 +1441,8 @@ module internal UnsafeAccessorDispatch =
             match commitment with
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                ExecutionResult.stepped (state, WhatWeDid.UndefinedValueObserved observation)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
@@ -1538,7 +1540,19 @@ module internal UnsafeAccessorDispatch =
                 targetType
                 false // `markDispatched` has already moved this frame's program counter
                 state
-            |> fun state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+            |> fun (state, whatWeDid) ->
+                match whatWeDid with
+                | WhatWeDid.Executed -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+                | WhatWeDid.UndefinedValueObserved _
+                | WhatWeDid.Aborted _ -> ExecutionResult.stepped (state, whatWeDid)
+                | WhatWeDid.SuspendedForClassInit
+                | WhatWeDid.SuspendedForManagedCall
+                | WhatWeDid.BlockedOnClassInit _
+                | WhatWeDid.ThrowingTypeInitializationException
+                | WhatWeDid.UnhandledException _
+                | WhatWeDid.VoluntaryYield _ ->
+                    failwith
+                        $"unreachable: constructing through %s{describe} reported %O{whatWeDid}, which constructObject never does"
         | UnsafeAccessorPlan.CallInstance target ->
             // CoreCLR emits `callvirt` for the instance-method kind (unsafeaccessors.cpp:970), so a
             // null receiver faults here rather than inside the target.

@@ -22,6 +22,7 @@
         <Compile Include="ControlFlow.fs" />
         <Compile Include="StackEffect.fs" />
         <Compile Include="StackFlow.fs" />
+        <Compile Include="OperandUse.fs" />
         <Compile Include="StackShape.fs" />
         <Compile Include="StackShapeTokens.fs" />
         <Compile Include="HardwareIntrinsicsProfile.fs" />

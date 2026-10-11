@@ -63,6 +63,7 @@ module TestScheduleFork =
 
     let private describeWhatWeDid (what : WhatWeDid) : string =
         match what with
+        | WhatWeDid.UndefinedValueObserved observation -> $"undefinedValueObserved(%O{observation})"
         | WhatWeDid.Executed -> "executed"
         | WhatWeDid.VoluntaryYield reportsSwitch -> $"yield(%b{reportsSwitch})"
         | WhatWeDid.SuspendedForClassInit -> "suspendedForClassInit"
@@ -84,6 +85,8 @@ module TestScheduleFork =
             $"aborted %O{fatal.Code} %s{message}"
         | RunEnd.Ended (RunOutcome.SignalTerminated (_, signal, _)) -> $"signal %O{signal}"
         | RunEnd.Ended (RunOutcome.GuestUnhandledException (_, _, _, _)) -> "unhandled exception"
+        | RunEnd.StoppedAtUndefinedValue (_, ThreadId thread, observation) ->
+            $"stopped on thread %d{thread} at an undefined value: %O{observation}"
 
     let private terminalStateOf (runEnd : RunEnd) : IlMachineState = RunEnd.state runEnd
 
@@ -112,6 +115,8 @@ module TestScheduleFork =
 
         let rec go (prepared : Program.PreparedProgram) (steps : Step list) : RunTrace =
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (p, thread, observation) ->
+                finish steps (describeOutcome (RunEnd.StoppedAtUndefinedValue (p.State, thread, observation))) p.State
             | Program.ProgramStepOutcome.Completed outcome ->
                 let runEnd = RunEnd.Ended outcome
                 finish steps (describeOutcome runEnd) (terminalStateOf runEnd)

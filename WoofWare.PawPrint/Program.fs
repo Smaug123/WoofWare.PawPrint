@@ -49,6 +49,8 @@ module Program =
 
     type ProgramStartResult =
         | Ready of PreparedProgram
+        /// The run finished before `Main` was installed: the process ended, or PawPrint stopped it
+        /// at an undefined value.
         | CompletedBeforeMain of RunEnd
 
     type ProgramStepOutcome =
@@ -72,6 +74,10 @@ module Program =
         | WorkerTerminated of PreparedProgram * terminatingThread : ThreadId
         | Completed of RunOutcome
         | Deadlocked of PreparedProgram * stuckThreads : string
+        /// `observingThread` was about to use a value whose content is undefined, so PawPrint
+        /// stopped the run there (see `ExecutionResult.UndefinedValueObserved`). The process has
+        /// not ended, so there is no `RunOutcome`. Stepping it again would observe the value again.
+        | StoppedAtUndefinedValue of PreparedProgram * observingThread : ThreadId * UndefinedValueObservation
 
     /// Startup in progress: an opaque handle on the driver (`MultiProgram`) of the one program,
     /// as a `PreparedProgram` is, whose entry thread is running one of the calls startup pumps
@@ -103,6 +109,8 @@ module Program =
         | PhaseAdvanced of Startup
         | Completed of ProgramStartResult
         | Deadlocked of Startup * stuckThreads : string
+        /// As `ProgramStepOutcome.StoppedAtUndefinedValue`, in whichever phase of startup.
+        | StoppedAtUndefinedValue of Startup * observingThread : ThreadId * UndefinedValueObservation
 
     /// How the one program of a driver of one program ended, of the ends the driver finished
     /// with.
@@ -117,6 +125,9 @@ module Program =
     let private onlyOutcome (ends : (ProcessId * RunEnd) list) : RunOutcome =
         match onlyEnd ends with
         | RunEnd.Ended outcome -> outcome
+        | RunEnd.StoppedAtUndefinedValue _ ->
+            failwith
+                "Program: a driver of one program finished with its program stopped at an undefined value, but the driver reports a stop as MultiStepOutcome.StoppedAtUndefinedValue and never as a process's end (this is a bug in PawPrint)."
 
     /// Where the one program of a driver of one program is stuck, of the deadlock's report.
     let private onlyStuck (stuck : (ProcessId * string) list) : string =
@@ -176,6 +187,14 @@ module Program =
                 },
                 onlyStuck stuck
             )
+        | MultiStepOutcome.StoppedAtUndefinedValue (driver, _, thread, observation) ->
+            ProgramStepOutcome.StoppedAtUndefinedValue (
+                {
+                    Driver = driver
+                },
+                thread,
+                observation
+            )
         | MultiStepOutcome.Stepped (_, _, ProgramEvent.PhaseAdvanced) ->
             failwith
                 "Program.stepPrepared: the entry thread's startup call returned, which ends a phase of startup; a program still starting up is stepped by stepStartup"
@@ -186,6 +205,8 @@ module Program =
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunEnd =
         match stepPrepared loggerFactory logger prepared with
         | ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
+        | ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+            RunEnd.StoppedAtUndefinedValue (prepared.State, thread, observation)
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and the process has not exited. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
@@ -285,6 +306,15 @@ module Program =
                 },
                 onlyStuck stuck
             )
+        // In any phase: the stop is a value a caller inspects, never a refusal.
+        | MultiStepOutcome.StoppedAtUndefinedValue (driver, _, thread, observation) ->
+            StartupStepOutcome.StoppedAtUndefinedValue (
+                {
+                    Driver = driver
+                },
+                thread,
+                observation
+            )
         // The process ended before `Main` was installed, in the class-initialisation phase: the
         // driver fails loudly on an end in an earlier phase (`RunningProgram.runEnd`). The CLR
         // tears the process down, and the guest-level diagnostic is the run's end, rather than a
@@ -321,10 +351,14 @@ module Program =
             | StartupStepOutcome.PhaseAdvanced startup -> go startup
             | StartupStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"Deadlock during startup: no runnable threads and startup has not finished. Stuck: {stuck}"
+            | StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (startup.State, thread, observation)
+                |> ProgramStartResult.CompletedBeforeMain
 
         go (beginStartup loggerFactory originalPath fileStream hostConfig)
 
-    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
+    /// Runs the program until its process ends, or until PawPrint stops it at an undefined value;
+    /// either is returned, never raised.
     ///
     /// `hostConfig.PctSeed` flows through to `prepare`: `Some s` selects PCT with seed `s`,
     /// `None` keeps the default round-robin scheduler. See `prepare` for the
@@ -394,8 +428,8 @@ module Program =
     type PrefixOutcome =
         /// Reached a contended decision. Resume with `resumeFork`, once per seed.
         | ForkedAt of ForkSnapshot
-        /// The program ran to completion without ever reaching a contended decision. No policy
-        /// had a choice anywhere, so this is the outcome under *every* seed, and a sweep is
+        /// The program ran to completion, or PawPrint stopped it at an undefined value, without
+        /// ever reaching a contended decision. No policy had a choice anywhere, so this is the outcome under *every* seed, and a sweep is
         /// answered by this one run. (Its state's `Scheduling` is the `RoundRobin` the prefix ran
         /// under, where a from-scratch `Pct s` run would carry `Pct (ofSeed s)`; nothing
         /// guest-visible depends on the difference, but do not compare that field.)
@@ -442,6 +476,7 @@ module Program =
         | WhatWeDid.Executed
         | WhatWeDid.Aborted _
         | WhatWeDid.UnhandledException _
+        | WhatWeDid.UndefinedValueObserved _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.BlockedOnClassInit _
@@ -471,6 +506,9 @@ module Program =
         | Advanced.Settled (MultiStepOutcome.Stepped (_, pid, _)) ->
             failwith
                 $"Program.runToNextFork: the preamble of a tick of one program settled the tick with process %O{pid} running on, which only the end of another program does (this is a bug in PawPrint)."
+        | Advanced.Settled (MultiStepOutcome.StoppedAtUndefinedValue _) ->
+            failwith
+                "Program.runToNextFork: the preamble of a tick stopped at an undefined value, but only a step uses one (this is a bug in PawPrint)."
         | Advanced.Decide (advanced, tick) ->
 
         match Scheduler.tryContenders advanced.Current.State with
@@ -483,7 +521,7 @@ module Program =
         | None ->
 
         // `decide` annotates the step itself.
-        match MultiProgram.decide loggerFactory logger advanced tick with
+        match MultiProgram.decide loggerFactory logger prepared.Driver advanced tick with
         | MultiStepOutcome.Stepped (_, _, ProgramEvent.PhaseAdvanced) ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"
@@ -494,6 +532,9 @@ module Program =
             failwith
                 $"Program.runToNextFork: process %O{pid} ended and the driver ran on, but a driver of one program finishes when its program ends (this is a bug in PawPrint)."
         | MultiStepOutcome.Finished (ends, _) -> PrefixOutcome.NeverForked (onlyEnd ends)
+        | MultiStepOutcome.StoppedAtUndefinedValue (stopped, _, thread, observation) ->
+            RunEnd.StoppedAtUndefinedValue (stopped.Current.State, thread, observation)
+            |> PrefixOutcome.NeverForked
         | MultiStepOutcome.Stepped (next, _, ProgramEvent.WorkerTerminated _) ->
             runToNextFork
                 loggerFactory
@@ -554,6 +595,9 @@ module Program =
             | StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain outcome) ->
                 PrefixOutcome.NeverForked outcome
             | StartupStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
+            | StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (startup.State, thread, observation)
+                |> PrefixOutcome.NeverForked
             | StartupStepOutcome.Stepped (startup, ran, whatWeDid, _) ->
                 checkYieldDidNotStraddle ran whatWeDid startup.State
                 goStartup startup

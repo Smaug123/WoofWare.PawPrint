@@ -109,6 +109,11 @@ type internal ProgramTick =
     /// The process ended, as `outcome` says, and `ended` is the kernel's account of the end,
     /// which the driver takes to the machine the process ran on.
     | Ended of outcome : RunOutcome * ended : EndedProcess<ThreadId, NativeSignalHandler>
+    /// `observingThread` was about to use a value whose content is undefined, so PawPrint stopped
+    /// the run there (see `ExecutionResult.UndefinedValueObserved`). The process has not ended,
+    /// so the kernel is told nothing. No program is carried: the driver reports the stop at the
+    /// machine as the tick found it, so that stepping that again stops again.
+    | StoppedAtUndefinedValue of observingThread : ThreadId * observation : UndefinedValueObservation
 
 /// The operations on one program that the driver (`MultiProgram`) runs each tick: those that
 /// stay with a program, as opposed to the machine-wide ones the driver runs itself. The other
@@ -452,6 +457,8 @@ module internal RunningProgram =
                 "Step ended the thread with an unhandled exception at {ExceptionObject}",
                 exn.ExceptionObject
             )
+        | WhatWeDid.UndefinedValueObserved observation ->
+            logger.LogTrace ("Step used an undefined value: {Observation}", observation)
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -531,18 +538,28 @@ module internal RunningProgram =
     /// The eval stack is exactly what the signature says by the time this runs:
     /// `returnStackFrame` has already refused, as invalid CIL, a `Main` that returned with any
     /// other number of values on it.
+    ///
+    /// An undefined return value is an `Error`: the exit code is the host's observation of it,
+    /// and there is no exit code to report without inventing one.
     let private latchMainReturnValue
         (returns : MainReturn)
         (entry : ThreadId)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValueObservation>
         =
         match returns, state.ThreadState.[entry].MethodState.EvaluationStack.Values with
-        | MainReturn.Void, [] -> state
+        | MainReturn.Void, [] -> Ok state
         | MainReturn.Int32, [ EvalStackValue.Int32 (Int32Source.Verbatim code) ] ->
             { state with
                 LatchedExitCode = code
             }
+            |> Ok
+        | MainReturn.Int32, [ EvalStackValue.Undefined value ] ->
+            Error
+                {
+                    Value = value
+                    Use = UndefinedValueUse.ExitCode
+                }
         | MainReturn.Int32, [ other ] ->
             failwith
                 $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
@@ -697,10 +714,11 @@ module internal RunningProgram =
                             program.EntryThread
                         )
 
-                        let state =
-                            state
-                            |> latchMainReturnValue returns program.EntryThread
-                            |> Scheduler.onMainReturned program.EntryThread
+                        match latchMainReturnValue returns program.EntryThread state with
+                        | Error observation -> ProgramTick.StoppedAtUndefinedValue (program.EntryThread, observation)
+                        | Ok state ->
+
+                        let state = state |> Scheduler.onMainReturned program.EntryThread
 
                         // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
                         // gets that outcome's consequences — as the dispatcher's final `ret`
@@ -799,6 +817,9 @@ module internal RunningProgram =
                     RunOutcome.GuestUnhandledException (state, terminatingThread, exn, EndedProcess.termination ended),
                     ended
                 )
+            | ExecutionResult.UndefinedValueObserved (observingThread, observation) ->
+                // Not a process ending, so the kernel is not told anything.
+                ProgramTick.StoppedAtUndefinedValue (observingThread, observation)
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 

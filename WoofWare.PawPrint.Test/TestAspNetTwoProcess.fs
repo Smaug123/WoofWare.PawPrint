@@ -182,6 +182,7 @@ module TestAspNetTwoProcess =
                 Error $"aborted (%O{fatal.Code}): %s{message}"
             | RunEnd.Ended (RunOutcome.SignalTerminated (_, signal, coreDumped)) ->
                 Error $"was killed by %O{signal} (core dumped: %b{coreDumped})"
+            | RunEnd.StoppedAtUndefinedValue (_, _, observation) -> Error $"stopped at %O{observation}"
 
         {
             Exit = exit
@@ -232,6 +233,8 @@ module TestAspNetTwoProcess =
                 ends
             | MultiStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"PawPrint: the server and the client deadlocked. Where each program was: %A{stuck}"
+            | MultiStepOutcome.StoppedAtUndefinedValue (_, pid, _, observation) ->
+                failwith $"PawPrint: process %O{pid} stopped at %O{observation}"
 
         let driver =
             MultiProgram.start

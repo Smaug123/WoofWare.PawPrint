@@ -174,6 +174,7 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
+                | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "brfalse_s" u
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "Brfalse_s" int32Source
                     i <> 0
@@ -199,6 +200,7 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
+                | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "brtrue_s" u
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "Brtrue_s" int32Source
                     i <> 0
@@ -224,6 +226,7 @@ module internal UnaryConstIlOp =
 
             let isFalse =
                 match popped with
+                | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "brfalse" u
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "Brfalse" int32Source
                     i = 0
@@ -249,6 +252,7 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
+                | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "brtrue" u
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "Brtrue" int32Source
                     i <> 0

@@ -104,6 +104,8 @@ public static class Program
                     failwith "guest did not terminate"
 
                 match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                    failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
                 | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _, _)) ->
                     if state.LatchedExitCode <> 0 then
                         failwith $"guest did not return 0: %d{state.LatchedExitCode}"
