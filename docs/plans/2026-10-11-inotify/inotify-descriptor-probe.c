@@ -98,7 +98,9 @@ static void sectionD(void)
     int other = inotify_init1(IN_NONBLOCK);
     check("inotify_add_watch", inotify_add_watch(fd, "d", IN_CREATE));
     char buf[256];
-    line("D", "isatty", "isatty=%d errno=%s", isatty(fd), en(errno));
+    int tty = isatty(fd);
+    int ttyErrno = errno;
+    line("D", "isatty", "isatty=%d errno=%s", tty, en(ttyErrno));
     line("D", "pread-empty", "%s", rc(pread(fd, buf, sizeof buf, 0)));
     touch("d/a");
     line("D", "pread-with-record", "%s", rc(pread(fd, buf, sizeof buf, 0)));
