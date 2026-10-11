@@ -1,7 +1,10 @@
 namespace WoofWare.PosixKernel.Test
 
 open System
+open System.Buffers.Binary
 open System.Net
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -212,3 +215,68 @@ module TestSockaddrLayoutAgainstHost =
 
         SimulatedUnixPlatform.encodeInternetSockaddr (hostPlatform ()) (Ipv4Endpoint.ofParts (Ipv4Address address) port)
         |> shouldEqual (v4 ())
+
+    /// `encodeInternetV6Sockaddr` against `Serialize`, for every address, port
+    /// and scope id, under both flavours.
+    ///
+    /// The host describes only its own flavour, so the other flavour is held
+    /// to the fields both lay out alike (the port, the address and the scope
+    /// id), and the host's flavour to every byte. `Serialize` cannot write a
+    /// flow info (`IPEndPoint` has none), and writes zero there; the encoder's
+    /// is checked against the network byte order `sin6_flowinfo` has on both
+    /// (`__be32` in Linux's `uapi/linux/in6.h`; RFC 3493 §3.3), and the
+    /// rest of the struct against the host's bytes with that field zeroed.
+    [<Test>]
+    let ``the IPv6 encoder agrees with this machine for every endpoint, under both flavours`` () : unit =
+        let byteGen = ArbMap.defaults |> ArbMap.generate<byte>
+
+        let scopeIds =
+            Gen.frequency [ 1, Gen.constant 0u ; 2, ArbMap.defaults |> ArbMap.generate<uint32> ]
+
+        let gen =
+            Gen.zip
+                (Gen.zip (Gen.arrayOfLength 16 byteGen) (ArbMap.defaults |> ArbMap.generate<uint16>))
+                (Gen.zip (ArbMap.defaults |> ArbMap.generate<uint32>) scopeIds)
+
+        let host = hostPlatform ()
+
+        let property ((address : byte[], port : uint16), (flowInfo : uint32, scopeId : uint32)) : unit =
+            let socketAddress =
+                IPEndPoint(IPAddress (address, int64 scopeId), int port).Serialize ()
+
+            let serialized = Array.init socketAddress.Size (fun i -> socketAddress.[i])
+
+            let endpoint : Ipv6Endpoint =
+                {
+                    Address =
+                        Ipv6Address.ofBytes (ReadOnlySpan<byte> address)
+                        |> Option.defaultWith (fun () -> failwith "sixteen bytes are an address")
+                    Port = port
+                    FlowInfo = flowInfo
+                    ScopeId = scopeId
+                }
+
+            field InternetV6Sockaddr.flowInfo serialized
+            |> shouldEqual (Array.zeroCreate<byte> 4)
+
+            for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+                let encoded = SimulatedUnixPlatform.encodeInternetV6Sockaddr platform endpoint
+                encoded.Length |> shouldEqual serialized.Length
+
+                BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan<byte> (field InternetV6Sockaddr.flowInfo encoded))
+                |> shouldEqual flowInfo
+
+                for shared in
+                    [
+                        InternetV6Sockaddr.port
+                        InternetV6Sockaddr.address
+                        InternetV6Sockaddr.scopeId
+                    ] do
+                    field shared encoded |> shouldEqual (field shared serialized)
+
+                if SimulatedUnixPlatform.flavour platform = SimulatedUnixPlatform.flavour host then
+                    let flowInfoZeroed = Array.copy encoded
+                    Array.fill flowInfoZeroed InternetV6Sockaddr.flowInfo.Offset InternetV6Sockaddr.flowInfo.Width 0uy
+                    flowInfoZeroed |> shouldEqual serialized
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
