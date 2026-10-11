@@ -254,19 +254,11 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 
 ### Unions that gain cases
 
-From version 1.0, a minor version may add a case to a union that isn't on the closed list below.
-The model grows: a refusal becomes an answer once its behaviour is measured, each newly measured difference between Linux and Darwin adds a refusal case, and each call newly modelled as sleeping adds a case to `ParkedSyscall` and `WakePrimitive`.
-
-These unions are closed, and gain a case only in a major version:
-
-* `SyscallAnswer`: a call returns a number or fails with an errno, and nothing else.
-* `UnixError` and `Signal`: each already has a case for every name in either flavour's `<errno.h>` or `<signal.h>`.
-* `SimulatedUnixFlavour`, `SimulatedUnixKernel`, `RawErrnoNumbering`, `RawErrnoPortability` and `SignalNumbering`: a client converts raw numbers by these, so it must handle every case. A new flavour would also bring errnos and signals of its own.
-* `ProcessTermination`: a process exits, or a signal kills it.
-
-Every other union may gain cases, including `Syscall` and the defects that the `checkInvariants` functions report, such as `UnixSystemDefect`.
-That includes `SimulatedUnixArchitecture`, `SimulatedPageSize`, `EmulatedFileSystemType` and `EmulatedMount`, but a client only meets a new one of those if it builds one.
-Removing a case, changing a case's fields, or changing the shape of any other type is a breaking change, and comes only in a major version.
+From version 1.0, adding a case to any public union is a breaking change, and comes only in a major version.
+F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
+The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a refusal case.
+Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` and `WakePrimitive.FifoPartnerOpened`.
+Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
 Before 1.0, any version may change anything.
 
 ### The syscalls
