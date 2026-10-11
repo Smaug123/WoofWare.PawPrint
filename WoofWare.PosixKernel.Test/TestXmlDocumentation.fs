@@ -44,6 +44,17 @@ module TestXmlDocumentation =
         |> Array.map (fun (t : Type) -> t.FullName.Replace ('+', '.'), t)
         |> Map.ofArray
 
+    /// The library's type abbreviations, by the name the documentation file gives
+    /// each, with the type each stands for. The compiler erases an abbreviation,
+    /// so reflection cannot find it, but the documentation file documents it as a
+    /// type of its own.
+    let private typeAbbreviations : Map<string, Type> =
+        Map.ofList
+            [
+                "T:WoofWare.PosixKernel.Ipv4Binding", typeof<Ipv4Binding>
+                "T:WoofWare.PosixKernel.Ipv6Binding", typeof<Ipv6Binding>
+            ]
+
     /// Whether a client can reach the member the documentation file names by
     /// `docId` (`T:`, `M:`, `P:`, `F:` or `E:`, then the member's full name), or
     /// `None` where the member cannot be found to say.
@@ -95,6 +106,10 @@ module TestXmlDocumentation =
         match docId.[0] with
         | 'T' ->
             match Map.tryFind path types with
+            | Some t -> Some (LibraryNames.reachable t)
+            | None ->
+
+            match Map.tryFind docId typeAbbreviations with
             | Some t -> Some (LibraryNames.reachable t)
             // A union case without its own class is documented as a type that does
             // not exist: see `asMember`.
@@ -153,6 +168,16 @@ module TestXmlDocumentation =
                 memberElement.Attribute(XName.Get "name").Value, memberElement
             )
             |> List.ofSeq
+
+        // Every abbreviation listed is one the file documents, so that a misspelt
+        // entry cannot stand in for the abbreviation it means.
+        typeAbbreviations
+        |> Map.keys
+        |> Seq.filter (fun (id : string) ->
+            not (List.exists (fun (documentedId : string, _) -> documentedId = id) documented)
+        )
+        |> List.ofSeq
+        |> shouldEqual []
 
         // A member this cannot place would be skipped silently, so every one must be placed.
         documented

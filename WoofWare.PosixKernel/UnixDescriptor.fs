@@ -675,6 +675,9 @@ module UnixDescriptor =
             // the epoll success is served below, after the whence check the
             // syscall still applies.
             | Some (OpenFileTarget.Kqueue _) -> Some DescriptorFault.NotSeekable
+            // Measured on both flavours: `lseek` on a FIFO is ESPIPE, as on a
+            // pipe.
+            | Some (OpenFileTarget.Fifo _) -> Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.Epoll _) -> None
             | Some (OpenFileTarget.Socket _) ->
                 // Unseekable on both, unlike the epoll instance above: measured, both
@@ -737,6 +740,7 @@ module UnixDescriptor =
         // Each of these answered EBADF or ESPIPE above.
         | None
         | Some (OpenFileTarget.Kqueue _)
+        | Some (OpenFileTarget.Fifo _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Socket _) ->
             failwith
@@ -981,6 +985,7 @@ module UnixDescriptor =
             // is no unseekable-versus-unwritable tie for the platforms to break
             // differently, so this arm deliberately carries no Darwin flag.
             Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixDescriptor.ftruncate" inode
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _) ->
 
@@ -1072,6 +1077,10 @@ module UnixDescriptor =
             // where the range and advice checks belong to the generic path it
             // dispatches to.
             Ok (FileAdviceAnswer.Failed UnixError.ESPIPE)
+        // Only Linux provides the call, and its `generic_fadvise` answers
+        // ESPIPE for any inode that is `S_ISFIFO`: the test that answers it
+        // for a pipe.
+        | OpenFileTarget.Fifo _ -> Ok (FileAdviceAnswer.Failed UnixError.ESPIPE)
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Kqueue _
@@ -1195,6 +1204,14 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Darwin -> Error (FLockRefusal.DarwinMalformedOperation operation)
         | Some request ->
 
+        // Whether a FIFO's descriptions contend is unmeasured on both flavours.
+        match descriptor with
+        | Some {
+                   Target = OpenFileTarget.Fifo (inode, _)
+               } -> ReservedFifo.fail "UnixDescriptor.flock" inode
+        | Some _
+        | None -> ()
+
         // The remaining divergences are all about a descriptor already resolved,
         // so they are checked here rather than in the registry: that module
         // models one coherent set of rules. An unknown fd is EBADF on both
@@ -1214,6 +1231,7 @@ module UnixDescriptor =
                     failwith
                         "UnixDescriptor.flock: a Darwin-flavoured kernel holds a description of a device, which only Linux's devtmpfs gives (this is a bug in the caller's state construction)."
                 | OpenFileTarget.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
+                | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixDescriptor.flock" inode
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _ ->
                     match request, description.Flock with
@@ -1445,7 +1463,10 @@ module UnixDescriptor =
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Kqueue _)
-            | Some (OpenFileTarget.Epoll _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
+            | Some (OpenFileTarget.Epoll _)
+            // Measured to differ by flavour on the write side, and needing the
+            // FIFO's channel, which is not modelled.
+            | Some (OpenFileTarget.Fifo _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
             | Some (OpenFileTarget.Socket socketId) ->
                 // A connected TCP socket reports the bytes in its receive
                 // buffer, on both flavours, after a FIN or a reset too
@@ -1527,7 +1548,12 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _) ->
+            | OpenFileTarget.CharacterDevice (inode, _)
+            // A FIFO's inode is on the filesystem its path is on, and the
+            // later screen answers EINVAL for it there:
+            // `generic_remap_file_range_prep` refuses any inode that is not
+            // `S_ISREG`.
+            | OpenFileTarget.Fifo (inode, _) ->
                 ObjectFileSystem.Mounted (VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem)
             | OpenFileTarget.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
             | OpenFileTarget.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
@@ -1541,6 +1567,7 @@ module UnixDescriptor =
             | OpenFileTarget.Directory _ -> true
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1551,6 +1578,7 @@ module UnixDescriptor =
             | OpenFileTarget.File _ -> true
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1607,6 +1635,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
+            | Some (OpenFileTarget.Fifo (inode, _)) -> ReservedFifo.fail "UnixDescriptor.terminalAttributes" inode
             | Some (OpenFileTarget.Socket socketId) ->
                 match flavour, (UnixMachineState.socket socketId system.Machine).Domain with
                 | SimulatedUnixFlavour.Linux, _ -> UnixError.ENOTTY
@@ -2177,6 +2206,7 @@ module UnixDescriptor =
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Socket _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _ -> registry
 
         let closed = UnixSystemState.withFileDescriptors registry system
@@ -2252,7 +2282,8 @@ module UnixDescriptor =
                 match description.Target with
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.CharacterDevice _ -> true
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _ -> true
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Epoll _
@@ -2390,6 +2421,7 @@ module UnixDescriptor =
             // O_NONBLOCK, which a kqueue answers ENOTTY, every time.
             match description.Target with
             | OpenFileTarget.Kqueue _ -> Ok (SyscallAnswer.Failed UnixError.ENOTTY, withRegistry registry system)
+            | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixDescriptor.fcntl" inode
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _

@@ -100,7 +100,7 @@ module TestDualMode =
 
             SocketAddress.toString address |> shouldEqual "[::ffff:127.0.0.1]:5000"
 
-            (UnixMachineState.socket (socketIdOf fd system) system.Machine).Binding
+            (UnixMachineState.socket (socketIdOf fd system) system.Machine).Ipv4Binding
             |> Option.map (fun binding -> binding.Endpoint)
             |> shouldEqual (Some (loopback 5000us))
         | other -> failwith $"bind answered %A{other}"
@@ -125,7 +125,8 @@ module TestDualMode =
             let socket = UnixMachineState.socket socketId system.Machine
 
             match socket.Addressing, socket.Phase with
-            | SocketAddressing.Inet6DualMode (Some binding), SocketPhase.Established (connection, ConnectionEnd.Client) ->
+            | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Mapped binding)),
+              SocketPhase.Established (connection, ConnectionEnd.Client) ->
                 binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                 let connection = UnixMachineState.connection connection system.Machine
                 connection.ServerAddress |> shouldEqual (loopback port)

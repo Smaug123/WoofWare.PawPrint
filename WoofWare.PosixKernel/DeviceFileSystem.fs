@@ -71,7 +71,8 @@ module DeviceFileSystemMount =
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module CharacterDevice =
     /// Every device this kernel has a driver for, in the order a devtmpfs
-    /// makes their nodes.
+    /// makes their nodes. A devtmpfs holds a node for each of these and for
+    /// nothing else.
     let all : CharacterDevice list = [ CharacterDevice.Null ; CharacterDevice.URandom ]
 
     /// The name of the device's node in `/dev`.
@@ -79,19 +80,26 @@ module CharacterDevice =
         match device with
         | CharacterDevice.Null -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "null"
         | CharacterDevice.URandom -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "urandom"
+        | CharacterDevice.Zero -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "zero"
+        | CharacterDevice.Random -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "random"
 
     /// The permission bits of the device's node.
     let permissions (device : CharacterDevice) : PermissionBits =
-        // Measured on both flavours: crw-rw-rw- for both nodes.
+        // Measured on both flavours: crw-rw-rw- for all four nodes
+        // (`devices.c`, STAT rows: mode 020666 for null, zero, random and
+        // urandom, on Linux 6.18.5 and on Darwin 27.0.0).
         match device with
         | CharacterDevice.Null
-        | CharacterDevice.URandom -> PermissionBits 0o666
+        | CharacterDevice.URandom
+        | CharacterDevice.Zero
+        | CharacterDevice.Random -> PermissionBits 0o666
 
     /// What an `ioctl(2)` the device's Linux driver does not recognise answers:
     /// `FIONREAD` and `TCGETS` (`tcgetattr`) among them, neither device being a
     /// queue or a terminal. The buffer the request names is never looked at.
     ///
-    /// Linux only: this kernel holds no device on Darwin.
+    /// Linux only: this kernel holds no device on Darwin. Only for a device in
+    /// `CharacterDevice.all`: no other device has a node to ask through.
     let unrecognisedIoctl (device : CharacterDevice) : UnixError =
         // Measured on Linux 6.18.5 (`devices-l2.c`, FIONREAD and TCGETATTR
         // rows, through descriptors opened for reading and for writing): null
@@ -100,6 +108,10 @@ module CharacterDevice =
         match device with
         | CharacterDevice.Null -> UnixError.ENOTTY
         | CharacterDevice.URandom -> UnixError.EINVAL
+        | CharacterDevice.Zero
+        | CharacterDevice.Random ->
+            failwith
+                $"CharacterDevice.unrecognisedIoctl: asked about %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in the caller)."
 
     /// `st_rdev` for the device's node under a kernel of `flavour`, in that
     /// flavour's `dev_t` encoding.
@@ -112,11 +124,14 @@ module CharacterDevice =
                 $"CharacterDevice.specialFileDevice: asked for the number of %O{device} on Darwin, where this kernel holds no device (this is a bug in the caller)."
         | SimulatedUnixFlavour.Linux ->
 
-        // The mem driver's registrations, which are fixed: 1,3 for null and 1,9
-        // for urandom, measured on Linux 6.18.5 (`devices.c`, STAT rows).
+        // The mem driver's registrations, which are fixed: 1,3 for null, 1,5
+        // for zero, 1,8 for random and 1,9 for urandom, measured on Linux
+        // 6.18.5 (`devices.c`, STAT rows).
         let major, minor =
             match device with
             | CharacterDevice.Null -> 1L, 3L
+            | CharacterDevice.Zero -> 1L, 5L
+            | CharacterDevice.Random -> 1L, 8L
             | CharacterDevice.URandom -> 1L, 9L
 
         // glibc's `makedev`, which is how a 64-bit Linux `stat` encodes the pair:

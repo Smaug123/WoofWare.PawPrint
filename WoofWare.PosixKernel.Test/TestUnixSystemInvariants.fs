@@ -5,14 +5,16 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.checkInvariants`, for the six rules nothing else exercises.
+/// `UnixSystem.checkInvariants`, for the eight rules nothing else exercises.
 ///
 /// Five of these six were found by mutating each rule in turn and seeing which
 /// mutants no suite killed, and three of those are the same gap twice over: the
 /// `>=` against a counter is only ever tested with a strictly greater identity,
 /// so the boundary the rule exists for is untested.
 /// The sixth, `CurrentDirectoryIsNotADirectory`, arrived with the setter that
-/// establishes the current directory.
+/// establishes the current directory. The seventh and eighth,
+/// `UnmodelledBindingHeld` and `DatagramPeerOfAnotherFamily`, guard states no
+/// syscall yet produces.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixSystemInvariants =
@@ -546,7 +548,7 @@ module TestUnixSystemInvariants =
     // Sockets whose binding cannot have come from bind or listen
     // ------------------------------------------------------------------
 
-    let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
+    let private streamSocket (binding : Ipv4Binding option) (phase : SocketPhase) : SocketDescription =
         {
             Addressing = SocketAddressing.Inet binding
             Kind = SocketKind.Stream
@@ -575,7 +577,7 @@ module TestUnixSystemInvariants =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private boundAt (port : uint16) : SocketBinding option =
+    let private boundAt (port : uint16) : Ipv4Binding option =
         Some
             {
                 Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback port
@@ -608,7 +610,7 @@ module TestUnixSystemInvariants =
     let ``an unaddressable socket with a latched refusal is a defect`` () : unit =
         let refused = SocketPhase.Refused RefusalError.Pending
 
-        for addressing in [ SocketAddressing.Inet6V6Only ; SocketAddressing.Unix ] do
+        for addressing in [ SocketAddressing.Inet6V6Only None ; SocketAddressing.Unix None ] do
             let socketId, faulty =
                 withSocket
                     { streamSocket None refused with
@@ -626,6 +628,101 @@ module TestUnixSystemInvariants =
                     }
 
             UnixSystem.checkInvariants sound |> shouldEqual []
+
+    let private ipv6Binding : Ipv6Binding =
+        {
+            Endpoint =
+                {
+                    Address = Ipv6Address.loopback
+                    Port = 5000us
+                    FlowInfo = 0u
+                    ScopeId = 0u
+                }
+            LockedAddress = Some Ipv6Address.loopback
+            LockedPort = true
+        }
+
+    let private socketName : UnixSocketName =
+        match UnixByteString.ofString "/tmp/socket" with
+        | Ok path -> UnixSocketName.ofPath path
+        | Error defect -> failwith $"%s{context}: /tmp/socket is not a path: %A{defect}"
+
+    /// No syscall binds a socket natively over IPv6 or names a Unix-domain
+    /// socket yet, so a socket holding such a binding was assembled some other
+    /// way.
+    [<Test>]
+    let ``a socket holding a binding no syscall makes is a defect`` () : unit =
+        let unmodelled =
+            [
+                SocketAddressing.Inet6V6Only (Some ipv6Binding)
+                SocketAddressing.Inet6DualMode (Some (DualModeBinding.Native ipv6Binding))
+                SocketAddressing.Unix (Some socketName)
+            ]
+
+        for addressing in unmodelled do
+            let socketId, faulty =
+                withSocket
+                    { streamSocket None SocketPhase.Idle with
+                        Addressing = addressing
+                    }
+
+            UnixSystem.checkInvariants faulty
+            |> shouldEqual [ UnixSystemDefect.UnmodelledBindingHeld (socketId, addressing) ]
+
+        // The controls: each family unbound, and a dual-mode socket holding
+        // its IPv4 transport, are sound.
+        let sound =
+            [
+                SocketAddressing.Inet6V6Only None
+                SocketAddressing.Inet6DualMode None
+                SocketAddressing.Inet6DualMode (boundAt 5000us |> Option.map DualModeBinding.Mapped)
+                SocketAddressing.Unix None
+            ]
+
+        for addressing in sound do
+            let _, sound =
+                withSocket
+                    { streamSocket None SocketPhase.Idle with
+                        Addressing = addressing
+                    }
+
+            UnixSystem.checkInvariants sound |> shouldEqual []
+
+    /// `connect(2)` gives a datagram socket a peer in its own family only.
+    [<Test>]
+    let ``a datagram peer in another family is a defect`` () : unit =
+        let datagramSocket (peer : SocketAddress) : SocketDescription =
+            { streamSocket (boundAt 5000us) (SocketPhase.DatagramPeer peer) with
+                Kind = SocketKind.Datagram
+                Protocol = SocketProtocol.Udp
+            }
+
+        let foreignPeers =
+            [
+                SocketAddress.Inet6
+                    {
+                        Address = Ipv6Address.loopback
+                        Port = 6000us
+                        FlowInfo = 0u
+                        ScopeId = 0u
+                    }
+                SocketAddress.Unix socketName
+            ]
+
+        for peer in foreignPeers do
+            let socketId, faulty = withSocket (datagramSocket peer)
+
+            UnixSystem.checkInvariants faulty
+            |> shouldEqual
+                [
+                    UnixSystemDefect.DatagramPeerOfAnotherFamily (socketId, SocketDomain.Inet, peer)
+                ]
+
+        // The control: an IPv4 socket's IPv4 peer is sound.
+        let _, sound =
+            withSocket (datagramSocket (SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us)))
+
+        UnixSystem.checkInvariants sound |> shouldEqual []
 
     [<Test>]
     let ``a socket bound to port 0 is a defect`` () : unit =

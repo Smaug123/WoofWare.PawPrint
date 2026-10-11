@@ -827,7 +827,7 @@ module TestSocketTable =
 
         // The implicit bind: loopback, a nonzero port from the ephemeral
         // range, and the connection records exactly that endpoint.
-        match client.Binding with
+        match client.Ipv4Binding with
         | None -> failwith "expected the connect to bind the client implicitly"
         | Some binding ->
             binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
@@ -1173,7 +1173,7 @@ module TestSocketTable =
         accepted.Phase
         |> shouldEqual (SocketPhase.Established (connectionOf 1L, ConnectionEnd.Server))
 
-        accepted.Binding
+        accepted.Ipv4Binding
         |> shouldEqual (
             Some
                 {
@@ -1309,13 +1309,13 @@ module TestSocketTable =
         outcome |> shouldEqual ConnectOutcome.Completed
         let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
         socket.Phase |> shouldEqual SocketPhase.Idle
-        socket.Binding |> shouldEqual None
+        socket.Ipv4Binding |> shouldEqual None
 
         // A re-connect binds afresh.
         let outcome, kernel = connect (SocketId 0L) false (loopback 1234us) kernel
         outcome |> shouldEqual ConnectOutcome.Completed
 
-        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
+        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Ipv4Binding with
         | Some binding -> (binding.Endpoint.Port > 0us) |> shouldEqual true
         | None -> failwith "expected the re-connect to bind the socket"
 
@@ -1789,7 +1789,7 @@ module TestSocketTable =
 
         let client = UnixMachineState.socket (SocketId 1L) kernel.Machine
 
-        client.Binding
+        client.Ipv4Binding
         |> shouldEqual (
             Some
                 {
@@ -1887,7 +1887,7 @@ module TestSocketTable =
                 // While the refusal pends, the source reads as resolved
                 // loopback with a nonzero port on both flavours.
                 let pending =
-                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
+                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Ipv4Binding with
                     | Some binding -> binding
                     | None -> failwith "expected the pending attempt to have bound the socket"
 
@@ -1901,7 +1901,7 @@ module TestSocketTable =
                 |> shouldEqual (ConnectOutcome.Failed (if darwin then UnixError.EISCONN else UnixError.ECONNREFUSED))
 
                 let delivered =
-                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
+                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Ipv4Binding with
                     | Some binding -> binding
                     | None -> failwith "expected the retry to keep the socket bound"
 
@@ -1914,7 +1914,7 @@ module TestSocketTable =
                     let outcome, blocked = connect (SocketId 0L) false (loopback 9999us) start
                     outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-                    match (UnixMachineState.socket (SocketId 0L) blocked.Machine).Binding with
+                    match (UnixMachineState.socket (SocketId 0L) blocked.Machine).Ipv4Binding with
                     | Some binding -> binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                     | None -> failwith "expected the blocking refusal to keep the socket bound"
 
@@ -2105,7 +2105,7 @@ module TestSocketTable =
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         let firstPort =
-            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Binding with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Ipv4Binding with
             | Some binding -> binding.Endpoint.Port
             | None -> failwith "expected the connect to bind the client"
 
@@ -2131,7 +2131,7 @@ module TestSocketTable =
         let outcome, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
         outcome |> shouldEqual ConnectOutcome.Completed
 
-        match (UnixMachineState.socket (SocketId 2L) kernel.Machine).Binding with
+        match (UnixMachineState.socket (SocketId 2L) kernel.Machine).Ipv4Binding with
         | Some binding -> binding.Endpoint.Port |> shouldEqual 40001us
         | None -> failwith "expected the connect to bind the client"
 

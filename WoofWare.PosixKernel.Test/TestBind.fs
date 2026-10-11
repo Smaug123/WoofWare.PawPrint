@@ -113,8 +113,8 @@ module TestBind =
         | BindAnswer.Bound (SocketAddress.Inet bound), system -> bound, system
         | answer, _ -> failwith $"expected an IPv4 bind to succeed, got %A{answer}"
 
-    let private bindingOf (socketId : SocketId) (system : UnixSystem<int, string>) : SocketBinding option =
-        (UnixMachineState.socket socketId system.Machine).Binding
+    let private bindingOf (socketId : SocketId) (system : UnixSystem<int, string>) : Ipv4Binding option =
+        (UnixMachineState.socket socketId system.Machine).Ipv4Binding
 
     // ------------------------------------------------------------------
     // The happy path

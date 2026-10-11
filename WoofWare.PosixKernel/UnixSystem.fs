@@ -216,7 +216,7 @@ type UnixSystemDefect<'Task> =
     /// `OpenFileTarget.File` onto a directory or a device, an
     /// `OpenFileTarget.Directory` onto anything but a directory, or an
     /// `OpenFileTarget.CharacterDevice` onto anything but the node of the device
-    /// it names. `open` chooses the target by what it opened, so a directory's
+    /// it names, or an `OpenFileTarget.Fifo` onto anything but a FIFO. `open` chooses the target by what it opened, so a directory's
     /// position is always a place in its entries and never a byte offset, and a
     /// device's operations are the driver's own.
     | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
@@ -467,11 +467,21 @@ type UnixSystemDefect<'Task> =
     /// before it listens, and a connect looks listeners up by their binding,
     /// so this one can never be reached.
     | ListenerWithoutBinding of socket : SocketId
-    /// A socket whose `SocketAddressing` can hold no address -- an IPv6 one
-    /// with `IPV6_V6ONLY` on, or a Unix-domain one -- is listening, connected
-    /// or latched by a refusal, each of which only a socket with an address
+    /// A socket that this kernel gives no address -- an IPv6 one with
+    /// `IPV6_V6ONLY` on, or a Unix-domain one -- is listening, connected or
+    /// latched by a refusal, each of which only a socket with an address
     /// reaches.
     | UnaddressableSocketInPhase of socket : SocketId * addressing : SocketAddressing * phase : SocketPhase
+    /// A socket holds a binding that no syscall of this kernel makes: an
+    /// `Inet6V6Only` socket's IPv6 binding, a dual-mode socket's
+    /// `DualModeBinding.Native` one, or a Unix-domain socket's name. This
+    /// kernel has no IPv6 transport and binds no Unix-domain socket, so every
+    /// binding it makes is an IPv4 one.
+    | UnmodelledBindingHeld of socket : SocketId * addressing : SocketAddressing
+    /// A datagram socket's peer (`SocketPhase.DatagramPeer`) is an address in
+    /// a family other than the socket's own `domain`, where `connect(2)` sets
+    /// a peer only in the socket's own family.
+    | DatagramPeerOfAnotherFamily of socket : SocketId * domain : SocketDomain * peer : SocketAddress
     /// A bound socket holds port 0, which is how a process *asks* for a port and
     /// never one it is given, with one exception: a datagram socket whose
     /// Linux `connect(AF_UNSPEC)` kept a locked concrete address and dropped
@@ -1237,6 +1247,7 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -1283,6 +1294,7 @@ module UnixSystem =
                 | OpenFileTarget.File _, _
                 | OpenFileTarget.Directory _, _
                 | OpenFileTarget.Socket _, _
+                | OpenFileTarget.Fifo _, _
                 | OpenFileTarget.Pipe _, _ -> None
             )
 
@@ -1319,6 +1331,15 @@ module UnixSystem =
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Socket _)
                     | Some (InodeContent.Fifo _)
+                    | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                | OpenFileTarget.Fifo (inode, _) ->
+                    match VirtualFileSystem.tryGetContent inode machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.Fifo _) -> None
+                    | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.Directory _)
+                    | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Socket _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -1520,6 +1541,7 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
@@ -1625,6 +1647,7 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> None
             )
 
@@ -1709,25 +1732,57 @@ module UnixSystem =
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (ordinal, _) -> UnixSystemDefect.DuplicateParkOrdinal ordinal)
 
-        // Bindings no bind or listen could have produced.
+        // Addresses no bind, listen or connect could have produced.
         let bindings =
             machine.Sockets
             |> Map.toList
             |> List.collect (fun (socketId, socket) ->
                 let unboundListener =
-                    match socket.Phase, socket.Binding with
-                    | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
+                    match socket.Phase with
+                    | SocketPhase.Listening _ when not (SocketAddressing.isBound socket.Addressing) ->
+                        [ UnixSystemDefect.ListenerWithoutBinding socketId ]
                     | _ -> []
 
                 let unaddressable =
                     match socket.Addressing, socket.Phase with
-                    | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), SocketPhase.Idle
+                    | (SocketAddressing.Inet6V6Only _ | SocketAddressing.Unix _), SocketPhase.Idle
                     | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _), _ -> []
-                    | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix) as addressing, phase ->
+                    | (SocketAddressing.Inet6V6Only _ | SocketAddressing.Unix _) as addressing, phase ->
                         [ UnixSystemDefect.UnaddressableSocketInPhase (socketId, addressing, phase) ]
 
+                let unmodelledBinding =
+                    match socket.Addressing with
+                    | SocketAddressing.Inet _
+                    | SocketAddressing.Inet6DualMode None
+                    | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Mapped _))
+                    | SocketAddressing.Inet6V6Only None
+                    | SocketAddressing.Unix None -> []
+                    | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Native _))
+                    | SocketAddressing.Inet6V6Only (Some _)
+                    | SocketAddressing.Unix (Some _) ->
+                        [ UnixSystemDefect.UnmodelledBindingHeld (socketId, socket.Addressing) ]
+
+                let peerFamily =
+                    match socket.Phase with
+                    | SocketPhase.DatagramPeer peer ->
+                        let peerDomain =
+                            match peer with
+                            | SocketAddress.Inet _ -> SocketDomain.Inet
+                            | SocketAddress.Inet6 _ -> SocketDomain.Inet6
+                            | SocketAddress.Unix _ -> SocketDomain.Unix
+
+                        if peerDomain = socket.Domain then
+                            []
+                        else
+                            [ UnixSystemDefect.DatagramPeerOfAnotherFamily (socketId, socket.Domain, peer) ]
+                    | SocketPhase.Idle
+                    | SocketPhase.Listening _
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _
+                    | SocketPhase.Refused _ -> []
+
                 let portZero =
-                    match socket.Binding with
+                    match socket.Ipv4Binding with
                     | Some binding when binding.Endpoint.Port = 0us ->
                         let halfBound =
                             // Only Linux's `connect(AF_UNSPEC)` produces this,
@@ -1748,7 +1803,7 @@ module UnixSystem =
                             [ UnixSystemDefect.BoundToPortZero socketId ]
                     | _ -> []
 
-                unboundListener @ unaddressable @ portZero
+                unboundListener @ unaddressable @ unmodelledBinding @ peerFamily @ portZero
             )
 
         let fileSystemType =
@@ -1988,6 +2043,7 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> None
             )
             |> Seq.toList
@@ -2005,6 +2061,7 @@ module UnixSystem =
                 |> List.choose (fun (id, description) ->
                     match description.Target with
                     | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
+                    | OpenFileTarget.Fifo _
                     | OpenFileTarget.Kqueue _
                     | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
@@ -2261,6 +2318,7 @@ module UnixSystem =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.CharacterDevice _
+                        | OpenFileTarget.Fifo _
                         | OpenFileTarget.Pipe _
                         | OpenFileTarget.Kqueue _
                         | OpenFileTarget.Epoll _ -> false
@@ -2295,6 +2353,7 @@ module UnixSystem =
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
                         | OpenFileTarget.CharacterDevice _
+                        | OpenFileTarget.Fifo _
                         | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedEpollWaitOnNonEpoll (task, wait.Epoll, description.Target)
@@ -2331,6 +2390,7 @@ module UnixSystem =
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Socket _
+                            | OpenFileTarget.Fifo _
                             | OpenFileTarget.Pipe _ ->
                                 [
                                     UnixSystemDefect.ParkedKeventOnNonKqueue (task, wait.Kqueue, description.Target)
@@ -2355,6 +2415,7 @@ module UnixSystem =
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
                                     | OpenFileTarget.CharacterDevice _
+                                    | OpenFileTarget.Fifo _
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
@@ -2482,6 +2543,7 @@ module UnixSystem =
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.CharacterDevice _
+                            | OpenFileTarget.Fifo _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
                             | OpenFileTarget.Epoll _ -> None

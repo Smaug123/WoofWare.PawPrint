@@ -1312,7 +1312,8 @@ module UnixNamespace =
                     match description.Target with
                     | OpenFileTarget.File (inode, _)
                     | OpenFileTarget.Directory (inode, _)
-                    | OpenFileTarget.CharacterDevice (inode, _) -> Ok inode
+                    | OpenFileTarget.CharacterDevice (inode, _)
+                    | OpenFileTarget.Fifo (inode, _) -> Ok inode
                     | OpenFileTarget.Pipe _
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.Epoll _
@@ -1544,6 +1545,13 @@ module UnixNamespace =
         | OpenFileTarget.Socket _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Fifo (inode, _) ->
+            match flavour with
+            // Every kind measured above is ENOTDIR on Linux, whose
+            // `iterate_dir` answers it for any file without an `iterate_shared`.
+            | SimulatedUnixFlavour.Linux -> Ok (ReadDirectoryAnswer.Failed UnixError.ENOTDIR, system)
+            // Unmeasured: a Darwin FIFO is a vnode, so not the pipe's ENOTSUP.
+            | SimulatedUnixFlavour.Darwin -> ReservedFifo.fail "UnixNamespace.getdents" inode
         | OpenFileTarget.Directory (inode, position) ->
 
         match VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem with

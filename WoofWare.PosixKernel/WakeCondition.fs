@@ -229,6 +229,7 @@ module WakeCondition =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _ -> None
@@ -315,6 +316,7 @@ module WakeCondition =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Epoll _ ->
                     failwith
@@ -342,6 +344,7 @@ module WakeCondition =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->

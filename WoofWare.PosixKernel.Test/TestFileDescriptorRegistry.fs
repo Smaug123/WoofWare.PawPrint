@@ -1560,6 +1560,7 @@ module TestFileDescriptorRegistry =
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Socket _)
         | Some (OpenFileTarget.Pipe _)
+        | Some (OpenFileTarget.Fifo _)
         | Some (OpenFileTarget.CharacterDevice _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
         | Some (OpenFileTarget.Directory _) ->
@@ -1898,6 +1899,47 @@ module TestFileDescriptorRegistry =
 
         FileDescriptorRegistry.checkInvariants (table System.Int64.MaxValue)
         |> shouldEqual []
+
+    /// `OpenFileTarget.Fifo` is reserved: nothing in this version opens a FIFO, so a description
+    /// naming one is a defect, whichever ends it holds and whether or not a descriptor names it.
+    /// Reachable only through `Unchecked.ofParts`, and `FifoAttachment` has no public constructor.
+    [<Test>]
+    let ``checkInvariants reports a FIFO description, which nothing in this version makes`` () : unit =
+        let table (fds : Map<int, OpenFileDescriptionId>) (target : OpenFileTarget) (mode : FileAccessMode) =
+            FileDescriptorRegistry.Unchecked.ofParts
+                fds
+                (Map.ofList
+                    [
+                        OpenFileDescriptionId 7L,
+                        {
+                            Target = target
+                            AccessMode = mode
+                            NonBlocking = false
+                            Flock = None
+                            Status = OpenFileStatus.none
+                        }
+                    ])
+                (OpenFileDescriptionId 9L)
+
+        let fifo = OpenFileTarget.Fifo (someInode, FifoAttachment.Unattached)
+        let named = Map.ofList [ 0, OpenFileDescriptionId 7L ]
+
+        for mode in
+            [
+                FileAccessMode.ReadOnly
+                FileAccessMode.WriteOnly
+                FileAccessMode.ReadWrite
+            ] do
+            FileDescriptorRegistry.checkInvariants (table named fifo mode)
+            |> shouldEqual [ FileDescriptorRegistryDefect.ReservedTarget (OpenFileDescriptionId 7L) ]
+
+            // The same description onto a regular file is sound, so the defect is the target's.
+            FileDescriptorRegistry.checkInvariants (table named (OpenFileTarget.File (someInode, 0L)) mode)
+            |> shouldEqual []
+
+        // A description no descriptor names, which only a call in flight holds, is reported too.
+        FileDescriptorRegistry.checkInvariants (table Map.empty fifo FileAccessMode.ReadOnly)
+        |> shouldEqual [ FileDescriptorRegistryDefect.ReservedTarget (OpenFileDescriptionId 7L) ]
 
     let private nonBlockingOf (fd : int) (registry : FileDescriptorRegistry) : bool =
         match FileDescriptorRegistry.tryFind fd registry with

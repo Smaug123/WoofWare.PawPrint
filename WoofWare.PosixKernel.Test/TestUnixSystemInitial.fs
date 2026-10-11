@@ -204,7 +204,7 @@ module TestUnixSystemInitial =
                 Phase = SocketPhase.Idle
             }
 
-        let candidate (port : uint16) : SocketBinding =
+        let candidate (port : uint16) : Ipv4Binding =
             {
                 Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                 LockedAddress = None

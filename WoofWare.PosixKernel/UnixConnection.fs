@@ -408,10 +408,10 @@ module UnixConnection =
         // A3 and G).
         let ipv6Only () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
             match sock.Addressing, nativeDestination () with
-            | SocketAddressing.Inet6V6Only, None ->
+            | SocketAddressing.Inet6V6Only _, None ->
                 Some (Ok (ConnectOutcome.Failed (SimulatedUnixPlatform.ipv6OnlyConnectError platform), system))
-            | SocketAddressing.Inet6V6Only, Some native -> Some native
-            | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _ | SocketAddressing.Unix), _ -> None
+            | SocketAddressing.Inet6V6Only _, Some native -> Some native
+            | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _ | SocketAddressing.Unix _), _ -> None
 
         let declaredLength = int declaredLength
 
@@ -456,7 +456,7 @@ module UnixConnection =
             else
 
             let address =
-                match flavour, sock.Binding with
+                match flavour, sock.Ipv4Binding with
                 | SimulatedUnixFlavour.Linux, Some binding when binding.Endpoint.Address <> Ipv4Address.any ->
                     binding.Endpoint.Address
                 | SimulatedUnixFlavour.Linux, _
@@ -476,7 +476,7 @@ module UnixConnection =
         // reverts the address to whatever bind(2) locked — the wildcard when
         // the address only ever came from source resolution — while keeping
         // the port.
-        let bindingAfterRefusalDelivery (flavour : SimulatedUnixFlavour) (binding : SocketBinding) : SocketBinding =
+        let bindingAfterRefusalDelivery (flavour : SimulatedUnixFlavour) (binding : Ipv4Binding) : Ipv4Binding =
             match flavour with
             | SimulatedUnixFlavour.Darwin -> binding
             | SimulatedUnixFlavour.Linux ->
@@ -495,10 +495,10 @@ module UnixConnection =
         // resolved from, which is the socket's own unless the connect has
         // already reset it.
         let ensureBoundFrom
-            (current : SocketBinding option)
+            (current : Ipv4Binding option)
             (dest : Ipv4Endpoint)
             (system : UnixSystem<'Task, 'Handler>)
-            : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            : Result<Ipv4Binding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
             match current with
             | Some binding when binding.Endpoint.Port = 0us ->
@@ -507,7 +507,7 @@ module UnixConnection =
                 // keeps the address -- measured, `127.0.0.1:0` connects from
                 // `127.0.0.1:<ephemeral>`. Only a concrete locked address is
                 // ever left half-bound, so the wildcard case does not arise.
-                let candidate (port : uint16) : SocketBinding =
+                let candidate (port : uint16) : Ipv4Binding =
                     { binding with
                         Endpoint =
                             { binding.Endpoint with
@@ -560,7 +560,7 @@ module UnixConnection =
                 Error (ConnectRefusal.SourceForNonLoopbackDestination (socketId, SocketAddress.Inet dest, false))
             else
 
-            let candidate (port : uint16) : SocketBinding =
+            let candidate (port : uint16) : Ipv4Binding =
                 {
                     Endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback port
                     // No bind(2) ran: a Linux refusal delivery reverts the
@@ -590,9 +590,9 @@ module UnixConnection =
         let ensureBound
             (dest : Ipv4Endpoint)
             (system : UnixSystem<'Task, 'Handler>)
-            : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            : Result<Ipv4Binding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
-            ensureBoundFrom sock.Binding dest system
+            ensureBoundFrom sock.Ipv4Binding dest system
 
         // The established/refused attempt, shared by both flavours once the
         // per-flavour screens have let an idle stream socket through.
@@ -609,7 +609,7 @@ module UnixConnection =
                 |> List.choose (fun (otherId, other) ->
                     match other.Phase with
                     | SocketPhase.Listening listenState ->
-                        match other.Binding with
+                        match other.Ipv4Binding with
                         | Some binding when
                             other.Kind = SocketKind.Stream
                             && binding.Endpoint.Port = dest.Port
@@ -798,7 +798,7 @@ module UnixConnection =
                 // The client's own endpoint with no listener behind it is
                 // TCP simultaneous open: a real kernel can complete it,
                 // connecting the socket to itself. Unmodelled.
-                match sock.Binding with
+                match sock.Ipv4Binding with
                 | Some binding when
                     binding.Endpoint.Port = dest.Port
                     && Ipv4Endpoint.addressesOverlap binding.Endpoint dest
@@ -823,7 +823,7 @@ module UnixConnection =
                             | _ -> false
                         )
                         && (
-                            match other.Binding with
+                            match other.Ipv4Binding with
                             | Some binding ->
                                 binding.Endpoint.Port = dest.Port
                                 && Ipv4Endpoint.addressesOverlap binding.Endpoint dest
@@ -977,7 +977,7 @@ module UnixConnection =
                                             { sock with
                                                 Addressing =
                                                     SocketAddressing.replaceBinding
-                                                        (sock.Binding
+                                                        (sock.Ipv4Binding
                                                          |> Option.map (
                                                              bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux
                                                          ))
@@ -1096,10 +1096,10 @@ module UnixConnection =
                     (error : UnixError)
                     : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
                     =
-                    match sock.Binding with
+                    match sock.Ipv4Binding with
                     | Some _ -> fail error
                     | None ->
-                        let candidate (port : uint16) : SocketBinding =
+                        let candidate (port : uint16) : Ipv4Binding =
                             {
                                 Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                                 // No bind(2) ran.
@@ -1180,7 +1180,7 @@ module UnixConnection =
             // (`sockaddr-connect-ladder.c`, U, and `sockaddr-dgram-connect.c`,
             // L and D).
             let disconnectedFirst : UnixSystem<'Task, 'Handler> =
-                match flavour, sock.Phase, sock.Binding with
+                match flavour, sock.Phase, sock.Ipv4Binding with
                 | SimulatedUnixFlavour.Darwin, SocketPhase.DatagramPeer _, Some binding ->
                     { system with
                         Machine =
@@ -1223,7 +1223,7 @@ module UnixConnection =
                     // to `127.0.0.1:0` (half-bound: it rebinds freely, and a
                     // later connect keeps the address), and an implicit or
                     // `0.0.0.0:0` binding to nothing at all.
-                    match sock.Phase, sock.Binding with
+                    match sock.Phase, sock.Ipv4Binding with
                     | SocketPhase.DatagramPeer _, None ->
                         failwith
                             "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
@@ -1300,12 +1300,12 @@ module UnixConnection =
                 match flavour with
                 | SimulatedUnixFlavour.Darwin -> failed error disconnectedFirst
                 | SimulatedUnixFlavour.Linux ->
-                    match sock.Binding with
+                    match sock.Ipv4Binding with
                     | Some binding when binding.Endpoint.Port <> 0us -> fail error
                     | existing ->
                         // A half-bound socket keeps its address and gains a
                         // port, as `inet_autobind` does for it on success.
-                        let candidate (port : uint16) : SocketBinding =
+                        let candidate (port : uint16) : Ipv4Binding =
                             match existing with
                             | Some binding ->
                                 { binding with
@@ -1394,7 +1394,8 @@ module UnixConnection =
             // binding the disconnect left, so a connected socket bound to an
             // interface address connects to loopback from 127.0.0.1, where
             // Linux keeps the interface address (`sockaddr-dgram-reconnect.c`).
-            let current = (UnixMachineState.socket socketId disconnectedFirst.Machine).Binding
+            let current =
+                (UnixMachineState.socket socketId disconnectedFirst.Machine).Ipv4Binding
 
             match ensureBoundFrom current dest disconnectedFirst with
             | Error refusal -> Error refusal
@@ -1412,7 +1413,7 @@ module UnixConnection =
                        otherId <> socketId
                        && other.Kind = SocketKind.Datagram
                        && other.Phase = SocketPhase.DatagramPeer (SocketAddress.Inet dest)
-                       && (other.Binding |> Option.map (fun b -> b.Endpoint)) = Some binding.Endpoint
+                       && (other.Ipv4Binding |> Option.map (fun b -> b.Endpoint)) = Some binding.Endpoint
                    )
 
             if duplicate then
@@ -1997,6 +1998,7 @@ module UnixConnection =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
@@ -2095,6 +2097,7 @@ module UnixConnection =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
@@ -2226,7 +2229,8 @@ module UnixConnection =
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
-        | OpenFileTarget.Epoll _ -> Ok (ShutdownAnswer.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Epoll _
+        | OpenFileTarget.Fifo _ -> Ok (ShutdownAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine

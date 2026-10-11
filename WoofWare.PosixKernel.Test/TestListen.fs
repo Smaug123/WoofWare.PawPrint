@@ -34,7 +34,7 @@ module TestListen =
 
     let private socketWith
         (kind : SocketKind)
-        (binding : SocketBinding option)
+        (binding : Ipv4Binding option)
         (reuse : bool)
         (phase : SocketPhase)
         : SocketDescription
@@ -74,7 +74,7 @@ module TestListen =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : Ipv4Binding option =
         Some
             {
                 Endpoint = endpoint
@@ -136,7 +136,7 @@ module TestListen =
 
         let socket = UnixMachineState.socket (SocketId 0L) system.Machine
 
-        socket.Binding
+        socket.Ipv4Binding
         |> shouldEqual (
             Some
                 {

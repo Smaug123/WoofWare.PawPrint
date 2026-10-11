@@ -49,7 +49,7 @@ module TestSocketBinding =
 
     let private endpoint (address : Ipv4Address) (port : uint16) : Ipv4Endpoint = Ipv4Endpoint.ofParts address port
 
-    let private binding (address : Ipv4Address) (port : uint16) : SocketBinding =
+    let private binding (address : Ipv4Address) (port : uint16) : Ipv4Binding =
         {
             Endpoint = endpoint address port
             LockedAddress = None
@@ -472,7 +472,7 @@ module TestSocketBinding =
                     unboundStream
                     (fun _ -> binding wildcard 1us)
                     initialSystem.Machine
-                |> ignore<(SocketBinding * UnixMachineState) option>
+                |> ignore<(Ipv4Binding * UnixMachineState) option>
             )
 
         exn.Message |> shouldContainText "names port 1 instead"

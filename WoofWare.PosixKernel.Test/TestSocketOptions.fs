@@ -610,7 +610,7 @@ module TestSocketOptions =
         let fd, system = socketOf SocketDomain.Inet6 SocketKind.Stream (fresh platform)
         let socketId = SocketId 0L
 
-        let withState (binding : SocketBinding option) (phase : SocketPhase) =
+        let withState (binding : Ipv4Binding option) (phase : SocketPhase) =
             { system with
                 Machine =
                     { system.Machine with
