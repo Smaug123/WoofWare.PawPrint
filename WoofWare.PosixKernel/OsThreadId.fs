@@ -57,14 +57,13 @@ type internal ThreadIdCounter =
 ///
 /// The machine's rather than a process's, as a real kernel's pid allocator is,
 /// so that no process can be handed an id another process's task holds.
-type ThreadIdAllocator =
-    internal
-        {
-            Counter : ThreadIdCounter
-            /// The ids of every live task on the machine. `spawn` adds the new
-            /// task's, and a task's exit removes its own.
-            Live : Set<OsThreadId>
-        }
+type internal ThreadIdAllocator =
+    {
+        Counter : ThreadIdCounter
+        /// The ids of every live task on the machine. `spawn` adds the new
+        /// task's, and a task's exit removes its own.
+        Live : Set<OsThreadId>
+    }
 
 /// What `ThreadIdAllocator.allocate` did.
 [<RequireQualifiedAccess>]
