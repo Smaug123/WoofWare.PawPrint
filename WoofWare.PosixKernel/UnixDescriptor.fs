@@ -813,6 +813,9 @@ module UnixDescriptor =
                 | InodeContent.CharacterDevice _ ->
                     failwith
                         $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a character device, through a description of a regular file. A description of a device is OpenFileTarget.CharacterDevice, and UnixSystem.checkInvariants reports this one as DescriptionKindMismatch (this is a bug in this library)."
+                | InodeContent.Socket _ ->
+                    failwith
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an

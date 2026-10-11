@@ -187,6 +187,9 @@ type DirectoryEntryKind =
     | Directory
     | Symlink
     | CharacterDevice
+    /// `DT_SOCK`: an entry naming an `InodeContent.Socket`, which nothing in
+    /// this version makes.
+    | Socket
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryKind =
@@ -197,6 +200,7 @@ module DirectoryEntryKind =
         | InodeContent.Directory _ -> DirectoryEntryKind.Directory
         | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
         | InodeContent.CharacterDevice _ -> DirectoryEntryKind.CharacterDevice
+        | InodeContent.Socket _ -> DirectoryEntryKind.Socket
 
 /// One entry of a directory, as `getdents(2)` reports it: the facts in a
 /// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
@@ -853,6 +857,9 @@ module UnixNamespace =
                         device
                         flags.Access
                         (UnixSystemState.fileDescriptors system)
+                | Some (InodeContent.Socket _) ->
+                    failwith
+                        $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
@@ -1045,6 +1052,9 @@ module UnixNamespace =
             // `RefusesExistingDirectory` is false, where the verdict is therefore
             // `OpenExisting` on the directory itself.
             Ok (SyscallAnswer.Failed UnixError.EISDIR, system)
+        | InodeContent.Socket _ ->
+            failwith
+                $"UnixNamespace.openPath: resolution returned inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
         | InodeContent.RegularFile _
         | InodeContent.Directory _
         | InodeContent.CharacterDevice _ ->
@@ -1121,6 +1131,9 @@ module UnixNamespace =
             | InodeContent.Directory _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> Ok (false, system)
+            | InodeContent.Socket _ ->
+                failwith
+                    $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
 
         truncated
         |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
@@ -1299,6 +1312,7 @@ module UnixNamespace =
         match record.Content with
         | InodeContent.Directory _
         | InodeContent.RegularFile _
+        | InodeContent.Socket _
         | InodeContent.CharacterDevice _ ->
             // Not a link: EINVAL for a path, which is what distinguishes "not a
             // link" from a failure to read one, and ENOENT for an empty path
@@ -2502,6 +2516,9 @@ module UnixNamespace =
         | Some (InodeContent.CharacterDevice _) ->
             failwith
                 $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, a character device; clonefile(2) is Darwin's, and this kernel holds no device on Darwin (this is a bug in this library)."
+        | Some (InodeContent.Socket _) ->
+            failwith
+                $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
         | Some (InodeContent.Symlink _)
         | None ->
             failwith
@@ -2593,6 +2610,7 @@ module UnixNamespace =
             match source.Content with
             | InodeContent.RegularFile (_, bits) -> bits
             | InodeContent.Directory _
+            | InodeContent.Socket _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 failwith

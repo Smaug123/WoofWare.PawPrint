@@ -261,6 +261,7 @@
     <Compile Include="TestOpenFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestFileStatusPal.fs" />
+    <Compile Include="TestDirectoryEntryPal.fs" />
     <Compile Include="TestSocketShimPal.fs" />
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamFds.fs" />
