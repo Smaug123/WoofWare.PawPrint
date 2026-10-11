@@ -1035,6 +1035,7 @@ The file also records the order of each union's cases: F# numbers the cases of a
 A second test fails if a union has lost or reordered cases, or has gained a case anywhere but at its end, since the version the file records.
 Code built against the recorded version would then misread the cases it already knew, which an appended case does not make it do.
 From 1.0 an appended case is a major version too (see "Unions that gain cases" above), and the first test already fails on one.
+It also fails if a union whose cases the file records as public no longer has public cases, which is expected when a refusal union becomes an open refusal type (see "Answers and refusals"), or when a union is deleted or renamed.
 Before 1.0 such a change may still be made deliberately, by the same command.
 
 A third test fails if a public record that the file does not list, or a field that a listed record has gained, uses a field label that another listed record already has.

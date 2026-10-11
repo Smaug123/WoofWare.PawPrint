@@ -36,21 +36,53 @@ module TestSurface =
         match UnionCaseOrder.violations committed current with
         | [] -> ()
         | violations ->
-            let listed =
+            let hidden, misnumbered =
                 violations
-                |> List.map (fun (v : CaseOrderViolation) -> "  " + UnionCaseOrder.describe v)
-                |> String.concat "\n"
+                |> List.partition (fun (v : CaseOrderViolation) ->
+                    match v with
+                    | CaseOrderViolation.NoLongerAUnion _ -> true
+                    | CaseOrderViolation.LostCases _
+                    | CaseOrderViolation.NotAnAppend _
+                    | CaseOrderViolation.InsertedBeforeOnlyCase _
+                    | CaseOrderViolation.ReplacedOnlyCase _ -> false
+                )
 
-            Assert.Fail (
-                "Public unions no longer keep the cases SurfaceBaseline.txt records at the tags it records:\n"
-                + listed
-                + "\nAn F# client compiled against the committed API may identify a case by its tag, which is "
-                + "its position, so for these it would run the wrong arm even for cases it already knew, which "
-                + "an appended case does not make it do. From 1.0 either is a major version (README, \"Unions "
-                + "that gain cases\"). Before 1.0 such a change may be made deliberately: regenerate the baseline with `nix develop -c dotnet test "
-                + "WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "
-                + "\"FullyQualifiedName~TestSurface&Name~Update\"` and commit it with the change."
-            )
+            let section (heading : string) (explanation : string) (vs : CaseOrderViolation list) : string list =
+                match vs with
+                | [] -> []
+                | _ ->
+                    [
+                        yield heading
+                        for v in vs do
+                            yield "  " + UnionCaseOrder.describe v
+                        yield explanation
+                    ]
+
+            let message =
+                [
+                    yield!
+                        section
+                            "Public unions no longer keep the cases SurfaceBaseline.txt records at the tags it records:"
+                            ("An F# client compiled against the committed API may identify a case by its tag, which "
+                             + "is its position, so for these it would run the wrong arm even for cases it already "
+                             + "knew, which an appended case does not make it do. From 1.0 either is a major version "
+                             + "(README, \"Unions that gain cases\").")
+                            misnumbered
+                    yield!
+                        section
+                            "Unions that SurfaceBaseline.txt records with public cases no longer have them:"
+                            ("That is expected when a union was deleted or renamed, or was given a representation "
+                             + "that hides its cases, as a refusal union is when it becomes an open refusal type "
+                             + "(README, \"Answers and refusals\"). A client's matches on its cases then stop "
+                             + "compiling, rather than misreading a value.")
+                            hidden
+                    yield
+                        "Before 1.0 such a change may be made deliberately: regenerate the baseline with `nix develop "
+                        + "-c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "
+                        + "\"FullyQualifiedName~TestSurface&Name~Update\"` and commit it with the change."
+                ]
+
+            Assert.Fail (String.concat "\n" message)
 
     /// Every public record in the built assembly, with its field labels.
     let internal publicRecords (built : Assembly) : Map<string, Set<string>> =
