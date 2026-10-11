@@ -3241,16 +3241,22 @@ module NativeSystemNative =
             // `O_CREAT` would refuse the BCL's own read path.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            match UnixNamespace.openPath openFlags path mode state.Kernel.System with
+            match UnixNamespace.openPath ctx.Thread openFlags path mode state.Kernel.System with
             | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-            | Ok (SyscallAnswer.Failed error, system) ->
+            | Ok (SyscallOutcome.WouldBlock condition, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open would sleep until %A{condition}, and PawPrint does not yet park a thread in an open."
+            | Ok (SyscallOutcome.Restarts, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SyscallAnswer.Completed fd, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
 
             withAnswered system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim fd)) ctx.Thread
@@ -3491,12 +3497,18 @@ module NativeSystemNative =
             // `OpenFlagsPal.directoryStream`).
             let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
 
-            match UnixNamespace.openPath flags path 0 state.Kernel.System with
+            match UnixNamespace.openPath ctx.Thread flags path 0 state.Kernel.System with
             | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models, and not for O_TRUNC, whose set-ID change is the only other thing it refuses an open for (this is an interpreter bug)."
-            | Ok (SyscallAnswer.Failed error, system) ->
+            | Ok (SyscallOutcome.WouldBlock condition, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open with O_DIRECTORY would sleep until %A{condition}, but an open that sleeps is of a FIFO, which O_DIRECTORY refuses with ENOTDIR before it could sleep (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Restarts, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (EmulatedKernel.withUnix system)
@@ -3507,7 +3519,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SyscallAnswer.Completed fd, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
 
             // The block whose address the guest holds as its `DIR*`, and whose
             // bytes are the `d_name` buffer each `ReadDir` refills. One

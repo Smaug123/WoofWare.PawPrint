@@ -194,10 +194,12 @@ module TestOpenFlagsPal =
             for word in words do
                 match
                     UnixNamespace.openPath
+                        (UnixSystem.leader system)
                         word
                         (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/")))
                         0o644
                         system
                 with
-                | Ok _ -> ()
+                | Ok (SyscallOutcome.Answered _, _) -> ()
+                | Ok (outcome, _) -> failwith $"%O{platform} 0x%x{word}: expected an open that returns, got %A{outcome}"
                 | Error refusal -> failwith $"%O{platform} 0x%x{word}: %s{OpenRefusal.describe refusal}"

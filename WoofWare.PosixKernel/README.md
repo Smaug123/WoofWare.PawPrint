@@ -196,14 +196,15 @@ let path (text : string) : PathArgumentBytes =
     | Ok bytes -> PathArgumentBytes.Bytes bytes
     | Error defect -> failwith $"not a path: %O{defect}"
 
-// open("/etc/hostname", O_RDONLY), and read(fd, buf, 64). O_RDONLY is 0 on every flavour.
-match UnixNamespace.openPath 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
-| SyscallAnswer.Completed fd, system ->
+// Task 0, the process's leader, calls open("/etc/hostname", O_RDONLY), and read(fd, buf, 64).
+// O_RDONLY is 0 on every flavour.
+match UnixNamespace.openPath 0 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
+| SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
     match UnixReadWrite.read 0 (int fd) UserBuffer.Mapped 64UL system |> orFail ReadRefusal.describe with
     | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ ->
         printf "%s" (System.Text.Encoding.ASCII.GetString (bytes.AsSpan ()))
     | outcome, _ -> failwith $"unexpected read: %A{outcome}"
-| SyscallAnswer.Failed error, _ -> failwith $"open failed: %O{error}"
+| outcome, _ -> failwith $"unexpected open: %A{outcome}"
 
 // Prints:
 // sim
@@ -331,8 +332,8 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `open(2)` | `UnixNamespace.openPath (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
-| `openat(2)` | `UnixNamespace.openat (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
+| `open(2)` | `UnixNamespace.openPath (task : 'Task) (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
+| `openat(2)` | `UnixNamespace.openat (task : 'Task) (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
 | `readlink(2)` | `UnixNamespace.readlink (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | `readlinkat(2)` | `UnixNamespace.readlinkat (dirfd : int) (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | one entry of `getdents(2)` or `getdirentries(2)`, without its byte layout | `UnixNamespace.readDirectoryEntry (fd : int)` | `Result<ReadDirectoryAnswer * UnixSystem, ReadDirectoryRefusal>` |
@@ -350,6 +351,9 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, SymlinkRefusal>` |
 | `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 | `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
+
+`UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
+Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
 
 An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`.
 Nothing produces one yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, and a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`.

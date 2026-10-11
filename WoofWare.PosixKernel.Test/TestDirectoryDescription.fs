@@ -640,7 +640,7 @@ module TestDirectoryDescription =
             for flags in unmodelled do
                 let word = OpenFlagWords.encode platform flags
 
-                match UnixNamespace.openPath word (PathArg.ofPath (rooted "d")) 0 system with
+                match OpenOutcomes.openPath word (PathArg.ofPath (rooted "d")) 0 system with
                 | Error (OpenRefusal.UnmodelledDirectoryOpen refused) -> refused |> shouldEqual word
                 | other -> failwith $"%O{platform} %A{flags}: %A{other}"
 
@@ -667,7 +667,7 @@ module TestDirectoryDescription =
                     PathArg.ofText "nx"
                     PathArgumentBytes.Unreadable
                 ] do
-                match UnixNamespace.openPath word path 0 system with
+                match OpenOutcomes.openPath word path 0 system with
                 | Ok (SyscallAnswer.Failed UnixError.EINVAL, after) -> after |> shouldEqual system
                 | other -> failwith $"%O{platform}: %A{other}"
 

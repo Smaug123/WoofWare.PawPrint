@@ -1000,7 +1000,15 @@ module TestMultiProcessFuzz =
                     view
                 |> ofWrite
         | Op.Open path ->
-            OpenFlagWords.openPath openCreating (PathArg.ofText files.[path % files.Length]) 0o644 view
+            // `OpenOutcomes.answered` fails the run if the open sleeps: nothing
+            // makes a FIFO, so none can.
+            UnixNamespace.openPath
+                task
+                (OpenFlagWords.encode (UnixSystem.platform view) openCreating)
+                (PathArg.ofText files.[path % files.Length])
+                0o644
+                view
+            |> OpenOutcomes.answered
             |> answered
         | Op.Close fd ->
             match pick fd any with
