@@ -1055,10 +1055,11 @@ module TestImpureCases =
         VirtualFileSystem.checkInvariants pinned filesystem |> shouldEqual []
 
         // ...and the pin is what excuses them, rather than the rule having gone
-        // quiet.
-        VirtualFileSystem.checkInvariants Set.empty filesystem
-        |> List.sort
-        |> shouldEqual (orphaned |> List.map VirtualFileSystemDefect.UnreachableFromRoot |> List.sort)
+        // quiet: without its pin, each is a defect of its own.
+        for inode in orphaned do
+            VirtualFileSystem.checkInvariants (Set.remove inode pinned) filesystem
+            |> List.length
+            |> shouldEqual 1
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
@@ -1111,8 +1112,9 @@ module TestImpureCases =
 
             // ...and the pin is what excuses it, rather than the rule having
             // gone quiet: without it, this is a defect.
-            VirtualFileSystem.checkInvariants Set.empty filesystem
-            |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot kept ]
+            VirtualFileSystem.checkInvariants (Set.remove kept pinned) filesystem
+            |> List.length
+            |> shouldEqual 1
 
             EmulatedKernel.checkInvariants kernel |> shouldEqual []
         | other ->

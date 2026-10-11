@@ -123,9 +123,21 @@ module WakeSweepMemo =
         && readsSame remembered asleep machine processes
 
 /// A way a `SimulatedMachine` fails to be a machine any kernel could be in.
-/// `SimulatedMachine.checkInvariants` returns these.
+/// `SimulatedMachine.checkInvariants` returns these: the defects of
+/// `UnixSystem.checkInvariants` that concern the machine, read against every
+/// process on it; each process's view's own defects, and those of its
+/// descriptor table; the open file table's defects, read against every
+/// process's descriptor table; and the machine's own, about which process
+/// holds which process ID.
+///
+/// A defect is a bug in this library, and its cases are not public: a client
+/// reports one with `SimulatedMachineDefect.describe`, which names the process
+/// a defect was found in, and has no reason to branch on which rule broke. Any
+/// version may add a rule or remove one, for instance when the types come to
+/// make a state it forbids unrepresentable.
 [<RequireQualifiedAccess>]
 type SimulatedMachineDefect<'Task> =
+    internal
     /// A defect in the clauses of `UnixSystem.checkInvariants` that concern
     /// the machine, read against every process on it.
     | Machine of UnixSystemDefect<'Task>
@@ -147,6 +159,14 @@ type SimulatedMachineDefect<'Task> =
     | SlotUnderAnotherProcessId of key : ProcessId * recorded : ProcessId
     /// More than one process has the process ID `processId`.
     | DuplicateProcessId of processId : ProcessId
+
+[<RequireQualifiedAccess>]
+module SimulatedMachineDefect =
+    /// The defect, for a bug report: the rule that does not hold, by the name
+    /// this library's source gives it, the process it was found in where it
+    /// concerns one, and the values that break it.
+    let describe<'Task> (defect : SimulatedMachineDefect<'Task>) : string =
+        $"the machine is in a state no kernel could be in, which is a bug in this library: %A{defect}"
 
 /// Why `SimulatedMachine.launch` will not start a process.
 [<RequireQualifiedAccess>]

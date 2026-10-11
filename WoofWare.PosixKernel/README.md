@@ -55,7 +55,7 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three pa
 
 Those records are opaque outside the library.
 A client reads a system through `UnixSystem`'s queries, such as `UnixSystem.leader`, `UnixSystem.tasks`, `UnixSystem.signals`, `UnixSystem.credentials`, `UnixSystem.fileDescriptors`, `UnixSystem.openFiles`, `UnixSystem.delivered` and `UnixSystem.descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described under "When time passes".
-`UnixSystem.descriptorTarget` answers what a descriptor's description refers to, an `OpenFileTarget`, of which `OpenFileTarget.Fifo` (a FIFO's inode and an opaque `FifoAttachment`) is reserved: nothing opens a FIFO yet, `FileDescriptorRegistry.checkInvariants` reports a description naming one as `FileDescriptorRegistryDefect.ReservedTarget`, and the case exists so that a client's matches already handle it when FIFOs arrive.
+`UnixSystem.descriptorTarget` answers what a descriptor's description refers to, an `OpenFileTarget`, of which `OpenFileTarget.Fifo` (a FIFO's inode and an opaque `FifoAttachment`) is reserved: nothing opens a FIFO yet, `FileDescriptorRegistry.checkInvariants` reports a description naming one as a defect, and the case exists so that a client's matches already handle it when FIFOs arrive.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
@@ -311,6 +311,11 @@ Removing a case, changing a case's fields, or changing the shape of any other ty
 
 An open refusal type's cases are not public (see "Answers and refusals"), so a client built against an older version meets a reason added since in its wildcard, and a minor version may add one.
 Removing a reason's pattern, or changing what it hands back, is breaking; a reason the library no longer produces keeps a pattern that never matches.
+
+The defects the `checkInvariants` functions report (`UnixSystemDefect`, `VirtualFileSystemDefect`, `FileDescriptorRegistryDefect` and `SimulatedMachineDefect`) are open too, and have no patterns at all.
+A defect is a bug in this library, and the thing to do with one is report it with its `describe`; no client needs to branch on which rule broke.
+So any version may add a defect, and any version may remove one, as it will when the types come to make the state it forbids unrepresentable.
+
 Before 1.0, any version may change anything.
 
 ### The syscalls
@@ -447,7 +452,7 @@ This kernel's IPv6 sockets reach only IPv4 peers, through v4-mapped addresses, s
 It binds no Unix-domain socket yet, so nothing it hands out holds a `UnixSocketName`.
 A socket's own state, which `UnixSystem.socket` reads, keeps its local address in its domain's own types: `SocketAddressing.Inet` holds an IPv4 binding, `SocketAddressing.Inet6DualMode` a `DualModeBinding`, `SocketAddressing.Inet6V6Only` an IPv6 binding, and `SocketAddressing.Unix` a `UnixSocketName`, each as an option that is `None` while the socket is unbound. An IP binding is an `InetBinding` over the family's endpoint and address types, so an IPv4 socket cannot hold an IPv6 address.
 A dual-mode socket bound to an IPv4 address holds it as `DualModeBinding.Mapped`, the IPv4 transport, and presents it v4-mapped.
-Only IPv4 bindings are made yet: `UnixSystem.checkInvariants` reports an IPv6 binding or a Unix-domain name as `UnixSystemDefect.UnmodelledBindingHeld`, and a datagram peer outside its socket's family as `UnixSystemDefect.DatagramPeerOfAnotherFamily`.
+Only IPv4 bindings are made yet: `UnixSystem.checkInvariants` reports an IPv6 binding or a Unix-domain name as a defect, as it does a datagram peer outside its socket's family.
 
 A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, each direction's FIN (not sent, queued behind unsent bytes, or arrived), and each end's state: open, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. A listener's last close resets every client still in its accept queue, oldest first, whatever the listener's `SO_LINGER`. Each queued connection keeps the options the listener held when it completed (`QueuedConnection`), so a change to a listener's options does not reach the connections already queued, and the socket `accept` makes for one holds them; under Darwin a listener lingering for no time gives it a linger of 120 seconds. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
 
@@ -556,7 +561,8 @@ Many calls are not there, `open`, `socket`, `bind`, `connect`, `kill` and `sigac
 ### Checking the tables
 
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
-No sequence of syscalls should ever produce one.
+No sequence of syscalls should ever produce one: a defect is a bug in this library.
+Each kind of defect has a `describe`, such as `UnixSystemDefect.describe`, which names the rule that does not hold and the values that break it, for a bug report; a client cannot match a defect's cases (see "Unions that gain cases").
 It is two halves: the rules about the machine, which read facts every process on it contributes to, and `UnixSystem.checkViewInvariants`, the rules about one process's view of it.
 A process alone on its machine is held to both in full. Of a view a `SimulatedMachine` focused, only the machine's rules that one process can check truthfully are run; `SimulatedMachine.checkInvariants` runs the rest, against every process at once.
 Each table's own rules are checked apart from these: `FileDescriptorRegistry.checkInvariants` of `UnixSystem.fileDescriptors` for the descriptor table and the open file descriptions it names, and `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) (UnixSystem.fileSystem system)` for the filesystem.
@@ -621,7 +627,7 @@ A woken task finishes its call through its family's finishing function, which ma
 
 Each answers what the call that parked answered, as in the tables above.
 
-`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) and `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`) are reserved: nothing parks a task in either yet, and neither has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as `UnixSystemDefect.ReservedPark`.
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) and `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`) are reserved: nothing parks a task in either yet, and neither has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
 So is the primitive a FIFO open waits for, `WakePrimitive.FifoPartnerOpened`, which no condition contains yet.
 The cases exist so that a client's matches already handle them when sleeps and FIFOs arrive.
 
