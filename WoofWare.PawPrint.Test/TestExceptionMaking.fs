@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
+open System
+open System.IO
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -244,6 +246,172 @@ static class Program
                 failwith
                     $"%s{fault} under a culture whose name throws: expected %s{case.Exception} itself, got %A{other}"
         | ExceptionMaking.InitializerFailure -> failwith $"%s{fault}: no case here raises a TypeInitializationException"
+
+    /// The provider a binding guest is compiled against: it declares a field and a method, an
+    /// interface method one of two interfaces overrides, and an interface method with a default body.
+    let private providerBefore : CrossAssemblySpec =
+        CrossAssemblySpec.library
+            "Provider"
+            []
+            [
+                """
+namespace Provider;
+
+public static class Parent
+{
+    public static int Value;
+    public static void Gone() { }
+}
+
+public interface IProbe { int Probe() => 0; }
+public interface IL : IProbe { int IProbe.Probe() => 1; }
+public interface IR : IProbe { }
+
+public interface IFoo { int Frob() => 2; }
+public interface IBar : IFoo { }
+"""
+            ]
+
+    /// The provider a binding guest runs against: the field and method are gone, both interfaces
+    /// override the method, and the default body is reabstracted.
+    let private providerAfter : CrossAssemblySpec =
+        CrossAssemblySpec.library
+            "Provider"
+            []
+            [
+                """
+namespace Provider;
+
+public static class Parent { }
+
+public interface IProbe { int Probe() => 0; }
+public interface IL : IProbe { int IProbe.Probe() => 1; }
+public interface IR : IProbe { int IProbe.Probe() => 3; }
+
+public interface IFoo { int Frob() => 2; }
+public interface IBar : IFoo { abstract int IFoo.Frob(); }
+"""
+            ]
+
+    /// Uses what `providerBefore` declares and `providerAfter` does not, or decides differently,
+    /// as its first argument names, under a culture as `guest`'s, and exits as `guest` does.
+    let private bindingGuest : CrossAssemblySpec =
+        CrossAssemblySpec.entryPoint
+            "Binding"
+            [ "Provider" ]
+            [
+                """
+using System;
+using System.Globalization;
+using System.Runtime.CompilerServices;
+using Provider;
+
+sealed class NamelessCulture : CultureInfo
+{
+    public NamelessCulture() : base("") { }
+    public bool Nameless;
+    public override string Name => Nameless ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
+}
+
+sealed class Both : IL, IR { }
+
+sealed class Reabstracted : IBar { }
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Read() => Parent.Value;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Call() => Parent.Gone();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Ambiguous(IProbe probe) => probe.Probe();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Reabstraction(IFoo foo) => foo.Frob();
+
+    static void Run(string failure)
+    {
+        switch (failure)
+        {
+            case "Read": Read(); break;
+            case "Call": Call(); break;
+            case "Ambiguous": Ambiguous(new Both()); break;
+            case "Reabstraction": Reabstraction(new Reabstracted()); break;
+            default: throw new ArgumentException(failure);
+        }
+    }
+
+    static int Main(string[] args)
+    {
+        var culture = new NamelessCulture();
+        if (args[1] == "nameless")
+        {
+            CultureInfo.CurrentUICulture = culture;
+            culture.Nameless = true;
+        }
+
+        try
+        {
+            Run(args[0]);
+            return 0;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return 2;
+        }
+        catch (Exception e)
+        {
+            culture.Nameless = false;
+            return e.GetType().FullName == args[2] ? 1 : 3;
+        }
+    }
+}
+"""
+            ]
+
+    /// What the binding guest uses that the provider it runs against lacks or decides differently,
+    /// and the exception the runtime raises for it.
+    let bindingFailures : obj[] list =
+        [
+            [| "Read" ; "System.MissingFieldException" |]
+            [| "Call" ; "System.MissingMethodException" |]
+            [| "Ambiguous" ; "System.Runtime.AmbiguousImplementationException" |]
+            [| "Reabstraction" ; "System.EntryPointNotFoundException" |]
+        ]
+
+    /// The escape analysis takes the runtime to make each of these exceptions by running its
+    /// parameterless constructor, which looks up its message.
+    [<TestCaseSource(nameof bindingFailures)>]
+    let ``a failure to bind or dispatch raises an exception made by running its parameterless constructor``
+        (failure : string)
+        (exceptionName : string)
+        : unit
+        =
+        let compiled =
+            CrossAssemblyHarness.compileAssemblies [ providerBefore ; bindingGuest ]
+
+        let after = CrossAssemblyHarness.compileAssemblies [ providerAfter ]
+        let tempDir = Path.Combine (Path.GetTempPath (), Path.GetRandomFileName ())
+        Directory.CreateDirectory tempDir |> ignore<DirectoryInfo>
+
+        try
+            CrossAssemblyHarness.writeAssemblies tempDir (Map.add "Provider" after.["Provider"] compiled)
+            let entryPath = Path.Combine (tempDir, "Binding.dll")
+
+            let run (culture : string) : RealRuntimeResult =
+                RealRuntime.executeAssemblyInPlace [| failure ; culture ; exceptionName |] entryPath
+
+            run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
+            run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        finally
+            try
+                if Directory.Exists tempDir then
+                    Directory.Delete (tempDir, true)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> ()
 
     /// Touches a type whose initializer throws an exception whose construction looks nothing up,
     /// under a current UI culture whose name cannot be read at all when its argument is "nameless",

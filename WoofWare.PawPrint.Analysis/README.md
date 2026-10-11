@@ -98,9 +98,12 @@ The runtime makes most of the exceptions it raises by itself (a null dereference
 check's, a failed cast's, an overflow's) by running the exception's parameterless constructor,
 which looks up its message, so what that constructor can raise is in the answer too:
 `ThreadInterruptedException`, for one, from the lookup's lock. `OutOfMemoryException` and
-`StackOverflowException` it allocated in advance, and makes without running anything. What the
-runtime runs to make an exception with arguments is not followed: a failed binding's, and a
-multidimensional array constructor's `ArgumentOutOfRangeException`.
+`StackOverflowException` it allocated in advance, and makes without running anything. It makes
+the exception of a failure to bind a member (`MissingMethodException`, `MissingFieldException`)
+or to dispatch a call (`AmbiguousImplementationException`, `EntryPointNotFoundException`) the
+same way. What the runtime runs to make an exception with arguments is not followed: a failed type
+binding's `TypeLoadException`, and a multidimensional array constructor's
+`ArgumentOutOfRangeException`.
 
 Where a type initializer fails, the runtime runs `TypeInitializationException`'s
 `(string, Exception)` constructor around what the initializer raised. Should that constructor fail,
