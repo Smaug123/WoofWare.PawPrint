@@ -503,10 +503,11 @@ module TestInotifyMeasured =
         actual.Add ("bad-fd", $"add on fd 999=%s{badFd}; add on a regular file's fd=%s{onRegular}")
 
         // The masks each add stores, checked here; and the changes the probe
-        // made under each, of which the first two rows record a write's
-        // `IN_MODIFY`, which this kernel refuses under a watch asking for it
-        // (it is made through a descriptor), and the first an `IN_OPEN`, which
-        // no watch here asks for.
+        // made under each. Each write is refused, made through a descriptor
+        // while a watch asks for `IN_MODIFY` (`w/d1`'s, if not `w/d2`'s) on a
+        // directory that could hold the name it was opened through; the first
+        // two rows record those writes' `IN_MODIFY`, and the first an
+        // `IN_OPEN`, which no watch here asks for.
         let maskOf (wd : int) =
             match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Inotify state) -> state.Watches.[WatchDescriptor wd].Mask.Events
@@ -540,7 +541,7 @@ module TestInotifyMeasured =
         system <-
             system
             |> InotifyReplay.chmod "w/d2/x" 0o600
-            |> InotifyReplay.writeFile "w/d2/y" "1"
+            |> InotifyReplay.writeFileRefused "w/d2/y" "1"
 
         let drained, s = drain fd system
         system <- s

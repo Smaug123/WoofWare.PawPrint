@@ -11,9 +11,10 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///
 /// A change made through a descriptor is reported by Linux at the watch on the
 /// directory of the name the descriptor was opened through, which this kernel
-/// does not record; so it is refused when a watch asking for an event it
-/// raises is on the inode itself, on a directory holding a name of it, or,
-/// for an inode with no name left, anywhere. A change through a directory
+/// does not record, and which may since have been unlinked; so it is refused
+/// when a watch asking for an event it raises is on the inode itself, or on
+/// any directory but one with `IN_EXCL_UNLINK`, not naming the inode, for a
+/// write (for a directory's descriptor, its parent alone). A change through a directory
 /// `rmdir` removed, reached by ".", is reported by Linux at its old parent
 /// under its old name, which the graph does not keep; so it is refused when
 /// that parent's watch asks for an event it raises.
@@ -130,6 +131,57 @@ module TestInotifyRefusals =
         let _, fd, system = watchingThenOpen "u" modify
         let system = unlink "a/x" system
         refused throughDescriptor (fun () -> write fd "y" system)
+
+    [<Test>]
+    let ``a write through a name since unlinked is refused under a watch on that name's directory, though another name survives``
+        ()
+        : unit
+        =
+        // Found by Codex: Linux reports the write at `a` under the old name
+        // (`inotify-probe.c` row H write-via-b-after-unlink-of-b), and `a`
+        // no longer names the file.
+        let instance, fd, system = watchingThenOpen "a" modify
+        let system = system |> link "a/x" "b/y" |> unlink "a/x"
+        let _, system = drain instance system
+        refused throughDescriptor (fun () -> write fd "y" system)
+
+    [<Test>]
+    let ``a write is refused under a watch on any directory asking for IN_MODIFY, which could hold the name it was opened through``
+        ()
+        : unit
+        =
+        let _, fd, system = watchingThenOpen "u" modify
+        refused throughDescriptor (fun () -> write fd "y" system)
+
+    [<Test>]
+    let ``a write goes through under a watch with IN_EXCL_UNLINK on a directory not naming the file`` () : unit =
+        // Measured (`inotify-probe.c` row D write-unlinked-excl-unlink): such
+        // a watch hears nothing of a write through an unlinked name.
+        let instance, fd, system = watchingThenOpen "u" (modify ||| 0x04000000u)
+        let system = write fd "y" system
+        drain instance system |> fst |> shouldEqual "(none)"
+
+    [<Test>]
+    let ``fchmod is refused under a watch with IN_EXCL_UNLINK on a directory not naming the file`` () : unit =
+        let _, fd, system = watchingThenOpen "u" (attrib ||| 0x04000000u)
+
+        refused throughDescriptor (fun () -> UnixPathResolution.tryFchmod fd 0o600 system |> Result.map fst)
+
+    [<Test>]
+    let ``fchmod of a directory's descriptor goes through under a watch on a directory that is not its parent``
+        ()
+        : unit
+        =
+        let system = boot root seed
+        let instance, system = init1 nonblock system
+        let _, system = watch instance "u" attrib system
+
+        let fd, system =
+            openFd (openFlags FileAccessMode.ReadOnly false false false) "a" 0 system
+
+        match UnixPathResolution.tryFchmod fd 0o700 system with
+        | Ok (SyscallAnswer.Completed 0L, system) -> drain instance system |> fst |> shouldEqual "(none)"
+        | other -> failwith $"%A{other}"
 
     [<Test>]
     let ``a write to a file with no name left goes through where no watch asks for IN_MODIFY`` () : unit =
