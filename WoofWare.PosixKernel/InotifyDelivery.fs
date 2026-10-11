@@ -94,10 +94,13 @@ type internal Unplaced =
     /// A change of `inode` through a descriptor, raising `events`: Linux
     /// reports them at the inode's own watch, and at the watch on the
     /// directory of the name the descriptor was opened through, which may
-    /// since have been unlinked. `write` says it is a write, which Linux does
-    /// not report through an unlinked name to a watch with `IN_EXCL_UNLINK`
-    /// (measured, `inotify-probe.c` row D write-unlinked-excl-unlink).
-    | ThroughDescriptor of inode : InodeNumber * events : Set<InotifyEvent> * write : bool
+    /// since have been unlinked. `excludedWhenUnlinked` says Linux does not
+    /// report them through an unlinked name to a watch with `IN_EXCL_UNLINK`:
+    /// true of a write's `IN_MODIFY` (measured, `inotify-probe.c` row D
+    /// write-unlinked-excl-unlink), and not of the `IN_ATTRIB` of the set-ID
+    /// bits it clears, nor of any `setattr` (`inotify-delivery-probe.c` row Z
+    /// write-unlinked-excl-unlink).
+    | ThroughDescriptor of inode : InodeNumber * events : Set<InotifyEvent> * excludedWhenUnlinked : bool
     /// A change of a directory whose last name has gone, through a path,
     /// raising `events`, which Linux reports at `oldParent`'s watch under
     /// the name the directory had there.
@@ -285,16 +288,15 @@ module internal InotifyDelivery =
             // `inotify-delivery-probe.c` row Z write).
             let inode, contents, attributes = attributeChanges "a write" changes
 
-            let events =
+            let unplaced =
                 [
                     if attributes then
-                        InotifyEvent.Attrib
+                        Unplaced.ThroughDescriptor (inode, Set.singleton InotifyEvent.Attrib, false)
                     if contents then
-                        InotifyEvent.Modify
+                        Unplaced.ThroughDescriptor (inode, Set.singleton InotifyEvent.Modify, true)
                 ]
-                |> Set.ofList
 
-            [], [ Unplaced.ThroughDescriptor (inode, events, true) ], nextCookie
+            [], unplaced, nextCookie
 
     /// Fails, naming the name this kernel does not keep, if some watch in
     /// `openFiles` asks for an event of `unplaced` and could be one Linux
@@ -304,7 +306,8 @@ module internal InotifyDelivery =
     /// or on the directory of the name the descriptor was opened through: for
     /// a directory, its parent, whether or not it still names it; for any
     /// other inode, any directory, the name having perhaps been unlinked, but
-    /// for a write one with `IN_EXCL_UNLINK` that names it nowhere. The root
+    /// for a write's `IN_MODIFY` one with `IN_EXCL_UNLINK` that names it
+    /// nowhere. The root
     /// and the root of a mounted filesystem are heard at their own watches
     /// alone. For a change of a removed directory through a path, it is a
     /// watch on its old parent.
@@ -338,7 +341,7 @@ module internal InotifyDelivery =
 
             for unplaced in unplaced do
                 match unplaced with
-                | Unplaced.ThroughDescriptor (inode, events, write) ->
+                | Unplaced.ThroughDescriptor (inode, events, excludedWhenUnlinked) ->
                     let unnamed =
                         inode = VirtualFileSystem.root graph
                         || (VirtualFileSystem.mountOf inode graph).IsSome
@@ -351,7 +354,8 @@ module internal InotifyDelivery =
                                | Some directory -> watch.Inode = directory.Parent
                                | None ->
                                    (VirtualFileSystem.tryGetDirectory watch.Inode graph).IsSome
-                                   && (names watch.Inode inode || not (write && watch.Mask.ExcludeUnlinked))
+                                   && (names watch.Inode inode
+                                       || not (excludedWhenUnlinked && watch.Mask.ExcludeUnlinked))
                            )
 
                     match asking events |> List.tryFind (fun (_, _, watch) -> hears watch) with
