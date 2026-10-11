@@ -403,7 +403,7 @@ module TestOpenFlagWord =
                         | OpenFlagWord.Decoding.Refused _ ->
                             // Each refused cell must be a refusal, whatever the path.
                             for column, _ in row.Cells do
-                                match UnixNamespace.openPath row.Word (argument column) 0o644 system with
+                                match OpenOutcomes.openPath row.Word (argument column) 0o644 system with
                                 | Error _ -> ()
                                 | Ok answer ->
                                     yield
@@ -414,7 +414,7 @@ module TestOpenFlagWord =
                                 replayed <- replayed + 1
 
                                 let modelled =
-                                    match UnixNamespace.openPath row.Word (argument column) 0o644 system with
+                                    match OpenOutcomes.openPath row.Word (argument column) 0o644 system with
                                     | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
                                     | Ok (SyscallAnswer.Completed fd, after) ->
                                         // F_GETFL (3) and F_GETFD (1), which
@@ -528,7 +528,7 @@ module TestOpenFlagWord =
                         let path = argument column
                         compared <- compared + 1
 
-                        (column, flags, UnixNamespace.openPath word path 0o644 system)
+                        (column, flags, OpenOutcomes.openPath word path 0o644 system)
                         |> shouldEqual (column, flags, parsedEntryPoint flags path system)
 
         compared |> shouldBeGreaterThan 10000

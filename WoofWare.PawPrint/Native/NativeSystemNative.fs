@@ -524,6 +524,8 @@ module NativeSystemNative =
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
             | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
                 "Model the reset a zero-linger close sends, or close the peer first."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _) ->
+                "Model the TCP timer that ends a Darwin close behind its own queued FIN, or read what the peer sent before closing, or configure a Linux platform."
             | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
                 "Model a close that waits, on the virtual clock, for its unsent bytes to reach the peer, or let the peer read them before the close."
             | CloseRefusal.PolledDescriptor _ ->
@@ -3241,16 +3243,22 @@ module NativeSystemNative =
             // `O_CREAT` would refuse the BCL's own read path.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            match UnixNamespace.openPath openFlags path mode state.Kernel.System with
+            match UnixNamespace.openPath ctx.Thread openFlags path mode state.Kernel.System with
             | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-            | Ok (SyscallAnswer.Failed error, system) ->
+            | Ok (SyscallOutcome.WouldBlock condition, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open would sleep until %A{condition}, and PawPrint does not yet park a thread in an open."
+            | Ok (SyscallOutcome.Restarts, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SyscallAnswer.Completed fd, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
 
             withAnswered system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim fd)) ctx.Thread
@@ -3491,12 +3499,18 @@ module NativeSystemNative =
             // `OpenFlagsPal.directoryStream`).
             let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
 
-            match UnixNamespace.openPath flags path 0 state.Kernel.System with
+            match UnixNamespace.openPath ctx.Thread flags path 0 state.Kernel.System with
             | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models, and not for O_TRUNC, whose set-ID change is the only other thing it refuses an open for (this is an interpreter bug)."
-            | Ok (SyscallAnswer.Failed error, system) ->
+            | Ok (SyscallOutcome.WouldBlock condition, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open with O_DIRECTORY would sleep until %A{condition}, but an open that sleeps is of a FIFO, which O_DIRECTORY refuses with ENOTDIR before it could sleep (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Restarts, _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (EmulatedKernel.withUnix system)
@@ -3507,7 +3521,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SyscallAnswer.Completed fd, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
 
             // The block whose address the guest holds as its `DIR*`, and whose
             // bytes are the `d_name` buffer each `ReadDir` refills. One
@@ -4005,6 +4019,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
+            | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 // Unreachable, for the same reason.
@@ -5352,6 +5367,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeRead _)
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
+            | Some (ParkedSyscall.Sleep _)
             | Some (ParkedSyscall.ConnectionRead _)
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 // Unreachable: a task parked in another syscall is not running
@@ -5706,6 +5722,73 @@ module NativeSystemNative =
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> writeBytesThrough ctx operation errorCell (ImmutableArray.CreateRange bytes)
             |> complete UnixErrorPal.palSuccess
+        // `int32_t SystemNative_Shutdown(intptr_t socket, int32_t
+        // socketShutdown)` (pal_networking.c), which is `Common_Shutdown`
+        // (pal_networking_common.h):
+        //
+        //     switch (socketShutdown) { case SocketShutdown_SHUT_READ: how = SHUT_RD; ...
+        //                               default: return Error_EINVAL; }
+        //     int err = shutdown(fd, how);
+        //     return err == 0 ? Error_SUCCESS : ConvertErrorPlatformToPal(errno);
+        //
+        // so the conversion's EINVAL precedes even the descriptor, and makes no
+        // call (`SocketShutdownPal`). The argument is CoreLib's `SocketShutdown`
+        // enum, matched with a wildcard as `SystemNative_Receive`'s flags are.
+        //
+        // CoreLib reaches this from `Socket.Shutdown`, which ignores ENOTCONN
+        // on a socket that was connected, and so from `NetworkStream`'s and
+        // Kestrel's disposal of a connection.
+        | Some "SystemNative_Shutdown",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_Shutdown"
+            let palHow = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match SocketShutdownPal.toPlatform palHow with
+            | None -> complete (UnixErrorPal.toPal UnixError.EINVAL) state
+            | Some how ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            match UnixConnection.shutdown fd how state.Kernel.System with
+            | Error refusal ->
+                // The library says why no kernel answer exists; PawPrint says how
+                // a guest could be holding such a socket.
+                let reachedBy =
+                    match refusal with
+                    | ShutdownRefusal.Listener _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a listening Socket."
+                    | ShutdownRefusal.LinuxUnconnected _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a Socket that never connected, which a real Linux kernel answers ENOTCONN to while leaving the socket changed."
+                    | ShutdownRefusal.ConnectedDatagram _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a UDP Socket after Connect."
+                    | ShutdownRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
+                        " That belongs with the filesystem work (issue #956), not here."
+                    | ShutdownRefusal.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
+                        failwith
+                            $"%s{operation}: the library refused an internet socket's domain, which it shuts down or refuses otherwise. This is an interpreter bug."
+                    | ShutdownRefusal.UnmeasuredKind _
+                    | ShutdownRefusal.ReceiveShutBeforeUnsentBytes _ -> ""
+
+                failwith $"%s{operation}: fd %d{fd}: %s{ShutdownRefusal.describe refusal}%s{reachedBy}"
+            | Ok (ShutdownAnswer.Shut, system) -> withAnswered system state |> complete UnixErrorPal.palSuccess
+            | Ok (ShutdownAnswer.Failed error, system) ->
+                withErrno ctx error system state |> complete (UnixErrorPal.toPal error)
+        // `int32_t SystemNative_Disconnect(intptr_t socket)` (pal_networking.c):
+        // Linux's `connect(AF_UNSPEC)`, an abortive close, falling back to
+        // `shutdown(SHUT_RDWR)`; Darwin's `disconnectx`, a FIN, falling back
+        // likewise. Refused by name: neither is modelled, and CoreLib calls it
+        // only from `SafeSocketHandle.TryUnblockSocket`, when a close races a
+        // synchronous call that holds the socket.
+        | Some "SystemNative_Disconnect", _, _ ->
+            failwith
+                "SystemNative_Disconnect: not modelled. The shim disconnects a socket with Linux's connect(AF_UNSPEC), which resets a TCP connection, or with Darwin's disconnectx, which sends a FIN, each falling back to shutdown(SHUT_RDWR); this kernel models neither the reset of an open socket nor disconnectx. CoreLib calls it only from SafeSocketHandle.TryUnblockSocket, when a Socket is closed while a synchronous call on another thread still holds it."
         // `int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t
         // bufferLen, int32_t flags, int32_t* received)` (pal_networking.c):
         //
@@ -7316,6 +7399,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
+            | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 // Unreachable, for the same reason.
@@ -7617,6 +7701,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeRead _)
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
+            | Some (ParkedSyscall.Sleep _)
             | Some (ParkedSyscall.ConnectionRead _)
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 // Unreachable: a task parked in another syscall is not running

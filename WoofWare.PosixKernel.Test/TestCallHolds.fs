@@ -327,6 +327,7 @@ module TestCallHolds =
         | ParkedSyscall.ConnectionRead _ -> 8
         | ParkedSyscall.ConnectionWrite _ -> 9
         | ParkedSyscall.SigSuspend -> 10
+        | ParkedSyscall.Sleep _ -> 11
 
     /// The recorded facts against the model: each description's holds, which
     /// descriptions exist, and which thread IDs are live.

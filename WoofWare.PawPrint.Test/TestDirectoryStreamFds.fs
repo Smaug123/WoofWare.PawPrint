@@ -46,12 +46,13 @@ module TestDirectoryStreamFds =
         let fd, system =
             match
                 UnixNamespace.openPath
+                    (UnixSystem.leader kernel.System)
                     (OpenFlagsPal.directoryStream kernel.UnixPlatform)
                     (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/dir")))
                     0
                     kernel.System
             with
-            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) -> int fd, system
             | other -> failwith $"could not open the directory: %O{other}"
 
         let kernel = EmulatedKernel.withUnix system kernel

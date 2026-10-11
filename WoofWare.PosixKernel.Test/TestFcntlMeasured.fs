@@ -471,7 +471,7 @@ module TestFcntlMeasured =
                     failwith $"socket(%d{domain}, %d{kind}, %d{protocol}): %s{SocketRefusal.describe refusal}"
 
             let openOf (flags : int) (path : PathArgumentBytes) (system : UnixSystem<int, string>) =
-                match UnixNamespace.openPath flags path 0o644 system with
+                match OpenOutcomes.openPath flags path 0o644 system with
                 | Ok (answer, _) -> Ok answer
                 | Error (OpenRefusal.DescriptorLimit refusal) -> Error refusal
                 | Error refusal -> failwith $"open: %s{OpenRefusal.describe refusal}"

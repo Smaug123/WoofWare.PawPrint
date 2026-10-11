@@ -1000,7 +1000,15 @@ module TestMultiProcessFuzz =
                     view
                 |> ofWrite
         | Op.Open path ->
-            OpenFlagWords.openPath openCreating (PathArg.ofText files.[path % files.Length]) 0o644 view
+            // `OpenOutcomes.answered` fails the run if the open sleeps: nothing
+            // makes a FIFO, so none can.
+            UnixNamespace.openPath
+                task
+                (OpenFlagWords.encode (UnixSystem.platform view) openCreating)
+                (PathArg.ofText files.[path % files.Length])
+                0o644
+                view
+            |> OpenOutcomes.answered
             |> answered
         | Op.Close fd ->
             match pick fd any with
@@ -1244,6 +1252,9 @@ module TestMultiProcessFuzz =
             | Ok (SigsuspendOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
+        | Some (ParkedSyscall.Sleep _ as parked) ->
+            failwith
+                $"task %d{task} is woken in %A{parked}, but nothing parks a task in a sleep yet, so there is no finishSleep to finish it with"
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.

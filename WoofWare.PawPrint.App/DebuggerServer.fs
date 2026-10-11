@@ -333,6 +333,9 @@ module DebuggerServer =
                 writer.WriteNumber ("count", parked.Count)
                 writer.WriteNumber ("written", parked.Written)
             | Some ParkedSyscall.SigSuspend -> writer.WriteString ("kind", "blockedInSigsuspend")
+            | Some (ParkedSyscall.Sleep parked) ->
+                writer.WriteString ("kind", "blockedInSleep")
+                writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter parked.Deadline)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

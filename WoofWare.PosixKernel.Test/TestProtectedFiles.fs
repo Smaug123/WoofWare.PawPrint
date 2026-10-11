@@ -865,8 +865,8 @@ module TestProtectedFiles =
                     | Ok (FileSystemStatisticsAnswer.Failed error) -> WalkOutcome.Answered (Some error)
                     | Error refusal -> WalkOutcome.Refused refusal
                 )
-                "open", (fun p -> UnixNamespace.openPath 0 (bytes p) 0 system |> ofOpen)
-                "openat", (fun p -> UnixNamespace.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
+                "open", (fun p -> OpenOutcomes.openPath 0 (bytes p) 0 system |> ofOpen)
+                "openat", (fun p -> OpenOutcomes.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
                 "chdir", (fun p -> UnixSystem.step 0 (Syscall.ChDir (bytes p)) system |> ofStep)
                 "chmod",
                 (fun p ->

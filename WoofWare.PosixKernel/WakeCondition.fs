@@ -264,6 +264,7 @@ module WakeCondition =
         | Some (ParkedSyscall.Poll _)
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
+        | Some (ParkedSyscall.Sleep _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -572,6 +573,8 @@ module WakeCondition =
                     ]
             // A signal alone ends it.
             | ParkedSyscall.SigSuspend -> []
+            // Its deadline, or a signal.
+            | ParkedSyscall.Sleep sleep -> [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed sleep.Deadline) ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

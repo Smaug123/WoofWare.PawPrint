@@ -833,12 +833,13 @@ module TestSignalDispatch =
 
                 match
                     UnixNamespace.openPath
+                        (UnixSystem.leader system)
                         (flagWord (OpenFlagsPal.WriteOnly ||| OpenFlagsPal.Create))
                         sinkBytes
                         0o644
                         system
                 with
-                | Ok (SyscallAnswer.Completed fd, system) when fd = int64 writeEnd ->
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) when fd = int64 writeEnd ->
                     EmulatedKernel.withUnix system kernel
                 | other -> failwith $"opening the sink answered %A{other}"
             )
@@ -853,8 +854,10 @@ module TestSignalDispatch =
         let contents =
             let system = state.Kernel.System
 
-            match UnixNamespace.openPath (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system with
-            | Ok (SyscallAnswer.Completed fd, system) ->
+            match
+                UnixNamespace.openPath (UnixSystem.leader system) (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system
+            with
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
                 match UnixReadWrite.read (UnixSystem.leader system) (int fd) UserBuffer.Mapped 16UL system with
                 | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
                 | other -> failwith $"reading the sink answered %O{other}"
@@ -979,8 +982,11 @@ module TestSignalDispatch =
             | Some word -> word
             | None -> failwith "the shim refuses O_RDONLY | O_CREAT"
 
-        match UnixNamespace.openPath flags pathBytes 0o644 state.Kernel.System with
-        | Ok (SyscallAnswer.Completed fd, system) -> state.MapKernel (EmulatedKernel.withUnix system), int fd
+        let system = state.Kernel.System
+
+        match UnixNamespace.openPath (UnixSystem.leader system) flags pathBytes 0o644 system with
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
+            state.MapKernel (EmulatedKernel.withUnix system), int fd
         | other -> failwith $"opening the file answered %A{other}"
 
     [<Test>]

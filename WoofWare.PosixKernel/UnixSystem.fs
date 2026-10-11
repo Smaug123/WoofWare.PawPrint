@@ -617,6 +617,10 @@ type UnixSystemDefect<'Task> =
     /// `occupied`, and the task's own processor is `cpu`: a running task's
     /// processor is the one it runs on (`UnixTaskState.cpu`).
     | OccupantOnAnotherCpu of task : 'Task * occupied : CpuId * cpu : CpuId
+    /// A task is parked in a syscall that nothing in this version parks a task
+    /// in, such as `ParkedSyscall.Sleep`: a case reserved for behaviour not yet
+    /// modelled, which no call produces and no finishing call answers.
+    | ReservedPark of task : 'Task * parked : ParkedSyscall
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
@@ -2283,6 +2287,7 @@ module UnixSystem =
                 | None -> []
                 // Names no description.
                 | Some ParkedSyscall.SigSuspend -> []
+                | Some (ParkedSyscall.Sleep _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []

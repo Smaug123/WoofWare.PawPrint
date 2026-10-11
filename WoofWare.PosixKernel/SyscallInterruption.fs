@@ -142,6 +142,10 @@ module SyscallInterruption =
         // Measured on Linux 6.18.5 and Darwin 27.0.0 (`sigsuspend-mask.c`, the
         // "handler" and "pause-handler" rows): EINTR under SA_RESTART too.
         | ParkedSyscall.SigSuspend -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 and Darwin 27.0.0: a `nanosleep` a caught
+        // signal interrupts answers EINTR under SA_RESTART too, and is never
+        // restarted.
+        | ParkedSyscall.Sleep _ -> SignalRestartRule.FailsWithEintr
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]
