@@ -10,19 +10,22 @@ open WoofWare.PosixKernel
 
 /// `shutdown(2)` on connected loopback TCP sockets, and what each end then
 /// sees: sections S, T, R, P, E and F, and the connected rows of U, of
-/// `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger), measured on
-/// Linux 6.18.5 aarch64 and Darwin 27.0, replayed against the host the suite
-/// runs on and against this kernel's syscalls, each driven as the probe drives
-/// its pair (`ShutdownProbe`). Each host falsifies its own column: Darwin's
-/// here, Linux's on CI's x86-64. The kernel is held to both flavours' rows on
-/// every host.
+/// `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger), and the
+/// binds of an endpoint an end still holds, by `bind-held-endpoint.c` beside
+/// it, measured on Linux 6.18.5 aarch64 and Darwin 27.0, replayed against the
+/// host the suite runs on and against this kernel's syscalls, each driven as
+/// the probe drives its pair (`ShutdownProbe`). Each host falsifies its own
+/// column: Darwin's here, Linux's on CI's x86-64. The kernel is held to both
+/// flavours' rows on every host.
 ///
 /// A line marked `~timing` is not compared, and a `~counts` line is compared
 /// without its counts. The host ignores `SIGPIPE`, so its writes report no
 /// signal, and the probe's `+SIGPIPE` is not compared against it. The listener
-/// rows of E are stage 5's, and so are not replayed. This kernel's `bind` does
-/// not see an endpoint a closed socket's end still holds (`TIME_WAIT`, or a
-/// FIN on its way), so F's lines that bind after a close are the host's alone.
+/// rows of E are stage 5's, and so are not replayed. This kernel forgets a
+/// connection once neither socket refers to it, so the `TIME_WAIT` an end
+/// whose FIN was made first leaves once both sockets have closed is
+/// unmodelled, and F's lines that bind after both have closed are the
+/// host's alone.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestShutdownAgainstHost =
@@ -206,6 +209,17 @@ module TestShutdownAgainstHost =
             let result = f ()
             result, (if result < 0L then Marshal.GetLastPInvokeError () else 0)
 
+        let setReuseAddress (fd : int) : unit =
+            check
+                "setsockopt(SO_REUSEADDR)"
+                (hostSetSockOpt (
+                    fd,
+                    SimulatedUnixPlatform.socketOptionLevel platform,
+                    SimulatedUnixPlatform.reuseAddressOption platform,
+                    BitConverter.GetBytes 1,
+                    4u
+                ))
+
         let mutable fds : Map<ConnectionEnd, int> = Map.empty
         let mutable edgePort : int option = None
 
@@ -218,8 +232,17 @@ module TestShutdownAgainstHost =
                     match shape with
                     | ShutdownPairShape.ListenerLocked -> freePort ()
                     | ShutdownPairShape.Plain
-                    | ShutdownPairShape.ClientLocked -> 0
+                    | ShutdownPairShape.ClientLocked
+                    | ShutdownPairShape.ClientReuseAddress
+                    | ShutdownPairShape.ListenerReuseAddress -> 0
                 )
+
+            match shape with
+            | ShutdownPairShape.ListenerReuseAddress -> setReuseAddress listener
+            | ShutdownPairShape.Plain
+            | ShutdownPairShape.ClientLocked
+            | ShutdownPairShape.ListenerLocked
+            | ShutdownPairShape.ClientReuseAddress -> ()
 
             check "bind" (hostBind (listener, address, uint32 address.Length))
             check "listen" (hostListen (listener, 4))
@@ -231,8 +254,10 @@ module TestShutdownAgainstHost =
             | ShutdownPairShape.ClientLocked ->
                 let own = loopbackAt (freePort ())
                 check "bind" (hostBind (client, own, uint32 own.Length))
+            | ShutdownPairShape.ClientReuseAddress -> setReuseAddress client
             | ShutdownPairShape.Plain
-            | ShutdownPairShape.ListenerLocked -> ()
+            | ShutdownPairShape.ListenerLocked
+            | ShutdownPairShape.ListenerReuseAddress -> ()
 
             check "connect" (hostConnect (client, destination, uint32 destination.Length))
             settle ()
@@ -524,6 +549,51 @@ module TestShutdownAgainstHost =
                 elif errorName errno = "EADDRINUSE" then "bind-EADDRINUSE"
                 else ans result errno
 
+            member _.Candidate reuse wildcard port =
+                let n = hostSocket (AF_INET, SOCK_STREAM, 0)
+                check "socket" n
+
+                if reuse then
+                    setReuseAddress n
+
+                let address =
+                    SimulatedUnixPlatform.encodeInternetSockaddr
+                        platform
+                        (Ipv4Endpoint.ofParts (if wildcard then Ipv4Address.any else Ipv4Address.loopback) (uint16 port))
+
+                let bound, bindErrno =
+                    call (fun () -> int64 (hostBind (n, address, uint32 address.Length)))
+
+                let answer =
+                    if bound < 0L then
+                        $"bind-%s{errorName bindErrno}"
+                    else
+                        let listened, listenErrno = call (fun () -> int64 (hostListen (n, 4)))
+
+                        if listened < 0L then
+                            $"bind-ok listen-%s{errorName listenErrno}"
+                        else
+                            "bind-ok listen-ok"
+
+                hostClose n |> ignore<int>
+                answer
+
+            member this.ReuseAddress e =
+                let mutable value = 0
+                let mutable length = 4u
+
+                check
+                    "getsockopt(SO_REUSEADDR)"
+                    (hostGetSockOpt (
+                        this.Fd e,
+                        SimulatedUnixPlatform.socketOptionLevel platform,
+                        SimulatedUnixPlatform.reuseAddressOption platform,
+                        &value,
+                        &length
+                    ))
+
+                if value <> 0 then 1 else 0
+
             member this.PeerName e =
                 let name = Array.zeroCreate<byte> 16
                 let mutable length = 16u
@@ -535,7 +605,7 @@ module TestShutdownAgainstHost =
                 else
                     errorName (Marshal.GetLastPInvokeError ())
 
-            member _.BindSeesClosedEnds = true
+            member _.KeepsTimeWaitOnceBothClosed = true
 
     /// Each scenario on a pair of its own, `concurrently` or one at a time; their
     /// lines in order.
@@ -569,16 +639,24 @@ module TestShutdownAgainstHost =
 
     let private withoutSigPipe (text : string) : string = text.Replace ("+SIGPIPE", "")
 
-    let private hostDisagreements (section : string) (concurrently : bool) (scenarios : ShutdownProbe.Scenario list) =
+    let private hostDisagreementsOf
+        (probe : ShutdownProbe.Probe)
+        (section : string)
+        (concurrently : bool)
+        (scenarios : ShutdownProbe.Scenario list)
+        : string list
+        =
         let mutable found = []
 
         HostPlatform.onUnixHost (fun flavour ->
             found <-
                 hostReplay flavour concurrently scenarios
-                |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour section withoutSigPipe
+                |> ShutdownProbe.disagreements probe flavour section withoutSigPipe
         )
 
         found
+
+    let private hostDisagreements = hostDisagreementsOf ShutdownProbe.Probe.Shutdown
 
     [<Test>]
     let ``this host answers shutdown, and what each end then sees, as its flavour was measured (section S)`` () =
@@ -605,6 +683,12 @@ module TestShutdownAgainstHost =
     [<Test>]
     let ``this host frees an endpoint by which FIN came first, as measured (section F)`` () =
         hostDisagreements "F" false ShutdownProbe.sectionF |> shouldEqual []
+
+    // One scenario at a time, as for section F.
+    [<Test>]
+    let ``this host answers a bind of an endpoint an end still holds as measured (bind-held-endpoint.c)`` () =
+        hostDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" false ShutdownProbe.sectionH
+        |> shouldEqual []
 
     // ------------------------------------------------------------------
     // Section U: sockets without a connection, and a `how` out of range
@@ -949,12 +1033,22 @@ module TestShutdownAgainstHost =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
             let s =
+                match shape with
+                | ShutdownPairShape.ListenerReuseAddress -> ReuseAddress.set true listener s
+                | ShutdownPairShape.Plain
+                | ShutdownPairShape.ClientLocked
+                | ShutdownPairShape.ListenerLocked
+                | ShutdownPairShape.ClientReuseAddress -> s
+
+            let s =
                 kernelBind
                     listener
                     (match shape with
                      | ShutdownPairShape.ListenerLocked -> lockedPort
                      | ShutdownPairShape.Plain
-                     | ShutdownPairShape.ClientLocked -> 0)
+                     | ShutdownPairShape.ClientLocked
+                     | ShutdownPairShape.ClientReuseAddress
+                     | ShutdownPairShape.ListenerReuseAddress -> 0)
                     s
 
             let s =
@@ -970,8 +1064,10 @@ module TestShutdownAgainstHost =
             let s =
                 match shape with
                 | ShutdownPairShape.ClientLocked -> kernelBind client lockedPort s
+                | ShutdownPairShape.ClientReuseAddress -> ReuseAddress.set true client s
                 | ShutdownPairShape.Plain
-                | ShutdownPairShape.ListenerLocked -> s
+                | ShutdownPairShape.ListenerLocked
+                | ShutdownPairShape.ListenerReuseAddress -> s
 
             let s =
                 match CopyIn.connect client UserBuffer.Mapped 16u (loopback platform port) s with
@@ -1301,13 +1397,50 @@ module TestShutdownAgainstHost =
                 system <- kernelClose fresh s
                 answer
 
+            member _.Candidate reuse wildcard port =
+                let fresh, s =
+                    NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+                let s = if reuse then ReuseAddress.set true fresh s else s
+
+                let address =
+                    CopyIn.inet
+                        platform
+                        (Ipv4Endpoint.ofParts (if wildcard then Ipv4Address.any else Ipv4Address.loopback) (uint16 port))
+
+                let answer, s =
+                    match CopyIn.bind fresh UserBuffer.Mapped 16u address s with
+                    | Ok (BindAnswer.Bound _, s) ->
+                        match UnixSocket.listen fresh 4 s with
+                        | Ok (ListenAnswer.Listening _, s) -> "bind-ok listen-ok", s
+                        | Ok (ListenAnswer.Failed error, s) -> $"bind-ok listen-%A{error}", s
+                        | Error refusal -> failwith $"listen refused: %A{refusal}"
+                    | Ok (BindAnswer.Failed error, s) -> $"bind-%A{error}", s
+                    | Error refusal -> failwith $"bind refused: %A{refusal}"
+
+                system <- kernelClose fresh s
+                answer
+
+            member this.ReuseAddress e =
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let name = SimulatedUnixPlatform.reuseAddressOption platform
+
+                match
+                    UnixSocket.getsockopt (this.Fd e) level name UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+                with
+                | Ok (answer, after) ->
+                    system <- after
+                    if OptionValue.readInt answer <> 0 then 1 else 0
+                | Error refusal ->
+                    failwith $"getsockopt(SO_REUSEADDR) refused: %s{SocketOptionRefusal.describe refusal}"
+
             member this.PeerName e =
                 match UnixSocket.getpeername (this.Fd e) UserBuffer.Mapped 16u system with
                 | Ok (GetSockNameAnswer.Reported _) -> "ok"
                 | Ok (GetSockNameAnswer.Failed (error, _)) -> $"%A{error}"
                 | Error refusal -> failwith $"getpeername refused: %s{GetSockNameRefusal.describe refusal}"
 
-            member _.BindSeesClosedEnds = false
+            member _.KeepsTimeWaitOnceBothClosed = false
 
     let private kernelReplay (flavour : SimulatedUnixFlavour) (scenarios : ShutdownProbe.Scenario list) =
         let platform = HostPlatform.platformOf flavour
@@ -1428,12 +1561,20 @@ module TestShutdownAgainstHost =
     let private flavours : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
-    let private kernelDisagreements (section : string) (scenarios : ShutdownProbe.Scenario list) : string list =
+    let private kernelDisagreementsOf
+        (probe : ShutdownProbe.Probe)
+        (section : string)
+        (scenarios : ShutdownProbe.Scenario list)
+        : string list
+        =
         flavours
         |> List.collect (fun flavour ->
             kernelReplay flavour scenarios
-            |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour section id
+            |> ShutdownProbe.disagreements probe flavour section id
         )
+
+    let private kernelDisagreements (section : string) (scenarios : ShutdownProbe.Scenario list) : string list =
+        kernelDisagreementsOf ShutdownProbe.Probe.Shutdown section scenarios
 
     [<Test>]
     let ``the kernel answers shutdown, and what each end then sees, as each flavour measured (section S)`` () =
@@ -1456,8 +1597,13 @@ module TestShutdownAgainstHost =
         kernelDisagreements "E" ShutdownProbe.sectionE |> shouldEqual []
 
     [<Test>]
-    let ``the kernel frees an open end's endpoint and answers getpeername as measured (section F)`` () =
+    let ``the kernel frees an end's endpoint, open or closed, and answers getpeername as measured (section F)`` () =
         kernelDisagreements "F" ShutdownProbe.sectionF |> shouldEqual []
+
+    [<Test>]
+    let ``the kernel answers a bind of an endpoint an end still holds as measured (bind-held-endpoint.c)`` () =
+        kernelDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" ShutdownProbe.sectionH
+        |> shouldEqual []
 
     [<Test>]
     let ``the kernel refuses only where the probe marked the outcome as waiting on a timer`` () =

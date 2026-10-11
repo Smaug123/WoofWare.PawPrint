@@ -117,7 +117,7 @@ module TestTcpShutdownMeasured =
                 if TcpTransfer.closeRefused e transfer then
                     refused <- true
                 else
-                    transfer <- snd (TcpTransfer.close e transfer)
+                    transfer <- snd (TcpTransfer.close e false transfer)
 
                 "0"
 
@@ -125,7 +125,7 @@ module TestTcpShutdownMeasured =
                 if TcpTransfer.abortRefused e transfer then
                     refused <- true
                 else
-                    transfer <- snd (TcpTransfer.abort e transfer)
+                    transfer <- snd (TcpTransfer.abort e false transfer)
 
                 "0"
 
@@ -152,8 +152,10 @@ module TestTcpShutdownMeasured =
             member _.Edges () = notThisLayer "edge registration"
             member _.PortOf _ = 0
             member _.BindFree _ = notThisLayer "bind"
+            member _.Candidate _ _ _ = notThisLayer "bind"
+            member _.ReuseAddress _ = notThisLayer "SO_REUSEADDR"
             member _.PeerName _ = notThisLayer "getpeername"
-            member _.BindSeesClosedEnds = false
+            member _.KeepsTimeWaitOnceBothClosed = notThisLayer "TIME_WAIT"
 
             // What the probe's `rdy` prints for `e`: `poll` (and, on Linux, an
             // epoll registration, which agrees with it), then `FIONREAD`.
@@ -171,7 +173,7 @@ module TestTcpShutdownMeasured =
 
                     let bits =
                         match state with
-                        | TcpEndState.Closed -> failwith "rdy of a closed end"
+                        | TcpEndState.Closed _ -> failwith "rdy of a closed end"
                         | TcpEndState.Reset _ -> 0x1 ||| 0x4 ||| 0x10 ||| 0x2000 ||| (if pending.IsSome then 0x8 else 0)
                         | TcpEndState.Open _ ->
                             (if readable > 0 || receiveShut then 0x1 else 0)
@@ -188,7 +190,7 @@ module TestTcpShutdownMeasured =
                         match state with
                         | TcpEndState.Reset _ -> true
                         | TcpEndState.Open _ -> false
-                        | TcpEndState.Closed -> failwith "rdy of a closed end"
+                        | TcpEndState.Closed _ -> failwith "rdy of a closed end"
 
                     let fflags = pending |> Option.map darwinErrno |> Option.defaultValue 0
                     let space = int64 (TcpTransfer.sendSpace e transfer)

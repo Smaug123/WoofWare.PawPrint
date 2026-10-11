@@ -1,0 +1,9 @@
+#	Linux 6.18.5 aarch64
+tw reuse 0->1 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=EADDRINUSE
+tw reuse 0->1 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=EADDRINUSE
+tw reuse 1->0 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=ok
+tw reuse 1->0 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 0->1 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 0->1 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 1->0 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=EADDRINUSE
+fw2 reuse 1->0 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=EADDRINUSE

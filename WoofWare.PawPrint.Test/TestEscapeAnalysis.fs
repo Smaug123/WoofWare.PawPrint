@@ -1746,8 +1746,13 @@ public static class SR
         |> Set.ofSeq
         |> shouldEqual preserving
 
+    /// The runtime makes each exception a native raises by running its parameterless constructor,
+    /// whose own exceptions escape in its place.
     [<Test>]
-    let ``a native method the contract table describes raises exactly what its row says`` () : unit =
+    let ``a native method the contract table describes raises what its row says, and what making those runs``
+        ()
+        : unit
+        =
         let corelib = hostCoreLib ()
 
         let tabulated =
@@ -1778,11 +1783,20 @@ public static class SR
         let _ =
             (analysis, tabulated)
             ||> List.fold (fun analysis (key, row) ->
+                let analysis, made =
+                    ((analysis, Set.empty), row.Contract.Raises)
+                    ||> List.fold (fun (analysis, made) name ->
+                        let analysis, escapes =
+                            EscapeAnalysis.escapes
+                                analysis
+                                (parameterlessConstructor corelib name.Namespace name.Name)
+
+                        escapes.Unknown |> shouldEqual false
+                        analysis, made |> Set.add ("=" + name.FullName) |> Set.union (render analysis escapes)
+                    )
+
                 let analysis, escapes = EscapeAnalysis.escapes analysis key
-
-                render analysis escapes
-                |> shouldEqual (row.Contract.Raises |> List.map (fun name -> "=" + name.FullName) |> Set.ofList)
-
+                render analysis escapes |> shouldEqual made
                 escapes.Unknown |> shouldEqual false
                 analysis
             )

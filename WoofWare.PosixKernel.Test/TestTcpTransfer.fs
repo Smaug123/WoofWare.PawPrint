@@ -781,7 +781,7 @@ module TestTcpTransfer =
                 match inbound.Receiver with
                 | TcpEndState.Open receiveShut -> false, receiveShut, false, false
                 | TcpEndState.Reset pending -> false, false, true, pending
-                | TcpEndState.Closed -> true, false, false, false
+                | TcpEndState.Closed _ -> true, false, false, false
 
             {
                 Closed = closed
@@ -864,13 +864,13 @@ module TestTcpTransfer =
             if TcpTransfer.closeRefused e transfer then
                 TcpTransferSeen.Refused, [], transfer
             else
-                let wakes, transfer = TcpTransfer.close e transfer
+                let wakes, transfer = TcpTransfer.close e false transfer
                 TcpTransferSeen.Closed, wakes, transfer
         | TcpTransferOp.Abort e ->
             if TcpTransfer.abortRefused e transfer then
                 TcpTransferSeen.Refused, [], transfer
             else
-                let wakes, transfer = TcpTransfer.abort e transfer
+                let wakes, transfer = TcpTransfer.abort e false transfer
                 TcpTransferSeen.Closed, wakes, transfer
         | TcpTransferOp.Shutdown (e, how) ->
             match TcpTransfer.shutdown e how transfer with
@@ -1327,7 +1327,7 @@ module TestTcpTransfer =
                 )
             | other, _ -> failwith $"the write of 20 was %A{other}"
 
-        let wakes, transfer = TcpTransfer.close ConnectionEnd.Client transfer
+        let wakes, transfer = TcpTransfer.close ConnectionEnd.Client false transfer
         wakes |> shouldEqual []
 
         (TcpTransfer.towards ConnectionEnd.Server transfer).Fin

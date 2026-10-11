@@ -99,11 +99,12 @@ module SigsuspendRefusal =
 [<RequireQualifiedAccess>]
 module SyscallInterruption =
 
-    /// How the syscall `parked` records ends when a signal with a handler
-    /// interrupts it, on either flavour that parks it. A FIFO open
-    /// (`ParkedSyscall.FifoOpen`, reserved) is answered as Linux ends it,
-    /// because a Darwin FIFO open is refused rather than parked.
-    let ruleOf (parked : ParkedSyscall) : SignalRestartRule =
+    /// How the syscall `parked` records ends under `flavour` when a signal with
+    /// a handler interrupts it.
+    ///
+    /// A park `flavour` never makes (an `epoll_wait` under Darwin, a `kevent`
+    /// under Linux) is answered as the flavour that makes it ends it.
+    let ruleOf (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         // Measured on Linux 6.18.5 and Darwin 25.6.0
         // (`docs/plans/2026-08-23-posix-kernel-extraction/signal-sigaction-flags.c`),
         // each call blocked and signalled 50 ms in: `flock` and `accept` returned
@@ -148,13 +149,14 @@ module SyscallInterruption =
         // signal interrupts answers EINTR under SA_RESTART too, and is never
         // restarted.
         | ParkedSyscall.Sleep _ -> SignalRestartRule.FailsWithEintr
-        // Measured on Linux 6.18.5, for an open of either end signalled 100 ms
-        // into its sleep: EINTR without SA_RESTART, and with it the call sleeps
-        // on and completes once a partner opens. Darwin 27.0.0 answers EINTR
-        // under SA_RESTART too, but a Darwin FIFO open stays refused rather
-        // than parked until Darwin's FIFOs are modelled, so this answers for
-        // Linux alone.
-        | ParkedSyscall.FifoOpen _ -> SignalRestartRule.RestartsUnderSaRestart
+        // Measured on Linux 6.18.5 and Darwin 27.0.0, for an open of either end
+        // signalled into its sleep: EINTR without SA_RESTART on both. With it,
+        // Linux's call sleeps on and completes once a partner opens, and
+        // Darwin's answers EINTR.
+        | ParkedSyscall.FifoOpen _ ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> SignalRestartRule.RestartsUnderSaRestart
+            | SimulatedUnixFlavour.Darwin -> SignalRestartRule.FailsWithEintr
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]
@@ -362,7 +364,7 @@ module SyscallInterruption =
         | Ok [] -> Ok None
         | Ok frames ->
 
-        match ruleOf parked with
+        match ruleOf (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) parked with
         | SignalRestartRule.FailsWithEintr -> Ok (Some SyscallInterruption.Eintr)
         | SignalRestartRule.RestartsUnderSaRestart ->
             // Every frame is pushed before any handler runs, and a kernel decides

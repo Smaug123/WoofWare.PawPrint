@@ -987,6 +987,18 @@ module TestBlockingConnection =
         | Some (OpenFileTarget.Socket socketId) -> socketId
         | other -> failwith $"fd %d{fd} names %A{other}"
 
+    /// Whether a fresh socket, with `SO_REUSEADDR` if `reuse`, is refused
+    /// `EADDRINUSE` binding loopback at `port`; any other answer fails.
+    let private bindRefused (reuse : bool) (port : uint16) (system : UnixSystem<int, string>) : bool =
+        let fresh, system = KeventWorld.stream false system
+        let system = if reuse then ReuseAddress.set true fresh system else system
+        let address = CopyIn.inet system.Machine.UnixPlatform (KeventWorld.loopback port)
+
+        match CopyIn.bind fresh UserBuffer.Mapped 16u address system with
+        | Ok (BindAnswer.Bound _, _) -> false
+        | Ok (BindAnswer.Failed UnixError.EADDRINUSE, _) -> true
+        | other -> failwith $"a bind of port %d{port}: %A{other}"
+
     /// `SO_LINGER` on `fd`: `l_onoff` of `onOff` and a time of `seconds`,
     /// through `SO_LINGER_SEC` where the flavour has it and `SO_LINGER`
     /// otherwise. `None` if the call fails with an errno, which changes
@@ -1054,6 +1066,12 @@ module TestBlockingConnection =
             let flavourName = if linux then "Linux" else "Darwin"
             let client, server, start = pair (systemOn platform restart)
             let connection = connectionOf client start
+
+            let clientPort =
+                match (UnixMachineState.socket (socketOf client start) start.Machine).Ipv4Binding with
+                | Some binding -> binding.Endpoint.Port
+                | None -> failwith "the connecting socket is unbound"
+
             let mutable system = start
 
             let transfer = (UnixMachineState.connection connection start.Machine).Transfer
@@ -1711,6 +1729,42 @@ module TestBlockingConnection =
 
                     socketsLeft |> shouldEqual (2 - Set.count reference.Gone)
 
+                    // Each end's endpoint, against an explicit bind: held
+                    // until a reset reaches the connection or the end's own
+                    // FIN, made after the peer's had arrived, has arrived,
+                    // whether its socket is open or closed
+                    // (`bind-held-endpoint.c`); and forgotten with the
+                    // connection once both sockets have gone, where a real
+                    // kernel's `TIME_WAIT` would go on holding an active
+                    // closer's, which this library does not model. The pair's
+                    // sockets carry no `SO_REUSEADDR`, so a candidate's own
+                    // lets it through on Darwin alone.
+                    for connectionEnd, endPort in [ ConnectionEnd.Client, clientPort ; ConnectionEnd.Server, port ] do
+                        let ends = reference.Model.Ends
+                        let own = ends.[TcpTransferReference.other connectionEnd]
+
+                        let held =
+                            Set.count reference.Gone < 2
+                            && not ends.[ConnectionEnd.Client].GotReset
+                            && not ends.[ConnectionEnd.Server].GotReset
+                            && not (own.FinArrived && own.FinPassive)
+
+                        for reuse in [ false ; true ] do
+                            let refused = bindRefused reuse endPort system
+
+                            if refused <> (held && (linux || not reuse)) then
+                                failwith
+                                    $"%s{where}: a bind of the %A{connectionEnd} end's port %d{endPort}, SO_REUSEADDR %b{reuse}, refused %b{refused}"
+
+                        let socket =
+                            match Set.count reference.Gone with
+                            | 2 -> "a closed end's endpoint, the peer closed too"
+                            | _ when Set.contains connectionEnd reference.Gone -> "a closed end's endpoint"
+                            | _ -> "an open end's endpoint"
+
+                        let holds = if held then "held" else "free"
+                        cover $"%s{flavourName} bind of %s{socket}: %s{holds}"
+
                     // Darwin's `FWASWRITTEN`, on each end a descriptor still
                     // names: set by a `write` that moved bytes, never by a
                     // `send`, and never on Linux.
@@ -1839,6 +1893,17 @@ module TestBlockingConnection =
                 "Darwin finish write after its own shutdown: EPIPE"
                 "Darwin close: refused, behind its queued FIN"
                 "Darwin SO_LINGER: fails"
+                // The endpoint against an explicit bind.
+                "Linux bind of an open end's endpoint: held"
+                "Linux bind of an open end's endpoint: free"
+                "Linux bind of a closed end's endpoint: held"
+                "Linux bind of a closed end's endpoint: free"
+                "Linux bind of a closed end's endpoint, the peer closed too: free"
+                "Darwin bind of an open end's endpoint: held"
+                "Darwin bind of an open end's endpoint: free"
+                "Darwin bind of a closed end's endpoint: held"
+                "Darwin bind of a closed end's endpoint: free"
+                "Darwin bind of a closed end's endpoint, the peer closed too: free"
             ] do
             if coverage.Count label = 0 then
                 failwith $"never reached: %s{label}"

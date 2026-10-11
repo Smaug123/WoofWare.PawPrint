@@ -1477,8 +1477,8 @@ module UnixSystem =
                             |> List.distinct
 
                         match (TcpTransfer.towards connectionEnd tcp.Transfer).Receiver, holders with
-                        | TcpEndState.Closed, [] -> []
-                        | TcpEndState.Closed, holders ->
+                        | TcpEndState.Closed _, [] -> []
+                        | TcpEndState.Closed _, holders ->
                             holders
                             |> List.map (fun socketId ->
                                 UnixSystemDefect.ConnectionEndClosedUnderSocket (connection, connectionEnd, socketId)

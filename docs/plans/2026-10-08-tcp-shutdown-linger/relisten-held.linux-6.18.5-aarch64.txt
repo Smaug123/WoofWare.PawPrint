@@ -1,0 +1,7 @@
+#	Linux 6.18.5 aarch64
+listener-reuse=0 child=open relisten=ok
+listener-reuse=0 child=closed-active relisten=ok
+listener-reuse=0 child=closed-passive relisten=ok
+listener-reuse=1 child=open relisten=ok
+listener-reuse=1 child=closed-active relisten=ok
+listener-reuse=1 child=closed-passive relisten=ok

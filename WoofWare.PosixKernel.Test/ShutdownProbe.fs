@@ -36,12 +36,17 @@ type internal ShutdownLine =
 /// How the connected pair a scenario starts from was made: by `connect` and
 /// `accept` from sockets bound to port 0, or with the connecting socket, or
 /// the listener whose port the accepted socket shares, bound explicitly to a
-/// port (`tcp-shutdown.c`'s `pair_locked`).
+/// port (`tcp-shutdown.c`'s `pair_locked`), or with `SO_REUSEADDR` set on
+/// the connecting socket before its connect, or on the listener before its
+/// bind, which the accepted socket inherits (`bind-held-endpoint.c`'s
+/// `pair`).
 [<RequireQualifiedAccess>]
 type internal ShutdownPairShape =
     | Plain
     | ClientLocked
     | ListenerLocked
+    | ClientReuseAddress
+    | ListenerReuseAddress
 
 /// A connected pair, `c` (`ConnectionEnd.Client`) and `p`
 /// (`ConnectionEnd.Server`), both non-blocking, driven call by call as
@@ -85,11 +90,21 @@ type internal IShutdownPair =
     /// Whether a fresh socket binds the loopback address at `port`:
     /// `bind-ok`, `bind-EADDRINUSE` or the answer.
     abstract BindFree : int -> string
+    /// A fresh socket, with `SO_REUSEADDR` if `reuse`, binds `port` at the
+    /// wildcard address if `wildcard` and at loopback otherwise, and if it
+    /// binds, listens: `bind-ok listen-ok`, `bind-ok listen-` and the errno's
+    /// name, or `bind-` and the errno's name, as `bind-held-endpoint.c`'s
+    /// `candidate` prints it.
+    abstract Candidate : reuse : bool -> wildcard : bool -> port : int -> string
+    /// `getsockopt(SO_REUSEADDR)` of the end: 1 if set, 0 if not.
+    abstract ReuseAddress : ConnectionEnd -> int
     /// `getpeername(2)`: `ok` or the errno's name.
     abstract PeerName : ConnectionEnd -> string
-    /// Whether a fresh socket's bind sees an endpoint a closed socket's end
-    /// still holds (`TIME_WAIT`, or a FIN on its way): a real kernel's does.
-    abstract BindSeesClosedEnds : bool
+    /// Whether an end whose FIN was made first still holds its endpoint once
+    /// both sockets have closed (`TIME_WAIT`): a real kernel's does, for
+    /// 2MSL, and this library forgets a connection once no socket refers to
+    /// it.
+    abstract KeepsTimeWaitOnceBothClosed : bool
 
 /// The lines one scenario of a section prints, against one pair, recording
 /// as `IShutdownPair`'s calls answer; once a call has been refused, every line
@@ -161,10 +176,19 @@ type internal ShutdownRecorder (pair : IShutdownPair) =
     member _.BindFree (port : int) : string =
         if pair.Refused then "" else pair.BindFree port
 
+    member _.Candidate (reuse : bool) (wildcard : bool) (port : int) : string =
+        if pair.Refused then
+            ""
+        else
+            pair.Candidate reuse wildcard port
+
+    member _.ReuseAddress (e : ConnectionEnd) : int =
+        if pair.Refused then 0 else pair.ReuseAddress e
+
     member _.PeerName (e : ConnectionEnd) : string =
         if pair.Refused then "" else pair.PeerName e
 
-    member _.BindSeesClosedEnds : bool = pair.BindSeesClosedEnds
+    member _.KeepsTimeWaitOnceBothClosed : bool = pair.KeepsTimeWaitOnceBothClosed
 
 /// The sections of `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger)
 /// and `tcp-shutdown-exchange.c` beside it, as scripts over an
@@ -181,6 +205,8 @@ module internal ShutdownProbe =
         | Shutdown
         /// `tcp-shutdown-exchange.c`: once both ends have shut writing.
         | Exchange
+        /// `bind-held-endpoint.c`: binds of an endpoint an end still holds.
+        | HeldEndpoint
 
     /// One scenario: a fresh pair, driven to completion, giving its lines.
     type Scenario = (ShutdownPairShape -> IShutdownPair) -> ShutdownLine list
@@ -191,6 +217,7 @@ module internal ShutdownProbe =
             match probe with
             | Probe.Shutdown -> "tcpShutdown"
             | Probe.Exchange -> "tcpShutdownExchange"
+            | Probe.HeldEndpoint -> "bindHeldEndpoint"
 
         let resource =
             match flavour with
@@ -617,11 +644,8 @@ module internal ShutdownProbe =
                         b1, b2
 
                     let emitClosed (prefix : string) (b1 : string) (b2 : string) (rp : string) =
-                        if s.BindSeesClosedEnds then
-                            s.Emit
-                                $"F\t%s{order}\t%s{prefix}closers-endpoint at once %s{b1}, 30 ms later %s{b2}\trdy(p)\t%s{rp}"
-                        else
-                            s.EmitElsewhere ()
+                        s.Emit
+                            $"F\t%s{order}\t%s{prefix}closers-endpoint at once %s{b1}, 30 ms later %s{b2}\trdy(p)\t%s{rp}"
 
                     match order with
                     | "p-first-close" ->
@@ -712,18 +736,13 @@ module internal ShutdownProbe =
                         $"F\t%s{name}\tboth open: c-endpoint at once %s{b1}, 30 ms later %s{b2}; p-endpoint %s{bp}; getpeername(c)=%s{g1} getpeername(p)=%s{g2}"
 
                     s.Close c |> ignore<string>
-
-                    if s.BindSeesClosedEnds then
-                        let b3 = s.BindFree cport
-                        let b4 = s.BindFree pport
-                        let g3 = s.PeerName p
-                        s.Emit $"F\t%s{name}\tc closed: c-endpoint %s{b3} p-endpoint %s{b4} getpeername(p)=%s{g3}"
-                    else
-                        s.EmitElsewhere ()
-
+                    let b3 = s.BindFree cport
+                    let b4 = s.BindFree pport
+                    let g3 = s.PeerName p
+                    s.Emit $"F\t%s{name}\tc closed: c-endpoint %s{b3} p-endpoint %s{b4} getpeername(p)=%s{g3}"
                     s.Close p |> ignore<string>
 
-                    if s.BindSeesClosedEnds then
+                    if s.KeepsTimeWaitOnceBothClosed then
                         let b5 = s.BindFree cport
                         let b6 = s.BindFree pport
                         s.Emit $"F\t%s{name}\tboth closed: c-endpoint %s{b5} p-endpoint %s{b6}"
@@ -731,6 +750,93 @@ module internal ShutdownProbe =
                         s.EmitElsewhere ()
 
                     s.Lines
+        ]
+
+    /// `bind-held-endpoint.c`'s rows: an end `o` brought to a state in which
+    /// it holds its endpoint or has released it, its socket open or closed,
+    /// with or without `SO_REUSEADDR`; then four fresh sockets bind its port,
+    /// with and without `SO_REUSEADDR`, at loopback and the wildcard, and each
+    /// that binds listens.
+    let sectionH : Scenario list =
+        [
+            for o in [ c ; p ] do
+                for state in [ "released" ; "tw" ; "fw2" ; "active-queued" ; "passive-queued" ] do
+                    for isOpen in [ false ; true ] do
+                        for oreuse in [ false ; true ] do
+                            fun pairOf ->
+                                let shape =
+                                    match oreuse, o with
+                                    | false, _ -> ShutdownPairShape.Plain
+                                    | true, ConnectionEnd.Client -> ShutdownPairShape.ClientReuseAddress
+                                    | true, ConnectionEnd.Server -> ShutdownPairShape.ListenerReuseAddress
+
+                                let s = ShutdownRecorder (pairOf shape)
+                                let q = if o = c then p else c
+                                let port = s.PortOf o
+                                let got = s.ReuseAddress o
+
+                                let fin () =
+                                    if isOpen then
+                                        s.Shutdown o TcpShutdownHow.Write |> ignore<string>
+                                    else
+                                        s.Close o |> ignore<string>
+
+                                // The probe's `fill`: again until bytes stay
+                                // unsent, since a Darwin receive buffer grows
+                                // under a fill.
+                                let fill () : int64 =
+                                    let rec go (round : int) (written : int64) =
+                                        let written = written + s.Fill o
+                                        s.Settle ()
+
+                                        if written > int64 (s.Fionread q) || round = 19 then
+                                            written
+                                        else
+                                            go (round + 1) written
+
+                                    go 0 0L
+
+                                let written =
+                                    match state with
+                                    | "released" ->
+                                        s.Shutdown q TcpShutdownHow.Write |> ignore<string>
+                                        fin ()
+                                        0L
+                                    | "tw" ->
+                                        fin ()
+                                        s.Shutdown q TcpShutdownHow.Write |> ignore<string>
+                                        0L
+                                    | "fw2" ->
+                                        fin ()
+                                        0L
+                                    | "active-queued" ->
+                                        let written = fill ()
+                                        fin ()
+                                        written
+                                    | _ ->
+                                        s.Shutdown q TcpShutdownHow.Write |> ignore<string>
+                                        let written = fill ()
+                                        fin ()
+                                        written
+
+                                let lo = s.Candidate false false port
+                                let loReuse = s.Candidate true false port
+                                let any = s.Candidate false true port
+                                let anyReuse = s.Candidate true true port
+
+                                let unsent =
+                                    if written = 0L then ""
+                                    elif written > int64 (s.Fionread q) then "\tunsent"
+                                    else "\tall-delivered"
+
+                                let endName = if o = c then "c" else "p"
+                                let openName = if isOpen then "open" else "closed"
+                                let reuseFlag = if oreuse then 1 else 0
+
+                                s.Emit
+                                    $"H\t%s{endName}\t%s{state}\t%s{openName}\toreuse=%d{reuseFlag}(%d{got})\tlo %s{lo}\tlo+reuse %s{loReuse}\tany %s{any}\tany+reuse %s{anyReuse}%s{unsent}"
+
+                                s.Lines
         ]
 
     /// The rows of section U on a connected socket: a `how` out of range.
