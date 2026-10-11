@@ -476,7 +476,7 @@ module TestPathCursor =
         let root = VirtualFileSystem.root vfs
 
         let d1, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 root
                 (name "d1")
                 SeedEntry.defaultPermsForDirectory
@@ -486,7 +486,7 @@ module TestPathCursor =
             |> ok
 
         let d2, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 d1
                 (name "d2")
                 SeedEntry.defaultPermsForDirectory
@@ -496,7 +496,7 @@ module TestPathCursor =
             |> ok
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 d2
                 (name "f")
                 SeedEntry.defaultPermsForRegularFile
@@ -507,7 +507,7 @@ module TestPathCursor =
             |> ok
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 root
                 (name "f1")
                 SeedEntry.defaultPermsForRegularFile
@@ -518,7 +518,7 @@ module TestPathCursor =
             |> ok
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 parent
                 (name n)
                 SymlinkModes.linux

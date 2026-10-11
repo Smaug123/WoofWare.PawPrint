@@ -301,7 +301,7 @@ module TestDirectoryEntrySeek =
             | Some content ->
 
             record Reached.Forget
-            let vfs = VirtualFileSystem.forget inode vfs
+            let vfs = GraphMutators.forget inode vfs
 
             match content with
             | InodeContent.Directory directory -> go directory.Parent vfs
@@ -329,7 +329,7 @@ module TestDirectoryEntrySeek =
 
                 let created =
                     if isDirectory then
-                        VirtualFileSystem.createDirectory
+                        GraphMutators.createDirectory
                             directory
                             entry
                             SeedEntry.defaultPermsForDirectory
@@ -337,7 +337,7 @@ module TestDirectoryEntrySeek =
                             now
                             vfs
                     else
-                        VirtualFileSystem.createFile
+                        GraphMutators.createFile
                             directory
                             entry
                             SeedEntry.defaultPermsForRegularFile
@@ -377,7 +377,7 @@ module TestDirectoryEntrySeek =
                     | None -> false
 
                 let removed, vfs =
-                    VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory entry now vfs
+                    GraphMutators.unbind UnbindTargetEffect.LostALink directory entry now vfs
                     |> ok "remove"
 
                 record (
@@ -417,7 +417,7 @@ module TestDirectoryEntrySeek =
                 else
 
                 let outcome, vfs =
-                    VirtualFileSystem.rename sourceDirectory sourceName destinationDirectory destinationName now vfs
+                    GraphMutators.rename sourceDirectory sourceName destinationDirectory destinationName now vfs
                     |> ok "rename"
 
                 record (
@@ -544,7 +544,7 @@ module TestDirectoryEntrySeek =
         let root = VirtualFileSystem.root vfs
 
         let create (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 root
                 (name n)
                 SeedEntry.defaultPermsForRegularFile
@@ -594,7 +594,7 @@ module TestDirectoryEntrySeek =
         // something have one, so that two filesystems with the same graph are
         // equal.
         let empty, emptied =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 root
                 (name "d")
                 SeedEntry.defaultPermsForDirectory
@@ -659,7 +659,7 @@ module TestDirectoryEntrySeek =
 
         let thrown =
             Assert.Throws<exn> (fun () ->
-                VirtualFileSystem.unbind UnbindTargetEffect.LostALink root (name "b") buildTime forged
+                GraphMutators.unbind UnbindTargetEffect.LostALink root (name "b") buildTime forged
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
@@ -675,7 +675,7 @@ module TestDirectoryEntrySeek =
 
         let thrown =
             Assert.Throws<exn> (fun () ->
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     root
                     (name "c")
                     SeedEntry.defaultPermsForRegularFile

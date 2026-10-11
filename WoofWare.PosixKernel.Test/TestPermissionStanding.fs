@@ -495,14 +495,14 @@ module TestPermissionStanding =
     let private directory (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
+        GraphMutators.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
         |> ok
         |> snd
 
     let private file (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (inodeAt vfs parent)
             (name child)
             (mode bits)
@@ -516,7 +516,7 @@ module TestPermissionStanding =
     let private hardLink (existing : string) (p : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.hardLink (inodeAt vfs parent) (name child) (inodeAt vfs existing) epoch vfs
+        GraphMutators.hardLink (inodeAt vfs parent) (name child) (inodeAt vfs existing) epoch vfs
         |> ok
 
     /// A process on `platform` with `credentials`, in the root of `vfs`.
@@ -533,7 +533,7 @@ module TestPermissionStanding =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Process =
                 { system.Process with

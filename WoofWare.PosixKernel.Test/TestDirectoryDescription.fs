@@ -761,11 +761,13 @@ module TestDirectoryDescription =
             { asFifo with
                 Machine =
                     { asFifo.Machine with
-                        FileSystem =
-                            VirtualFileSystem.Unchecked.setContent
-                                inode
-                                (InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644))
-                                asFifo.Machine.FileSystem
+                        CommittedFileSystem =
+                            CommittedFileSystem.initial (
+                                VirtualFileSystem.Unchecked.setContent
+                                    inode
+                                    (InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644))
+                                    asFifo.Machine.FileSystem
+                            )
                     }
             }
 

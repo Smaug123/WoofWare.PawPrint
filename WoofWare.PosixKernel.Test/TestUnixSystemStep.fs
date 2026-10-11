@@ -63,7 +63,7 @@ module TestUnixSystemStep =
     let private withOpenFile (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let inode, filesystem =
             match
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
@@ -82,7 +82,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = filesystem
+                    CommittedFileSystem = CommittedFileSystem.initial filesystem
                 }
         }
         |> UnixSystemState.withFileDescriptors registry
@@ -818,7 +818,7 @@ module TestUnixSystemStep =
     let private withOpenDirectory (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let inode, filesystem =
             match
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     rootInode
                     (DirectoryEntryName.parseOrFail context "d")
                     (PermissionBits.parseOrFail context 0o755)
@@ -836,7 +836,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = filesystem
+                    CommittedFileSystem = CommittedFileSystem.initial filesystem
                 }
         }
         |> UnixSystemState.withFileDescriptors registry
@@ -1493,7 +1493,7 @@ module TestUnixSystemStep =
     let private withSymlink (system : UnixSystem<int, string>) : InodeNumber * UnixSystem<int, string> =
         let inode, filesystem =
             match
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "l")
                     (SymlinkModes.at022 system.Machine.UnixPlatform)
@@ -1509,7 +1509,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = filesystem
+                    CommittedFileSystem = CommittedFileSystem.initial filesystem
                 }
         }
 
@@ -1616,7 +1616,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = filesystem
+                            CommittedFileSystem = CommittedFileSystem.initial filesystem
                         }
                 }
 
@@ -1772,7 +1772,7 @@ module TestUnixSystemStep =
         let dirPermissions = PermissionBits.parseOrFail context 0o755
 
         let d, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (DirectoryEntryName.parseOrFail context "d")
                 dirPermissions
@@ -1782,7 +1782,7 @@ module TestUnixSystemStep =
             |> orFail "/d"
 
         let inner, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 d
                 (DirectoryEntryName.parseOrFail context "inner")
                 innerPermissions
@@ -1792,7 +1792,7 @@ module TestUnixSystemStep =
             |> orFail "/d/inner"
 
         let target, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 inner
                 (DirectoryEntryName.parseOrFail context "t")
                 (PermissionBits.parseOrFail context 0o600)
@@ -1803,7 +1803,7 @@ module TestUnixSystemStep =
             |> orFail "/d/inner/t"
 
         let link, vfs =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "l")
                 SymlinkModes.linux
@@ -1817,7 +1817,7 @@ module TestUnixSystemStep =
         // final component is not dereferenced" from "it is": a link to an
         // *existing* file cannot, both readings landing on a name that exists.
         let _, vfs =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "dangling")
                 SymlinkModes.linux
@@ -1833,7 +1833,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
         }
 
@@ -2377,7 +2377,7 @@ module TestUnixSystemStep =
 
         let unnamed =
             match
-                VirtualFileSystem.unbind
+                GraphMutators.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
@@ -2388,7 +2388,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = filesystem
+                            CommittedFileSystem = CommittedFileSystem.initial filesystem
                         }
                 }
             | Error error -> failwith $"could not unlink the file: %O{error}"
@@ -2412,7 +2412,7 @@ module TestUnixSystemStep =
 
         let unnamed =
             match
-                VirtualFileSystem.unbind
+                GraphMutators.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
@@ -2423,7 +2423,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = filesystem
+                            CommittedFileSystem = CommittedFileSystem.initial filesystem
                         }
                 }
             | Error error -> failwith $"could not unlink the file: %O{error}"
@@ -2455,7 +2455,7 @@ module TestUnixSystemStep =
 
         let unnamed =
             match
-                VirtualFileSystem.unbind
+                GraphMutators.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
@@ -2481,7 +2481,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = unnamed
+                            CommittedFileSystem = CommittedFileSystem.initial unnamed
                         }
                 }
 
@@ -4276,7 +4276,7 @@ module TestUnixSystemStep =
 
             let vfs =
                 match
-                    VirtualFileSystem.createFile
+                    GraphMutators.createFile
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "readable")
                         (PermissionBits.parseOrFail context 0o400)
@@ -4292,7 +4292,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -4323,7 +4323,7 @@ module TestUnixSystemStep =
 
             let seed (name : string) (mode : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
                 match
-                    VirtualFileSystem.createFile
+                    GraphMutators.createFile
                         (VirtualFileSystem.root vfs)
                         (DirectoryEntryName.parseOrFail context name)
                         (PermissionBits.parseOrFail context mode)
@@ -4342,7 +4342,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -4652,7 +4652,7 @@ module TestUnixSystemStep =
 
             let vfs =
                 match
-                    VirtualFileSystem.createSymlink
+                    GraphMutators.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "ld")
                         SymlinkModes.linux
@@ -4668,7 +4668,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -4863,7 +4863,7 @@ module TestUnixSystemStep =
 
             let vfs =
                 match
-                    VirtualFileSystem.createSymlink
+                    GraphMutators.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "wide")
                         SymlinkModes.linux
@@ -4879,7 +4879,7 @@ module TestUnixSystemStep =
                 { system with
                     Machine =
                         { system.Machine with
-                            FileSystem = vfs
+                            CommittedFileSystem = CommittedFileSystem.initial vfs
                         }
                 }
 
@@ -5191,7 +5191,7 @@ module TestUnixSystemStep =
         let mode (m : int) = PermissionBits.parseOrFail context m
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 rootInode
                 (n "f")
                 (mode 0o644)
@@ -5202,7 +5202,7 @@ module TestUnixSystemStep =
             |> orFail "/f"
 
         let dir, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (n "dir")
                 (mode 0o755)
@@ -5212,7 +5212,7 @@ module TestUnixSystemStep =
             |> orFail "/dir"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 dir
                 (n "sub")
                 (mode 0o755)
@@ -5224,7 +5224,7 @@ module TestUnixSystemStep =
         // 0o600: readable and *not* searchable, which is what makes a lookup
         // through it EACCES while the directory itself still stats fine.
         let nosearch, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (n "nosearch")
                 (mode 0o600)
@@ -5234,7 +5234,7 @@ module TestUnixSystemStep =
             |> orFail "/nosearch"
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 nosearch
                 (n "kid")
                 (mode 0o644)
@@ -5245,7 +5245,7 @@ module TestUnixSystemStep =
             |> orFail "/nosearch/kid"
 
         let link (name : string) (target : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 rootInode
                 (n name)
                 SymlinkModes.linux
@@ -5261,7 +5261,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
         }
 
@@ -5471,7 +5471,7 @@ module TestUnixSystemStep =
 
         let displaced, vfs =
             match
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     rootInode
                     (n "victim")
                     (PermissionBits.parseOrFail context 0o644)
@@ -5487,7 +5487,7 @@ module TestUnixSystemStep =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = vfs
+                        CommittedFileSystem = CommittedFileSystem.initial vfs
                     }
             }
 
@@ -5836,7 +5836,7 @@ module TestUnixSystemStep =
         let mode (m : int) = PermissionBits.parseOrFail context m
 
         let d, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (n "d")
                 (mode 0o755)
@@ -5846,7 +5846,7 @@ module TestUnixSystemStep =
             |> orFail "/d"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 d
                 (n "sub")
                 (mode 0o755)
@@ -5856,7 +5856,7 @@ module TestUnixSystemStep =
             |> orFail "/d/sub"
 
         let _, vfs =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 rootInode
                 (n "f")
                 (mode 0o644)
@@ -5869,7 +5869,7 @@ module TestUnixSystemStep =
         // Search but not read, and read but not search: the pair that says which
         // bit chdir actually wants.
         let _, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (n "xonly")
                 (mode 0o100)
@@ -5879,7 +5879,7 @@ module TestUnixSystemStep =
             |> orFail "/xonly"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 rootInode
                 (n "ronly")
                 (mode 0o400)
@@ -5889,7 +5889,7 @@ module TestUnixSystemStep =
             |> orFail "/ronly"
 
         let link (name : string) (target : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 rootInode
                 (n name)
                 SymlinkModes.linux
@@ -5905,7 +5905,7 @@ module TestUnixSystemStep =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
         }
 

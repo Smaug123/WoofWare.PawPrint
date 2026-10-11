@@ -97,6 +97,7 @@ module TestBootImage =
                     "withEntropySeed"
                     "withEphemeralPortRange"
                     "withFileSystem"
+                    "withInotifyLimits"
                     "withIpv6OnlyByDefault"
                     "withLeaderThreadId"
                     "withLocalIpv4Addresses"

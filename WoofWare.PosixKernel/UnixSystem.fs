@@ -100,6 +100,11 @@ type Syscall =
     /// `setgroups(2)` of a list of `size` groups, whose words are as the caller
     /// read them.
     | SetGroups of size : int * words : GroupListWords
+    /// `inotify_init1(2)`. `flags` is raw, in Linux's numbering; see
+    /// `UnixInotify.inotifyInit1`. Answers the new descriptor.
+    | InotifyInit1 of flags : int
+    /// `inotify_rm_watch(2)` of the watch descriptor `wd`.
+    | InotifyRmWatch of fd : int * wd : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -130,6 +135,8 @@ type SyscallRefusal<'Task> =
     /// `setresuid(2)` and `setresgid(2)` alike.
     | SetIds of SetIdsRefusal
     | SetGroups of SetGroupsRefusal
+    /// `inotify_init1(2)` and `inotify_rm_watch(2)` alike.
+    | Inotify of InotifyRefusal
 
 [<RequireQualifiedAccess>]
 module SyscallRefusal =
@@ -162,6 +169,7 @@ module SyscallRefusal =
         | SyscallRefusal.CloneFile refusal -> $"clonefile: %s{CloneFileRefusal.describe refusal}"
         | SyscallRefusal.SetIds refusal -> $"setresuid or setresgid: %s{SetIdsRefusal.describe refusal}"
         | SyscallRefusal.SetGroups refusal -> $"setgroups: %s{SetGroupsRefusal.describe refusal}"
+        | SyscallRefusal.Inotify refusal -> $"inotify_init1 or inotify_rm_watch: %s{InotifyRefusal.describe refusal}"
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -632,6 +640,26 @@ type UnixSystemDefect<'Task> =
     /// reserved for behaviour not yet modelled, which no call produces and no
     /// finishing call answers.
     | ReservedPark of task : 'Task * parked : ParkedSyscall
+    /// A task is parked in a read of an inotify instance through the open file
+    /// description `description`, which names `target` rather than an
+    /// inotify instance.
+    | ParkedInotifyReadOnNonInotify of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// The machine's inotify limits are ones `UnixBootImage.withInotifyLimits`
+    /// refuses: not all positive, or a queue too long for `ioctl(FIONREAD)` to
+    /// count.
+    | InotifyLimitsNotAdmissible of limits : InotifyLimits
+    /// `user` holds `count` inotify instances, more than the machine's
+    /// `InotifyLimits.MaxUserInstances`, `limit`: `inotify_init1` answers
+    /// `EMFILE` for the one past it.
+    | InotifyInstancesBeyondLimit of user : UserId * count : int * limit : int
+    /// `user`'s inotify instances hold `count` watches, more than the
+    /// machine's `InotifyLimits.MaxUserWatches`, `limit`: `inotify_add_watch`
+    /// answers `ENOSPC` for the one past it.
+    | InotifyWatchesBeyondLimit of user : UserId * count : int * limit : int
+    /// The inotify instance `instance` queues `count` records, more than one
+    /// past the machine's `InotifyLimits.MaxQueuedEvents`, `limit`: the queue
+    /// stops at the limit, and then takes one `IN_Q_OVERFLOW` record.
+    | InotifyQueueBeyondLimit of instance : OpenFileDescriptionId * count : int * limit : int
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
@@ -1202,6 +1230,15 @@ module UnixSystem =
             UnixCredentials.setgroups size words system
             |> answered
             |> Result.mapError SyscallRefusal.SetGroups
+        | Syscall.InotifyInit1 flags ->
+            match UnixInotify.inotifyInit1 flags system with
+            | Error refusal -> Error (SyscallRefusal.Inotify refusal)
+            | Ok (Error error) -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
+            | Ok (Ok (fd, system)) -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 fd)), system)
+        | Syscall.InotifyRmWatch (fd, wd) ->
+            UnixInotify.inotifyRmWatch fd wd system
+            |> answered
+            |> Result.mapError SyscallRefusal.Inotify
 
     /// Every way the machine's tables disagree with each other or with the
     /// processes on it: the clauses of `checkInvariants` that concern the
@@ -1249,6 +1286,7 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -1285,11 +1323,13 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.Inotify _, SimulatedUnixFlavour.Darwin
                 | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux
                 // Only Linux's devtmpfs holds a device's node.
                 | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Darwin ->
                     Some (UnixSystemDefect.DescriptionNotOfFlavour (id, description.Target, flavour))
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Linux
+                | OpenFileTarget.Inotify _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Darwin
                 | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.File _, _
@@ -1344,9 +1384,78 @@ module UnixSystem =
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
             )
+
+        // The machine's inotify limits, and each user's instances and watches
+        // and each instance's queue against them.
+        let inotify =
+            let limits = machine.InotifyLimits
+
+            let limitsDefects =
+                if InotifyLimits.admissible limits then
+                    []
+                else
+                    [ UnixSystemDefect.InotifyLimitsNotAdmissible limits ]
+
+            let instances =
+                OpenFileTable.toSeq machine.OpenFiles
+                |> Seq.choose (fun (id, description) ->
+                    match description.Target with
+                    | OpenFileTarget.Inotify state -> Some (id, state)
+                    | OpenFileTarget.Epoll _
+                    | OpenFileTarget.Kqueue _
+                    | OpenFileTarget.File _
+                    | OpenFileTarget.Directory _
+                    | OpenFileTarget.Socket _
+                    | OpenFileTarget.CharacterDevice _
+                    | OpenFileTarget.Fifo _
+                    | OpenFileTarget.Pipe _ -> None
+                )
+                |> Seq.toList
+
+            let byUser = instances |> List.groupBy (fun (_, state) -> state.Owner)
+
+            let instanceCounts =
+                byUser
+                |> List.choose (fun (user, held) ->
+                    if List.length held > limits.MaxUserInstances then
+                        Some (
+                            UnixSystemDefect.InotifyInstancesBeyondLimit (
+                                user,
+                                List.length held,
+                                limits.MaxUserInstances
+                            )
+                        )
+                    else
+                        None
+                )
+
+            let watchCounts =
+                byUser
+                |> List.choose (fun (user, held) ->
+                    let watches = held |> List.sumBy (fun (_, state) -> Map.count state.Watches)
+
+                    if watches > limits.MaxUserWatches then
+                        Some (UnixSystemDefect.InotifyWatchesBeyondLimit (user, watches, limits.MaxUserWatches))
+                    else
+                        None
+                )
+
+            let queues =
+                instances
+                |> List.choose (fun (id, state) ->
+                    let count = InotifyQueue.length state.Queue
+
+                    if int64 count > int64 limits.MaxQueuedEvents + 1L then
+                        Some (UnixSystemDefect.InotifyQueueBeyondLimit (id, count, limits.MaxQueuedEvents))
+                    else
+                        None
+                )
+
+            limitsDefects @ instanceCounts @ watchCounts @ queues
 
         // Every reference any socket makes to a connection: as the end it is
         // (`Some`), or through an accept queue (`None`), which has its own
@@ -1543,6 +1652,7 @@ module UnixSystem =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
@@ -1649,6 +1759,7 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> None
             )
 
@@ -2045,6 +2156,7 @@ module UnixSystem =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> None
             )
             |> Seq.toList
@@ -2063,6 +2175,7 @@ module UnixSystem =
                     match description.Target with
                     | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
                     | OpenFileTarget.Fifo _
+                    | OpenFileTarget.Inotify _
                     | OpenFileTarget.Kqueue _
                     | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
@@ -2217,6 +2330,7 @@ module UnixSystem =
         @ currentDirectories
         @ kqueueOwners
         @ pipes
+        @ inotify
 
 
     /// Every way one process's view of the machine disagrees with itself: the
@@ -2320,6 +2434,7 @@ module UnixSystem =
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Fifo _
+                        | OpenFileTarget.Inotify _
                         | OpenFileTarget.Pipe _
                         | OpenFileTarget.Kqueue _
                         | OpenFileTarget.Epoll _ -> false
@@ -2338,6 +2453,27 @@ module UnixSystem =
                 | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Sleep _ as parked)
                 | Some (ParkedSyscall.FifoOpen _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
+                | Some (ParkedSyscall.InotifyRead read) ->
+                    match Map.tryFind read.Instance descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Instance) ]
+                    | Some description ->
+                        match description.Target with
+                        | OpenFileTarget.Inotify _ -> []
+                        | OpenFileTarget.Epoll _
+                        | OpenFileTarget.Kqueue _
+                        | OpenFileTarget.File _
+                        | OpenFileTarget.Directory _
+                        | OpenFileTarget.Socket _
+                        | OpenFileTarget.CharacterDevice _
+                        | OpenFileTarget.Fifo _
+                        | OpenFileTarget.Pipe _ ->
+                            [
+                                UnixSystemDefect.ParkedInotifyReadOnNonInotify (
+                                    task,
+                                    read.Instance,
+                                    description.Target
+                                )
+                            ]
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []
@@ -2355,6 +2491,7 @@ module UnixSystem =
                         | OpenFileTarget.Socket _
                         | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Fifo _
+                        | OpenFileTarget.Inotify _
                         | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedEpollWaitOnNonEpoll (task, wait.Epoll, description.Target)
@@ -2392,6 +2529,7 @@ module UnixSystem =
                             | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Socket _
                             | OpenFileTarget.Fifo _
+                            | OpenFileTarget.Inotify _
                             | OpenFileTarget.Pipe _ ->
                                 [
                                     UnixSystemDefect.ParkedKeventOnNonKqueue (task, wait.Kqueue, description.Target)
@@ -2417,6 +2555,7 @@ module UnixSystem =
                                     | OpenFileTarget.Socket _
                                     | OpenFileTarget.CharacterDevice _
                                     | OpenFileTarget.Fifo _
+                                    | OpenFileTarget.Inotify _
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
@@ -2545,6 +2684,7 @@ module UnixSystem =
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Fifo _
+                            | OpenFileTarget.Inotify _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
                             | OpenFileTarget.Epoll _ -> None
@@ -2840,6 +2980,23 @@ module UnixSystem =
     [<Literal>]
     let defaultProcessorCount : int = 1
 
+    /// The `fs.inotify` sysctls a freshly-minted machine has: 128 instances
+    /// and 8192 watches per user, and 16384 records queued per instance.
+    ///
+    /// The first and third are Linux's defaults (measured on Linux 6.18.5,
+    /// `inotify-probe.c` section O). Linux derives the second from the
+    /// machine's memory and clamps it to between 8192 and 1048576, so 8192,
+    /// the floor every machine meets, rather than the 8982 the measuring
+    /// machine had. A client simulating another machine sets them with
+    /// `UnixBootImage.withInotifyLimits`. Only a Linux-flavoured machine reads
+    /// them.
+    let defaultInotifyLimits : InotifyLimits =
+        {
+            MaxUserInstances = 128
+            MaxUserWatches = 8192
+            MaxQueuedEvents = 16384
+        }
+
     /// The buffer check a freshly-minted machine on `platform` applies: none up
     /// front where the platform screens nothing, and otherwise a screen at the
     /// commonest `TASK_SIZE_MAX` of the platform's architecture, which is
@@ -3102,6 +3259,7 @@ module UnixSystem =
                     NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
                     EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                    InotifyLimits = defaultInotifyLimits
                     TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
                     Ipv6OnlyByDefault = false
                     TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
@@ -3113,7 +3271,7 @@ module UnixSystem =
                     ProcessorCount = defaultProcessorCount
                     UserBufferCheck = defaultUserBufferCheck platform
                     UnixPlatform = platform
-                    FileSystem = filesystem
+                    CommittedFileSystem = CommittedFileSystem.initial filesystem
                     Mount = EmulatedMount.defaultFor flavour
                     DeviceMount = deviceMount
                     ProtectedFiles = ProtectedFiles.off

@@ -128,7 +128,8 @@ type FStatRefusal =
     /// </remarks>
     | LaunchedPipe of pipe : PipeId
     /// <summary>
-    /// An event queue: an anonymous kernel object.
+    /// An event queue: an anonymous kernel object, an epoll instance, a kqueue
+    /// or an inotify instance.
     /// </summary>
     | EventQueue
     /// <summary>
@@ -551,6 +552,7 @@ module UnixPathResolution =
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
@@ -598,6 +600,7 @@ module UnixPathResolution =
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Kqueue _ -> Error (PathFailure.Refused (PathRefusal.UnmodelledStartingObject fd))
         | EmptyPathMeaning.NamesStartingPoint
         | EmptyPathMeaning.Walked ->
@@ -905,7 +908,11 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.Kqueue _)
-        | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.EventQueue
+        | Some (OpenFileTarget.Epoll _)
+        // On the anonymous inode an epoll instance is on: measured
+        // (`inotify-probe.c` row I fstat), the same `st_dev` and `st_ino`,
+        // mode 0600, one link.
+        | Some (OpenFileTarget.Inotify _) -> Error FStatRefusal.EventQueue
         | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
             let pipe = UnixMachineState.pipe pipeId system.Machine
@@ -1096,9 +1103,9 @@ module UnixPathResolution =
             SyscallAnswer.Completed 0L,
             { system with
                 Machine =
-                    { system.Machine with
-                        FileSystem = VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem
-                    }
+                    UnixMachineState.commitFileSystem
+                        (VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem)
+                        system.Machine
             }
         )
 
@@ -1315,23 +1322,25 @@ module UnixPathResolution =
                 Group = defaultArg group entry.Owner.Group
             }
 
-        let vfs = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
+        let machine =
+            UnixMachineState.commitFileSystem
+                (VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem)
+                system.Machine
 
         // Measured on Darwin (`chmod-chown-at.c`, LINKSETID): a link's set-ID
         // bits go exactly as a regular file's do.
-        let vfs =
+        let machine =
             if changed = bits then
-                vfs
+                machine
             else
-                VirtualFileSystem.setPermissions inode changed now vfs
+                UnixMachineState.commitFileSystem
+                    (VirtualFileSystem.setPermissions inode changed now machine.FileSystem)
+                    machine
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = vfs
-                    }
+                Machine = machine
             }
         )
 
@@ -1718,9 +1727,9 @@ module UnixPathResolution =
                 SyscallAnswer.Completed 0L,
                 { system with
                     Machine =
-                        { system.Machine with
-                            FileSystem = VirtualFileSystem.setTimes inode times system.Machine.FileSystem
-                        }
+                        UnixMachineState.commitFileSystem
+                            (VirtualFileSystem.setTimes inode times system.Machine.FileSystem)
+                            system.Machine
                 }
             )
         | OpenFileObject.Socket socket -> Error (UTimensAtRefusal.Socket socket)

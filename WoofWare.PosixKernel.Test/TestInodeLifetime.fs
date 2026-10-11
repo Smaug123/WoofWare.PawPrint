@@ -111,7 +111,7 @@ module TestInodeLifetime =
         : InodeNumber * UnixSystem<int, string>
         =
         match
-            VirtualFileSystem.unbind
+            GraphMutators.unbind
                 UnbindTargetEffect.LostALink
                 (inodeOf kernel path)
                 (name entry)
@@ -124,7 +124,7 @@ module TestInodeLifetime =
             { kernel with
                 Machine =
                     { kernel.Machine with
-                        FileSystem = filesystem
+                        CommittedFileSystem = CommittedFileSystem.initial filesystem
                     }
             }
 
@@ -521,7 +521,8 @@ module TestInodeLifetime =
             { held with
                 Machine =
                     { held.Machine with
-                        FileSystem = VirtualFileSystem.forget a held.Machine.FileSystem
+                        CommittedFileSystem =
+                            CommittedFileSystem.initial (GraphMutators.forget a held.Machine.FileSystem)
                     }
             }
 

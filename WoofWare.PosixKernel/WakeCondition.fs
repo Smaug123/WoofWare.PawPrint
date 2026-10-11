@@ -162,6 +162,16 @@ type WakePrimitive =
     /// Reserved: nothing parks a task in a FIFO open yet, so no condition this
     /// library hands out contains it.
     | FifoPartnerOpened of opener : OpenFileDescriptionId * opens : int64
+    /// The inotify instance the open file description `reader` names holds a
+    /// record.
+    ///
+    /// What a blocking `read(2)` of an instance that held none waits for.
+    /// Every reader asleep on the instance wakes for it, and the first to run
+    /// takes the record. In this version only `inotify_rm_watch(2)` queues
+    /// one (`IN_IGNORED`): no filesystem change is reported to a watch yet, so
+    /// a reader of an instance whose watches are never removed sleeps until a
+    /// signal ends its read.
+    | InotifyRecordQueued of reader : OpenFileDescriptionId
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -232,6 +242,7 @@ module WakeCondition =
                 | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Epoll _ -> None
 
             match phase |> Option.bind SocketPhase.connectionEnd with
@@ -280,6 +291,8 @@ module WakeCondition =
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
         | Some (ParkedSyscall.FifoOpen _)
+        // Only Linux has inotify, and its close leaves the read asleep.
+        | Some (ParkedSyscall.InotifyRead _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -318,6 +331,7 @@ module WakeCondition =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Epoll _ ->
                     failwith
                         $"WakeCondition.satisfied: a task waits in kevent on open file description %O{kqueue}, which names %A{description.Target} rather than a kqueue (this is a bug in the caller that recorded the park)."
@@ -347,6 +361,7 @@ module WakeCondition =
             | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Epoll _ ->
                 failwith
                     $"WakeCondition.satisfied: a task is parked in an accept on open file description %O{listener}, which names %A{description.Target} rather than a socket (this is a bug in the caller that recorded it)."
@@ -384,6 +399,11 @@ module WakeCondition =
         | WakePrimitive.FifoPartnerOpened _ ->
             failwith
                 $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but this library keeps no count of a FIFO's opens to evaluate it against: nothing parks a task in a FIFO open yet (`ParkedSyscall.FifoOpen` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
+        | WakePrimitive.InotifyRecordQueued reader ->
+            not (
+                InotifyQueue.isEmpty
+                    (OpenFileTable.inotifyState "WakeCondition.satisfied" reader system.Machine.OpenFiles).Queue
+            )
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -470,7 +490,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.ConnectionWritable _)
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
         | WakeCondition.Primitive WakePrimitive.EndedByClose
-        | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _) -> []
+        | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _)
+        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -600,6 +621,10 @@ module WakeCondition =
                 [
                     WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened (fifoOpen.Opener, fifoOpen.PartnerOpens))
                 ]
+            // A record, or a signal. No close ends it, since only Linux has
+            // inotify.
+            | ParkedSyscall.InotifyRead read ->
+                [ WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued read.Instance) ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

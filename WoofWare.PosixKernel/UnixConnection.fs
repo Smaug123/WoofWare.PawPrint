@@ -2009,6 +2009,7 @@ module UnixConnection =
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
@@ -2108,6 +2109,7 @@ module UnixConnection =
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
@@ -2240,6 +2242,7 @@ module UnixConnection =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Fifo _ -> Ok (ShutdownAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 

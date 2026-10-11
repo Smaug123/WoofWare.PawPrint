@@ -74,11 +74,11 @@ module TestRenameRules =
         let root = VirtualFileSystem.root vfs
 
         let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
             |> ok
 
         let file (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 parent
                 (name n)
                 SeedEntry.defaultPermsForRegularFile
@@ -89,21 +89,14 @@ module TestRenameRules =
             |> ok
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
-                parent
-                (name n)
-                SymlinkModes.linux
-                Owners.linuxDefault
-                buildTime
-                (target t)
-                vfs
+            GraphMutators.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
             |> ok
             |> snd
 
         let plainDir = SeedEntry.defaultPermsForDirectory
 
         let f, vfs = file root "f" vfs
-        let vfs = VirtualFileSystem.hardLink root (name "g") f buildTime vfs |> ok
+        let vfs = GraphMutators.hardLink root (name "g") f buildTime vfs |> ok
 
         let vfs = dir root "d" plainDir vfs |> snd
         let vfs = dir root "d2" plainDir vfs |> snd
@@ -131,7 +124,7 @@ module TestRenameRules =
 
         let p, vfs = dir root "p" (mode 0o555) vfs
         let pf, vfs = file p "pf" vfs
-        let vfs = VirtualFileSystem.hardLink p (name "ph") pf buildTime vfs |> ok
+        let vfs = GraphMutators.hardLink p (name "ph") pf buildTime vfs |> ok
         let vfs = dir p "pd" plainDir vfs |> snd
         let vfs = dir p "pm" plainDir vfs |> snd
 
@@ -168,7 +161,7 @@ module TestRenameRules =
         let root = VirtualFileSystem.root vfs
 
         let inode, vfs =
-            VirtualFileSystem.createDirectory
+            GraphMutators.createDirectory
                 root
                 (name "gone")
                 SeedEntry.defaultPermsForDirectory
@@ -178,7 +171,7 @@ module TestRenameRules =
             |> ok
 
         let unbound, vfs =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink root (name "gone") buildTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink root (name "gone") buildTime vfs
             |> ok
 
         unbound |> shouldEqual inode

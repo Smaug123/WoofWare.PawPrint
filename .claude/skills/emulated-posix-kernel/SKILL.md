@@ -1,6 +1,6 @@
 ---
 name: emulated-posix-kernel
-description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixKqueue.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSignal.fs, UnixClock.fs, UnixEntropy.fs, UnixCredentials.fs, UnixTaskLifecycle.fs, UnixWait.fs, UnixSystem.fs, UnixBootImage.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, StartingPointRules.fs, CreatingOpenRules.fs, MkDirRules.fs, MkNodRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, StatRules.fs, AttributeChangeRules.fs, TimestampChangeRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
+description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixKqueue.fs, UnixInotify.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSignal.fs, UnixClock.fs, UnixEntropy.fs, UnixCredentials.fs, UnixTaskLifecycle.fs, UnixWait.fs, UnixSystem.fs, UnixBootImage.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, StartingPointRules.fs, CreatingOpenRules.fs, MkDirRules.fs, MkNodRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, StatRules.fs, AttributeChangeRules.fs, TimestampChangeRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
 ---
 
 # Deciding what the emulated kernel says
@@ -184,8 +184,9 @@ Code that needs to tell two descriptions apart wants `OpenFileDescriptionId`.
 
 Before keying it on anything per-description, ask what the *kernel* contends on
 and **measure that descriptor kind**; do not generalise from a neighbouring one.
-Measured, epoll descriptors and an `eventfd` share a single `anon_inodefs` inode,
-so two epoll ports contend under `flock` and `OpenFileObject.AnonymousInode` is
+Measured, epoll descriptors, inotify descriptors and an `eventfd` share a single
+`anon_inodefs` inode, so two epoll ports contend under `flock`, as do an epoll
+port and an inotify instance, and `OpenFileObject.AnonymousInode` is
 payload-free. That is a fact about those creators, not about anonymous inodes as
 a class: Linux hands a distinct inode to files created through
 `anon_inode_getfile_secure` and `anon_inode_create_getfile`, so a future

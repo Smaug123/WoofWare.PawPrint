@@ -1,0 +1,25 @@
+6.18.5 aarch64
+D	isatty	isatty=0 errno=ENOTTY
+D	pread-empty	-1 ESPIPE
+D	pread-with-record	-1 ESPIPE
+D	after-pread	FIONREAD=32
+D	pwrite	-1 ESPIPE
+D	write-0	-1 EBADF
+D	fionread-null	-1 EFAULT
+D	fadvise	0
+D	ftruncate	-1 EINVAL
+D	ficlone-two-instances	-1 EINVAL
+D	getdents64	-1 ENOTDIR
+D	recv	-1 ENOTSOCK
+D	fsync	-1 EINVAL
+N	setfl-nonblock	0
+N	getfl	04000
+N	read-empty	-1 EAGAIN
+S	small-count-asleep	returned=0
+S	small-count-woken	returned=1 result=EINVAL
+S	small-count-after	FIONREAD=32
+S	after-setfl	returned=0,0
+S	two-sleepers-one-record	returned=1,1 record=1 EAGAIN=1 other=0
+P	poll-every-bit	poll=1 revents=0x41
+P	epoll-ctl-every-bit	0
+P	epoll-every-bit	n=1 events=0x41

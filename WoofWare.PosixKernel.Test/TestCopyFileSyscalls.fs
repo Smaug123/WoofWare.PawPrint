@@ -62,7 +62,7 @@ module TestCopyFileSyscalls =
         files
         |> List.fold
             (fun vfs (fileName, by, bits, contents) ->
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (VirtualFileSystem.root vfs)
                     (name fileName)
                     (mode bits)
@@ -91,7 +91,7 @@ module TestCopyFileSyscalls =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
@@ -748,7 +748,7 @@ module TestCopyFileSyscalls =
                 { after with
                     Machine =
                         { after.Machine with
-                            FileSystem = system.Machine.FileSystem
+                            CommittedFileSystem = system.Machine.CommittedFileSystem
                         }
                 }
                 |> shouldEqual system
@@ -882,7 +882,7 @@ module TestCopyFileRangeLarge =
         let destination, system =
             let inode, filesystem =
                 match
-                    VirtualFileSystem.createFile
+                    GraphMutators.createFile
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail "TestCopyFileRangeLarge" "g")
                         (PermissionBits.parseOrFail "TestCopyFileRangeLarge" 0o644)
@@ -901,7 +901,7 @@ module TestCopyFileRangeLarge =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = filesystem
+                        CommittedFileSystem = CommittedFileSystem.initial filesystem
                     }
             }
             |> UnixSystemState.withFileDescriptors registry

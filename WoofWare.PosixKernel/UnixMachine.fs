@@ -108,6 +108,11 @@ type internal UnixMachineState =
             /// Host configuration with a per-flavour default; see
             /// `UnixBootImage.withSoMaxConn` for the measured clamp rules.
             SoMaxConn : int
+            /// The `fs.inotify` sysctls: how many inotify instances and
+            /// watches one user may hold, and how many records an instance
+            /// queues. Host configuration; see `UnixBootImage.withInotifyLimits`
+            /// and `UnixSystem.defaultInotifyLimits`.
+            InotifyLimits : InotifyLimits
             /// The send buffer a new TCP socket starts with, in bytes: Darwin's
             /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
             /// default. Host configuration with a per-flavour default; see
@@ -236,14 +241,15 @@ type internal UnixMachineState =
             /// under it.
             UnixPlatform : SimulatedUnixPlatform
             /// The simulated process's filesystem: every inode a process can reach
-            /// through the path syscalls.
+            /// through the path syscalls. Read its graph as `FileSystem`.
             ///
             /// Set by `UnixBootImage.withFileSystem`, and changed by
-            /// the syscalls that write, create or truncate. It is emulated kernel
+            /// the syscalls that write, create or truncate, each through
+            /// `UnixMachineState.commitFileSystem`. It is emulated kernel
             /// state rather than anything read from the host, for the usual reason:
             /// a filesystem read from the host would make a replay depend on the
             /// machine that produced it, and programs branch on what they find.
-            FileSystem : VirtualFileSystem
+            CommittedFileSystem : CommittedFileSystem
             /// The mount `FileSystem`'s root filesystem claims to be: its type and
             /// what `statfs(2)` reports about it (see `FileSystemStatistics.ofMount`). Its type also
             /// decides a directory's `st_size`, and where `lseek(2)` with
@@ -270,6 +276,10 @@ type internal UnixMachineState =
             /// settings (`UnixSystemDefect.ProtectedFilesNotOfFlavour`).
             ProtectedFiles : ProtectedFiles
         }
+
+    /// The inode graph of `CommittedFileSystem`.
+    member this.FileSystem : VirtualFileSystem =
+        CommittedFileSystem.graph this.CommittedFileSystem
 
 /// What a socket is taking an ephemeral port for, which decides what stands
 /// in a candidate port's way.
@@ -311,6 +321,14 @@ module UnixMachineState =
     let maxBootTimeSeconds : int64 = 9223372027631403770L
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
+
+    /// `machine` with the filesystem `mutation` leaves, which must have been
+    /// made from `machine.FileSystem`. Every syscall that changes the
+    /// filesystem stores its change through here.
+    let internal commitFileSystem (mutation : VfsMutation) (machine : UnixMachineState) : UnixMachineState =
+        { machine with
+            CommittedFileSystem = CommittedFileSystem.commit mutation machine.CommittedFileSystem
+        }
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
     /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs
@@ -485,6 +503,9 @@ module UnixMachineState =
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _
+            // A watch does not keep the inode it watches: the watch goes
+            // when the inode does.
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq

@@ -1016,12 +1016,9 @@ module UnixNamespace =
                 // something the caller did.
                 failwith
                     $"UnixNamespace.openPath: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
-            | Ok (inode, filesystem) ->
+            | Ok (inode, mutation) ->
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
                 // A file this open created is not one it truncated, whatever
                 // `O_TRUNC` asked: measured on Darwin (`fcntl-dup.c`, WRITTEN
@@ -1317,6 +1314,8 @@ module UnixNamespace =
                     | OpenFileTarget.Pipe _
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.Epoll _
+                    // The anonymous inode an epoll instance is on.
+                    | OpenFileTarget.Inotify _
                     | OpenFileTarget.Kqueue _ -> Error UnixError.ENOENT
 
                 Ok named, UnixError.ENOENT
@@ -1544,7 +1543,9 @@ module UnixNamespace =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Kqueue _
-        | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Epoll _
+        // Measured on Linux (`inotify-descriptor-probe.c` row D getdents64).
+        | OpenFileTarget.Inotify _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
         | OpenFileTarget.Fifo (inode, _) ->
             match flavour with
             // Every kind measured above is ENOTDIR on Linux, whose
@@ -1660,15 +1661,12 @@ module UnixNamespace =
             // something the caller did.
             failwith
                 $"UnixNamespace.mkdir: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
-        | Ok (_, filesystem) ->
+        | Ok (_, mutation) ->
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 
@@ -1805,15 +1803,12 @@ module UnixNamespace =
         | Error error ->
             failwith
                 $"UnixNamespace.mknod: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
-        | Ok (_, filesystem) ->
+        | Ok (_, mutation) ->
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 
@@ -1928,7 +1923,7 @@ module UnixNamespace =
             // either is a broken graph rather than something the caller did.
             failwith
                 $"UnixNamespace.unlink: removing \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
-        | Ok (target, filesystem) ->
+        | Ok (target, mutation) ->
 
         // The name is gone; whether the *inode* is depends on whether any other
         // name or any open descriptor still holds it. A real `unlink` of a file
@@ -1939,10 +1934,7 @@ module UnixNamespace =
             ObjectLifetime.forgetIfUnheld
                 target
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
         )
 
@@ -2026,7 +2018,7 @@ module UnixNamespace =
         | Error error ->
             failwith
                 $"UnixNamespace.rmdir: removing \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
-        | Ok (target, filesystem) ->
+        | Ok (target, mutation) ->
 
         // A directory has only ever had the one name, so this was the last — but
         // a descriptor or the current directory may still hold it, and a real
@@ -2038,10 +2030,7 @@ module UnixNamespace =
             ObjectLifetime.forgetIfUnheld
                 target
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
         )
 
@@ -2408,7 +2397,7 @@ module UnixNamespace =
             // caller did anything unusual.
             failwith
                 $"UnixNamespace.rename: moving \"%s{DirectoryEntryName.toEscaped sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
-        | Ok (outcome, filesystem) ->
+        | Ok (outcome, mutation) ->
 
         // A rename is the one syscall that can change the *path* of a directory
         // the process is already in, without changing its inode: moving any
@@ -2420,10 +2409,7 @@ module UnixNamespace =
         // the current directory itself.
         let moved =
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
 
         // The destination name may have been the displaced inode's last, and
@@ -2731,14 +2717,11 @@ module UnixNamespace =
         | Error error ->
             failwith
                 $"UnixNamespace.cloneFileWithDestination: binding \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
-        | Ok (_, filesystem) ->
+        | Ok (_, mutation) ->
             Ok (
                 SyscallAnswer.Completed 0L,
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
             )
 
@@ -2890,15 +2873,12 @@ module UnixNamespace =
         | Error error ->
             failwith
                 $"UnixNamespace.symlink: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
-        | Ok (_, filesystem) ->
+        | Ok (_, mutation) ->
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 
@@ -3140,15 +3120,12 @@ module UnixNamespace =
         | Error error ->
             failwith
                 $"UnixNamespace.link: binding inode %O{paused.Source} as \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the verdict had just established that it may be (this is a bug in this library)."
-        | Ok filesystem ->
+        | Ok mutation ->
 
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 

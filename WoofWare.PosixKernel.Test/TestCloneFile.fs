@@ -75,7 +75,7 @@ module TestCloneFile =
     let private file (p : string) (by : InodeOwner) (bits : int) (contents : string) (vfs : VirtualFileSystem) =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (inodeAt vfs parent)
             (name child)
             (mode bits)
@@ -89,14 +89,14 @@ module TestCloneFile =
     let private directory (p : string) (by : InodeOwner) (bits : int) (vfs : VirtualFileSystem) =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
+        GraphMutators.createDirectory (inodeAt vfs parent) (name child) (mode bits) by epoch vfs
         |> ok
         |> snd
 
     let private symlink (p : string) (target : string) (vfs : VirtualFileSystem) =
         let parent, child = parentAndName p
 
-        VirtualFileSystem.createSymlink
+        GraphMutators.createSymlink
             (inodeAt vfs parent)
             (name child)
             SymlinkModes.linux
@@ -108,7 +108,7 @@ module TestCloneFile =
         |> snd
 
     let private chmodded (p : string) (bits : int) (vfs : VirtualFileSystem) =
-        VirtualFileSystem.setPermissions (inodeAt vfs p) (mode bits) epoch vfs
+        GraphMutators.setPermissions (inodeAt vfs p) (mode bits) epoch vfs
 
     /// The probe's error tree, every inode the caller's.
     let private tree : VirtualFileSystem =
@@ -133,7 +133,7 @@ module TestCloneFile =
             |> file "/unr" mine 0o000 "secret"
             |> file "/wo" mine 0o200 "secret"
 
-        VirtualFileSystem.hardLink (VirtualFileSystem.root vfs) (name "hf") (inodeAt vfs "/f") epoch vfs
+        GraphMutators.hardLink (VirtualFileSystem.root vfs) (name "hf") (inodeAt vfs "/f") epoch vfs
         |> ok
 
     let private later : int64 = 5_000_000_000L
@@ -156,7 +156,7 @@ module TestCloneFile =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
@@ -359,7 +359,7 @@ module TestCloneFile =
             // Born at `sourceTimes.Birth`, then given its access and
             // modification times at `sourceTimes.StatusChange`.
             let vfs =
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (VirtualFileSystem.root vfs)
                     (name "src")
                     (mode 0o640)
@@ -370,7 +370,7 @@ module TestCloneFile =
                 |> ok
                 |> snd
 
-            let vfs = VirtualFileSystem.setTimes (inodeAt vfs "/src") sourceTimes vfs
+            let vfs = GraphMutators.setTimes (inodeAt vfs "/src") sourceTimes vfs
 
             let system =
                 systemOnWith (Launched.umask (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs

@@ -529,6 +529,7 @@ module SignalDispatch =
         | OpenFileTarget.Pipe (pipe, pipeEnd) -> $"the %O{pipeEnd} end of pipe %O{pipe}"
         | OpenFileTarget.CharacterDevice (_, device) -> $"the character device %O{device}"
         | OpenFileTarget.Fifo (inode, _) -> $"a FIFO (inode %O{inode})"
+        | OpenFileTarget.Inotify _ -> "an inotify instance"
 
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and

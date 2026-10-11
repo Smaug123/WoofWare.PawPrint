@@ -514,7 +514,7 @@ module TestVirtualFileSystemAgainstHost =
 
             let _, updated =
                 apply
-                    (VirtualFileSystem.createDirectory parent name permissions Owners.linuxDefault buildTime vfs)
+                    (GraphMutators.createDirectory parent name permissions Owners.linuxDefault buildTime vfs)
                     directory
 
             vfs <- updated
@@ -524,7 +524,7 @@ module TestVirtualFileSystemAgainstHost =
 
             let _, updated =
                 apply
-                    (VirtualFileSystem.createFile
+                    (GraphMutators.createFile
                         parent
                         name
                         SeedEntry.defaultPermsForRegularFile
@@ -541,7 +541,7 @@ module TestVirtualFileSystemAgainstHost =
 
             let _, updated =
                 apply
-                    (VirtualFileSystem.createSymlink
+                    (GraphMutators.createSymlink
                         parent
                         leaf
                         SymlinkModes.linux
@@ -826,7 +826,7 @@ module TestVirtualFileSystemAgainstHost =
                             | _ -> Error (errno ())
 
                         let vfs =
-                            VirtualFileSystem.createSymlink
+                            GraphMutators.createSymlink
                                 (VirtualFileSystem.root (VirtualFileSystem.empty buildTime Owners.linuxDefault))
                                 (DirectoryEntryName.parseOrFail "test" linkName)
                                 SymlinkModes.linux
@@ -891,7 +891,7 @@ module TestVirtualFileSystemAgainstHost =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = vfs
+                        CommittedFileSystem = CommittedFileSystem.initial vfs
                     }
                 Process =
                     { system.Process with
@@ -1944,7 +1944,7 @@ module TestVirtualFileSystemAgainstHost =
         | UnlinkVerdict.Remove (directory, name) ->
 
         let removed =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name buildTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink directory name buildTime vfs
             |> function
                 | Ok (_, updated) -> updated
                 | Error error ->
@@ -2157,7 +2157,7 @@ module TestVirtualFileSystemAgainstHost =
         | RmDirVerdict.Remove (directory, name) ->
 
         let removed =
-            VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name buildTime vfs
+            GraphMutators.unbind rules.RemovedDirectoryEffect directory name buildTime vfs
             |> function
                 | Ok (_, updated) -> updated
                 | Error error ->
@@ -2515,7 +2515,7 @@ module TestVirtualFileSystemAgainstHost =
             let parent, leaf = split directory
 
             vfs <-
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     (directoryOf parent)
                     leaf
                     SeedEntry.defaultPermsForDirectory
@@ -2530,7 +2530,7 @@ module TestVirtualFileSystemAgainstHost =
             let parent, leaf = split file
 
             vfs <-
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (directoryOf parent)
                     leaf
                     SeedEntry.defaultPermsForRegularFile
@@ -2546,7 +2546,7 @@ module TestVirtualFileSystemAgainstHost =
             let parent, leaf = split name
 
             vfs <-
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     (directoryOf parent)
                     leaf
                     SymlinkModes.linux
@@ -2690,7 +2690,7 @@ module TestVirtualFileSystemAgainstHost =
         let sourceDirectory, sourceName = resolveEntry source
         let destinationDirectory, destinationName = resolveEntry destination
 
-        VirtualFileSystem.rename sourceDirectory sourceName destinationDirectory destinationName buildTime vfs
+        GraphMutators.rename sourceDirectory sourceName destinationDirectory destinationName buildTime vfs
         |> function
             | Ok (_, updated) -> updated
             | Error error -> failwith $"the model refused to rename %s{source} to %s{destination}: %O{error}"
@@ -2818,7 +2818,7 @@ module TestVirtualFileSystemAgainstHost =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Process =
                 { system.Process with
@@ -3141,7 +3141,7 @@ module TestVirtualFileSystemAgainstHost =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = vfs
+                        CommittedFileSystem = CommittedFileSystem.initial vfs
                     }
                 Process =
                     { system.Process with

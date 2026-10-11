@@ -8,7 +8,8 @@ type PseudoFileSystem =
     | Pipe
     /// `sockfs`, where every socket lives.
     | Socket
-    /// `anon_inodefs`, where an epoll instance and an eventfd live.
+    /// `anon_inodefs`, where an epoll instance, an inotify instance and an
+    /// eventfd live.
     | AnonymousInode
 
 /// Why this kernel does not state a filesystem's block size and name limit.
@@ -463,8 +464,9 @@ module FileSystemStatistics =
         | OpenFileObject.File _ -> FileSystemStatisticsAnswer.Reported (ofMount platform mount)
         | OpenFileObject.Pipe _ -> pseudoFileSystem PseudoFileSystem.Pipe
         | OpenFileObject.Socket _ -> pseudoFileSystem PseudoFileSystem.Socket
-        // An epoll instance. `OpenFileObject` folding every anonymous object
-        // into one case costs nothing here: they share one filesystem.
+        // An epoll instance or an inotify instance. `OpenFileObject` folding
+        // every anonymous object into one case costs nothing here: they share
+        // one filesystem.
         | OpenFileObject.AnonymousInode -> pseudoFileSystem PseudoFileSystem.AnonymousInode
         | OpenFileObject.Kqueue _ ->
             match flavour with

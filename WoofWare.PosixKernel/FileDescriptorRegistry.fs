@@ -530,8 +530,8 @@ type OpenFileObject =
     /// Not by path: renaming or deleting the path leaves this description
     /// naming the same file, which is what a real kernel does.
     | File of inode : InodeNumber
-    /// A file on Linux's `anon_inodefs` — today only an epoll instance, but
-    /// `eventfd`, `timerfd` and `signalfd` all live here too.
+    /// A file on Linux's `anon_inodefs`: an epoll instance or an inotify
+    /// instance, and `eventfd`, `timerfd` and `signalfd` live here too.
     ///
     /// **Payload-free on purpose, and it is a `flock` fact rather than an
     /// aesthetic one.** Every anon-inode file in a process shares a *single*
@@ -942,6 +942,18 @@ type OpenFileTarget =
     /// both flavours (its `fstat`, its access mode, and, on Darwin, the
     /// capacity of its channel).
     | Fifo of inode : InodeNumber * attachment : FifoAttachment
+    /// A Linux inotify instance, handed out by `UnixInotify.inotifyInit1` and
+    /// destroyed when its last reference goes, as any open file is. Its
+    /// watches and queued records are the instance's own, so they go with it.
+    ///
+    /// The instance is the description: a `dup` of the descriptor shares it,
+    /// and a read through either takes from the one queue (measured,
+    /// `inotify-probe.c` section A).
+    ///
+    /// No offset: measured, `lseek` on one is `noop_llseek`, answering 0 for
+    /// every whence and offset, as an epoll instance's does. Opened for
+    /// reading only, so `write(2)` through one is `EBADF`.
+    | Inotify of state : InotifyState
 
 /// The loud failure of a call that meets `OpenFileTarget.Fifo`, which is
 /// reserved, where what the call does through a FIFO is behaviour this library
@@ -1098,8 +1110,12 @@ module OpenFileDescription =
         | OpenFileTarget.Fifo (inode, _) -> OpenFileObject.File inode
         // Every epoll instance collapses to one object, because on Linux every
         // anon-inode file shares one inode and so they all contend under
-        // `flock`. See `OpenFileObject.AnonymousInode`.
-        | OpenFileTarget.Epoll _ -> OpenFileObject.AnonymousInode
+        // `flock`. See `OpenFileObject.AnonymousInode`. An inotify instance
+        // is on that inode too: measured (`inotify-probe.c` section I), it
+        // reports an epoll instance's `st_dev` and `st_ino`, and contends with
+        // one under `flock`.
+        | OpenFileTarget.Epoll _
+        | OpenFileTarget.Inotify _ -> OpenFileObject.AnonymousInode
         // A kqueue is reached only through the description `kqueue()` made
         // for it. See `OpenFileObject.Kqueue`.
         | OpenFileTarget.Kqueue _ -> OpenFileObject.Kqueue id
@@ -1402,6 +1418,29 @@ type FileDescriptorRegistryDefect =
     /// opens, such as `OpenFileTarget.Fifo`: a case reserved for behaviour not
     /// yet modelled.
     | ReservedTarget of description : OpenFileDescriptionId
+    /// An inotify instance's next watch descriptor is not positive, or a watch
+    /// or a record of the instance names a watch descriptor that is not below
+    /// it, so the instance could hand out a number it has handed out already.
+    /// Watch descriptors start at 1 and are never reused.
+    | InotifyWatchDescriptorNotFresh of instance : OpenFileDescriptionId * next : int * watch : int
+    /// An inotify instance's watch asks for an event this kernel does not
+    /// raise (see `InotifyEvent.modelled`), which `inotify_add_watch` refuses
+    /// rather than stores.
+    | InotifyUnmodelledEvent of instance : OpenFileDescriptionId * watch : WatchDescriptor * event : InotifyEvent
+    /// An inotify instance queues more than one `IN_Q_OVERFLOW` record: one is
+    /// added only when none is queued.
+    | InotifyOverflowRecordDuplicated of instance : OpenFileDescriptionId * count : int
+    /// An inotify instance queues an `IN_IGNORED` record for a watch it still
+    /// holds: the record is queued as the watch goes.
+    | InotifyIgnoredLiveWatch of instance : OpenFileDescriptionId * watch : WatchDescriptor
+    /// An inotify instance queues an event record that names no event.
+    | InotifyEventRecordEmpty of instance : OpenFileDescriptionId * watch : WatchDescriptor
+    /// An inotify instance's description permits writing: `inotify_init1`
+    /// opens it for reading only, and nothing changes an access mode.
+    | InotifyNotReadOnly of instance : OpenFileDescriptionId
+    /// An inotify instance holds two watches of one inode: adding a watch of
+    /// an inode the instance already watches changes that watch.
+    | InotifyInodeWatchedTwice of instance : OpenFileDescriptionId * inode : InodeNumber
 
 
 [<RequireQualifiedAccess>]
@@ -1629,6 +1668,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> entry
             )
 
@@ -1832,6 +1872,7 @@ module OpenFileTable =
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"%s{operation}: %O{epollId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of OpenFileTable.%s{operation}."
@@ -2036,6 +2077,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> entry
                 | OpenFileTarget.Epoll epollState ->
                     let entering =
@@ -2071,6 +2113,186 @@ module OpenFileTable =
         { table with
             Entries = entries
         }
+
+    /// The state of the inotify instance `instance` names. Loudly partial on a
+    /// dead or non-inotify description: every caller resolved it as an inotify
+    /// instance. `operation` names the caller for that message.
+    let internal inotifyState
+        (operation : string)
+        (instance : OpenFileDescriptionId)
+        (table : OpenFileTable)
+        : InotifyState
+        =
+        match tryFind instance table with
+        | None ->
+            failwith
+                $"%s{operation}: %O{instance} names no live open file description, but the caller holds it as an inotify instance (this is a bug in this library, or in a caller that assembled the state by hand)."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Inotify state -> state
+        | OpenFileTarget.Epoll _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
+        | OpenFileTarget.Pipe _ ->
+            failwith
+                $"%s{operation}: %O{instance} names %A{description.Target} rather than an inotify instance (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+    /// Replace the state of the inotify instance `instance` names with
+    /// `state`. Loudly partial, as `inotifyState` is.
+    let internal setInotifyState
+        (operation : string)
+        (instance : OpenFileDescriptionId)
+        (state : InotifyState)
+        (table : OpenFileTable)
+        : OpenFileTable
+        =
+        inotifyState operation instance table |> ignore<InotifyState>
+
+        table
+        |> mapDescription
+            operation
+            instance
+            (fun description ->
+                { description with
+                    Target = OpenFileTarget.Inotify state
+                }
+            )
+
+    /// Queue `record` on the inotify instance `instance` names, whose limit is
+    /// `maxQueuedEvents` records, by the rules of `InotifyQueue.enqueue`.
+    ///
+    /// A record the queue takes (an `IN_Q_OVERFLOW` record in its place
+    /// included) wakes every epoll registration of the instance, whatever it
+    /// waits for, as Linux's unkeyed `wake_up` of the instance's wait queue
+    /// does. One the queue drops wakes nothing. Measured
+    /// (`inotify-instance-probe.c` row T edge): an edge-triggered registration
+    /// is reported again for a second record queued behind one already
+    /// reported, and not for a record that repeats the newest.
+    let internal enqueueInotify
+        (maxQueuedEvents : int)
+        (instance : OpenFileDescriptionId)
+        (record : InotifyRecord)
+        (table : OpenFileTable)
+        : OpenFileTable
+        =
+        let state = inotifyState "enqueueInotify" instance table
+        let queue, added = InotifyQueue.enqueue maxQueuedEvents record state.Queue
+
+        if not added then
+            table
+        else
+            table
+            |> setInotifyState
+                "enqueueInotify"
+                instance
+                { state with
+                    Queue = queue
+                }
+            |> signalEpollInstances (Set.singleton instance) None
+
+    /// What is wrong with the inotify instance `instance`, whose description
+    /// has `accessMode` and holds `state`.
+    let private inotifyDefects
+        (instance : OpenFileDescriptionId)
+        (accessMode : FileAccessMode)
+        (state : InotifyState)
+        : FileDescriptorRegistryDefect list
+        =
+        let readOnly =
+            match accessMode with
+            | FileAccessMode.ReadOnly -> []
+            | FileAccessMode.WriteOnly
+            | FileAccessMode.ReadWrite -> [ FileDescriptorRegistryDefect.InotifyNotReadOnly instance ]
+
+        let records = InotifyQueue.toList state.Queue
+
+        let namedWatches =
+            (state.Watches |> Map.keys |> List.ofSeq)
+            @ (records
+               |> List.choose (fun record ->
+                   match record with
+                   | InotifyRecord.Event (watch, _, _, _, _)
+                   | InotifyRecord.Ignored watch -> Some watch
+                   | InotifyRecord.QueueOverflow -> None
+               ))
+
+        let freshness =
+            if state.NextWatchDescriptor < 1 then
+                [
+                    FileDescriptorRegistryDefect.InotifyWatchDescriptorNotFresh (
+                        instance,
+                        state.NextWatchDescriptor,
+                        state.NextWatchDescriptor
+                    )
+                ]
+            else
+                namedWatches
+                |> List.map WatchDescriptor.toInt
+                |> List.distinct
+                |> List.filter (fun watch -> watch < 1 || watch >= state.NextWatchDescriptor)
+                |> List.map (fun watch ->
+                    FileDescriptorRegistryDefect.InotifyWatchDescriptorNotFresh (
+                        instance,
+                        state.NextWatchDescriptor,
+                        watch
+                    )
+                )
+
+        let unmodelled =
+            state.Watches
+            |> Map.toList
+            |> List.collect (fun (watch, held) ->
+                held.Mask.Events
+                |> Set.toList
+                |> List.filter (InotifyEvent.modelled >> not)
+                |> List.map (fun event -> FileDescriptorRegistryDefect.InotifyUnmodelledEvent (instance, watch, event))
+            )
+
+        let overflows =
+            let count =
+                records
+                |> List.filter (fun record ->
+                    match record with
+                    | InotifyRecord.QueueOverflow -> true
+                    | InotifyRecord.Event _
+                    | InotifyRecord.Ignored _ -> false
+                )
+                |> List.length
+
+            if count > 1 then
+                [
+                    FileDescriptorRegistryDefect.InotifyOverflowRecordDuplicated (instance, count)
+                ]
+            else
+                []
+
+        let recordDefects =
+            records
+            |> List.choose (fun record ->
+                match record with
+                | InotifyRecord.Ignored watch when Map.containsKey watch state.Watches ->
+                    Some (FileDescriptorRegistryDefect.InotifyIgnoredLiveWatch (instance, watch))
+                | InotifyRecord.Event (watch, events, _, _, _) when Set.isEmpty events ->
+                    Some (FileDescriptorRegistryDefect.InotifyEventRecordEmpty (instance, watch))
+                | InotifyRecord.Ignored _
+                | InotifyRecord.Event _
+                | InotifyRecord.QueueOverflow -> None
+            )
+            |> List.distinct
+
+        let watchedTwice =
+            state.Watches
+            |> Map.toList
+            |> List.countBy (fun (_, watch) -> watch.Inode)
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (inode, _) -> FileDescriptorRegistryDefect.InotifyInodeWatchedTwice (instance, inode))
+
+        readOnly @ freshness @ unmodelled @ overflows @ recordDefects @ watchedTwice
 
     /// `checkInvariants`, with each description's count of the descriptors
     /// naming it held to `descriptorTables` exactly when `complete` (they are
@@ -2121,6 +2343,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
@@ -2148,6 +2371,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.File _ -> None
             )
@@ -2189,6 +2413,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -2219,6 +2444,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll epollState ->
                     epollState.Registrations
@@ -2242,6 +2468,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll epollState ->
                     let unregistered =
@@ -2279,6 +2506,7 @@ module OpenFileTable =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state ->
                     let unregistered =
@@ -2315,7 +2543,24 @@ module OpenFileTable =
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.CharacterDevice _ -> None
+            )
+
+        let inotifyInstances =
+            descriptions
+            |> Map.toList
+            |> List.collect (fun (instance, description) ->
+                match description.Target with
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Inotify state -> inotifyDefects instance description.AccessMode state
             )
 
         counts
@@ -2328,6 +2573,7 @@ module OpenFileTable =
         @ readyEntries
         @ kqueueEntries
         @ reservedTargets
+        @ inotifyInstances
 
     /// Every way in which `table` fails to be the open file descriptions of a
     /// machine whose descriptor tables are `descriptorTables`, all of them:
@@ -2764,6 +3010,7 @@ module FileDescriptorRegistry =
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.CharacterDevice _
                     | OpenFileTarget.Fifo _
+                    | OpenFileTarget.Inotify _
                     | OpenFileTarget.Pipe _ -> openFiles
                 )
 
@@ -2911,6 +3158,39 @@ module FileDescriptorRegistry =
                     Registrations = Map.empty
                     Ready = []
                 })
+            registry
+
+    /// Mirrors `inotify_init1(2)`: allocate a fresh open file description
+    /// naming a new inotify instance of `owner`'s with no watches, open for
+    /// reading only and non-blocking if `nonBlocking`, and the lowest
+    /// non-negative descriptor not in use to point at it.
+    ///
+    /// Read-only because Linux opens the instance's file `O_RDONLY`: measured,
+    /// `F_GETFL` reports access mode 0, and `write(2)` of a byte is `EBADF`
+    /// (`inotify-probe.c` section I).
+    ///
+    /// Total, like `createEpoll`.
+    let internal createInotify
+        (owner : UserId)
+        (nonBlocking : bool)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
+        createDescription
+            {
+                Target =
+                    OpenFileTarget.Inotify
+                        {
+                            Owner = owner
+                            Watches = Map.empty
+                            NextWatchDescriptor = 1
+                            Queue = InotifyQueue.empty
+                        }
+                AccessMode = FileAccessMode.ReadOnly
+                NonBlocking = nonBlocking
+                Flock = None
+                Status = OpenFileStatus.none
+            }
             registry
 
     /// Mirrors `kqueue(2)`: allocate a fresh open file description naming a
@@ -3100,6 +3380,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Epoll _ ->
             failwith
                 $"setOffset: fd %d{fd} names an epoll instance, which holds no file offset — Linux's lseek on one is noop_llseek (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
+        | OpenFileTarget.Inotify _ ->
+            failwith
+                $"setOffset: fd %d{fd} names an inotify instance, which holds no file offset — Linux's lseek on one is noop_llseek (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
         | OpenFileTarget.Kqueue _ ->
             failwith
                 $"setOffset: fd %d{fd} names a kqueue, which holds no file offset — Darwin's lseek on one is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
@@ -3165,6 +3448,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"setDirectoryPosition: fd %d{fd} names %O{description.Target}, which is not a directory (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition)."
@@ -3225,6 +3509,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state when not (ownsKqueue state) -> []
                 | OpenFileTarget.Kqueue state ->

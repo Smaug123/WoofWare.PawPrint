@@ -679,6 +679,10 @@ module UnixDescriptor =
             // pipe.
             | Some (OpenFileTarget.Fifo _) -> Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.Epoll _) -> None
+            // An inotify instance's `lseek` is `noop_llseek` too: measured
+            // (`inotify-probe.c` row I lseek), 0 for `SEEK_SET`, `SEEK_CUR` and
+            // `SEEK_END`, at offsets 0 and 5.
+            | Some (OpenFileTarget.Inotify _) -> None
             | Some (OpenFileTarget.Socket _) ->
                 // Unseekable on both, unlike the epoll instance above: measured, both
                 // platforms answer ESPIPE for every whence in 0..4 and every
@@ -731,7 +735,8 @@ module UnixDescriptor =
         // `whence <= SEEK_MAX` guard still applies and has already run, so
         // whence 5 and above were rejected as EINVAL.
         match target with
-        | Some (OpenFileTarget.Epoll _) -> Ok (SyscallAnswer.Completed 0L, system)
+        | Some (OpenFileTarget.Epoll _)
+        | Some (OpenFileTarget.Inotify _) -> Ok (SyscallAnswer.Completed 0L, system)
         // A device keeps no position, and answers 0 for every whence in 0..4
         // and every offset, negative and `INT64_MAX` included (`devices.c` and
         // `devices-l2.c`, LSEEK rows): `/dev/null`'s `null_lseek` resets a
@@ -938,13 +943,10 @@ module UnixDescriptor =
         match
             VirtualFileSystem.truncateFile inode length rule system.Process.Credentials now system.Machine.FileSystem
         with
-        | Ok filesystem ->
+        | Ok mutation ->
             Ok
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
@@ -975,6 +977,8 @@ module UnixDescriptor =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
+        // Measured (`inotify-descriptor-probe.c` row D ftruncate).
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _ ->
             // EINVAL on both platforms for every object that is not a regular
@@ -1085,6 +1089,9 @@ module UnixDescriptor =
         | OpenFileTarget.Directory _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
+        // Measured: advice 0 over the whole of an inotify instance succeeds
+        // (`inotify-descriptor-probe.c` row D fadvise).
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _ ->
 
@@ -1227,6 +1234,9 @@ module UnixDescriptor =
                 | OpenFileTarget.Epoll _ ->
                     failwith
                         "UnixDescriptor.flock: a Darwin-flavoured kernel holds an epoll instance, which only Linux has (this is a bug in the caller's state construction)."
+                | OpenFileTarget.Inotify _ ->
+                    failwith
+                        "UnixDescriptor.flock: a Darwin-flavoured kernel holds an inotify instance, which only Linux has (this is a bug in the caller's state construction)."
                 | OpenFileTarget.CharacterDevice _ ->
                     failwith
                         "UnixDescriptor.flock: a Darwin-flavoured kernel holds a description of a device, which only Linux's devtmpfs gives (this is a bug in the caller's state construction)."
@@ -1362,6 +1372,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
+            | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 failwith
@@ -1486,6 +1497,20 @@ module UnixDescriptor =
                 // The driver's own answer, without the destination: Linux asks the
                 // inode whether it is a regular file before it would write one.
                 Ok (Error (CharacterDevice.unrecognisedIoctl device))
+            | Some (OpenFileTarget.Inotify state) ->
+                // The bytes a read of every queued record would return
+                // (measured, `inotify-probe.c` section R), written to the
+                // destination after they are counted, so an unmapped one is
+                // EFAULT (`inotify-descriptor-probe.c` row D fionread-null).
+                // `InotifyLimits.largestQueuedEvents` keeps the count within an
+                // `int`.
+                let bytes = InotifyQueue.byteCount state.Queue
+
+                if bytes > int64 System.Int32.MaxValue then
+                    failwith
+                        $"UnixDescriptor.bytesAvailable: fd %d{fd} names an inotify instance holding %d{bytes} bytes of records, more than an int holds, which InotifyLimits.largestQueuedEvents exists to prevent; UnixSystem.checkInvariants reports the machine's limits as InotifyLimitsNotAdmissible or the queue as InotifyQueueBeyondLimit (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+                Ok (Ok (int bytes))
             | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
 
             let held = PipeBuffer.held (UnixMachineState.pipe pipeId system.Machine).Buffer
@@ -1557,7 +1582,10 @@ module UnixDescriptor =
                 ObjectFileSystem.Mounted (VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem)
             | OpenFileTarget.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
             | OpenFileTarget.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
-            | OpenFileTarget.Epoll _ -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode
+            | OpenFileTarget.Epoll _
+            // Measured: FICLONE between two inotify instances is EINVAL
+            // (`inotify-descriptor-probe.c` row D ficlone-two-instances).
+            | OpenFileTarget.Inotify _ -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode
             | OpenFileTarget.Kqueue _ ->
                 failwith
                     "UnixDescriptor.fileClone: a Linux-flavoured kernel holds a kqueue, which only Darwin has (this is a bug in the caller's state construction)."
@@ -1568,6 +1596,7 @@ module UnixDescriptor =
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1579,6 +1608,7 @@ module UnixDescriptor =
             | OpenFileTarget.Directory _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1623,7 +1653,9 @@ module UnixDescriptor =
         //   TCP or UDP socket, IPv4 or IPv6     ENOTTY   ENXIO
         //   Unix-domain socket, either kind     ENOTTY   EOPNOTSUPP
         //   epoll instance / kqueue             EINVAL   ENOTTY
+        //   inotify instance                    ENOTTY   -
         //
+        // (the inotify row by `inotify-descriptor-probe.c`, row D isatty),
         // and a device answers what its driver does
         // (`CharacterDevice.unrecognisedIoctl`).
         let error =
@@ -1634,6 +1666,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
+            | Some (OpenFileTarget.Inotify _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Fifo (inode, _)) -> ReservedFifo.fail "UnixDescriptor.terminalAttributes" inode
             | Some (OpenFileTarget.Socket socketId) ->
@@ -1735,6 +1768,9 @@ module UnixDescriptor =
                     | ParkedSyscall.EpollWait wait when wait.Epoll = closingId ->
                         failwith
                             $"UnixDescriptor.close: task %O{task} is parked in an epoll_wait on %O{closingId} under the Darwin flavour, which has no epoll (this is a bug in the caller's state construction)."
+                    | ParkedSyscall.InotifyRead read when read.Instance = closingId ->
+                        failwith
+                            $"UnixDescriptor.close: task %O{task} is parked in a read of the inotify instance %O{closingId} under the Darwin flavour, which has no inotify (this is a bug in the caller's state construction)."
                     | ParkedSyscall.Flock parked when parked.Requester = closingId ->
                         Some (CloseRefusal.DarwinFlockedDescriptorWithWaiter (closingId, task))
                     | ParkedSyscall.PipeRead read when enteredHere read.Reader ->
@@ -1797,6 +1833,7 @@ module UnixDescriptor =
                     // No descriptor names a FIFO open's description until the call
                     // installs it, so no close reaches it.
                     | ParkedSyscall.FifoOpen _
+                    | ParkedSyscall.InotifyRead _
                     // A Darwin poll's filters go with the descriptor (below).
                     | ParkedSyscall.KqueuePoll _ -> None
                 )
@@ -1835,6 +1872,7 @@ module UnixDescriptor =
                 | ParkedSyscall.SigSuspend
                 | ParkedSyscall.Sleep _
                 | ParkedSyscall.FifoOpen _
+                | ParkedSyscall.InotifyRead _
                 | ParkedSyscall.ConnectionRead _
                 | ParkedSyscall.ConnectionWrite _ -> None
             )
@@ -1870,6 +1908,7 @@ module UnixDescriptor =
                    | ParkedSyscall.SigSuspend
                    | ParkedSyscall.Sleep _
                    | ParkedSyscall.FifoOpen _
+                   | ParkedSyscall.InotifyRead _
                    | ParkedSyscall.ConnectionRead _
                    | ParkedSyscall.ConnectionWrite _ -> false
                )
@@ -1946,6 +1985,9 @@ module UnixDescriptor =
             // No descriptor names a FIFO open's description until the call
             // installs it, so no close reaches it.
             | ParkedSyscall.FifoOpen _
+            // Only Linux has inotify, and its close leaves the read asleep
+            // (measured, `inotify-probe.c` row B close-under-read).
+            | ParkedSyscall.InotifyRead _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2091,6 +2133,7 @@ module UnixDescriptor =
                     | ParkedSyscall.SigSuspend
                     | ParkedSyscall.Sleep _
                     | ParkedSyscall.FifoOpen _
+                    | ParkedSyscall.InotifyRead _
                     | ParkedSyscall.KqueuePoll _ -> false
                 )
 
@@ -2193,6 +2236,7 @@ module UnixDescriptor =
                         | ParkedSyscall.SigSuspend
                         | ParkedSyscall.Sleep _
                         | ParkedSyscall.FifoOpen _
+                        | ParkedSyscall.InotifyRead _
                         | ParkedSyscall.ConnectionRead _
                         | ParkedSyscall.ConnectionWrite _ -> false
                     )
@@ -2207,6 +2251,7 @@ module UnixDescriptor =
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _ -> registry
 
         let closed = UnixSystemState.withFileDescriptors registry system
@@ -2287,6 +2332,7 @@ module UnixDescriptor =
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Epoll _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Kqueue _ -> false
 
             accessMode
@@ -2422,6 +2468,9 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.Kqueue _ -> Ok (SyscallAnswer.Failed UnixError.ENOTTY, withRegistry registry system)
             | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixDescriptor.fcntl" inode
+            | OpenFileTarget.Inotify _ ->
+                failwith
+                    $"UnixDescriptor.fcntl: fd %d{fd} names an inotify instance under the Darwin flavour, which has no inotify (this is a bug in the caller's state construction)."
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _

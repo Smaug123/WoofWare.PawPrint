@@ -107,6 +107,7 @@ module internal StartingPointRules =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Epoll _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Kqueue _ ->
             match rules.NonDirectory with
             | NonDirectoryDescriptorRule.NotADirectory -> UnixError.ENOTDIR

@@ -156,9 +156,9 @@ module ObjectLifetime =
         let freed =
             { system with
                 Machine =
-                    { system.Machine with
-                        FileSystem = VirtualFileSystem.forget inode system.Machine.FileSystem
-                    }
+                    UnixMachineState.commitFileSystem
+                        (VirtualFileSystem.forget inode system.Machine.FileSystem)
+                        system.Machine
             }
 
         // A directory freed here was the last thing holding its parent's ".."
@@ -210,8 +210,10 @@ module ObjectLifetime =
         =
         match destroyed.Target with
         // An epoll instance's registrations are its own state, and a kqueue
-        // holds none, so neither is the last reference to anything.
+        // holds none, so neither is the last reference to anything. Nor is an
+        // inotify instance: its watches and records go with it.
         | OpenFileTarget.Epoll _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)

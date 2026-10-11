@@ -116,8 +116,8 @@ type ReadOutcome =
     /// The entry point returned.
     | Answered of ReadAnswer
     /// The call did not return: it is a blocking read of a pipe that holds
-    /// nothing while a write end is open, or of a connected socket with
-    /// nothing to answer. The calling task is parked, and
+    /// nothing while a write end is open, of a connected socket with nothing
+    /// to answer, or of an inotify instance holding no record. The calling task is parked, and
     /// sleeps until `UnixWait.wakes` wakes it; then `UnixReadWrite.finishRead`
     /// finishes the call.
     | WouldBlock of WakeCondition
@@ -536,6 +536,9 @@ type private ReadTarget =
     | Directory of inode : InodeNumber * position : DirectoryPosition
     /// A character device, whose driver answers.
     | CharacterDevice of device : CharacterDevice
+    /// An inotify instance, the open file description it is, and whether that
+    /// carries `O_NONBLOCK`.
+    | Inotify of instance : OpenFileDescriptionId * nonBlocking : bool
 
 /// What a `pread` will read from, once every question that precedes the
 /// buffer screen has been settled: a seekable object open for reading.
@@ -1540,6 +1543,60 @@ module UnixReadWrite =
             }
         )
 
+    /// What a read of at most `count` bytes into `buffer` takes from the
+    /// inotify instance `instance`, which holds a record: as many whole records
+    /// as fit, oldest first, `EINVAL` (taking nothing) if the oldest does not
+    /// fit, and `EFAULT` if the buffer names no storage, the oldest record lost.
+    ///
+    /// Measured (`inotify-probe.c` section R): a count of 0, 15, 16 or 31
+    /// with one 32-byte record queued is `EINVAL`; 48 with two takes one; a
+    /// null buffer is `EFAULT`, and the next read finds nothing. Linux copies
+    /// a record out after it has taken it off the queue, and destroys it
+    /// whether or not the copy faulted.
+    let private takeInotifyRecords<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (instance : OpenFileDescriptionId)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        let state =
+            OpenFileTable.inotifyState "UnixReadWrite.read" instance system.Machine.OpenFiles
+
+        let withQueue (queue : InotifyQueue) (system : UnixSystem<'Task, 'Handler>) =
+            UnixSystemState.mapOpenFiles
+                (OpenFileTable.setInotifyState
+                    "UnixReadWrite.read"
+                    instance
+                    { state with
+                        Queue = queue
+                    })
+                system
+
+        match InotifyQueue.take count state.Queue with
+        | InotifyTake.Empty ->
+            failwith
+                $"UnixReadWrite.read: asked to take records from the inotify instance %O{instance}, which holds none; the caller sleeps or answers EAGAIN for an empty one (this is a bug in this library)."
+        | InotifyTake.FirstTooLarge -> Ok (ReadAnswer.Failed UnixError.EINVAL, system)
+        | InotifyTake.Taken (records, rest) ->
+
+        match buffer with
+        | UserBuffer.Unmapped _ ->
+            Ok (ReadAnswer.Failed UnixError.EFAULT, withQueue (InotifyQueue.dropOldest state.Queue) system)
+        | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped ->
+
+        let bytes =
+            let builder = ImmutableArray.CreateBuilder<byte> ()
+
+            for record in records do
+                builder.AddRange (InotifyRecord.toBytes record)
+
+            builder.ToImmutable ()
+
+        Ok (ReadAnswer.Completed bytes, withQueue rest system)
+
     /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
     /// caller's buffer, and advance the offset by what actually moved.
     ///
@@ -1569,6 +1626,14 @@ module UnixReadWrite =
     ///
     /// A read of `/dev/urandom` longer than a page, by a task with a signal
     /// pending, is refused (`ReadRefusal.SignalAtPageBoundary`).
+    ///
+    /// A read of an inotify instance takes as many whole queued records as fit
+    /// in `count`, oldest first, and answers `EINVAL` if the oldest does not
+    /// fit, a count of 0 included. A buffer naming no storage is `EFAULT`, and
+    /// the oldest record is lost with it. An instance holding no record
+    /// answers `EAGAIN` through a description with `O_NONBLOCK`, whatever the
+    /// count, and otherwise the read sleeps (`ReadOutcome.WouldBlock`) without
+    /// looking at the buffer, and `finishRead` finishes it.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
@@ -1624,6 +1689,7 @@ module UnixReadWrite =
             | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
             | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
             | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixReadWrite.read" inode
+            | OpenFileTarget.Inotify _ -> Ok (ReadTarget.Inotify (descriptionId, description.NonBlocking))
             | OpenFileTarget.Socket socketId ->
                 match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
                 | Some (connectionId, connectionEnd) ->
@@ -1828,6 +1894,34 @@ module UnixReadWrite =
 
             let bytes, system = takeFromPipe pipeId count system
             answered (ReadAnswer.Completed bytes) system
+        | ReadTarget.Inotify (instance, nonBlocking) ->
+            let count = oneCallsWorth platform count
+
+            let state =
+                OpenFileTable.inotifyState "UnixReadWrite.read" instance system.Machine.OpenFiles
+
+            if not (InotifyQueue.isEmpty state.Queue) then
+                takeInotifyRecords instance buffer count system
+                |> Result.map (fun (answer, system) -> ReadOutcome.Answered answer, system)
+            // Measured (`inotify-probe.c` row R count-0-empty and row I
+            // read-nonblocking-empty): EAGAIN for a count of 0 too.
+            elif nonBlocking then
+                answered (ReadAnswer.Failed UnixError.EAGAIN) system
+            else
+                // Measured (`inotify-probe.c` section B): the read sleeps until
+                // a record is queued, and a close of the descriptor does not
+                // end it. A count too small for the record it wakes to is
+                // answered then (`inotify-descriptor-probe.c` row S
+                // small-count-woken).
+                let parked =
+                    ParkedSyscall.InotifyRead
+                        {
+                            Instance = instance
+                            Buffer = buffer
+                            Count = count
+                        }
+
+                Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
         | ReadTarget.File (inode, offset) ->
 
         match readAnsweredByPosition (positionCheck platform offset count) with
@@ -2078,6 +2172,42 @@ module UnixReadWrite =
             let parkedAgain = ParkedSyscall.PipeRead parked
             Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
 
+    let private finishInotifyRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedInotifyRead)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        let finished = UnixParkState.unpark task system
+
+        let state =
+            OpenFileTable.inotifyState "UnixReadWrite.finishRead" parked.Instance system.Machine.OpenFiles
+
+        if not (InotifyQueue.isEmpty state.Queue) then
+            // `inotify_read` looks for a record before it looks for a signal,
+            // so a record beats a signal pending as it wakes.
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (ReadRefusal.Interruption refusal)
+            | Ok () ->
+                takeInotifyRecords parked.Instance parked.Buffer parked.Count finished
+                |> Result.map (fun (answer, system) -> ReadOutcome.Answered answer, system)
+        // Then at the description's `O_NONBLOCK`, which it reads again each
+        // time it wakes: measured (`inotify-descriptor-probe.c` row S
+        // two-sleepers-one-record), of two readers asleep on one instance when
+        // its description became non-blocking, one took the record and the
+        // other answered EAGAIN.
+        elif nonBlockingNow parked.Instance system then
+            Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EAGAIN), finished)
+        else
+
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (ReadRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), finished)
+        | Ok (Some SyscallInterruption.Restart) -> Ok (ReadOutcome.Restarts, finished)
+        | Ok None ->
+            let parkedAgain = ParkedSyscall.InotifyRead parked
+            Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+
     let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2086,6 +2216,7 @@ module UnixReadWrite =
         match UnixTaskTable.parkedFor task system.Tasks with
         | Some (ParkedSyscall.PipeRead parked) -> finishPipeRead task parked system
         | Some (ParkedSyscall.ConnectionRead parked) -> finishConnectionRead task parked system
+        | Some (ParkedSyscall.InotifyRead parked) -> finishInotifyRead task parked system
         | Some other ->
             failwith
                 $"UnixReadWrite.finishRead: task %O{task} is parked in %A{other}, not in a read, so there is no read to finish (this is a bug in the client)."
@@ -2093,8 +2224,9 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
 
-    /// Finish the `read` or `recv` `task` is asleep in: look at the pipe or
-    /// the connection again, as a woken real read does, and answer.
+    /// Finish the `read` or `recv` `task` is asleep in: look at the pipe, the
+    /// connection or the inotify instance again, as a woken real read does,
+    /// and answer.
     ///
     /// Bytes in the pipe are read, up to the count the call was made with, into
     /// the buffer it was made with: a buffer naming no storage answers `EFAULT`
@@ -2127,6 +2259,13 @@ module UnixReadWrite =
     /// neither, the read sleeps again, refused instead if its description has
     /// become non-blocking (`ReadRefusal.ConnectionBecameNonBlocking`). One a
     /// close has ended, under Darwin, answers `EBADF`.
+    ///
+    /// A read of an inotify instance answers, once the instance holds a
+    /// record, as the same call made then would, the record beating a signal
+    /// pending. With none, it answers `EAGAIN` if its description has become
+    /// non-blocking while it slept; otherwise a signal with a handler ends it,
+    /// `Restarts` or `Failed EINTR`, as for a pipe; and otherwise it sleeps
+    /// again. No close ends it.
     ///
     /// `task` must be asleep in a `read` or a `recv`.
     let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2166,6 +2305,7 @@ module UnixReadWrite =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Epoll _
@@ -2422,6 +2562,10 @@ module UnixReadWrite =
                 // object has no read operation at all, and `pread` never gets as
                 // far as asking, having already failed on seekability.
                 Error UnixError.ESPIPE
+            // Measured on Linux, with a record queued and without
+            // (`inotify-descriptor-probe.c` rows D pread-empty and
+            // pread-with-record): ESPIPE, the record left queued.
+            | OpenFileTarget.Inotify _ -> Error UnixError.ESPIPE
             | OpenFileTarget.Socket _ ->
                 // Unseekable on both, for the same reason the event queue is, and
                 // measured on a TCP, a UDP and a Unix-domain socket alike.
@@ -2530,6 +2674,9 @@ module UnixReadWrite =
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
+        | OpenFileTarget.Inotify _ ->
+            failwith
+                $"UnixReadWrite.write: fd %d{fd} names an inotify instance with an access mode that permits writing. `inotify_init1` opens one for reading only, so FileDescriptorRegistry.checkInvariants reports this as InotifyNotReadOnly (this is a bug in this library)."
 
     /// `task` asleep in a write of `count` bytes through `writer`, made through
     /// the descriptor `fd`, the first `written` of them in already.
@@ -3102,7 +3249,7 @@ module UnixReadWrite =
             Error (WriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
             Error (WriteRefusal.UnmeasuredSetIdChange (inode, refusal))
-        | Ok filesystem ->
+        | Ok mutation ->
 
         // At the description's own offset, and advancing it by what moved — the
         // entire difference from `pwrite`, which takes the offset as an argument
@@ -3119,10 +3266,7 @@ module UnixReadWrite =
                     (offset + int64 bytes.Length)
                     (UnixSystemState.fileDescriptors system))
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 })
 
     /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
@@ -3218,6 +3362,7 @@ module UnixReadWrite =
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
         | Some (ParkedSyscall.FifoOpen _)
+        | Some (ParkedSyscall.InotifyRead _)
         | None -> None
 
     /// The write `task` is asleep in.
@@ -4109,6 +4254,10 @@ module UnixReadWrite =
             // which is EINVAL on Linux and ENXIO on Darwin: the object has no
             // write operation at all, and `pwrite` never gets as far as asking.
             Error UnixError.ESPIPE
+        // Read-only, but unseekability wins the tie on Linux, as for a pipe's
+        // read end: measured ESPIPE (`inotify-descriptor-probe.c` row D
+        // pwrite).
+        | OpenFileTarget.Inotify _ -> Error UnixError.ESPIPE
         | OpenFileTarget.Socket _ ->
             // Unseekable on both, for the same reason the event queue is, and measured
             // on a TCP, a UDP and a Unix-domain socket alike.
@@ -4270,17 +4419,14 @@ module UnixReadWrite =
             Error (PWriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
             Error (PWriteRefusal.UnmeasuredSetIdChange (inode, refusal))
-        | Ok filesystem ->
+        | Ok mutation ->
 
         // The description is left exactly where it was — the whole of what
         // `pwrite` does differently from `write`, and measured on both flavours.
         Ok (
             WriteAnswer.Completed (int64 bytes.Length),
             { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem mutation system.Machine
             }
         )
 
@@ -4393,6 +4539,7 @@ module UnixReadWrite =
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -4475,7 +4622,7 @@ module UnixReadWrite =
                 Error (CopyFileRangeRefusal.ExceedsRepresentableLength (destinationInode, offset, count))
             | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
                 Error (CopyFileRangeRefusal.UnmeasuredSetIdChange (destinationInode, refusal))
-            | Ok filesystem ->
+            | Ok mutation ->
 
             let registry =
                 registry
@@ -4485,10 +4632,7 @@ module UnixReadWrite =
             Ok (
                 SyscallAnswer.Completed (int64 count),
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
                 |> UnixSystemState.withFileDescriptors registry
             )

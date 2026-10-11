@@ -403,6 +403,7 @@ module UnixPoll =
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _ ->
             // A live descriptor onto the wrong kind of object. EINVAL is epoll's
             // own answer for it, and it is the last of the four screens --
@@ -499,6 +500,9 @@ module UnixPoll =
                 $"UnixPoll.epollCtl: fd %d{fd} names a kqueue, which a Linux-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
         | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixPoll.epollCtl" inode
         | OpenFileTarget.Epoll _
+        // Measured (`inotify-probe.c` section P): an ADD of an inotify
+        // instance succeeds.
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
 
@@ -514,6 +518,7 @@ module UnixPoll =
             | OpenFileTarget.Socket _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _ -> None
 
         match epollState with
@@ -529,6 +534,7 @@ module UnixPoll =
             | OpenFileTarget.Socket _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _ -> false
 
         // The EPOLLEXCLUSIVE screen, ahead of the table (so ahead of EEXIST
@@ -617,6 +623,7 @@ module UnixPoll =
                 | PipeOrigin.Launched _ -> false
             | OpenFileTarget.File _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
             | OpenFileTarget.CharacterDevice _
@@ -637,6 +644,7 @@ module UnixPoll =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Kqueue _
@@ -779,6 +787,7 @@ module UnixPoll =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _ -> Ok (answer ())
         // Measured to differ from a pipe's: no POLLHUP for a reader until a
         // writer has opened.
@@ -1041,6 +1050,9 @@ module UnixPoll =
         | Some (OpenFileTarget.Epoll _), _ ->
             failwith
                 $"UnixPoll.poll: fd %d{fd} names an epoll instance, which a Darwin-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
+        | Some (OpenFileTarget.Inotify _), _ ->
+            failwith
+                $"UnixPoll.poll: fd %d{fd} names an inotify instance, which a Darwin-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
         | Some (OpenFileTarget.CharacterDevice _), _ ->
             failwith
                 $"UnixPoll.poll: fd %d{fd} names a character device, which a Darwin-flavoured kernel cannot hold: its device filesystem is not modelled, so no path opens one (this is a bug in the caller's state construction)."

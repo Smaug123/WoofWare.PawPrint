@@ -60,17 +60,17 @@ module TestVirtualFileSystem =
         steps |> List.fold (fun vfs step -> step vfs) emptyFs
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory parent (name n) dirPerms Owners.linuxDefault buildTime vfs
+        GraphMutators.createDirectory parent (name n) dirPerms Owners.linuxDefault buildTime vfs
         |> ok
         |> snd
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile parent (name n) filePerms Owners.linuxDefault buildTime noBytes vfs
+        GraphMutators.createFile parent (name n) filePerms Owners.linuxDefault buildTime noBytes vfs
         |> ok
         |> snd
 
     let private mklink (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
+        GraphMutators.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
         |> ok
         |> snd
 
@@ -947,22 +947,22 @@ module TestVirtualFileSystem =
             PathWalk.resolveExisting limits Owners.root SymlinkProtection.Off root SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
-        VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+        GraphMutators.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
         |> shouldEqual (Error UnixError.EEXIST)
 
-        VirtualFileSystem.createFile file (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
+        GraphMutators.createFile file (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
+        GraphMutators.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // link(2) refuses to hard-link a directory: it would make the graph a
         // non-tree and leave Parent naming only one container.
-        VirtualFileSystem.hardLink root (name "d2") directory buildTime vfs
+        GraphMutators.hardLink root (name "d2") directory buildTime vfs
         |> shouldEqual (Error UnixError.EPERM)
 
         // ...but hard-linking a file is fine, and both names reach one inode.
-        let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
+        let linked = GraphMutators.hardLink root (name "f2") file buildTime vfs |> ok
         VirtualFileSystem.checkInvariants Set.empty linked |> shouldEqual []
 
         PathWalk.resolveExisting limits Owners.root SymlinkProtection.Off root SymlinkPolicy.Follow (path "/f2") linked
@@ -978,27 +978,20 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
         let absent = VirtualFileSystem.nextInode vfs
 
-        VirtualFileSystem.createDirectory absent (name "x") dirPerms Owners.linuxDefault buildTime vfs
+        GraphMutators.createDirectory absent (name "x") dirPerms Owners.linuxDefault buildTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createFile absent (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
+        GraphMutators.createFile absent (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createSymlink
-            absent
-            (name "x")
-            SymlinkModes.linux
-            Owners.linuxDefault
-            buildTime
-            (target "y")
-            vfs
+        GraphMutators.createSymlink absent (name "x") SymlinkModes.linux Owners.linuxDefault buildTime (target "y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
     let ``a rejected builder leaves the filesystem sound`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
 
-        match VirtualFileSystem.createDirectory (rootOf vfs) (name "d") dirPerms Owners.linuxDefault buildTime vfs with
+        match GraphMutators.createDirectory (rootOf vfs) (name "d") dirPerms Owners.linuxDefault buildTime vfs with
         | Ok _ -> failwith "expected EEXIST"
         | Error _ ->
             // The burnt inode number is unobservable, since numbers are never
@@ -1011,7 +1004,7 @@ module TestVirtualFileSystem =
         let before = VirtualFileSystem.nextInode vfs
 
         // A rejected creation still consumes a number.
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
+        GraphMutators.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> Result.isError
         |> shouldEqual true
 
@@ -1284,7 +1277,7 @@ module TestVirtualFileSystem =
 
         let forgedName =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (rootOf vfs)
                     Unchecked.defaultof<DirectoryEntryName>
                     filePerms
@@ -1299,7 +1292,7 @@ module TestVirtualFileSystem =
 
         let forgedTarget =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     (rootOf vfs)
                     (name "l")
                     SymlinkModes.linux
@@ -1316,7 +1309,7 @@ module TestVirtualFileSystem =
         // which is not an empty file but an uninitialised one.
         let forgedContents =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (rootOf vfs)
                     (name "f")
                     filePerms
@@ -1330,7 +1323,7 @@ module TestVirtualFileSystem =
         forgedContents.Message |> shouldContainText "ImmutableArray<byte>.Empty"
 
         // ...and the genuinely empty file is still fine.
-        VirtualFileSystem.createFile
+        GraphMutators.createFile
             (rootOf vfs)
             (name "f")
             filePerms
@@ -1346,15 +1339,15 @@ module TestVirtualFileSystem =
         for builder in
             [
                 (fun n ->
-                    VirtualFileSystem.createDirectory (rootOf vfs) n dirPerms Owners.linuxDefault buildTime vfs
+                    GraphMutators.createDirectory (rootOf vfs) n dirPerms Owners.linuxDefault buildTime vfs
                     |> Result.map snd
                 )
                 (fun n ->
-                    VirtualFileSystem.createFile (rootOf vfs) n filePerms Owners.linuxDefault buildTime noBytes vfs
+                    GraphMutators.createFile (rootOf vfs) n filePerms Owners.linuxDefault buildTime noBytes vfs
                     |> Result.map snd
                 )
                 (fun n ->
-                    VirtualFileSystem.createSymlink
+                    GraphMutators.createSymlink
                         (rootOf vfs)
                         n
                         SymlinkModes.linux
@@ -1440,13 +1433,13 @@ module TestVirtualFileSystem =
         let outcome =
             match step with
             | Step.MakeDirectory (p, n) ->
-                VirtualFileSystem.createDirectory (pick directories p) (name n) dirPerms Owners.linuxDefault now vfs
+                GraphMutators.createDirectory (pick directories p) (name n) dirPerms Owners.linuxDefault now vfs
                 |> Result.map snd
             | Step.MakeFile (p, n) ->
-                VirtualFileSystem.createFile (pick directories p) (name n) filePerms Owners.linuxDefault now noBytes vfs
+                GraphMutators.createFile (pick directories p) (name n) filePerms Owners.linuxDefault now noBytes vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     (pick directories p)
                     (name n)
                     SymlinkModes.linux
@@ -1459,7 +1452,7 @@ module TestVirtualFileSystem =
                 if List.isEmpty files then
                     Ok vfs
                 else
-                    VirtualFileSystem.hardLink (pick directories p) (name n) (pick files t) now vfs
+                    GraphMutators.hardLink (pick directories p) (name n) (pick files t) now vfs
 
         // A rejected step (EEXIST, mostly) leaves the filesystem alone, which is
         // itself part of what the property asserts.
@@ -1734,7 +1727,7 @@ module TestVirtualFileSystem =
         let before = timesOf root emptyFs
 
         let vfs =
-            VirtualFileSystem.createFile root (name "f") filePerms Owners.linuxDefault later noBytes emptyFs
+            GraphMutators.createFile root (name "f") filePerms Owners.linuxDefault later noBytes emptyFs
             |> ok
             |> snd
 
@@ -1765,8 +1758,7 @@ module TestVirtualFileSystem =
                 vfs
             |> ok
 
-        let linked =
-            VirtualFileSystem.hardLink (rootOf vfs) (name "f2") file later vfs |> ok
+        let linked = GraphMutators.hardLink (rootOf vfs) (name "f2") file later vfs |> ok
 
         let after = timesOf file linked
 
@@ -1799,7 +1791,7 @@ module TestVirtualFileSystem =
 
         let written =
             match
-                VirtualFileSystem.writeFile
+                GraphMutators.writeFile
                     file
                     0L
                     (ImmutableArray.CreateRange [| 1uy ; 2uy |])
@@ -1850,7 +1842,7 @@ module TestVirtualFileSystem =
             // The writer's own file, as every file is to a process that built
             // its filesystem itself.
             let vfs =
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (rootOf emptyFs)
                     (name "s")
                     (PermissionBits.parseOrFail "test" start)
@@ -1874,7 +1866,7 @@ module TestVirtualFileSystem =
 
             let written =
                 match
-                    VirtualFileSystem.writeFile
+                    GraphMutators.writeFile
                         file
                         0L
                         (ImmutableArray.CreateRange [| 7uy |])
@@ -1934,7 +1926,7 @@ module TestVirtualFileSystem =
                 |> ok
 
             match
-                VirtualFileSystem.writeFile
+                GraphMutators.writeFile
                     file
                     0L
                     (ImmutableArray.CreateRange [| 1uy ; 2uy ; 3uy |])
@@ -1959,13 +1951,7 @@ module TestVirtualFileSystem =
 
         let truncated =
             match
-                VirtualFileSystem.truncateFile
-                    file
-                    3L
-                    SetIdBitsOnTruncation.Preserve
-                    Owners.linuxDefaultCaller
-                    later
-                    vfs
+                GraphMutators.truncateFile file 3L SetIdBitsOnTruncation.Preserve Owners.linuxDefaultCaller later vfs
             with
             | Ok vfs -> vfs
             | Error refusal -> failwith $"expected success, got %O{refusal}"
@@ -1996,7 +1982,7 @@ module TestVirtualFileSystem =
             // The truncating process's own file, as every file is to a process
             // that built its filesystem itself.
             let vfs =
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (rootOf emptyFs)
                     (name "s")
                     setuid
@@ -2019,7 +2005,7 @@ module TestVirtualFileSystem =
                 |> ok
 
             let truncated =
-                match VirtualFileSystem.truncateFile file 0L rule (Owners.caller privilege) buildTime vfs with
+                match GraphMutators.truncateFile file 0L rule (Owners.caller privilege) buildTime vfs with
                 | Ok vfs -> vfs
                 | Error refusal -> failwith $"expected success, got %O{refusal}"
 
@@ -2073,7 +2059,7 @@ module TestVirtualFileSystem =
         let shouldFailWith (substring : string) (inode : InodeNumber) : unit =
             let exn =
                 Assert.Throws<exn> (fun () ->
-                    VirtualFileSystem.truncateFile
+                    GraphMutators.truncateFile
                         inode
                         0L
                         SetIdBitsOnTruncation.Strip
@@ -2256,7 +2242,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is a directory"
             (fun () ->
-                VirtualFileSystem.writeFile
+                GraphMutators.writeFile
                     directory
                     0L
                     some
@@ -2272,7 +2258,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is a symbolic link"
             (fun () ->
-                VirtualFileSystem.writeFile
+                GraphMutators.writeFile
                     link
                     0L
                     some
@@ -2288,7 +2274,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is not in this filesystem"
             (fun () ->
-                VirtualFileSystem.writeFile
+                GraphMutators.writeFile
                     (InodeNumber 9999L)
                     0L
                     some
@@ -2379,7 +2365,7 @@ module TestVirtualFileSystem =
         let file = inodeAt "/d/f" vfs
 
         let target, after =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory (name "f") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink directory (name "f") unbindTime vfs
             |> ok
 
         target |> shouldEqual file
@@ -2415,16 +2401,14 @@ module TestVirtualFileSystem =
             build
                 [
                     mkfile (rootOf emptyFs) "f"
-                    fun v ->
-                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
-                        |> ok
+                    fun v -> GraphMutators.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v |> ok
                 ]
 
         let file = inodeAt "/f" vfs
         let before = timesOf file vfs
 
         let _, after =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
             |> ok
 
         let directoryTimes = timesOf (rootOf after) after
@@ -2455,7 +2439,7 @@ module TestVirtualFileSystem =
         let before = timesOf sub vfs
 
         let _, after =
-            VirtualFileSystem.unbind UnbindTargetEffect.Untouched directory (name "sub") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.Untouched directory (name "sub") unbindTime vfs
             |> ok
 
         timesOf sub after |> shouldEqual before
@@ -2470,20 +2454,15 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mkfile (rootOf emptyFs) "f" ]
 
         // A name the directory does not hold.
-        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // A directory the graph does not hold.
-        VirtualFileSystem.unbind
-            UnbindTargetEffect.LostALink
-            (VirtualFileSystem.nextInode vfs)
-            (name "d")
-            unbindTime
-            vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink (VirtualFileSystem.nextInode vfs) (name "d") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // Something that is not a directory, which cannot hold a name at all.
-        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (inodeAt "/f" vfs) (name "x") unbindTime vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink (inodeAt "/f" vfs) (name "x") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
@@ -2502,14 +2481,14 @@ module TestVirtualFileSystem =
                 vfs
             |> ok
 
-        VirtualFileSystem.unbind UnbindTargetEffect.LostALink link (name "x") unbindTime vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink link (name "x") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
     let ``a rejected unbind leaves the filesystem untouched`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
 
-        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
+        GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
         |> Result.isError
         |> shouldEqual true
 
@@ -2529,7 +2508,7 @@ module TestVirtualFileSystem =
         let kid = inodeAt "/d/kid" vfs
 
         let target, after =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
             |> ok
 
         target |> shouldEqual directory
@@ -2554,7 +2533,7 @@ module TestVirtualFileSystem =
 
         let thrown =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.unbind
+                GraphMutators.unbind
                     UnbindTargetEffect.LostALink
                     (rootOf vfs)
                     Unchecked.defaultof<DirectoryEntryName>
@@ -2574,11 +2553,9 @@ module TestVirtualFileSystem =
                 [
                     mkdir (rootOf emptyFs) "d"
                     mkfile (rootOf emptyFs) "f"
+                    fun v -> GraphMutators.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v |> ok
                     fun v ->
-                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
-                        |> ok
-                    fun v ->
-                        VirtualFileSystem.hardLink (inodeAt "/d" v) (name "f3") (inodeAt "/f" v) buildTime v
+                        GraphMutators.hardLink (inodeAt "/d" v) (name "f3") (inodeAt "/f" v) buildTime v
                         |> ok
                     mklink (rootOf emptyFs) "ld" "d"
                 ]
@@ -2604,22 +2581,20 @@ module TestVirtualFileSystem =
             build
                 [
                     mkfile (rootOf emptyFs) "f"
-                    fun v ->
-                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
-                        |> ok
+                    fun v -> GraphMutators.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v |> ok
                 ]
 
         let file = inodeAt "/f" vfs
         VirtualFileSystem.bindingCount file vfs |> shouldEqual 2
 
         let _, once =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
             |> ok
 
         VirtualFileSystem.bindingCount file once |> shouldEqual 1
 
         let _, twice =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf once) (name "f") unbindTime once
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf once) (name "f") unbindTime once
             |> ok
 
         VirtualFileSystem.bindingCount file twice |> shouldEqual 0
@@ -2632,10 +2607,10 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
 
         let _, orphaned =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
             |> ok
 
-        let forgotten = VirtualFileSystem.forget file orphaned
+        let forgotten = GraphMutators.forget file orphaned
 
         VirtualFileSystem.tryGet file forgotten |> shouldEqual None
         VirtualFileSystem.checkInvariants Set.empty forgotten |> shouldEqual []
@@ -2651,7 +2626,7 @@ module TestVirtualFileSystem =
 
         let thrown =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.forget (inodeAt "/f" vfs) vfs |> ignore<VirtualFileSystem>
+                GraphMutators.forget (inodeAt "/f" vfs) vfs |> ignore<VirtualFileSystem>
             )
 
         thrown.Message |> shouldContainText "still named by 1"
@@ -2665,14 +2640,14 @@ module TestVirtualFileSystem =
         // that produced the call.
         let root =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.forget (rootOf emptyFs) emptyFs |> ignore<VirtualFileSystem>
+                GraphMutators.forget (rootOf emptyFs) emptyFs |> ignore<VirtualFileSystem>
             )
 
         root.Message |> shouldContainText "root cannot be forgotten"
 
         let absent =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.forget (VirtualFileSystem.nextInode emptyFs) emptyFs
+                GraphMutators.forget (VirtualFileSystem.nextInode emptyFs) emptyFs
                 |> ignore<VirtualFileSystem>
             )
 
@@ -2691,7 +2666,7 @@ module TestVirtualFileSystem =
         VirtualFileSystem.isOrphanedDirectory d vfs |> shouldEqual false
 
         let _, unbound =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
             |> ok
 
         VirtualFileSystem.isOrphanedDirectory d unbound |> shouldEqual true
@@ -2728,7 +2703,7 @@ module TestVirtualFileSystem =
             |> ok
 
         let _, unbound =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
             |> ok
 
         VirtualFileSystem.bindingCount file unbound |> shouldEqual 0
@@ -2746,7 +2721,7 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
 
         let _, orphaned =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
             |> ok
 
         VirtualFileSystem.checkInvariants Set.empty orphaned
@@ -3078,7 +3053,7 @@ module TestVirtualFileSystem =
         (vfs : VirtualFileSystem)
         : RenameOutcome * VirtualFileSystem
         =
-        VirtualFileSystem.rename
+        GraphMutators.rename
             sourceDirectory
             (name sourceName)
             destinationDirectory
@@ -3172,7 +3147,7 @@ module TestVirtualFileSystem =
         // survives the rename and can be inspected afterwards.
         let vfs = vfs |> mkfile b "x"
         let displaced = childOf b "x" vfs
-        let vfs = VirtualFileSystem.hardLink a (name "keep") displaced buildTime vfs |> ok
+        let vfs = GraphMutators.hardLink a (name "keep") displaced buildTime vfs |> ok
 
         let before = timesOf displaced vfs
         let outcome, renamed = doRename a "f" b "x" vfs
@@ -3193,7 +3168,7 @@ module TestVirtualFileSystem =
         let file = childOf a "f" vfs
 
         let attempt (sd : InodeNumber) (sn : string) (dd : InodeNumber) (dn : string) =
-            VirtualFileSystem.rename sd (name sn) dd (name dn) renameTime vfs
+            GraphMutators.rename sd (name sn) dd (name dn) renameTime vfs
 
         attempt absent "f" b "x" |> shouldEqual (Error UnixError.ENOENT)
         attempt file "f" b "x" |> shouldEqual (Error UnixError.ENOTDIR)
@@ -3223,7 +3198,7 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``renaming a name onto another name for the same inode is refused`` () : unit =
         let vfs, a, _, _, f = twoParents ()
-        let vfs = VirtualFileSystem.hardLink a (name "g") f buildTime vfs |> ok
+        let vfs = GraphMutators.hardLink a (name "g") f buildTime vfs |> ok
 
         shouldFailWith "no-op" (fun () -> doRename a "f" a "g" vfs |> ignore)
         // The literal self-rename is the same condition and must reach the same
@@ -3242,7 +3217,7 @@ module TestVirtualFileSystem =
         // An *empty* directory at the destination is the ordinary case, and
         // this is the pair that keeps the refusal from being "any directory".
         let emptied =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink occupied (name "inside") buildTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink occupied (name "inside") buildTime vfs
             |> ok
             |> snd
 
@@ -3273,7 +3248,7 @@ module TestVirtualFileSystem =
         let vfs, a, b, _, _ = twoParents ()
 
         let orphaned =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "b") buildTime vfs
+            GraphMutators.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "b") buildTime vfs
             |> ok
             |> snd
 
@@ -3498,7 +3473,7 @@ module TestVirtualFileSystem =
                     3,
                     Gen.elements candidates
                     |> Gen.map (fun (inode, parent, entry) ->
-                        match VirtualFileSystem.unbind UnbindTargetEffect.LostALink parent entry (tickOf 400) vfs with
+                        match GraphMutators.unbind UnbindTargetEffect.LostALink parent entry (tickOf 400) vfs with
                         | Ok (_, orphaned) -> orphaned, Set.singleton inode
                         | Error _ -> vfs, Set.empty
                     )
@@ -3575,7 +3550,7 @@ module TestVirtualFileSystem =
             : unit
             =
             let attempt () =
-                VirtualFileSystem.rename
+                GraphMutators.rename
                     case.SourceDirectory
                     case.SourceName
                     case.DestinationDirectory
@@ -3709,7 +3684,7 @@ module TestVirtualFileSystem =
             else
 
             match
-                VirtualFileSystem.rename
+                GraphMutators.rename
                     case.SourceDirectory
                     case.SourceName
                     case.DestinationDirectory
@@ -3736,7 +3711,7 @@ module TestVirtualFileSystem =
             else
 
             match
-                VirtualFileSystem.rename
+                GraphMutators.rename
                     case.SourceDirectory
                     case.SourceName
                     case.DestinationDirectory
@@ -3810,7 +3785,7 @@ module TestVirtualFileSystem =
                     match displaced with
                     | None -> Ok vfs
                     | Some _ ->
-                        VirtualFileSystem.unbind
+                        GraphMutators.unbind
                             UnbindTargetEffect.LostALink
                             case.DestinationDirectory
                             case.DestinationName
@@ -3820,10 +3795,10 @@ module TestVirtualFileSystem =
 
                 cleared
                 |> Result.bind (fun vfs ->
-                    VirtualFileSystem.hardLink case.DestinationDirectory case.DestinationName moved renameTime vfs
+                    GraphMutators.hardLink case.DestinationDirectory case.DestinationName moved renameTime vfs
                 )
                 |> Result.bind (fun vfs ->
-                    VirtualFileSystem.unbind
+                    GraphMutators.unbind
                         UnbindTargetEffect.LostALink
                         case.SourceDirectory
                         case.SourceName
@@ -3833,7 +3808,7 @@ module TestVirtualFileSystem =
                 )
 
             let actual =
-                VirtualFileSystem.rename
+                GraphMutators.rename
                     case.SourceDirectory
                     case.SourceName
                     case.DestinationDirectory
@@ -4534,7 +4509,7 @@ module TestCreatingOpenRules =
         vfs
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     root
                     (name "d")
                     SeedEntry.defaultPermsForDirectory
@@ -4544,7 +4519,7 @@ module TestCreatingOpenRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     root
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
@@ -4554,7 +4529,7 @@ module TestCreatingOpenRules =
                     vfs
             )
         |> fun vfs ->
-            apply (VirtualFileSystem.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs)
+            apply (GraphMutators.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs)
 
     let private tree : VirtualFileSystem = treeWith SeedEntry.defaultPermsForDirectory
 
@@ -4846,7 +4821,7 @@ module TestMkDirRules =
         vfs
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     root
                     (name "d")
                     SeedEntry.defaultPermsForDirectory
@@ -4856,7 +4831,7 @@ module TestMkDirRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     root
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
@@ -4867,7 +4842,7 @@ module TestMkDirRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     root
                     (name "lf")
                     SymlinkModes.linux
@@ -4878,7 +4853,7 @@ module TestMkDirRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     root
                     (name "ld")
                     SymlinkModes.linux
@@ -4889,7 +4864,7 @@ module TestMkDirRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     root
                     (name "dang")
                     SymlinkModes.linux
@@ -4900,7 +4875,7 @@ module TestMkDirRules =
             )
         |> fun vfs ->
             apply (
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     root
                     (name "cyc")
                     SymlinkModes.linux
@@ -4916,13 +4891,13 @@ module TestMkDirRules =
             // 0o000 directory can still be given one here.
             let locked, vfs =
                 match
-                    VirtualFileSystem.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs
+                    GraphMutators.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs
                 with
                 | Ok (inode, vfs) -> inode, vfs
                 | Error error -> failwith $"could not build the tree: %O{error}"
 
             apply (
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     locked
                     (name "kid")
                     SeedEntry.defaultPermsForDirectory
@@ -5096,7 +5071,7 @@ module TestMkDirRules =
 
         let locked =
             match
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     (InodeNumber 1L)
                     (name "unused")
                     (mode 0o755)
@@ -5244,7 +5219,7 @@ module TestWalkSearchPermission =
         let root = VirtualFileSystem.root vfs
 
         let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            match VirtualFileSystem.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs with
+            match GraphMutators.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs with
             | Ok (inode, vfs) -> inode, vfs
             | Error error -> failwith $"could not build the tree: %O{error}"
 
@@ -5254,7 +5229,7 @@ module TestWalkSearchPermission =
 
         let vfs =
             match
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     p
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
@@ -5268,7 +5243,7 @@ module TestWalkSearchPermission =
 
         let vfs =
             match
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     p
                     (name "cyc")
                     SymlinkModes.linux
@@ -5281,7 +5256,7 @@ module TestWalkSearchPermission =
             | Error error -> failwith $"could not build the tree: %O{error}"
 
         match
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 root
                 (name "lp")
                 SymlinkModes.linux
