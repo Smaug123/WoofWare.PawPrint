@@ -34,7 +34,7 @@ module TestFifoOpenPark =
         }
 
     [<Test>]
-    let ``a FIFO open waits for a partner's open or a signal, holds its description, and restarts under SA_RESTART``
+    let ``a FIFO open waits for a partner's open or a signal, holds its description, and restarts under SA_RESTART on Linux alone``
         ()
         : unit
         =
@@ -53,8 +53,13 @@ module TestFifoOpenPark =
 
             ParkedSyscall.descriptions parked |> shouldEqual [ fifoOpen.Opener ]
 
-            SyscallInterruption.ruleOf parked
+            // Measured: Linux restarts a FIFO open under SA_RESTART, and Darwin
+            // answers EINTR with it as without.
+            SyscallInterruption.ruleOf SimulatedUnixFlavour.Linux parked
             |> shouldEqual SignalRestartRule.RestartsUnderSaRestart
+
+            SyscallInterruption.ruleOf SimulatedUnixFlavour.Darwin parked
+            |> shouldEqual SignalRestartRule.FailsWithEintr
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen fifoOpenGen) property)
 
