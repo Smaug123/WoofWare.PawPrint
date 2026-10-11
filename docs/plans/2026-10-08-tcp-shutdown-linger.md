@@ -817,10 +817,37 @@ been rebased onto main (with #1790).
      socket is served yet (stage 1, `AbortiveClose`, still stands), and the
      only one served, of a socket whose peer has gone, takes the connection
      with it.
-   - This kernel's explicit `bind` still ignores an endpoint that a closed
-     socket's end holds (only an implicit bind avoids it), which predates
-     this stage; `TestShutdownAgainstHost` replays the lines that bind after
-     a close against the host only.
+   - This kernel's explicit `bind` ignored an endpoint that a closed
+     socket's end holds (only an implicit bind avoided it), which predated
+     this stage. A follow-up fixed it: `bind-held-endpoint.c` measured, on
+     both flavours, that while an end holds its endpoint a bind of it is
+     refused exactly as one over an open connected socket is, whether the
+     end's socket is open or closed (Linux: unless both the end's socket and
+     the candidate carry `SO_REUSEADDR`; Darwin: unless the candidate does),
+     at loopback and the wildcard, and that a candidate that binds then
+     listens. An end whose socket has closed now keeps the `SO_REUSEADDR`
+     that socket carried (`TcpEndState.Closed reuseAddress`), and
+     `UnixMachineState.bindingConflicts`, which `bind` and Linux's `listen`
+     ask, judges such an end by
+     `SimulatedUnixPlatform.bindConflict` as a connected socket, through the
+     one rule of when an end holds its endpoint
+     (`UnixMachineState.endpointReleased`). `TestShutdownAgainstHost` now
+     replays F's binds after a close, and the new probe's rows, through the
+     syscalls. `bind-late-reuse.c` measured that Linux judges an end in
+     `TIME_WAIT` by the flag it had on entering it, open or closed, so a
+     Linux `setsockopt` changing the flag there is refused
+     (`SocketOptionRefusal.LinuxReuseAddressInTimeWait`). And
+     `relisten-held.c` measured that a `listen` of a socket already
+     listening answers 0 on both flavours while a connection it accepted
+     holds its port, open or closed, with or without `SO_REUSEADDR`: Linux
+     only updates the backlog. This kernel's Linux re-screen had asked the
+     admission question there too, answering `EADDRINUSE` over an open
+     accepted socket of a listener without the flag; it now asks only on a
+     first listen. Still unmodelled: the `TIME_WAIT` an end whose FIN was made
+     first leaves once both sockets have closed (3.6), so F's lines after
+     both have closed stay the host's alone; and which ports a connect's
+     implicit bind passes over for a closed end, which is unmeasured and
+     left to the four-tuple rule.
 5. **`shutdown(2)` on a listener.** Linux returns the socket to `Idle`
    through stage 2's step and wakes parked accepts with `EINVAL`. Darwin
    answers `ENOTCONN`. Kestrel and `HttpClient` never make this call, so the

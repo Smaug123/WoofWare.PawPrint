@@ -759,7 +759,7 @@ module UnixMachineState =
                     Hup = true
                     Err = errorPending
                 }
-            | TcpEndState.Closed ->
+            | TcpEndState.Closed _ ->
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
@@ -793,37 +793,40 @@ module UnixMachineState =
             match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
             | TcpEndState.Reset _ -> true
             | TcpEndState.Open _
-            | TcpEndState.Closed -> false
+            | TcpEndState.Closed _ -> false
         )
 
-    /// Whether the connected socket `socket`'s binding has stopped reserving
-    /// its port because its end of the connection is done with it: a reset
-    /// has reached it, or its FIN, made after the peer's had arrived, has
-    /// itself arrived (`TcpTransfer.passiveFinArrived`). On Darwin always, and
-    /// on Linux unless the port was bound explicitly
-    /// (`InetBinding.LockedPort`), whose port the socket's close releases.
-    /// `getsockname` still reports the port.
+    /// Whether `connectionEnd` of `connection` is done with its endpoint, as
+    /// far as the connection can tell: a reset has reached the connection
+    /// (`resetReleasedTuple`), or the end's FIN, made after the peer's had
+    /// arrived, has itself arrived (`TcpTransfer.passiveFinArrived`). That is
+    /// so whether the end's socket is open or has closed, and the last may
+    /// happen after the close, at the read by the peer that lets the FIN
+    /// through. A Linux socket still open keeps an explicitly bound port
+    /// regardless (`releasedPort`).
     ///
     /// Measured on both: a fresh socket binds the survivor's exact endpoint
     /// once a reset has reached it, at either end (`reset-binding.c` in
-    /// docs/plans/2026-10-07-tcp-byte-transfer), and binds the endpoint of an
-    /// end whose passive FIN has arrived while both sockets are open
+    /// docs/plans/2026-10-07-tcp-byte-transfer), and the endpoint of a socket
+    /// that closed over unread bytes (`reset-closer.c`, beside it); and binds
+    /// the endpoint of an end whose passive FIN has arrived, open or closed
     /// (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
-    /// section F's open rows). After a FIN made first, or one still queued, it
-    /// cannot.
+    /// section F, and `bind-held-endpoint.c` beside it). After a FIN made
+    /// first, or one still queued, it cannot.
+    let internal endpointReleased (connectionEnd : ConnectionEnd) (connection : TcpConnection) : bool =
+        resetReleasedTuple connection
+        || TcpTransfer.passiveFinArrived connectionEnd connection.Transfer
+
+    /// Whether the connected socket `socket`'s binding has stopped reserving
+    /// its port because its end of the connection is done with it
+    /// (`endpointReleased`): on Darwin always, and on Linux unless the port
+    /// was bound explicitly (`SocketBinding.LockedPort`), whose port the
+    /// socket's close releases. `getsockname` still reports the port.
     let internal releasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
         match SocketPhase.connectionEnd socket.Phase with
         | None -> false
         | Some (connectionId, connectionEnd) ->
-            let transfer = (connection connectionId machine).Transfer
-
-            let finished =
-                match (TcpTransfer.towards connectionEnd transfer).Receiver with
-                | TcpEndState.Reset _ -> true
-                | TcpEndState.Open _ -> TcpTransfer.passiveFinArrived connectionEnd transfer
-                | TcpEndState.Closed -> false
-
-            finished
+            endpointReleased connectionEnd (connection connectionId machine)
             && (
                 match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Ipv4Binding with
                 | SimulatedUnixFlavour.Darwin, _ -> true
@@ -831,14 +834,36 @@ module UnixMachineState =
                 | SimulatedUnixFlavour.Linux, None -> true
             )
 
-    /// Whether any *other* socket's binding conflicts with `candidate`, taken
-    /// on behalf of `socket`. A binding its connection released
-    /// (`releasedPort`) conflicts with nothing.
+    /// The endpoint of each TCP connection end whose socket has closed and
+    /// which still holds it (`endpointReleased`), with the `SO_REUSEADDR` its
+    /// socket carried when it closed.
     ///
-    /// The relation `bind(2)` decides admission with, `listen(2)` asks again
-    /// on the flavour that re-screens an already-bound socket, and every
-    /// ephemeral-port choice asks of each port it considers.
-    let internal bindingConflicts
+    /// A server end still in an accept queue has no socket yet, and is not
+    /// among them: the listener's own binding holds its port.
+    let private orphanedEndpoints (machine : UnixMachineState) : (Ipv4Endpoint * bool) list =
+        machine.Connections
+        |> Map.toList
+        |> List.collect (fun (_, connection) ->
+            [
+                ConnectionEnd.Client, connection.ClientAddress
+                ConnectionEnd.Server, connection.ServerAddress
+            ]
+            |> List.choose (fun (connectionEnd, endpoint) ->
+                match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+                | TcpEndState.Open _
+                | TcpEndState.Reset _ -> None
+                | TcpEndState.Closed reuseAddress ->
+                    if endpointReleased connectionEnd connection then
+                        None
+                    else
+                        Some (endpoint, reuseAddress)
+            )
+        )
+
+    /// Whether another socket's binding conflicts with `candidate`, taken on
+    /// behalf of `socket`, by `SimulatedUnixPlatform.bindConflict`. A binding
+    /// its connection released (`releasedPort`) conflicts with nothing.
+    let private socketBindingConflicts
         (socketId : SocketId)
         (socket : SocketDescription)
         (candidate : Ipv4Binding)
@@ -854,71 +879,60 @@ module UnixMachineState =
             match other.Ipv4Binding with
             | None -> false
             | Some existing ->
-                // Separate port namespaces per transport, measured: a UDP socket
-                // takes a port a listening TCP socket holds.
+                // Separate port namespaces per transport, measured: a UDP
+                // socket takes a port a listening TCP socket holds.
                 other.Kind = socket.Kind
                 && SimulatedUnixPlatform.bindConflict
                     machine.UnixPlatform
-                    existing
+                    existing.Endpoint
                     other.ReuseAddress
-                    other.Phase
-                    candidate
+                    (EndpointHolder.ofPhase other.Phase)
+                    candidate.Endpoint
                     socket.ReuseAddress
         )
 
-    /// Whether `first` and `second` name a common address: equal, or either
-    /// the wildcard.
-    let private addressesOverlap (first : Ipv4Endpoint) (second : Ipv4Endpoint) : bool =
-        first.Address = second.Address
-        || first.Address = Ipv4Address.any
-        || second.Address = Ipv4Address.any
-
-    /// Whether a TCP connection endpoint whose socket has gone still occupies
-    /// `endpoint`'s port.
+    /// Whether anything else holding an endpoint conflicts with `candidate`,
+    /// taken on behalf of `socket`: another socket's binding
+    /// (`socketBindingConflicts`), or, for a stream socket, a TCP connection
+    /// end whose socket has closed and which still holds its endpoint
+    /// (`orphanedEndpoints`), judged by `SimulatedUnixPlatform.bindConflict`
+    /// as a connected socket would be, with the `SO_REUSEADDR` its socket
+    /// carried when it closed.
     ///
-    /// An endpoint is held while a socket references its connection from
-    /// that end: an established socket bound at the endpoint, or a listener
-    /// whose accept queue still holds the connection, which owns the server
-    /// end until `accept(2)` mints a socket for it. A connection a reset has
-    /// reached (`resetReleasedTuple`) occupies no port of an end whose socket
-    /// has gone: measured on both (`reset-closer.c` in
-    /// docs/plans/2026-10-07-tcp-byte-transfer), the endpoint of a socket
-    /// that closed over unread bytes is free to a fresh bind, where after a
-    /// FIN it is not. Nor does an end whose FIN, made after the peer's had
-    /// arrived, has itself arrived (`TcpTransfer.passiveFinArrived`), which
-    /// may happen after its socket has gone, at the read by the peer that
-    /// lets the FIN through (measured on both, `tcp-shutdown.c` in
-    /// docs/plans/2026-10-08-tcp-shutdown-linger, section F).
-    let private orphanedConnectionOccupies (endpoint : Ipv4Endpoint) (machine : UnixMachineState) : bool =
-        let heldFrom (connectionId : ConnectionId) (held : Ipv4Endpoint) (isServerEnd : bool) : bool =
-            machine.Sockets
-            |> Map.exists (fun _ socket ->
-                match socket.Phase with
-                | SocketPhase.Established (c, _)
-                | SocketPhase.EstablishedPendingReport c ->
-                    c = connectionId
-                    && (socket.Ipv4Binding |> Option.exists (fun binding -> binding.Endpoint = held))
-                | SocketPhase.Listening listenState ->
-                    isServerEnd && List.contains connectionId (ListenState.connections listenState)
-                | SocketPhase.Idle
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
-            )
+    /// The relation `bind(2)` decides admission with, and `listen(2)` asks
+    /// again on the flavour that re-screens an already-bound socket. An
+    /// ephemeral choice asks `socketBindingConflicts` instead, and judges a
+    /// closed end by its own rule. Measured for a
+    /// connection end, open or closed, on both flavours, with and without
+    /// `SO_REUSEADDR` on either side, at loopback and the wildcard, and the
+    /// `listen(2)` of a socket that bound
+    /// (`bind-held-endpoint.c` in docs/plans/2026-10-08-tcp-shutdown-linger).
+    let internal bindingConflicts
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (candidate : Ipv4Binding)
+        (machine : UnixMachineState)
+        : bool
+        =
+        socketBindingConflicts socketId socket candidate machine
+        || socket.Kind = SocketKind.Stream
+           && orphanedEndpoints machine
+              |> List.exists (fun (held, reuse) ->
+                  SimulatedUnixPlatform.bindConflict
+                      machine.UnixPlatform
+                      held
+                      reuse
+                      EndpointHolder.ConnectionEnd
+                      candidate.Endpoint
+                      socket.ReuseAddress
+              )
 
-        machine.Connections
-        |> Map.exists (fun connectionId connection ->
-            not (resetReleasedTuple connection)
-            && [
-                connection.ClientAddress, ConnectionEnd.Client
-                connection.ServerAddress, ConnectionEnd.Server
-               ]
-               |> List.exists (fun (held, connectionEnd) ->
-                   held.Port = endpoint.Port
-                   && addressesOverlap held endpoint
-                   && not (heldFrom connectionId held (connectionEnd = ConnectionEnd.Server))
-                   && not (TcpTransfer.passiveFinArrived connectionEnd connection.Transfer)
-               )
-        )
+    /// Whether a TCP connection end whose socket has gone still occupies
+    /// `endpoint`'s port, whatever either side's `SO_REUSEADDR`
+    /// (`orphanedEndpoints`).
+    let private orphanedConnectionOccupies (endpoint : Ipv4Endpoint) (machine : UnixMachineState) : bool =
+        orphanedEndpoints machine
+        |> List.exists (fun (held, _) -> held.Port = endpoint.Port && Ipv4Endpoint.addressesOverlap held endpoint)
 
     /// Whether a TCP connection occupies the four-tuple between `source` and
     /// `destination`, in either orientation. One a reset has reached does
@@ -962,17 +976,22 @@ module UnixMachineState =
                     $"UnixMachineState.allocateEphemeralPort: the candidate binding for port %d{port} names port %d{binding.Endpoint.Port} instead (this is a bug in this library)."
 
             let free =
-                not (bindingConflicts socketId socket binding machine)
-                && (
-                    match purpose with
-                    | EphemeralPortUse.Reserve ->
-                        // Only a stream socket shares a namespace with the
-                        // TCP connections.
-                        socket.Kind <> SocketKind.Stream
-                        || not (orphanedConnectionOccupies binding.Endpoint machine)
-                    | EphemeralPortUse.ConnectTo destination ->
-                        not (connectionOccupiesTuple binding.Endpoint destination machine)
-                )
+                match purpose with
+                | EphemeralPortUse.Reserve ->
+                    not (socketBindingConflicts socketId socket binding machine)
+                    // Only a stream socket shares a namespace with the TCP
+                    // connections. A port an end whose socket has closed
+                    // still holds is passed over whatever either side's
+                    // SO_REUSEADDR: what that flag does to an implicit bind
+                    // is unmeasured.
+                    && (socket.Kind <> SocketKind.Stream
+                        || not (orphanedConnectionOccupies binding.Endpoint machine))
+                | EphemeralPortUse.ConnectTo destination ->
+                    // An end whose socket has closed constrains a connect's
+                    // port by its four-tuple alone: which other ports a
+                    // connect passes over is unmeasured.
+                    not (socketBindingConflicts socketId socket binding machine)
+                    && not (connectionOccupiesTuple binding.Endpoint destination machine)
 
             if free then Some binding else None
 

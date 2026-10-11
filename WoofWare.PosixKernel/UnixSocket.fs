@@ -267,6 +267,20 @@ type SocketOptionRefusal =
     /// tick rate (`CONFIG_HZ`) and cut to an `int`, and the tick rate is a fact
     /// of the kernel's build that this library does not model.
     | NegativeLingerTime of socket : SocketId * seconds : int
+    /// A Linux `SO_REUSEADDR` set changing the flag of a connected TCP socket
+    /// whose end is in `TIME_WAIT`: its FIN, made before the peer's had
+    /// arrived, has arrived, and so has the peer's.
+    ///
+    /// Linux copies the flag into the end's `TIME_WAIT` record as the end
+    /// enters it, and judges a bind of the endpoint by that copy, whether the
+    /// socket stays open or closes; a later change does not reach it
+    /// (measured, `bind-late-reuse.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger). This kernel judges such an
+    /// end by the socket's flag, which agrees only while it has not changed.
+    /// An explicitly bound Linux socket in `TIME_WAIT` leaves both the socket
+    /// and its `TIME_WAIT` record holding the port, and with this refusal
+    /// their flags agree; that is inferred from Linux's source, not measured.
+    | LinuxReuseAddressInTimeWait of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module SocketOptionRefusal =
@@ -277,6 +291,8 @@ module SocketOptionRefusal =
         | SocketOptionRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
             $"socket %O{socket} was asked about option %d{optionName} at level %d{level}. This kernel models SO_REUSEADDR, SO_LINGER (and Darwin's SO_LINGER_SEC) at SOL_SOCKET, TCP_NODELAY at IPPROTO_TCP and IPV6_V6ONLY at IPPROTO_IPV6 for setsockopt(2) and getsockopt(2), and SO_ERROR at SOL_SOCKET for getsockopt(2) alone. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. Model the option before asking for it."
+        | SocketOptionRefusal.LinuxReuseAddressInTimeWait socket ->
+            $"socket %O{socket} is one end of a TCP connection in TIME_WAIT, and the call would change its SO_REUSEADDR. Measured on Linux, a bind of the endpoint is judged by the flag the end had when it entered TIME_WAIT, whether the socket stays open or closes, and a later change does not reach it. This kernel does not keep that copy: it judges the end by the socket's flag, which agrees only while the flag is unchanged."
         | SocketOptionRefusal.NegativeLingerTime (socket, seconds) ->
             $"socket %O{socket} was asked to linger for %d{seconds} seconds. Linux reads l_linger as unsigned and stores its largest timeout for this, and what getsockopt(2) then reads back is that timeout over the kernel's tick rate, CONFIG_HZ, which this library does not model."
 
@@ -1607,10 +1623,14 @@ module UnixSocket =
         // one of them listens, and the second `listen(2)` is then EADDRINUSE.
         // Darwin asks nothing of a socket that already has a port; see
         // `listenRescreensBinding` for why that is not a strictness difference
-        // to round in the safe direction.
+        // to round in the safe direction. A socket already listening is not
+        // screened again on either: its listen only updates the backlog, even
+        // while a connection it accepted holds its port (`relisten-held.c` in
+        // docs/plans/2026-10-08-tcp-shutdown-linger).
         match binding with
         | Some binding when
             SimulatedUnixPlatform.listenRescreensBinding system.Machine.UnixPlatform
+            && not (SocketPhase.isListening socket.Phase)
             && UnixMachineState.bindingConflicts socketId socket binding system.Machine
             ->
             Ok (ListenAnswer.Failed UnixError.EADDRINUSE, system)
@@ -1915,7 +1935,7 @@ module UnixSocket =
                     match connectionEnd with
                     | ConnectionEnd.Client -> reportPeer connection.ServerAddress
                     | ConnectionEnd.Server -> reportPeer connection.ClientAddress
-            | TcpEndState.Closed ->
+            | TcpEndState.Closed _ ->
                 failwith
                     $"UnixSocket.getpeername: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
@@ -2147,7 +2167,7 @@ module UnixSocket =
                    | TcpEndState.Open _ ->
                        TcpTransfer.receiveShut connectionEnd transfer
                        && TcpTransfer.sendShut connectionEnd transfer
-                   | TcpEndState.Closed -> false
+                   | TcpEndState.Closed _ -> false
                | SocketPhase.Idle
                | SocketPhase.Listening _
                | SocketPhase.EstablishedPendingReport _
@@ -2238,7 +2258,9 @@ module UnixSocket =
     /// failure of another call undoes it. A change on a listener does not reach
     /// a connection already waiting to be accepted: the socket `accept(2)`
     /// makes for one holds the options the listener had when it completed (see
-    /// `QueuedConnection`).
+    /// `QueuedConnection`). A Linux change of `SO_REUSEADDR` on a connected
+    /// socket in `TIME_WAIT` is refused; see
+    /// `SocketOptionRefusal.LinuxReuseAddressInTimeWait`.
     let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2387,6 +2409,22 @@ module UnixSocket =
             | Error (Ok error) -> Ok (SetSockOptAnswer.Failed error, system)
             | Error (Error refusal) -> Error refusal
             | Ok updated ->
+
+            // Linux's TIME_WAIT record keeps the SO_REUSEADDR its end had on
+            // entering it (`bind-late-reuse.c`); Darwin answers EINVAL above,
+            // the socket being shut both ways.
+            let inTimeWait =
+                flavour = SimulatedUnixFlavour.Linux
+                && match SocketPhase.connectionEnd socket.Phase with
+                   | Some (connectionId, connectionEnd) ->
+                       TcpTransfer.timeWait
+                           connectionEnd
+                           (UnixMachineState.connection connectionId system.Machine).Transfer
+                   | None -> false
+
+            if inTimeWait && updated.ReuseAddress <> socket.ReuseAddress then
+                Error (SocketOptionRefusal.LinuxReuseAddressInTimeWait socketId)
+            else
 
             let system =
                 { system with

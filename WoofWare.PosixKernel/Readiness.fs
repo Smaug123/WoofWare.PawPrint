@@ -470,7 +470,7 @@ module internal DarwinReadiness =
                 |> Option.map TcpError.toUnixError
 
             match filter, inbound.Receiver with
-            | _, TcpEndState.Closed ->
+            | _, TcpEndState.Closed _ ->
                 failwith
                     $"DarwinReadiness.ofSocket: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
             // EV_EOF once the receive side is shut, reporting what is unread;

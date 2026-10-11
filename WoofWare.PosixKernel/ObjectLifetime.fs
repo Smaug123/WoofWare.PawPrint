@@ -309,14 +309,17 @@ module ObjectLifetime =
         let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) list, DescriptionReleaseRefusal> =
             match dying.Phase with
             | SocketPhase.Listening listenState ->
-                ListenState.connections listenState
-                |> List.map (fun connection ->
+                listenState.Queue
+                |> List.map (fun queued ->
+                    // The server end keeps the SO_REUSEADDR its socket would
+                    // have held: the listener's when the connection completed.
                     let wakes, transfer =
                         TcpTransfer.abort
                             ConnectionEnd.Server
-                            (UnixMachineState.connection connection system.Machine).Transfer
+                            queued.ReuseAddress
+                            (UnixMachineState.connection queued.Connection system.Machine).Transfer
 
-                    connection, wakes, transfer
+                    queued.Connection, wakes, transfer
                 )
                 |> Ok
             | SocketPhase.Idle
@@ -357,7 +360,7 @@ module ObjectLifetime =
                 elif TcpTransfer.closeRefused connectionEnd transfer then
                     Error (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (socketId, connection))
                 else
-                    let wakes, transfer = TcpTransfer.close connectionEnd transfer
+                    let wakes, transfer = TcpTransfer.close connectionEnd dying.ReuseAddress transfer
                     Ok [ connection, wakes, transfer ]
 
         match closing with

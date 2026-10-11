@@ -21,7 +21,7 @@ module internal ForgedConnection =
         =
         let transfer =
             (TcpBufferSizing.newTransfer domain system.Machine, closed)
-            ||> List.fold (fun transfer closer -> TcpTransfer.close closer transfer |> snd)
+            ||> List.fold (fun transfer closer -> TcpTransfer.close closer false transfer |> snd)
 
         { system with
             Machine =

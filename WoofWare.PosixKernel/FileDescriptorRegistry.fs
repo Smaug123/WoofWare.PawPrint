@@ -367,6 +367,31 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> None
 
+/// What holds an endpoint against a `bind(2)`, as far as the bind's conflict
+/// rule (`SimulatedUnixPlatform.bindConflict`) asks.
+[<RequireQualifiedAccess>]
+type internal EndpointHolder =
+    /// A listening socket.
+    | Listener
+    /// One end of a TCP connection: a connected socket, or an end whose socket
+    /// has closed and which still holds its endpoint.
+    | ConnectionEnd
+    /// A socket bound and doing neither: idle, a refused connect, or a
+    /// datagram socket with or without a default peer.
+    | Unconnected
+
+[<RequireQualifiedAccess>]
+module internal EndpointHolder =
+    /// What a socket in `phase` holds its binding as.
+    let ofPhase (phase : SocketPhase) : EndpointHolder =
+        match phase with
+        | SocketPhase.Listening _ -> EndpointHolder.Listener
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ -> EndpointHolder.ConnectionEnd
+        | SocketPhase.Idle
+        | SocketPhase.Refused _
+        | SocketPhase.DatagramPeer _ -> EndpointHolder.Unconnected
+
 /// A socket's domain, with its `IPV6_V6ONLY` where it is an IPv6 socket, and
 /// the local address it holds, typed in the domain's own addresses.
 ///
