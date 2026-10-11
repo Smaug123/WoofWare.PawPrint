@@ -3217,6 +3217,7 @@ module UnixReadWrite =
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
+        | Some (ParkedSyscall.FifoOpen _)
         | None -> None
 
     /// The write `task` is asleep in.

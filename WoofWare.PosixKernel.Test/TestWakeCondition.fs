@@ -236,7 +236,8 @@ module TestWakeCondition =
         | WakePrimitive.PipeReadEndClosed _
         | WakePrimitive.PipeReadWhileNonBlocking _
         | WakePrimitive.ConnectionReadable _
-        | WakePrimitive.ConnectionWritable _ ->
+        | WakePrimitive.ConnectionWritable _
+        | WakePrimitive.FifoPartnerOpened _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -462,6 +463,7 @@ module TestWakeCondition =
                         | WakePrimitive.PipeReadWhileNonBlocking _
                         | WakePrimitive.ConnectionReadable _
                         | WakePrimitive.ConnectionWritable _
+                        | WakePrimitive.FifoPartnerOpened _
                         | WakePrimitive.SignalDeliverable -> None
                     )
                 )
