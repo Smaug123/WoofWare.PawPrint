@@ -1270,6 +1270,27 @@ module TestImpureCases =
             AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
         }
 
+    /// `SocketShutdown.cs` under `platform`: `Socket.Shutdown`, reaching
+    /// `SystemNative_Shutdown`, on loopback connections, and the shim's own
+    /// screen of the `SocketShutdown` value. Compared against the real runtime
+    /// on a host of the same flavour: it asserts only what both flavours'
+    /// runtimes agree on (end of file after the peer's FIN or the end's own
+    /// shut receive side, `SocketError.Shutdown` from a send after the end's
+    /// own, and no exception from a shutdown Darwin answers ENOTCONN to).
+    let private socketShutdownCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketShutdown.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     /// `SocketSendReceive.cs` under `platform`: the synchronous Socket API and
     /// hand-rolled P/Invokes of `SystemNative_Receive`, `SystemNative_Send`,
     /// `SystemNative_GetBytesAvailable`, `SystemNative_Read` and
@@ -1700,6 +1721,8 @@ module TestImpureCases =
             socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             socketSendReceiveCase SimulatedUnixPlatform.linuxX64
             socketSendReceiveCase SimulatedUnixPlatform.macOsArm64
+            socketShutdownCase SimulatedUnixPlatform.linuxX64
+            socketShutdownCase SimulatedUnixPlatform.macOsArm64
             networkStreamAsyncCase SimulatedUnixPlatform.linuxX64
             networkStreamAsyncCase SimulatedUnixPlatform.macOsArm64
             {

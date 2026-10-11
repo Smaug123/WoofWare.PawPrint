@@ -412,6 +412,45 @@ type ParkedConnectionWrite =
         Call : TcpSendCall
     }
 
+/// What an interrupted sleep reports of the time it had left: whether
+/// `nanosleep(2)` or a relative `clock_nanosleep(2)` writes its `rem` argument.
+/// Fixed when the call is made.
+[<RequireQualifiedAccess>]
+type SleepRemainder =
+    /// Nothing is written: the call was made with a null `rem`, or is a
+    /// `clock_nanosleep` with `TIMER_ABSTIME`, which never writes it.
+    | Unreported
+    /// An interrupted call reports the nanoseconds from the instant it is
+    /// interrupted to `until`, or 0 if `until` has passed, and writes them to
+    /// `destination`.
+    ///
+    /// `until` is in nanoseconds since boot, on the same clock as
+    /// `ParkedSleep.Deadline`. Under Linux it is the deadline (plus the task's
+    /// timer slack, were that modelled). Under Darwin it is the C library's own
+    /// completion time, which its 32-bit arithmetic on seconds makes differ
+    /// from the deadline for requests of about 2^32 seconds or more.
+    ///
+    /// `destination` is `rem` as the caller classified it when the call was
+    /// entered. Under Linux the kernel writes it, and an interrupted call whose
+    /// `destination` it cannot write fails with `EFAULT` instead of `EINTR`.
+    /// Under Darwin the C library writes it, so the kernel does not consult it.
+    | Reported of until : int64 * destination : UserBuffer
+
+/// One task's in-flight `nanosleep(2)` or `clock_nanosleep(2)`: the state the
+/// call fixed when it was entered.
+///
+/// Reserved: nothing parks a task in a sleep yet (`ParkedSyscall.Sleep`).
+type ParkedSleep =
+    {
+        /// The instant, in nanoseconds since boot on the machine's virtual
+        /// clock, at which the sleep runs its course and the call returns 0. A
+        /// request whose end would lie past `Int64.MaxValue` nanoseconds since
+        /// boot ends there, as Linux saturates its deadline at `KTIME_MAX`.
+        Deadline : int64
+        /// What an interrupted call reports of the time it had left.
+        Remainder : SleepRemainder
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -442,6 +481,13 @@ type ParkedSyscall =
     /// is the signal state's (`SignalState.maskToRestore`), because it outlives
     /// the park, until the task returns to user mode.
     | SigSuspend
+    /// `nanosleep(2)`, or `clock_nanosleep(2)`. Waits for its deadline or for
+    /// a signal with a handler, and holds no open file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as
+    /// `UnixSystemDefect.ReservedPark`.
+    | Sleep of ParkedSleep
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -481,7 +527,8 @@ module ParkedSyscall =
         | ParkedSyscall.PipeWrite write -> SleepTarget.description write.Writer |> Option.toList
         | ParkedSyscall.ConnectionRead read -> SleepTarget.description read.Socket |> Option.toList
         | ParkedSyscall.ConnectionWrite write -> SleepTarget.description write.Socket |> Option.toList
-        | ParkedSyscall.SigSuspend -> []
+        | ParkedSyscall.SigSuspend
+        | ParkedSyscall.Sleep _ -> []
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -703,6 +750,7 @@ module UnixTaskTable =
             | ParkedSyscall.ConnectionRead _ -> 8
             | ParkedSyscall.ConnectionWrite _ -> 9
             | ParkedSyscall.SigSuspend -> 10
+            | ParkedSyscall.Sleep _ -> 11
 
         let sameSyscall =
             match existing.Parked with
