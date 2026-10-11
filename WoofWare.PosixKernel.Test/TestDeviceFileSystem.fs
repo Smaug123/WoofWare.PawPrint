@@ -323,7 +323,8 @@ module TestDeviceFileSystem =
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.Symlink _
-                | InodeContent.Socket _ -> None
+                | InodeContent.Socket _
+                | InodeContent.Fifo _ -> None
             )
             |> List.sort
             |> shouldEqual (List.sort expected)
