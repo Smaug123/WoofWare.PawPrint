@@ -617,6 +617,10 @@ type UnixSystemDefect<'Task> =
     /// `occupied`, and the task's own processor is `cpu`: a running task's
     /// processor is the one it runs on (`UnixTaskState.cpu`).
     | OccupantOnAnotherCpu of task : 'Task * occupied : CpuId * cpu : CpuId
+    /// A task is parked in a syscall that nothing in this version parks a task
+    /// in, such as `ParkedSyscall.Sleep`: a case reserved for behaviour not yet
+    /// modelled, which no call produces and no finishing call answers.
+    | ReservedPark of task : 'Task * parked : ParkedSyscall
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
@@ -1292,7 +1296,8 @@ module UnixSystem =
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.CharacterDevice _)
-                    | Some (InodeContent.Socket _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                    | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> None
                 | OpenFileTarget.Directory (inode, _) ->
@@ -1302,6 +1307,7 @@ module UnixSystem =
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.CharacterDevice (inode, device) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
@@ -1311,6 +1317,7 @@ module UnixSystem =
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -1805,6 +1812,7 @@ module UnixSystem =
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.Socket _
+                | InodeContent.Fifo _
                 | InodeContent.CharacterDevice _ -> None
             )
 
@@ -2171,6 +2179,7 @@ module UnixSystem =
             | Some (InodeContent.Directory _) -> []
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None ->
@@ -2267,6 +2276,7 @@ module UnixSystem =
                 | None -> []
                 // Names no description.
                 | Some ParkedSyscall.SigSuspend -> []
+                | Some (ParkedSyscall.Sleep _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []

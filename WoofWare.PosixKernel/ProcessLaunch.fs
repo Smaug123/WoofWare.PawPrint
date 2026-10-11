@@ -370,6 +370,7 @@ module ProcessLaunch =
                         $"ProcessLaunch.resolveCurrentDirectory: \"%s{AbsoluteUnixPath.toEscaped directory}\" resolved to inode %O{inode}, but no path from the root reaches it (this is a bug in this library)."
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _) -> Error CurrentDirectoryFault.NotADirectory
             | Some (InodeContent.Symlink _) ->
                 // `SymlinkPolicy.Follow` never finishes on one; `chdir` says

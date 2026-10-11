@@ -15,6 +15,7 @@
     <Compile Include="Launched.fs" />
     <Compile Include="WriteAdmissions.fs" />
     <Compile Include="ReadOutcomes.fs" />
+    <Compile Include="OpenOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="CopyIn.fs" />
     <Compile Include="OptionValue.fs" />
@@ -135,6 +136,7 @@
     <Compile Include="TestSigaction.fs" />
     <Compile Include="TestSigprocmask.fs" />
     <Compile Include="TestSigsuspend.fs" />
+    <Compile Include="TestSleepPark.fs" />
     <Compile Include="TestSigcontGeneration.fs" />
     <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />

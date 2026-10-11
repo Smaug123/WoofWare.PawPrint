@@ -816,6 +816,9 @@ module UnixDescriptor =
                 | InodeContent.Socket _ ->
                     failwith
                         $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+                | InodeContent.Fifo _ ->
+                    failwith
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an
@@ -1339,6 +1342,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
+            | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 failwith
@@ -1759,6 +1763,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
+                    | ParkedSyscall.Sleep _
                     // A Darwin poll's filters go with the descriptor (below).
                     | ParkedSyscall.KqueuePoll _ -> None
                 )
@@ -1795,6 +1800,7 @@ module UnixDescriptor =
                 | ParkedSyscall.PipeRead _
                 | ParkedSyscall.PipeWrite _
                 | ParkedSyscall.SigSuspend
+                | ParkedSyscall.Sleep _
                 | ParkedSyscall.ConnectionRead _
                 | ParkedSyscall.ConnectionWrite _ -> None
             )
@@ -1828,6 +1834,7 @@ module UnixDescriptor =
                    | ParkedSyscall.PipeRead _
                    | ParkedSyscall.PipeWrite _
                    | ParkedSyscall.SigSuspend
+                   | ParkedSyscall.Sleep _
                    | ParkedSyscall.ConnectionRead _
                    | ParkedSyscall.ConnectionWrite _ -> false
                )
@@ -1900,6 +1907,7 @@ module UnixDescriptor =
             | ParkedSyscall.Flock _
             | ParkedSyscall.Poll _
             | ParkedSyscall.SigSuspend
+            | ParkedSyscall.Sleep _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2043,6 +2051,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
+                    | ParkedSyscall.Sleep _
                     | ParkedSyscall.KqueuePoll _ -> false
                 )
 
@@ -2143,6 +2152,7 @@ module UnixDescriptor =
                         | ParkedSyscall.PipeRead _
                         | ParkedSyscall.PipeWrite _
                         | ParkedSyscall.SigSuspend
+                        | ParkedSyscall.Sleep _
                         | ParkedSyscall.ConnectionRead _
                         | ParkedSyscall.ConnectionWrite _ -> false
                     )

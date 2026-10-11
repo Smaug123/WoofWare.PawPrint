@@ -582,10 +582,12 @@ module PathWalk =
                 lastNavigation
                 symlinks
                 target
-        // A path cannot continue through a regular file, a device or a socket.
+        // A path cannot continue through a regular file, a device, a socket or
+        // a FIFO.
         | InodeContent.RegularFile _
         | InodeContent.CharacterDevice _
-        | InodeContent.Socket _ -> Error (PathFailure.Errno UnixError.ENOTDIR)
+        | InodeContent.Socket _
+        | InodeContent.Fifo _ -> Error (PathFailure.Errno UnixError.ENOTDIR)
 
     /// Whether the directory this paused resolution would look its final name up
     /// in has lost its own last name — so no path reaches it, though whatever
@@ -883,7 +885,8 @@ module PathWalk =
         | InodeContent.Directory _ -> finish (ResolvedTarget.Entry (directory, name, Some target))
         | InodeContent.RegularFile _
         | InodeContent.CharacterDevice _
-        | InodeContent.Socket _ ->
+        | InodeContent.Socket _
+        | InodeContent.Fifo _ ->
             // "p/" where p exists and is not a directory is ENOTDIR --
             // for every lookup, on both platforms, and for Darwin's
             // `mkdir`. Linux's `mkdir` is the exception and answers
@@ -955,6 +958,7 @@ module PathWalk =
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> Error (PathFailure.Errno UnixError.ENOTDIR)
 

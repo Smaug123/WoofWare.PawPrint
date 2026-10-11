@@ -189,6 +189,7 @@ module internal LinkRules =
             | InodeContent.RegularFile _
             | InodeContent.Symlink _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _ -> false
 
         match rules.DirectorySource with

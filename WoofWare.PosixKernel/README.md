@@ -196,14 +196,15 @@ let path (text : string) : PathArgumentBytes =
     | Ok bytes -> PathArgumentBytes.Bytes bytes
     | Error defect -> failwith $"not a path: %O{defect}"
 
-// open("/etc/hostname", O_RDONLY), and read(fd, buf, 64). O_RDONLY is 0 on every flavour.
-match UnixNamespace.openPath 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
-| SyscallAnswer.Completed fd, system ->
+// Task 0, the process's leader, calls open("/etc/hostname", O_RDONLY), and read(fd, buf, 64).
+// O_RDONLY is 0 on every flavour.
+match UnixNamespace.openPath 0 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
+| SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
     match UnixReadWrite.read 0 (int fd) UserBuffer.Mapped 64UL system |> orFail ReadRefusal.describe with
     | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ ->
         printf "%s" (System.Text.Encoding.ASCII.GetString (bytes.AsSpan ()))
     | outcome, _ -> failwith $"unexpected read: %A{outcome}"
-| SyscallAnswer.Failed error, _ -> failwith $"open failed: %O{error}"
+| outcome, _ -> failwith $"unexpected open: %A{outcome}"
 
 // Prints:
 // sim
@@ -252,16 +253,10 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 
 ### Unions that gain cases
 
-From version 1.0, a minor version may add a case to a union.
+From version 1.0, a minor version may add a case to a union that isn't on the closed list below.
 The model grows: a refusal becomes an answer once its behaviour is measured, each newly measured difference between Linux and Darwin adds a refusal case, and each call newly modelled as sleeping adds a case to `ParkedSyscall` and `WakePrimitive`.
-So a client must not rely on matching a union exhaustively.
-F# cannot mark a union as open, so the compiler accepts an exhaustive match today, and a client built against an older version fails to match a new case at run time.
-Give each match a wildcard arm instead.
-For a refusal, the arm reports the refusal's `describe`.
-For any other union, the arm treats a case the client has no code for as a refusal of its own: it fails the call loudly, and never guesses an answer.
-The examples in this document do this.
 
-A few unions are closed, and gain a case only in a major version, so a client may match them exhaustively:
+These unions are closed, and gain a case only in a major version:
 
 * `SyscallAnswer`: a call returns a number or fails with an errno, and nothing else.
 * `UnixError` and `Signal`: each already has a case for every name in either flavour's `<errno.h>` or `<signal.h>`.
@@ -337,8 +332,8 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `open(2)` | `UnixNamespace.openPath (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
-| `openat(2)` | `UnixNamespace.openat (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
+| `open(2)` | `UnixNamespace.openPath (task : 'Task) (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
+| `openat(2)` | `UnixNamespace.openat (task : 'Task) (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
 | `readlink(2)` | `UnixNamespace.readlink (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | `readlinkat(2)` | `UnixNamespace.readlinkat (dirfd : int) (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | one entry of `getdents(2)` or `getdirentries(2)`, without its byte layout | `UnixNamespace.readDirectoryEntry (fd : int)` | `Result<ReadDirectoryAnswer * UnixSystem, ReadDirectoryRefusal>` |
@@ -357,9 +352,12 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 | `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 
-An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`.
-Nothing produces one yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, and a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`.
-The cases exist so that a client's matches already handle them when pathname sockets arrive.
+`UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
+Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
+
+An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`, or a FIFO (`InodeContent.Fifo`), which a directory entry reports as `DirectoryEntryKind.Fifo`.
+Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Fifo`.
+The cases exist so that a client's matches already handle them when pathname sockets and FIFOs arrive.
 
 #### Reading and writing
 
@@ -551,6 +549,9 @@ A woken task finishes its call through its family's finishing function, which ma
 | `ParkedSyscall.SigSuspend` (a `sigsuspend`, `rt_sigsuspend` or `pause`) | `UnixSignal.finishSigsuspend (task : 'Task)` |
 
 Each answers what the call that parked answered, as in the tables above.
+
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) is reserved: nothing parks a task in it yet, and it has no finishing function, so `UnixSystem.checkInvariants` reports a task parked in it as `UnixSystemDefect.ReservedPark`.
+The case exists so that a client's matches already handle it when sleeps arrive.
 
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.

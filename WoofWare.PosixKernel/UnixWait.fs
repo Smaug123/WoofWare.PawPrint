@@ -305,6 +305,9 @@ module UnixWait =
                 | Some {
                            Syscall = ParkedSyscall.SigSuspend
                        }
+                | Some {
+                           Syscall = ParkedSyscall.Sleep _
+                       }
                 | None -> None
             )
             |> Set.ofSeq

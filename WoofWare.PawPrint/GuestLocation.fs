@@ -407,6 +407,8 @@ module GuestLocation =
 
                             Some $"in a poll of [%s{watched}]%s{until}"
                         | Some ParkedSyscall.SigSuspend -> Some "in sigsuspend, for a signal"
+                        | Some (ParkedSyscall.Sleep sleep) ->
+                            Some $"in nanosleep or clock_nanosleep, until %d{sleep.Deadline} ns since boot"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

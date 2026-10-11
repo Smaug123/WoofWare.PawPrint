@@ -191,12 +191,13 @@ module TestMinipalRandom =
         let system =
             match
                 UnixNamespace.openPath
+                    (UnixSystem.leader system)
                     0
                     (PathArgumentBytes.Bytes (Result.toOption (UnixByteString.ofString "/dev/null")).Value)
                     0
                     system
             with
-            | Ok (SyscallAnswer.Completed reopened, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed reopened), system) ->
                 int reopened |> shouldEqual fd
                 system
             | other -> failwith $"open: %A{other}"

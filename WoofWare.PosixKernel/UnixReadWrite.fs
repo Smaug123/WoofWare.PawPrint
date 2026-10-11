@@ -1403,6 +1403,9 @@ module UnixReadWrite =
         | InodeContent.Socket _ ->
             failwith
                 $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+        | InodeContent.Fifo _ ->
+            failwith
+                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
         | InodeContent.RegularFile (contents, _) ->
 
         let transfer = VirtualFileSystem.readTransferCount offset count contents.Length
@@ -3196,6 +3199,7 @@ module UnixReadWrite =
         | Some (ParkedSyscall.Poll _)
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
+        | Some (ParkedSyscall.Sleep _)
         | None -> None
 
     /// The write `task` is asleep in.
