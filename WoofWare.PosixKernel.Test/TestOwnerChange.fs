@@ -773,9 +773,10 @@ module TestOwnerChange =
 
         { system with
             Machine =
-                { UnixMachineState.advanceClock later system.Machine with
+                { system.Machine with
                     FileSystem = vfs
                 }
+            Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
@@ -850,7 +851,7 @@ module TestOwnerChange =
         (system : UnixSystem<int, string>)
         : unit
         =
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
         let standing = Standing.toward credentials by
 
         for p, target in [ "/t/f", OwnerChangeTarget.NonDirectory ; "/t/d", OwnerChangeTarget.Directory ] do
@@ -988,7 +989,7 @@ module TestOwnerChange =
         let egid = credentials.EffectiveGroup
         let by = InodeOwner.ofProcess credentials
         let system = systemOn platform credentials (pathTree by)
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         let changedOwner (p : string) (expected : InodeOwner) (after : UnixSystem<int, string>) : unit =
             let changed = inodeOf p after
@@ -1110,7 +1111,7 @@ module TestOwnerChange =
             ] do
             let by = InodeOwner.ofProcess credentials
             let system = systemOn platform credentials (pathTree by)
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             for p, call in [ "/p/f", chownAnswer ; "/p/d", chownAnswer ; "/p/lf", lchownAnswer ] do
                 match call p None None system with
@@ -1176,7 +1177,7 @@ module TestOwnerChange =
             ] do
             let by = InodeOwner.ofProcess credentials
             let system = systemOn platform credentials (pathTree by)
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             for access in
                 [
@@ -1253,7 +1254,7 @@ module TestOwnerChange =
                     after |> shouldEqual withFd
                 else
                     (inodeOf "/p/theirs" after).Times.StatusChange
-                    |> shouldEqual (UnixMachineState.realtime system.Machine)
+                    |> shouldEqual (UnixMachineState.realtime system.Scheduling system.Machine)
             | other -> failwith $"fchown(-1, -1) of someone else's file: %A{other}"
 
     [<Test>]
@@ -1407,7 +1408,7 @@ module TestOwnerChange =
 
         let system =
             { system with
-                Machine = UnixMachineState.advanceClock later system.Machine
+                Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             }
 
         let system =
@@ -1473,7 +1474,7 @@ module TestOwnerChange =
 
             let by = InodeOwner.ofProcess creator
             let standing = Standing.toward caller by
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             for user, group in
                 [

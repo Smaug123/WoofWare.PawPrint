@@ -848,7 +848,7 @@ module UnixReadWrite =
         : UnixSystem<'Task, 'Handler>
         =
         { system with
-            Machine = UnixMachineState.touchedByPipeRead pipeId system.Machine
+            Machine = UnixMachineState.touchedByPipeRead pipeId system.Scheduling system.Machine
         }
 
     /// What a write reaching `pipeId`'s write operation does to its timestamps:
@@ -860,7 +860,7 @@ module UnixReadWrite =
         : UnixSystem<'Task, 'Handler>
         =
         { system with
-            Machine = UnixMachineState.touchedByPipeWrite pipeId system.Machine
+            Machine = UnixMachineState.touchedByPipeWrite pipeId system.Scheduling system.Machine
         }
 
     /// `system` with `pipeId`'s buffer as a write of `count` bytes that took none
@@ -3088,7 +3088,7 @@ module UnixReadWrite =
             returns (WriteAnswer.Completed 0L) system
         else
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
         // bits unless the writer is root; measured on both platforms, which
@@ -4256,7 +4256,7 @@ module UnixReadWrite =
         | PWriteTarget.CharacterDevice _ -> Ok (WriteAnswer.Completed (int64 bytes.Length), system)
         | PWriteTarget.File inode ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
         // bits unless the writer is root, exactly as `write`'s does: the bits
@@ -4458,7 +4458,7 @@ module UnixReadWrite =
 
             let count = oneCallsWorth system.Machine.UnixPlatform count
             let bytes = ImmutableArray.Create (contents, int sourceOffset, count)
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
             let rule = SimulatedUnixPlatform.setGroupIdOnWrite system.Machine.UnixPlatform
 
             match

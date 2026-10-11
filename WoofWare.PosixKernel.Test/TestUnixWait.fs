@@ -121,7 +121,7 @@ module TestUnixWait =
         | Op.Unpark task -> UnixParkState.unpark task system
         | Op.AdvanceClock nanoseconds ->
             { system with
-                Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+                Scheduling = UnixSchedulingState.advanceClock nanoseconds system.Scheduling
             }
         | Op.CreateEpoll ->
             let _, registry =

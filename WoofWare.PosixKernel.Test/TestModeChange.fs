@@ -271,9 +271,10 @@ module TestModeChange =
 
         { system with
             Machine =
-                { UnixMachineState.advanceClock later system.Machine with
+                { system.Machine with
                     FileSystem = vfs
                 }
+            Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
@@ -310,7 +311,7 @@ module TestModeChange =
     /// the inode then has, which of its timestamps moved, and that a refusal
     /// changed nothing at all.
     let private sweep (standing : Standing) (system : UnixSystem<int, string>) : unit =
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         for p in [ "/t/f" ; "/t/d" ] do
             let before = inodeOf p system
@@ -415,7 +416,7 @@ module TestModeChange =
                 UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)
 
             let system = systemOn platform credentials (tree (InodeOwner.ofProcess credentials))
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             for p, bits in [ "/t/f", 0o600 ; "/t/d", 0o700 ] do
                 let before = inodeOf p system
@@ -535,7 +536,7 @@ module TestModeChange =
             let system =
                 systemOn platform credentials (pathTree (InodeOwner.ofProcess credentials))
 
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             for access, bits in
                 [
@@ -719,7 +720,7 @@ module TestModeChange =
 
         let system =
             { system with
-                Machine = UnixMachineState.advanceClock later system.Machine
+                Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             }
 
         let system =
@@ -750,7 +751,7 @@ module TestModeChange =
                 withPipe SimulatedUnixPlatform.linuxX64 creator caller
 
             let standing = Standing.toward caller (InodeOwner.ofProcess creator)
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
             let before = fstatOrFail readFd system
 
             for requested in allModes do

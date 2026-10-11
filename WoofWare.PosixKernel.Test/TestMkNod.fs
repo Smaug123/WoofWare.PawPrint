@@ -720,7 +720,7 @@ module TestMkNod =
                         // The probe slept before it called.
                         let system =
                             { before with
-                                Machine = UnixMachineState.advanceClock 50_000_000L before.Machine
+                                Scheduling = UnixSchedulingState.advanceClock 50_000_000L before.Scheduling
                             }
 
                         let result =

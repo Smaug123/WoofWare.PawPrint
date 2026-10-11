@@ -656,7 +656,7 @@ module TestUnixScheduling =
             |> UnixScheduling.dispatch 0 (CpuId 0)
             |> UnixScheduling.dispatch 0 (CpuId 1)
 
-        system.Machine.Occupants
+        system.Scheduling.Occupants
         |> shouldEqual (Map.ofList [ CpuId 1, (UnixTaskTable.get 0 system.Tasks).OsThreadId ])
 
         UnixScheduling.runningOn 0 system |> shouldEqual (Some (CpuId 1))
@@ -694,8 +694,8 @@ module TestUnixScheduling =
         : SimulatedMachine<int, string>
         =
         { machine with
-            Machine =
-                { machine.Machine with
+            Scheduling =
+                { machine.Scheduling with
                     Occupants = Map.ofList occupants
                 }
         }

@@ -83,12 +83,16 @@ module UnixScheduling =
             failwith
                 $"UnixScheduling.dispatch: %O{task} was dispatched to %O{cpu}, but the machine has %d{system.Machine.ProcessorCount} logical processors, numbered from 0 (this is a bug in the client)."
 
-        if state.Cpu = cpu && UnixMachineState.runs cpu state.OsThreadId system.Machine then
+        if
+            state.Cpu = cpu
+            && UnixSchedulingState.runs cpu state.OsThreadId system.Scheduling
+        then
             system
         else
 
-        let machine =
-            let vacated = UnixMachineState.vacate state.Cpu state.OsThreadId system.Machine
+        let scheduling =
+            let vacated =
+                UnixSchedulingState.vacate state.Cpu state.OsThreadId system.Scheduling
 
             { vacated with
                 Occupants = Map.add cpu state.OsThreadId vacated.Occupants
@@ -106,7 +110,7 @@ module UnixScheduling =
                     system.Tasks
 
         { system with
-            Machine = machine
+            Scheduling = scheduling
             Tasks = tasks
         }
 
@@ -120,7 +124,7 @@ module UnixScheduling =
         : CpuId option
         =
         match Map.tryFind task system.Tasks with
-        | Some state when UnixMachineState.runs state.Cpu state.OsThreadId system.Machine -> Some state.Cpu
+        | Some state when UnixSchedulingState.runs state.Cpu state.OsThreadId system.Scheduling -> Some state.Cpu
         | Some _
         | None -> None
 
@@ -150,7 +154,7 @@ module UnixScheduling =
                 $"UnixScheduling.getcpu: task %O{task} is parked in %A{park.Syscall}, so it cannot be making the getcpu syscall (this is a bug in the client)."
         | None ->
 
-        match Map.tryFind state.Cpu system.Machine.Occupants with
+        match Map.tryFind state.Cpu system.Scheduling.Occupants with
         | Some running when running = state.OsThreadId ->
             Ok
                 {

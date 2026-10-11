@@ -927,7 +927,7 @@ module TestKeventRegistration =
 
         let expired =
             { withEvent with
-                Machine = UnixMachineState.advanceClock 5L withEvent.Machine
+                Scheduling = UnixSchedulingState.advanceClock 5L withEvent.Scheduling
             }
 
         UnixKqueue.finishKevent 1 expired

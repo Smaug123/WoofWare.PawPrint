@@ -997,7 +997,7 @@ module UnixNamespace =
                     system.Process.Umask
                     mode
 
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             match
                 VirtualFileSystem.createFile
@@ -1648,7 +1648,7 @@ module UnixNamespace =
         let permissions =
             MkDirRules.createdPermissions rules parentPermissions system.Process.Umask mode
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         let owner = newInodeOwner "UnixNamespace.mkdir" directory system
 
@@ -1790,7 +1790,7 @@ module UnixNamespace =
                 system.Process.Umask
                 mode
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match
             VirtualFileSystem.createFile
@@ -1919,7 +1919,7 @@ module UnixNamespace =
             Error (RemovalRefusal.DeviceFileSystem (directory, name))
         | Ok (UnlinkVerdict.Remove (directory, name)) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now system.Machine.FileSystem with
         | Error error ->
@@ -2020,7 +2020,7 @@ module UnixNamespace =
             Error (RemovalRefusal.DeviceFileSystem (directory, name))
         | Ok (RmDirVerdict.Remove (directory, name)) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now system.Machine.FileSystem with
         | Error error ->
@@ -2386,7 +2386,7 @@ module UnixNamespace =
         | Ok (Ok RenameVerdict.NoOp) -> Ok (SyscallAnswer.Completed 0L, system)
         | Ok (Ok (RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName))) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match
             VirtualFileSystem.rename
@@ -2716,7 +2716,7 @@ module UnixNamespace =
                 "UnixNamespace.cloneFileWithDestination"
                 (raw &&& ~~~(PermissionBits.setUserId ||| PermissionBits.setGroupId))
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match
             VirtualFileSystem.cloneFile
@@ -2884,7 +2884,7 @@ module UnixNamespace =
             SimulatedUnixPlatform.symlinkCreationPermissions system.Machine.UnixPlatform system.Process.Umask
 
         let owner = newInodeOwner "UnixNamespace.symlink" directory system
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match VirtualFileSystem.createSymlink directory name permissions owner now target system.Machine.FileSystem with
         | Error error ->
@@ -3134,7 +3134,7 @@ module UnixNamespace =
         | LinkVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
         | LinkVerdict.Create (directory, name) ->
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         match VirtualFileSystem.hardLink directory name paused.Source now system.Machine.FileSystem with
         | Error error ->

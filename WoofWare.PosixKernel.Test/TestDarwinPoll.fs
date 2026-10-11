@@ -615,8 +615,8 @@ module TestDarwinPoll =
 
     let private advanceTo (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         { system with
-            Machine =
-                { system.Machine with
+            Scheduling =
+                { system.Scheduling with
                     NanosecondsSinceBoot = nanoseconds
                 }
         }
@@ -811,7 +811,7 @@ module TestDarwinPoll =
     [<Test>]
     let ``a deadline is milliseconds from now, and a signal ends the sleep with EINTR`` () : unit =
         let listener, system = KeventWorld.listenerAt 5106us KeventWorld.darwin
-        let now = system.Machine.NanosecondsSinceBoot
+        let now = system.Scheduling.NanosecondsSinceBoot
         let condition, parked = parks [ entry listener pollIn ] 7 system
         deadlineOf condition |> shouldEqual (now + 7_000_000L)
         let early = advanceTo (now + 6_999_999L) parked

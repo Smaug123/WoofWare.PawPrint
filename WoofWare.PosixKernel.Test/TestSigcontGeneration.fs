@@ -380,15 +380,10 @@ module TestSigcontGeneration =
             if row.InSigsuspend || r.Returned.IsSome then
                 Ok r
             else
-                let machine = UnixMachineState.advanceClock 300_000_000L r.System.Machine
-
                 wakeIfDue
                     row
                     { r with
-                        System =
-                            { r.System with
-                                Machine = machine
-                            }
+                        System = UnixSystem.advanceClock 300_000_000L r.System
                     }
 
     let private sleep (row : SleepRow) : Step =
