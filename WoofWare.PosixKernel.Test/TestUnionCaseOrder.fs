@@ -210,23 +210,28 @@ module TestUnionCaseOrder =
         Check.One (config, property)
 
     [<Test>]
-    let ``A one-case union may gain cases after its case, and not before it`` () : unit =
-        let property (before : int) (after : int) : unit =
+    let ``A one-case union may gain cases after its case, and may not gain them before it or replace it`` () : unit =
+        let property (before : int) (after : int) (replaced : bool) : unit =
             let before = abs before % 4
             let after = abs after % 4
             let earlier = [ for i in 1..before -> $"Earlier%d{i}" ]
             let later = [ for i in 1..after -> $"Later%d{i}" ]
+            let only = if replaced then "Replacement" else "Only"
             let committed = Map.ofList [ "U", RecordedUnion.Single (Set.singleton "Only") ]
 
             let current =
-                match earlier @ [ "Only" ] @ later with
-                | [ _ ] -> RecordedUnion.Single (Set.singleton "Only")
+                match earlier @ [ only ] @ later with
+                | [ _ ] -> RecordedUnion.Single (Set.singleton only)
                 | cases -> RecordedUnion.Tagged cases
 
             let expected =
-                match earlier with
-                | [] -> []
-                | first :: _ -> [ CaseOrderViolation.InsertedBeforeOnlyCase ("U", first) ]
+                match earlier, current with
+                | first :: _, _ -> [ CaseOrderViolation.InsertedBeforeOnlyCase ("U", first) ]
+                | [], RecordedUnion.Tagged (first :: _) when first <> "Only" ->
+                    [ CaseOrderViolation.InsertedBeforeOnlyCase ("U", first) ]
+                | [], RecordedUnion.Single names when replaced ->
+                    [ CaseOrderViolation.ReplacedOnlyCase ("U", Set.singleton "Only", names) ]
+                | [], _ -> []
 
             UnionCaseOrder.violations committed (Map.ofList [ "U", current ])
             |> shouldEqual expected

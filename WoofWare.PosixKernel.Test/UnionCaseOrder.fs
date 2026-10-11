@@ -26,6 +26,9 @@ type CaseOrderViolation =
     | NotAnAppend of union : string * committed : string list * current : string list
     /// The committed union had one case, and the compiled union's tag 0 is a case it did not have.
     | InsertedBeforeOnlyCase of union : string * currentFirst : string
+    /// The committed union had one case and so does the compiled one, and no constructor name of
+    /// the committed union's is one of the compiled union's: its case was renamed or replaced.
+    | ReplacedOnlyCase of union : string * committed : Set<string> * current : Set<string>
 
 /// Whether each public union only gained cases at its end, comparing two ApiSurface listings.
 /// An F# client compiled against the earlier listing may identify a case by its tag, which is its
@@ -118,7 +121,11 @@ module UnionCaseOrder =
         |> List.choose (fun (union : string, recorded : RecordedUnion) ->
             match recorded, Map.tryFind union current with
             | _, None -> Some (CaseOrderViolation.NoLongerAUnion union)
-            | RecordedUnion.Single _, Some (RecordedUnion.Single _) -> None
+            | RecordedUnion.Single committedNames, Some (RecordedUnion.Single currentNames) ->
+                if Set.isEmpty (Set.intersect committedNames currentNames) then
+                    Some (CaseOrderViolation.ReplacedOnlyCase (union, committedNames, currentNames))
+                else
+                    None
             | RecordedUnion.Single constructorNames, Some (RecordedUnion.Tagged cases) ->
                 match cases with
                 | first :: _ when Set.contains first constructorNames -> None
@@ -147,3 +154,5 @@ module UnionCaseOrder =
             $"%s{union} had the cases %s{render committed} in that order, and now has %s{render current}"
         | CaseOrderViolation.InsertedBeforeOnlyCase (union, currentFirst) ->
             $"%s{union} had one case, and now has %s{currentFirst}, which it did not have, at tag 0"
+        | CaseOrderViolation.ReplacedOnlyCase (union, committed, current) ->
+            $"%s{union} had one case, among %s{render (Set.toList committed)}, and now has one case, among %s{render (Set.toList current)}"
