@@ -283,6 +283,52 @@ module TestDeviceFileSystem =
             | SimulatedUnixFlavour.Darwin -> ()
 
     [<Test>]
+    let ``the device filesystem holds a node for each device CharacterDevice.all lists, and no other device has one``
+        ()
+        : unit
+        =
+        // Read from the inode graph, since a listing of `/dev` is refused on
+        // both flavours.
+        for platform, expected in [ linux, CharacterDevice.all ; darwin, [] ] do
+            let vfs = (booted platform).Machine.FileSystem
+
+            let mountedRoot =
+                match VirtualFileSystem.tryGetContent (VirtualFileSystem.root vfs) vfs with
+                | Some (InodeContent.Directory root) -> root.Entries.[name "dev"]
+                | other -> failwith $"the root is not a directory: %A{other}"
+
+            let entries =
+                match VirtualFileSystem.tryGetContent mountedRoot vfs with
+                | Some (InodeContent.Directory dev) ->
+                    dev.Entries
+                    |> Map.toList
+                    |> List.map (fun (entry, inode) -> entry, VirtualFileSystem.tryGetContent inode vfs)
+                | other -> failwith $"/dev is not a directory: %A{other}"
+
+            entries
+            |> shouldEqual (
+                expected
+                |> List.map (fun device ->
+                    CharacterDevice.name device,
+                    Some (InodeContent.CharacterDevice (device, CharacterDevice.permissions device))
+                )
+                |> List.sortBy fst
+            )
+
+            VirtualFileSystem.inodes vfs
+            |> Map.toList
+            |> List.choose (fun (_, inode) ->
+                match inode.Content with
+                | InodeContent.CharacterDevice (device, _) -> Some device
+                | InodeContent.RegularFile _
+                | InodeContent.Directory _
+                | InodeContent.Symlink _
+                | InodeContent.Socket _ -> None
+            )
+            |> List.sort
+            |> shouldEqual (List.sort expected)
+
+    [<Test>]
     let ``a listing of the device filesystem is refused, and so is its status`` () : unit =
         let system = booted linux
 
