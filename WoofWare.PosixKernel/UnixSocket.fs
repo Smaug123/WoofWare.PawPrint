@@ -550,6 +550,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
@@ -1570,6 +1571,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
@@ -1781,6 +1783,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
@@ -1841,6 +1844,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
@@ -2046,6 +2050,7 @@ module UnixSocket =
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.CharacterDevice _)
+        | Some (OpenFileTarget.Fifo _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Epoll _) -> Error UnixError.ENOTSOCK

@@ -1623,6 +1623,7 @@ module UnixReadWrite =
             // non-zero length, unlike a pipe's zero-return shortcut below.
             | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
             | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
+            | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixReadWrite.read" inode
             | OpenFileTarget.Socket socketId ->
                 match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
                 | Some (connectionId, connectionEnd) ->
@@ -2164,6 +2165,7 @@ module UnixReadWrite =
             | OpenFileTarget.Socket socketId -> Ok (descriptionId, description, socketId)
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Epoll _
@@ -2400,6 +2402,11 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Darwin when not readable -> Error UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
+            // Measured on both flavours through an `O_RDWR` description:
+            // ESPIPE. A write-only end is a tie between unseekable and
+            // unreadable, which is unmeasured for a FIFO.
+            | OpenFileTarget.Fifo _ when readable -> Error UnixError.ESPIPE
+            | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixReadWrite.pread" inode
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
                 // Unseekable on both, with no tie to break: an event queue's description
@@ -2499,6 +2506,7 @@ module UnixReadWrite =
         // rather than EFAULT, and no length is a no-op.
         | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
         | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
+        | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixReadWrite.write" inode
         | OpenFileTarget.Socket socketId ->
             match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
             | Some (connectionId, connectionEnd) ->
@@ -4088,6 +4096,7 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin when not writable -> Error UnixError.EBADF
             | SimulatedUnixFlavour.Darwin
             | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
+        | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "UnixReadWrite.pwrite" inode
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ ->
             // Unseekable on both, with no tie to break: an event queue's description is
@@ -4382,6 +4391,7 @@ module UnixReadWrite =
             | OpenFileTarget.Directory _ -> true
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _

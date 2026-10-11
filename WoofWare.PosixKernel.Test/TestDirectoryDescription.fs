@@ -734,6 +734,43 @@ module TestDirectoryDescription =
         )
         |> shouldEqual true
 
+    [<Test>]
+    let ``a FIFO description must name a FIFO inode`` () : unit =
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> createFile "f"
+
+        let fd, system = openAt reading "f" system
+        let inode = inodeOf "f" system
+
+        let asFifo =
+            forgeTarget fd (OpenFileTarget.Fifo (inode, FifoAttachment.Unattached)) system
+
+        let mismatched (system : UnixSystem<int, string>) : bool =
+            UnixSystem.checkInvariants system
+            |> List.exists (fun defect ->
+                match defect with
+                | UnixSystemDefect.DescriptionKindMismatch (_, named) -> named = inode
+                | _ -> false
+            )
+
+        mismatched asFifo |> shouldEqual true
+
+        let overFifoInode =
+            { asFifo with
+                Machine =
+                    { asFifo.Machine with
+                        FileSystem =
+                            VirtualFileSystem.Unchecked.setContent
+                                inode
+                                (InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644))
+                                asFifo.Machine.FileSystem
+                    }
+            }
+
+        mismatched overFifoInode |> shouldEqual false
+
     let private someInode : InodeNumber = InodeNumber 5L
 
     let private registryWith (target : OpenFileTarget) (access : FileAccessMode) : FileDescriptorRegistry =
