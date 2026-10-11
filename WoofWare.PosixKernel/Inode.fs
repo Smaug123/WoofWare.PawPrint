@@ -201,7 +201,7 @@ type InodeContent =
     ///
     /// Nothing in this version makes one: `mknodat` of `S_IFSOCK` answers
     /// `MkNodRefusal.Socket`, and a Unix-domain `bind` answers
-    /// `SockaddrCopyRefusal.UnmodelledDomain`.
+    /// `SockaddrCopyRefusal.Reason.UnmodelledDomain`.
     | Socket of permissions : PermissionBits
     /// A FIFO special file, or named pipe: what `stat(2)` reports as
     /// `S_IFIFO`, which `mkfifo` or `mknod(2)` of `S_IFIFO` makes.

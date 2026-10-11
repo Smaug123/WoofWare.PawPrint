@@ -19,7 +19,18 @@ module TestOpenRefusals =
 
     /// The refusals whose cases are hidden. A union converted to an open one
     /// joins this list and leaves `unconverted`.
-    let private openRefusals : Type list = [ typeof<BindRefusal> ]
+    let private openRefusals : Type list =
+        [
+            typeof<AcceptRefusal>
+            typeof<BindRefusal>
+            typeof<ConnectRefusal>
+            typeof<GetSockNameRefusal>
+            typeof<ListenRefusal>
+            typeof<ShutdownRefusal>
+            typeof<SockaddrCopyRefusal>
+            typeof<SocketOptionRefusal>
+            typeof<SocketRefusal>
+        ]
 
     /// Public unions named `*Refusal` that are closed by what they are: a
     /// client's own buffer, the error of a parser, or a flavour's rule. They
@@ -38,7 +49,6 @@ module TestOpenRefusals =
     let private unconverted : Set<string> =
         Set.ofList
             [
-                "AcceptRefusal"
                 "AccessRefusal"
                 "BootTimeRefusal"
                 "BytesAvailableRefusal"
@@ -48,7 +58,6 @@ module TestOpenRefusals =
                 "ClockGettimeRefusal"
                 "CloneFileRefusal"
                 "CloseRefusal"
-                "ConnectRefusal"
                 "CopyFileRangeRefusal"
                 "CredentialsRefusal"
                 "DescriptionReleaseRefusal"
@@ -77,7 +86,6 @@ module TestOpenRefusals =
                 "GetGroupsRefusal"
                 "GetIdsRefusal"
                 "GetRandomRefusal"
-                "GetSockNameRefusal"
                 "InotifyAddWatchRefusal"
                 "InotifyLimitsRefusal"
                 "InotifyRefusal"
@@ -90,7 +98,6 @@ module TestOpenRefusals =
                 "LeaderThreadIdRefusal"
                 "LinkReadRefusal"
                 "LinkRefusal"
-                "ListenRefusal"
                 "MkNodRefusal"
                 "ModeChangeRefusal"
                 "MountFieldsRefusal"
@@ -119,14 +126,10 @@ module TestOpenRefusals =
                 "SetGroupsRefusal"
                 "SetIdChangeRefusal"
                 "SetIdsRefusal"
-                "ShutdownRefusal"
                 "SignalReceiverRefusal"
                 "SigprocmaskRefusal"
                 "SigsuspendRefusal"
                 "SoMaxConnRefusal"
-                "SockaddrCopyRefusal"
-                "SocketOptionRefusal"
-                "SocketRefusal"
                 "SpawnRefusal"
                 "StatRefusal"
                 "StickyRefusal"
