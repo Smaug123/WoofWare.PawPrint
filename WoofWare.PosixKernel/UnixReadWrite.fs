@@ -1108,19 +1108,20 @@ module UnixReadWrite =
             // `127.0.0.1:0` reads back `127.0.0.1:<ephemeral>` after the
             // failed write.
             let bound : Result<UnixSystem<'Task, 'Handler>, WriteRefusal> =
-                match socket.Binding with
+                match socket.Ipv4Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> Ok system
                 | _ when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
-                | existing ->
+                | _ ->
 
-                match socket.Domain with
-                | SocketDomain.Inet6 -> Error (WriteRefusal.Inet6Binding socketId)
-                | SocketDomain.Unix ->
+                match socket.Addressing with
+                | SocketAddressing.Inet6DualMode _
+                | SocketAddressing.Inet6V6Only _ -> Error (WriteRefusal.Inet6Binding socketId)
+                | SocketAddressing.Unix _ ->
                     failwith
                         $"UnixReadWrite: a write on Unix-domain socket %O{socketId} binds it first, which no flavour does (this is a bug in this library)."
-                | SocketDomain.Inet ->
+                | SocketAddressing.Inet existing ->
 
-                let candidate (port : uint16) : SocketBinding =
+                let candidate (port : uint16) : Ipv4Binding =
                     match existing with
                     | Some halfBound ->
                         { halfBound with
@@ -1156,8 +1157,7 @@ module UnixReadWrite =
                                         Map.add
                                             socketId
                                             { socket with
-                                                Addressing =
-                                                    SocketAddressing.replaceBinding (Some binding) socket.Addressing
+                                                Addressing = SocketAddressing.Inet (Some binding)
                                             }
                                             machine.Sockets
                                 }

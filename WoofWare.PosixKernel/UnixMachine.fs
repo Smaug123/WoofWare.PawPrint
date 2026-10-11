@@ -800,7 +800,7 @@ module UnixMachineState =
     /// has reached it, or its FIN, made after the peer's had arrived, has
     /// itself arrived (`TcpTransfer.passiveFinArrived`). On Darwin always, and
     /// on Linux unless the port was bound explicitly
-    /// (`SocketBinding.LockedPort`), whose port the socket's close releases.
+    /// (`InetBinding.LockedPort`), whose port the socket's close releases.
     /// `getsockname` still reports the port.
     ///
     /// Measured on both: a fresh socket binds the survivor's exact endpoint
@@ -824,7 +824,7 @@ module UnixMachineState =
 
             finished
             && (
-                match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Binding with
+                match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Ipv4Binding with
                 | SimulatedUnixFlavour.Darwin, _ -> true
                 | SimulatedUnixFlavour.Linux, Some binding -> not binding.LockedPort
                 | SimulatedUnixFlavour.Linux, None -> true
@@ -840,7 +840,7 @@ module UnixMachineState =
     let internal bindingConflicts
         (socketId : SocketId)
         (socket : SocketDescription)
-        (candidate : SocketBinding)
+        (candidate : Ipv4Binding)
         (machine : UnixMachineState)
         : bool
         =
@@ -850,7 +850,7 @@ module UnixMachineState =
                 false
             else
 
-            match other.Binding with
+            match other.Ipv4Binding with
             | None -> false
             | Some existing ->
                 // Separate port namespaces per transport, measured: a UDP socket
@@ -896,7 +896,7 @@ module UnixMachineState =
                 | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c ->
                     c = connectionId
-                    && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
+                    && (socket.Ipv4Binding |> Option.exists (fun binding -> binding.Endpoint = held))
                 | SocketPhase.Listening listenState ->
                     isServerEnd && List.contains connectionId (ListenState.connections listenState)
                 | SocketPhase.Idle
@@ -946,14 +946,14 @@ module UnixMachineState =
         (purpose : EphemeralPortUse)
         (socketId : SocketId)
         (socket : SocketDescription)
-        (candidate : uint16 -> SocketBinding)
+        (candidate : uint16 -> Ipv4Binding)
         (machine : UnixMachineState)
-        : (SocketBinding * UnixMachineState) option
+        : (Ipv4Binding * UnixMachineState) option
         =
         let low, high = machine.EphemeralPortRange
         let width = int high - int low + 1
 
-        let acceptable (port : uint16) : SocketBinding option =
+        let acceptable (port : uint16) : Ipv4Binding option =
             let binding = candidate port
 
             if binding.Endpoint.Port <> port then
@@ -975,7 +975,7 @@ module UnixMachineState =
 
             if free then Some binding else None
 
-        let rec sweep (remaining : int) (port : uint16) : (SocketBinding * UnixMachineState) option =
+        let rec sweep (remaining : int) (port : uint16) : (Ipv4Binding * UnixMachineState) option =
             if remaining = 0 then
                 None
             else

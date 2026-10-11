@@ -1347,10 +1347,10 @@ module SimulatedUnixPlatform =
     /// a listen, and never lets the pair coexist in the first place.
     let internal bindConflict
         (platform : SimulatedUnixPlatform)
-        (existing : SocketBinding)
+        (existing : Ipv4Binding)
         (existingReuse : bool)
         (existingPhase : SocketPhase)
-        (candidate : SocketBinding)
+        (candidate : Ipv4Binding)
         (candidateReuse : bool)
         : bool
         =

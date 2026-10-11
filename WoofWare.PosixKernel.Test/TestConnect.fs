@@ -71,7 +71,7 @@ module TestConnect =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
+    let private streamSocket (binding : Ipv4Binding option) (phase : SocketPhase) : SocketDescription =
         {
             Addressing = SocketAddressing.Inet binding
             Kind = SocketKind.Stream
@@ -81,7 +81,7 @@ module TestConnect =
             Phase = phase
         }
 
-    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : Ipv4Binding option =
         Some
             {
                 Endpoint = endpoint
@@ -172,7 +172,7 @@ module TestConnect =
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
         let socket =
             { streamSocket None SocketPhase.Idle with
-                Addressing = SocketAddressing.Unix
+                Addressing = SocketAddressing.Unix None
             }
 
         let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
@@ -229,7 +229,7 @@ module TestConnect =
             withSocket
                 (SocketId 9L)
                 ({ streamSocket None SocketPhase.Idle with
-                    Addressing = SocketAddressing.Unix
+                    Addressing = SocketAddressing.Unix None
                 })
                 system
 

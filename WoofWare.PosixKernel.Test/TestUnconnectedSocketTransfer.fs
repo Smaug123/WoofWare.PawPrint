@@ -331,21 +331,24 @@ module TestUnconnectedSocketTransfer =
 
         let before = system.Machine.Sockets.[socketId]
         before.Phase |> shouldEqual SocketPhase.Idle
-        before.Binding |> Option.map _.Endpoint |> shouldEqual (Some (loopbackAt 0us))
+
+        before.Ipv4Binding
+        |> Option.map _.Endpoint
+        |> shouldEqual (Some (loopbackAt 0us))
 
         match UnixReadWrite.admitWrite system.Leader fd UserBuffer.Mapped 1UL system with
         | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EDESTADDRREQ), after)) ->
             let low, high = system.Machine.EphemeralPortRange
 
-            match after.Machine.Sockets.[socketId].Binding with
+            match after.Machine.Sockets.[socketId].Ipv4Binding with
             | Some binding ->
                 binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
 
                 (binding.Endpoint.Port >= low && binding.Endpoint.Port <= high)
                 |> shouldEqual true
 
-                binding.LockedAddress |> shouldEqual before.Binding.Value.LockedAddress
-                binding.LockedPort |> shouldEqual before.Binding.Value.LockedPort
+                binding.LockedAddress |> shouldEqual before.Ipv4Binding.Value.LockedAddress
+                binding.LockedPort |> shouldEqual before.Ipv4Binding.Value.LockedPort
             | None -> failwith "the write unbound the socket"
         | other -> failwith $"expected EDESTADDRREQ, got %A{other}"
 
@@ -442,12 +445,12 @@ module TestUnconnectedSocketTransfer =
         let socketAfter = after.Machine.Sockets.[socketId]
 
         if
-            socketBefore.Binding.IsNone
+            socketBefore.Ipv4Binding.IsNone
             && UnconnectedSocketRules.writeBindsFirst row.Flavour row.Domain row.Kind
         then
             let low, high = before.Machine.EphemeralPortRange
 
-            match socketAfter.Binding with
+            match socketAfter.Ipv4Binding with
             | Some binding ->
                 binding.Endpoint.Address = Ipv4Address.any
                 && binding.Endpoint.Port >= low

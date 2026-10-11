@@ -39,8 +39,8 @@ module TestDatagramDissolve =
         | Some (OpenFileTarget.Socket socketId) -> socketId
         | other -> failwith $"fd %d{fd} is %A{other}"
 
-    let private bound (fd : int) (system : UnixSystem<int, string>) : SocketBinding option =
-        (UnixMachineState.socket (socketOf fd system) system.Machine).Binding
+    let private bound (fd : int) (system : UnixSystem<int, string>) : Ipv4Binding option =
+        (UnixMachineState.socket (socketOf fd system) system.Machine).Ipv4Binding
 
     let private phase (fd : int) (system : UnixSystem<int, string>) : SocketPhase =
         (UnixMachineState.socket (socketOf fd system) system.Machine).Phase
@@ -248,7 +248,7 @@ module TestDatagramDissolve =
     /// a socket still holding a peer, is the defect it always was.
     [<Test>]
     let ``the port-0 exception is exactly Linux's idle half-bound datagram`` () : unit =
-        let halfBound : SocketBinding =
+        let halfBound : Ipv4Binding =
             {
                 Endpoint = endpoint loopback 0us
                 LockedAddress = Some loopback

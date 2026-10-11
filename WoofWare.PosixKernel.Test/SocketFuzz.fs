@@ -373,7 +373,7 @@ module SocketFuzz =
             // slot of it, so ask the kernel at connect time — the harness
             // does the same with getsockname.
             let endpoint =
-                match (UnixMachineState.socket (socketIdOfSlot listener state) state.Kernel.Machine).Binding with
+                match (UnixMachineState.socket (socketIdOfSlot listener state) state.Kernel.Machine).Ipv4Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> binding.Endpoint
                 | _ -> failwith $"FUZZ-DRIVER BUG: conn targets slot %d{listener}, whose socket never listened."
 
