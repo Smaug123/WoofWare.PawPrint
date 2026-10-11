@@ -125,7 +125,7 @@ module SocketLadder =
         | other -> failwith $"fd %d{fd} names %A{other}"
 
     let local (socket : SocketDescription) : Ipv4Endpoint =
-        match socket.Binding with
+        match socket.Ipv4Binding with
         | Some binding -> binding.Endpoint
         | None -> Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us
 

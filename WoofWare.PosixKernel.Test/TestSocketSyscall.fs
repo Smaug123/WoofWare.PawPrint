@@ -287,7 +287,7 @@ module TestSocketSyscall =
                 |> shouldEqual (Some (OpenFileTarget.Socket socketId))
 
                 let socket = UnixMachineState.socket socketId after.Machine
-                socket.Binding |> shouldEqual None
+                socket.Ipv4Binding |> shouldEqual None
                 socket.Phase |> shouldEqual SocketPhase.Idle
                 socket.ReuseAddress |> shouldEqual false
 
