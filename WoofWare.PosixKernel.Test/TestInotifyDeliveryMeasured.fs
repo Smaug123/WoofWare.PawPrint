@@ -16,14 +16,16 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// Rows are skipped, each named, where the model cannot make the call or does
 /// not yet report what it records:
 /// - a change made through a descriptor (`write`, `pwrite`, `ftruncate`), which
-///   the model does not report to a watch;
+///   the model refuses where a watch would hear of it (`refused`), not knowing
+///   the name the descriptor was opened through;
 /// - `truncate(2)`, which the model does not have;
 /// - the records of the watched inode itself going (`IN_DELETE_SELF`,
 ///   `IN_MOVE_SELF`, and the `IN_IGNORED` after them), which the model does not
 ///   queue;
 /// - a change through the current directory after `rmdir` removed it, which
 ///   Linux reports to the old parent under the old name, a name the model does
-///   not keep.
+///   not keep, and so refuses the change where that parent's watch would hear
+///   of it.
 ///
 /// A watch the probe gave `IN_ALL_EVENTS` asks here for the events the model
 /// raises, and the rows lose the records of the events it does not
@@ -58,7 +60,7 @@ module TestInotifyDeliveryMeasured =
         |> normaliseCookies
 
     /// Rows of changes made through a descriptor.
-    let private throughDescriptor : string list = [ "write" ; "pwrite" ; "ftruncate" ]
+    let private descriptorRows : string list = [ "write" ; "pwrite" ; "ftruncate" ]
 
     /// `inotify-probe.c`'s `operations`: every operation of section E or N on
     /// the directory `dir`, watched with `mask`, each row the records it
@@ -95,13 +97,13 @@ module TestInotifyDeliveryMeasured =
 
         system <- s
         row "open-creat"
-        system <- write f "hello" system
+        refused throughDescriptor (fun () -> write f "hello" system)
         row "write"
         system <- write f "" system
         row "write-0"
-        system <- pwrite f "p" 0L system
+        refused throughDescriptor (fun () -> pwrite f "p" 0L system)
         row "pwrite"
-        system <- ftruncate f 2L system
+        refused throughDescriptor (fun () -> ftruncate f 2L system)
         row "ftruncate"
         system <- close f system
         row "close-write"
@@ -174,14 +176,14 @@ module TestInotifyDeliveryMeasured =
 
     [<Test>]
     let ``section E: what each operation queues on a watched directory`` () : unit =
-        let skipped = "truncate" :: throughDescriptor
+        let skipped = "truncate" :: descriptorRows
 
         actual skipped (operations "e" modelledEvents)
         |> shouldEqual (expected probe "E" skipped)
 
     [<Test>]
     let ``section N: what each operation queues under FileSystemWatcher's mask`` () : unit =
-        let skipped = "truncate" :: throughDescriptor
+        let skipped = "truncate" :: descriptorRows
 
         actual skipped (operations "n" dotnetMask)
         |> shouldEqual (expected probe "N" skipped)
@@ -234,9 +236,13 @@ module TestInotifyDeliveryMeasured =
             let text = records |> List.map render |> String.concat " | "
             produced.Add (case, $"%d{records.Length} events: %s{text}")
 
-        system <- system |> write f "1" |> write f "2" |> write f "3"
+        for text in [ "1" ; "2" ; "3" ] do
+            refused throughDescriptor (fun () -> write f text system)
+
         counted "three-writes"
-        system <- system |> write f "4" |> chmod "c/f" 0o600 |> write f "5"
+        refused throughDescriptor (fun () -> write f "4" system)
+        system <- chmod "c/f" 0o600 system
+        refused throughDescriptor (fun () -> write f "5" system)
         counted "write-chmod-write"
         system <- system |> chmod "c/f" 0o644 |> chmod "c/g" 0o644 |> chmod "c/f" 0o600
         counted "chmod-f-g-f"
@@ -244,12 +250,15 @@ module TestInotifyDeliveryMeasured =
         counted "chmod-f-f"
         system <- close f system
         let _, s = drain fd system
-        system <- writeFile "c/h" "x" s
+        system <- writeFileRefused "c/h" "x" s
 
         let g, s =
             openFd (openFlags FileAccessMode.WriteOnly false false false) "c/g" 0 system
 
-        system <- s |> write g "a" |> write g "b" |> writeFile "c/i" "x" |> close g
+        system <- s
+        refused throughDescriptor (fun () -> write g "a" system)
+        refused throughDescriptor (fun () -> write g "b" system)
+        system <- system |> writeFileRefused "c/i" "x" |> close g
         counted "create-write-write-create"
         system <- chmod "c/f" 0o644 system
 
@@ -656,6 +665,8 @@ module TestInotifyDeliveryMeasured =
                         [
                             "a", file "a"
                             "b", file "b"
+                            "c", file "c"
+                            "e", file "e"
                             "sd", directory 0o755 []
                             "td", directory 0o755 []
                         ]
@@ -678,7 +689,6 @@ module TestInotifyDeliveryMeasured =
         row "over-watched-file"
         system <- rename "r/sd" "r/td" system
         row "over-watched-empty-dir"
-        system <- system |> writeFile "r/c" "c" |> writeFile "r/e" "e"
         let we, s = watch fd "r/e" modelledEvents system
 
         let opened, s =
@@ -748,7 +758,7 @@ module TestInotifyDeliveryMeasured =
         let drained, s = drain gone system
         system <- s
         produced.Add ("rmdir-of-current", $"p=%d{wpg} gone=%d{wg}: %s{drained}")
-        system <- chmod "." 0o700 system
+        refused throughRemovedDirectory (fun () -> chmod "." 0o700 system)
         let drained, s = drain gone system
         system <- s
         produced.Add ("chmod-removed-current", $"chmod=0: %s{drained}")

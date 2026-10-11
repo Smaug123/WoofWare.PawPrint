@@ -227,6 +227,7 @@
     <Compile Include="TestInotifyDeliveryMeasured.fs" />
     <Compile Include="TestInotifyDelivery.fs" />
     <Compile Include="TestInotifyDeliveryAgainstHost.fs" />
+    <Compile Include="TestInotifyRefusals.fs" />
     <Compile Include="TestKqueue.fs" />
     <Compile Include="KeventWorld.fs" />
     <Compile Include="TestKeventMeasured.fs" />

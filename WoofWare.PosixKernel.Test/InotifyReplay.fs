@@ -262,6 +262,31 @@ module internal InotifyReplay =
         | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> system
         | other -> failwith $"read(%d{fd}): %A{other}"
 
+    /// That `call` fails loudly, with a message holding `fragment`: a call
+    /// this kernel refuses rather than answer wrongly.
+    let refused (fragment : string) (call : unit -> 'a) : unit =
+        let error = NUnit.Framework.Assert.Throws<exn> (fun () -> call () |> ignore<'a>)
+
+        if not (error.Message.Contains fragment) then
+            failwith $"the call failed, but not for want of %s{fragment}: %s{error.Message}"
+
+    /// What the message of a change through a descriptor that some watch
+    /// would hear of holds, when this kernel refuses it.
+    let throughDescriptor : string = "the name the descriptor was opened through"
+
+    /// What the message of a change through a removed directory that its
+    /// old parent's watch would hear of holds, when this kernel refuses it.
+    let throughRemovedDirectory : string = "under the name it had"
+
+    /// The probe's `writeFile`, under a watch that would hear of its write,
+    /// which this kernel refuses: the open, the write refused, and the close.
+    let writeFileRefused (path : string) (text : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let fd, system =
+            openFd (openFlags FileAccessMode.WriteOnly true false true) path 0o644 system
+
+        refused throughDescriptor (fun () -> write fd text system)
+        close fd system
+
     /// The probe's `writeFile`: `open(O_WRONLY|O_CREAT|O_TRUNC, 0644)`, a
     /// write of `text`, and a close.
     let writeFile (path : string) (text : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
