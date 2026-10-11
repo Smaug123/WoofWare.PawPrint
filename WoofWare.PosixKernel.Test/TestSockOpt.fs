@@ -426,7 +426,7 @@ module TestSockOpt =
                 SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client), false
                 SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Server), false
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L), false
-                SocketPhase.DatagramPeer (loopback 5000us), false
+                SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 5000us)), false
                 SocketPhase.Refused RefusalError.Pending, true
                 SocketPhase.Refused RefusalError.Reported, true
             ]

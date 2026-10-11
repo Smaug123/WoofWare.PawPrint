@@ -215,7 +215,7 @@ module TestDatagramDissolve =
             let fd, system = halfBound ()
 
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) rebind) system with
-            | Ok (BindAnswer.Bound actual, after) ->
+            | Ok (BindAnswer.Bound (SocketAddress.Inet actual), after) ->
                 actual.Address |> shouldEqual rebind.Address
 
                 if rebind.Port <> 0us then
@@ -285,7 +285,9 @@ module TestDatagramDissolve =
         |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
 
         UnixSystem.checkInvariants (
-            forge SimulatedUnixPlatform.linuxX64 (SocketPhase.DatagramPeer (endpoint loopback 9000us))
+            forge
+                SimulatedUnixPlatform.linuxX64
+                (SocketPhase.DatagramPeer (SocketAddress.Inet (endpoint loopback 9000us)))
         )
         |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
 
@@ -307,7 +309,7 @@ module TestDatagramDissolve =
                 (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 0us))
                 system
         with
-        | Ok (BindAnswer.Bound actual, after) ->
+        | Ok (BindAnswer.Bound (SocketAddress.Inet actual), after) ->
             actual.Address |> shouldEqual loopback
             actual.Port |> shouldNotEqual 0us
             UnixSystem.checkInvariants after |> shouldEqual []

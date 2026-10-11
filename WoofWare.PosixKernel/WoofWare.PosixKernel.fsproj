@@ -35,6 +35,7 @@
         <Compile Include="PathWalk.fs" />
         <Compile Include="Ipv4Address.fs" />
         <Compile Include="Ipv6Address.fs" />
+        <Compile Include="SocketAddress.fs" />
         <Compile Include="ProcessId.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="Signal.fs" />

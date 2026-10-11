@@ -110,8 +110,8 @@ module TestBind =
 
     let private bound (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         match bindOrFail fd endpoint system with
-        | BindAnswer.Bound bound, system -> bound, system
-        | BindAnswer.Failed error, _ -> failwith $"expected the bind to succeed, got %O{error}"
+        | BindAnswer.Bound (SocketAddress.Inet bound), system -> bound, system
+        | answer, _ -> failwith $"expected an IPv4 bind to succeed, got %A{answer}"
 
     let private bindingOf (socketId : SocketId) (system : UnixSystem<int, string>) : SocketBinding option =
         (UnixMachineState.socket socketId system.Machine).Binding
@@ -194,7 +194,7 @@ module TestBind =
             let inside = Ipv4Endpoint.ofParts (Ipv4Address 0x7F000009u) 5000us
 
             match bindOrFail fd inside system |> fst, expected with
-            | BindAnswer.Bound where, None -> where |> shouldEqual inside
+            | BindAnswer.Bound (SocketAddress.Inet where), None -> where |> shouldEqual inside
             | BindAnswer.Failed error, Some expected -> error |> shouldEqual expected
             | answer, expected -> failwith $"platform %O{platform}: got %A{answer}, expected %A{expected}"
 
@@ -211,14 +211,14 @@ module TestBind =
 
         bindOrFail fd (loopback 1024us) system
         |> fst
-        |> shouldEqual (BindAnswer.Bound (loopback 1024us))
+        |> shouldEqual (BindAnswer.Bound (SocketAddress.Inet (loopback 1024us)))
 
         let rootFd, asRoot =
             streamAs (Some (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])) platform
 
         bindOrFail rootFd (loopback 1023us) asRoot
         |> fst
-        |> shouldEqual (BindAnswer.Bound (loopback 1023us))
+        |> shouldEqual (BindAnswer.Bound (SocketAddress.Inet (loopback 1023us)))
 
     /// Whether a port below the ceiling may be bound is decided by the effective
     /// user ID alone, measured on Linux (`credentials.c`): a real or saved uid of
@@ -229,7 +229,7 @@ module TestBind =
             [
                 // real, effective, saved, measured answer
                 0u, 1000u, 0u, BindAnswer.Failed UnixError.EACCES
-                1000u, 0u, 1000u, BindAnswer.Bound (loopback 80us)
+                1000u, 0u, 1000u, BindAnswer.Bound (SocketAddress.Inet (loopback 80us))
                 1000u, 1000u, 0u, BindAnswer.Failed UnixError.EACCES
             ]
 
@@ -277,7 +277,7 @@ module TestBind =
 
         bindOrFail datagram (loopback 5000us) system
         |> fst
-        |> shouldEqual (BindAnswer.Bound (loopback 5000us))
+        |> shouldEqual (BindAnswer.Bound (SocketAddress.Inet (loopback 5000us)))
 
     /// A family that is neither `AF_INET` nor `AF_UNSPEC`.
     [<TestCaseSource(nameof platforms)>]
@@ -312,7 +312,8 @@ module TestBind =
 
             match SimulatedUnixPlatform.flavour platform, answer with
             | SimulatedUnixFlavour.Linux, Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, _) -> ()
-            | SimulatedUnixFlavour.Darwin, Ok (BindAnswer.Bound where, _) -> where |> shouldEqual (loopback 5000us)
+            | SimulatedUnixFlavour.Darwin, Ok (BindAnswer.Bound (SocketAddress.Inet where), _) ->
+                where |> shouldEqual (loopback 5000us)
             | flavour, other -> failwith $"flavour %O{flavour}: got %A{other}"
 
     // ------------------------------------------------------------------

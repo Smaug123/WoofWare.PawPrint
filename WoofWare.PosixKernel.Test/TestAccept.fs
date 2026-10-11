@@ -679,7 +679,8 @@ module TestAccept =
 
     [<Test>]
     let ``a stream socket holding a datagram peer is a caller bug`` () : unit =
-        let socket = streamSocket (SocketPhase.DatagramPeer (loopback 9000us))
+        let socket =
+            streamSocket (SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 9000us)))
 
         let fd, system =
             withSocket (SocketId 0L) socket (systemOn SimulatedUnixPlatform.linuxX64)

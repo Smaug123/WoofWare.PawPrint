@@ -722,7 +722,7 @@ module TestUnixSystemStep =
             [
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
-                SocketPhase.DatagramPeer (Ipv4Endpoint.ofParts Ipv4Address.loopback 9us)
+                SocketPhase.DatagramPeer (SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 9us))
             ]
 
         for platform in [ linux ; darwin ] do
