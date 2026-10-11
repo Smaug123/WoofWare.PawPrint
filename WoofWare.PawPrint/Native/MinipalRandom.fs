@@ -123,6 +123,7 @@ module MinipalRandom =
     /// the errno an `open` failed with, after which the next call tries again.
     let private urandomDescriptor
         (operation : string)
+        (thread : ThreadId)
         (kernel : EmulatedKernel)
         : Result<int, UnixError> * EmulatedKernel
         =
@@ -134,21 +135,30 @@ module MinipalRandom =
 
         // `open("/dev/urandom", O_RDONLY | O_CLOEXEC)`, retried on EINTR, which
         // an open of a device never answers here.
-        match UnixNamespace.openPath (OpenFlagsPal.minipalUrandom kernel.UnixPlatform) urandomPath 0 kernel.System with
+        match
+            UnixNamespace.openPath thread (OpenFlagsPal.minipalUrandom kernel.UnixPlatform) urandomPath 0 kernel.System
+        with
         | Error refusal -> failwith $"%s{operation}: open(/dev/urandom) was refused: %s{OpenRefusal.describe refusal}"
-        | Ok (SyscallAnswer.Completed fd, system) ->
+        | Ok (SyscallOutcome.WouldBlock condition, _) ->
+            failwith
+                $"%s{operation}: open(/dev/urandom) on thread %O{thread} would sleep until %A{condition}, but only an open of a FIFO sleeps, and /dev/urandom is a device node (this is a bug in the kernel library)."
+        | Ok (SyscallOutcome.Restarts, _) ->
+            failwith
+                $"%s{operation}: open(/dev/urandom) on thread %O{thread} answered a restart, which only a finishing call answers (this is a bug in the kernel library)."
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
             let kernel = EmulatedKernel.withUnix system kernel
 
             Ok (int fd),
             { kernel with
                 ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open (int fd), lrand48)
             }
-        | Ok (SyscallAnswer.Failed UnixError.ENOENT, _) ->
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOENT), _) ->
             // minipal latches a missing `/dev/urandom` and never asks again. A
             // Linux machine here always has one, and nothing can remove it.
             failwith
                 $"%s{operation}: open(/dev/urandom) answered ENOENT, which minipal latches for the process's life; this kernel's devtmpfs always holds the node, so the latch is not modelled (this is a bug in the kernel library)."
-        | Ok (SyscallAnswer.Failed error, system) -> Error error, EmulatedKernel.withUnix system kernel
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
+            Error error, EmulatedKernel.withUnix system kernel
 
     /// `minipal_get_cryptographically_secure_random_bytes` in System.Native's
     /// copy, called on `thread`, for `length` bytes.
@@ -178,7 +188,7 @@ module MinipalRandom =
             SecureRandomFill.Filled bytes, kernel
         | ProcessRandom.Minipal _ ->
 
-        match urandomDescriptor operation kernel with
+        match urandomDescriptor operation thread kernel with
         | Error error, kernel -> SecureRandomFill.Failed (ImmutableArray.Empty, error), kernel
         | Ok fd, kernel ->
 

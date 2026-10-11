@@ -187,7 +187,7 @@ module internal FcntlWorld =
 
     /// `open(2)` of `path` with the raw word `flags`, which must succeed.
     let openRaw (flags : int) (path : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixNamespace.openPath flags (PathArg.ofText path) 0o644 system with
+        match OpenOutcomes.openPath flags (PathArg.ofText path) 0o644 system with
         | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
         | other -> failwith $"open(%s{path}, 0x%x{flags}): %A{other}"
 

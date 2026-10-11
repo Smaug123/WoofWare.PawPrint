@@ -861,7 +861,7 @@ module TestStartingDirectory =
                         let flags = if call = "openat(O_RDONLY)" then 0 else openCreate flavour
 
                         let actual =
-                            UnixNamespace.openat dirfd (pathArgument path envelope.Platform) flags 0o644 system
+                            OpenOutcomes.openat dirfd (pathArgument path envelope.Platform) flags 0o644 system
                             |> renderedOpen
 
                         if actual <> expected then
@@ -914,7 +914,7 @@ module TestStartingDirectory =
             if opened > bound then
                 failwith $"%s{context}: %d{opened} opens and the table is still not full at the bound %d{bound}"
 
-            match UnixNamespace.openPath 0 (PathArg.ofText "f") 0 system with
+            match OpenOutcomes.openPath 0 (PathArg.ofText "f") 0 system with
             | Ok (SyscallAnswer.Completed _, system) -> fill (opened + 1) system
             | Error (OpenRefusal.DescriptorLimit _) -> system
             | other -> failwith $"%s{context}: filling the table: %A{other}"
@@ -954,7 +954,7 @@ module TestStartingDirectory =
                     | other -> failwith $"%s{context}: the probe has no pathname %s{other}"
 
                 let flags = if flagLabel = "O_CREAT" then openCreate flavour else 0
-                let result = UnixNamespace.openat dirfd path flags 0o644 system
+                let result = OpenOutcomes.openat dirfd path flags 0o644 system
 
                 let ok =
                     match expected, result with
@@ -3053,8 +3053,8 @@ module TestStartingDirectory =
             let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
             let inCwd = walkSystem platform credentials cwd
 
-            UnixNamespace.openat (atFdCwd flavour) argument flags 0o644 inCwd
-            |> shouldEqual (UnixNamespace.openPath flags argument 0o644 inCwd)
+            OpenOutcomes.openat (atFdCwd flavour) argument flags 0o644 inCwd
+            |> shouldEqual (OpenOutcomes.openPath flags argument 0o644 inCwd)
 
             // Opened as root, as the descriptor properties above do, and
             // compared with open from the same tree, whose unowned entries are
@@ -3090,9 +3090,9 @@ module TestStartingDirectory =
                     Ok (answer, system.Machine.FileSystem, (UnixSystemState.fileDescriptors system))
                 | Error refusal -> Error refusal
 
-            UnixNamespace.openat fd argument flags 0o644 atRoot
+            OpenOutcomes.openat fd argument flags 0o644 atRoot
             |> outcome
-            |> shouldEqual (UnixNamespace.openPath flags argument 0o644 heldInCwd |> outcome)
+            |> shouldEqual (OpenOutcomes.openPath flags argument 0o644 heldInCwd |> outcome)
 
         Check.One (config, Prop.forAll (Arb.fromGen openCase) property)
 

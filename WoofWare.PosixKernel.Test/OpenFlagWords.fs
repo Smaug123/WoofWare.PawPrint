@@ -121,8 +121,9 @@ module internal OpenFlagWords =
         ||| bit flags.Directory OpenFlagBit.Directory
         ||| synchronous
 
-    /// `UnixNamespace.openPath`, given the flag word that stands for `flags`
-    /// on the system's own platform.
+    /// `OpenOutcomes.openPath`, by the process's leader and failing the test
+    /// if the call sleeps, given the flag word that stands for `flags` on the
+    /// system's own platform.
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : OpenFlags)
         (path : PathArgumentBytes)
@@ -130,4 +131,4 @@ module internal OpenFlagWords =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        UnixNamespace.openPath (encode system.Machine.UnixPlatform flags) path mode system
+        OpenOutcomes.openPath (encode system.Machine.UnixPlatform flags) path mode system

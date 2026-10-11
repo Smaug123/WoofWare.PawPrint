@@ -146,7 +146,7 @@ module TestPathCopyIn =
         // passed it.
         let openedRaw (word : int) =
             Some (fun path system ->
-                match UnixNamespace.openPath word path 0o644 system with
+                match OpenOutcomes.openPath word path 0o644 system with
                 | Ok (answer, _) -> ofAnswer answer
                 | Error refusal -> failwith $"open refused: %s{OpenRefusal.describe refusal}"
             )
