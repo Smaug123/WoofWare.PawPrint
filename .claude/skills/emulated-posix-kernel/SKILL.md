@@ -90,7 +90,7 @@ truthful reading**:
 
 CPU placement has both, as Linux does. A task's processor (`UnixTaskState.Cpu`,
 the one it last ran on) is a field, because every task has one. Which task each
-processor is running (`UnixMachineState.Occupants`) is a `Map<CpuId, OsThreadId>`
+processor is running (`UnixSchedulingState.Occupants`) is a `Map<CpuId, OsThreadId>`
 on the *machine*, because an idle processor is a truthful reading of an absent
 key, and because a machine's processes share its processors. Keying it by
 processor makes two tasks on one processor unrepresentable, and "is T running" is

@@ -13,8 +13,7 @@ type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
             /// How the process ended, which is what its parent's `wait` reads.
             Termination : ProcessTermination
             /// The machine the process ran on, as the process's end left it: its
-            /// tasks' thread IDs are no longer live, no processor runs one of its
-            /// tasks, the holds its tasks' calls
+            /// tasks' thread IDs are no longer live, the holds its tasks' calls
             /// in flight had on open file descriptions are let go of, so is the
             /// hold its current directory had on its inode, and its process ID is
             /// no live process's (no `wait` is modelled, so nothing keeps it).
@@ -25,6 +24,9 @@ type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
             /// `SimulatedMachine`, `SimulatedMachine.endProcess` closes them, as a
             /// real kernel does at exit, where another process can see it.
             Machine : UnixMachineState
+            /// The machine's scheduling state as the process's end left it: no
+            /// processor runs one of its tasks.
+            Scheduling : UnixSchedulingState
             /// The process's own state as it stood when it ended. It holds nothing for
             /// any task: no signal mask, and no signal pending on one task alone.
             FinalProcess : UnixProcessState<'Task, 'Handler>
@@ -156,8 +158,8 @@ module UnixTaskLifecycle =
             ||> Map.fold (fun threadIds _ state -> ThreadIdAllocator.release state.OsThreadId threadIds)
 
         let vacated =
-            (unparked.Machine, unparked.Tasks)
-            ||> Map.fold (fun machine _ state -> UnixMachineState.vacate state.Cpu state.OsThreadId machine)
+            (unparked.Scheduling, unparked.Tasks)
+            ||> Map.fold (fun scheduling _ state -> UnixSchedulingState.vacate state.Cpu state.OsThreadId scheduling)
 
         let cwd = system.Process.CurrentDirectoryInode
 
@@ -166,17 +168,19 @@ module UnixTaskLifecycle =
         let released =
             { unparked with
                 Machine =
-                    { vacated with
+                    { unparked.Machine with
                         ThreadIds = threadIds
                         ProcessIds = ProcessIdTable.remove system.Process.ProcessId unparked.Machine.ProcessIds
                     }
                     |> UnixMachineState.releaseCurrentDirectory cwd
+                Scheduling = vacated
             }
             |> ObjectLifetime.forgetIfUnheld cwd
 
         {
             Termination = termination
             Machine = released.Machine
+            Scheduling = released.Scheduling
             FinalProcess =
                 { system.Process with
                     Signals = signals
@@ -237,9 +241,10 @@ module UnixTaskLifecycle =
             TaskOutcome.Continues
                 { system with
                     Machine =
-                        { UnixMachineState.vacate state.Cpu state.OsThreadId system.Machine with
+                        { system.Machine with
                             ThreadIds = ThreadIdAllocator.release state.OsThreadId system.Machine.ThreadIds
                         }
+                    Scheduling = UnixSchedulingState.vacate state.Cpu state.OsThreadId system.Scheduling
                     Process =
                         { system.Process with
                             Signals = SignalState.forgetTask task system.Process.Signals

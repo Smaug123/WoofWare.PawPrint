@@ -90,9 +90,10 @@ module TestCopyFileSyscalls =
 
         { system with
             Machine =
-                { UnixMachineState.advanceClock later system.Machine with
+                { system.Machine with
                     FileSystem = vfs
                 }
+            Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
@@ -387,7 +388,7 @@ module TestCopyFileSyscalls =
                         "abc", owner 0u 0u, 0o644, "abc"
                     ])
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
 
         // The whole of a short file, from both offsets, then 0 at the end with
         // nothing moved.
@@ -409,7 +410,7 @@ module TestCopyFileSyscalls =
 
         let s2 =
             { s with
-                Machine = UnixMachineState.advanceClock 1_000_000_000L s.Machine
+                Scheduling = UnixSchedulingState.advanceClock 1_000_000_000L s.Scheduling
             }
 
         let answer, after = copyFileRangeAnswer inFd outFd 11UL 0 s2
@@ -738,7 +739,7 @@ module TestCopyFileSyscalls =
                             {
                                 Access = atime
                                 Modification = mtime
-                                StatusChange = UnixMachineState.realtime system.Machine
+                                StatusChange = UnixMachineState.realtime system.Scheduling system.Machine
                                 Birth = before.Times.Birth
                             }
                     }

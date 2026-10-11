@@ -1,10 +1,10 @@
 namespace WoofWare.PosixKernel
 
-/// Where a process's view of a `SimulatedMachine` was taken from: the machine
-/// and the process's own state as they stood, which `SimulatedMachine.unfocus`
-/// requires to be the machine's still, so that a view whose copy of the
-/// machine is stale, or of another history of it, is refused rather than
-/// written back over a change it never saw.
+/// Where a process's view of a `SimulatedMachine` was taken from: the machine,
+/// its scheduling state and the process's own state as they stood, which
+/// `SimulatedMachine.unfocus` requires to be the machine's still, so that a
+/// view whose copy of the machine is stale, or of another history of it, is
+/// refused rather than written back over a change it never saw.
 ///
 /// Compared by identity rather than by content, both by `unfocus` and as part
 /// of a `UnixSystem`'s equality: two views are views of the same state when
@@ -15,6 +15,7 @@ type internal FocusOrigin<'Task, 'Handler when 'Task : comparison and 'Handler :
     | NotFocused
     | FocusedFrom of
         machine : UnixMachineState *
+        scheduling : UnixSchedulingState *
         proc : UnixProcessState<'Task, 'Handler> *
         tasks : Map<'Task, UnixTaskState>
 
@@ -23,8 +24,9 @@ type internal FocusOrigin<'Task, 'Handler when 'Task : comparison and 'Handler :
         | :? FocusOrigin<'Task, 'Handler> as other ->
             match this, other with
             | NotFocused, NotFocused -> true
-            | FocusedFrom (machine, proc, tasks), FocusedFrom (machine', proc', tasks') ->
+            | FocusedFrom (machine, scheduling, proc, tasks), FocusedFrom (machine', scheduling', proc', tasks') ->
                 obj.ReferenceEquals (machine, machine')
+                && obj.ReferenceEquals (scheduling, scheduling')
                 && obj.ReferenceEquals (proc, proc')
                 && obj.ReferenceEquals (tasks, tasks')
             | NotFocused, FocusedFrom _
@@ -54,6 +56,9 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
     internal
         {
             Machine : UnixMachineState
+            /// How long the machine has been up, and which task each of its
+            /// processors runs: see `UnixSchedulingState`.
+            Scheduling : UnixSchedulingState
             Process : UnixProcessState<'Task, 'Handler>
             Tasks : Map<'Task, UnixTaskState>
             /// The process's first task, which it started with: its thread-group

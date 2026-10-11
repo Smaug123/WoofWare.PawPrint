@@ -1,0 +1,191 @@
+6.18.5 aarch64
+I	fstat	two inotify fds: same st_dev=1 same st_ino=1; inotify vs epoll: same st_dev=1 same st_ino=1; mode=600 nlink=1 size=0
+I	fstat-values	st_dev=13 st_ino=1025 ~boot
+I	flock	epoll LOCK_EX|LOCK_NB=0; then inotify LOCK_EX|LOCK_NB=-1 EAGAIN
+I	flock-after-unlock	inotify LOCK_EX|LOCK_NB=0; second inotify LOCK_EX|LOCK_NB=-1 EAGAIN
+I	lseek	SEEK_SET 0=0 SEEK_CUR 0=0 SEEK_END 0=0 SEEK_SET 5=0
+I	fcntl	IN_CLOEXEC: F_GETFL=00 (O_NONBLOCK=0 accmode=0) F_GETFD=1; IN_CLOEXEC|IN_NONBLOCK: F_GETFL=04000 (O_NONBLOCK=1)
+I	empty	poll(IN|OUT|PRI|RDHUP, 0)=0 revents=0x0; FIONREAD=0 avail=0
+I	read-nonblocking-empty	read(64)=-1 EAGAIN
+I	write	write(inotify, 1 byte)=-1 EBADF
+W	numbering	d1=1 d2=2 d1-again=1 ./w/d1/.=1
+W	events-from-adding	(none)
+W	onlydir-file	-1 ENOTDIR
+W	file	3
+W	missing	-1 ENOENT
+W	mask-0	-1 EINVAL
+W	mask-flags-only	ONLYDIR alone=2
+W	symlink-followed	add w/l (no DONT_FOLLOW)=1 (d1's wd=1)
+W	symlink-dont-follow	add w/l DONT_FOLLOW=4
+W	symlink-dont-follow-onlydir	add w/l DONT_FOLLOW|ONLYDIR=-1 ENOTDIR
+W	bad-fd	add on fd 999=-1 EBADF; add on a regular file's fd=-1 EINVAL
+W	mask-replace	wd=2; create+write+chmod under MODIFY only: wd=3 mask=OPEN cookie=0 len=0 name="" | wd=2 mask=MODIFY cookie=0 len=16 name="x"
+W	mask-add	wd=2; chmod then write under MODIFY+ATTRIB: wd=2 mask=ATTRIB cookie=0 len=16 name="x" | wd=2 mask=MODIFY cookie=0 len=16 name="x"
+W	mask-replaced-again	wd=2; chmod then create under CREATE: wd=2 mask=CREATE cookie=0 len=16 name="y"
+W	mask-create-existing	add d2 with IN_MASK_CREATE=-1 EEXIST
+W	rm	rm wd1=0; rm wd1 again=-1 EINVAL; rm 999=-1 EINVAL; rm -1=-1 EINVAL
+W	rm-events	wd=1 mask=IGNORED cookie=0 len=0 name=""
+W	re-add-after-rm	d1=5 (was 1, highest so far 4)
+W	re-add-events	(none)
+E	open-creat	wd=1 mask=CREATE cookie=0 len=16 name="f" | wd=1 mask=OPEN cookie=0 len=16 name="f"
+E	write	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	write-0	(none)
+E	pwrite	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	ftruncate	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	close-write	wd=1 mask=CLOSE_WRITE cookie=0 len=16 name="f"
+E	open-rdonly	wd=1 mask=OPEN cookie=0 len=16 name="f"
+E	read	wd=1 mask=ACCESS cookie=0 len=16 name="f"
+E	read-at-eof	(none)
+E	close-nowrite	wd=1 mask=CLOSE_NOWRITE cookie=0 len=16 name="f"
+E	open-trunc-existing	wd=1 mask=OPEN cookie=0 len=16 name="existing" | wd=1 mask=MODIFY cookie=0 len=16 name="existing"
+E	close-after-trunc	wd=1 mask=CLOSE_WRITE cookie=0 len=16 name="existing"
+E	chmod	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	chown	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	utimensat	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	truncate	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	chmod-watched-dir	wd=1 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+E	mkdir	wd=1 mask=CREATE+ISDIR cookie=0 len=16 name="sub"
+E	write-in-unwatched-subdir	(none)
+E	rmdir	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+E	symlink	wd=1 mask=CREATE cookie=0 len=16 name="lnk"
+E	link	wd=1 mask=CREATE cookie=0 len=16 name="hard"
+E	unlink-one-of-two-names	wd=1 mask=DELETE cookie=0 len=16 name="hard"
+E	unlink-symlink	wd=1 mask=DELETE cookie=0 len=16 name="lnk"
+E	rename-within	wd=1 mask=MOVED_FROM cookie=k1 len=16 name="f" | wd=1 mask=MOVED_TO cookie=k1 len=16 name="g"
+E	rename-over-existing	wd=1 mask=MOVED_FROM cookie=k2 len=16 name="g" | wd=1 mask=MOVED_TO cookie=k2 len=16 name="existing"
+E	rename-in	wd=1 mask=MOVED_TO cookie=k3 len=16 name="arrived"
+E	rename-out	wd=1 mask=MOVED_FROM cookie=k4 len=16 name="arrived"
+E	rename-dir-within	wd=1 mask=MOVED_FROM+ISDIR cookie=k5 len=16 name="sub-victim" | wd=1 mask=MOVED_TO+ISDIR cookie=k5 len=16 name="sub-renamed"
+E	rename-noop	(none)
+E	unlink	wd=1 mask=DELETE cookie=0 len=16 name="existing"
+E	rmdir-renamed-dir	wd=1 mask=DELETE cookie=0 len=16 name="victim" | wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub-renamed"
+E	wd-after-all	add again=1 (was 1)
+N	open-creat	wd=1 mask=CREATE cookie=0 len=16 name="f"
+N	write	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+N	write-0	(none)
+N	pwrite	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+N	ftruncate	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+N	close-write	(none)
+N	open-rdonly	(none)
+N	read	(none)
+N	read-at-eof	(none)
+N	close-nowrite	(none)
+N	open-trunc-existing	wd=1 mask=MODIFY cookie=0 len=16 name="existing"
+N	close-after-trunc	(none)
+N	chmod	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+N	chown	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+N	utimensat	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+N	truncate	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+N	chmod-watched-dir	wd=1 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+N	mkdir	wd=1 mask=CREATE+ISDIR cookie=0 len=16 name="sub"
+N	write-in-unwatched-subdir	(none)
+N	rmdir	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+N	symlink	wd=1 mask=CREATE cookie=0 len=16 name="lnk"
+N	link	wd=1 mask=CREATE cookie=0 len=16 name="hard"
+N	unlink-one-of-two-names	wd=1 mask=DELETE cookie=0 len=16 name="hard"
+N	unlink-symlink	wd=1 mask=DELETE cookie=0 len=16 name="lnk"
+N	rename-within	wd=1 mask=MOVED_FROM cookie=k6 len=16 name="f" | wd=1 mask=MOVED_TO cookie=k6 len=16 name="g"
+N	rename-over-existing	wd=1 mask=MOVED_FROM cookie=k7 len=16 name="g" | wd=1 mask=MOVED_TO cookie=k7 len=16 name="existing"
+N	rename-in	wd=1 mask=MOVED_TO cookie=k8 len=16 name="arrived"
+N	rename-out	wd=1 mask=MOVED_FROM cookie=k9 len=16 name="arrived"
+N	rename-dir-within	wd=1 mask=MOVED_FROM+ISDIR cookie=k10 len=16 name="sub-victim" | wd=1 mask=MOVED_TO+ISDIR cookie=k10 len=16 name="sub-renamed"
+N	rename-noop	(none)
+N	unlink	wd=1 mask=DELETE cookie=0 len=16 name="existing"
+N	rmdir-renamed-dir	wd=1 mask=DELETE cookie=0 len=16 name="victim" | wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub-renamed"
+N	wd-after-all	add again=1 (was 1)
+F	two-names-one-inode	wd via f=1 via f2=1
+F	open-write-close-via-f2	wd=1 mask=OPEN cookie=0 len=0 name="" | wd=1 mask=MODIFY cookie=0 len=0 name="" | wd=1 mask=CLOSE_WRITE cookie=0 len=0 name=""
+F	chmod	wd=1 mask=ATTRIB cookie=0 len=0 name=""
+F	rename-of-watched-file	wd=1 mask=MOVE_SELF cookie=0 len=0 name=""
+F	unlink-other-name	wd=1 mask=ATTRIB cookie=0 len=0 name=""
+F	unlink-last-name-while-open	wd=1 mask=OPEN cookie=0 len=0 name="" | wd=1 mask=ATTRIB cookie=0 len=0 name=""
+F	close-last-reference	wd=1 mask=CLOSE_NOWRITE cookie=0 len=0 name="" | wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+F	rm-after-delete-self	rm wd=-1 EINVAL
+D	wds	parent=1 sub=2
+D	rename-watched-dir	wd=1 mask=MOVED_FROM+ISDIR cookie=k11 len=16 name="sub" | wd=1 mask=MOVED_TO+ISDIR cookie=k11 len=16 name="moved" | wd=2 mask=MOVE_SELF cookie=0 len=0 name=""
+D	create-in-renamed-watched-dir	wd=2 mask=CREATE cookie=0 len=16 name="after" | wd=2 mask=OPEN cookie=0 len=16 name="after" | wd=2 mask=MODIFY cookie=0 len=16 name="after" | wd=2 mask=CLOSE_WRITE cookie=0 len=16 name="after"
+D	unlink-inside	wd=2 mask=DELETE cookie=0 len=16 name="inner" | wd=2 mask=DELETE cookie=0 len=16 name="after"
+D	rmdir-watched-dir	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="moved"
+D	rm-after-ignored	rm sub's wd=-1 EINVAL
+D	new-watch-wd	sub2=3
+D	mkdir-sub2-events	wd=1 mask=CREATE+ISDIR cookie=0 len=16 name="sub2"
+D	watched-dir-moved-out	wd=1 mask=MOVED_FROM+ISDIR cookie=k12 len=16 name="sub2" | wd=3 mask=MOVE_SELF cookie=0 len=0 name=""
+D	create-in-moved-out-dir	wd=3 mask=CREATE cookie=0 len=16 name="x" | wd=3 mask=OPEN cookie=0 len=16 name="x" | wd=3 mask=MODIFY cookie=0 len=16 name="x" | wd=3 mask=CLOSE_WRITE cookie=0 len=16 name="x"
+D	unlink-open-file	wd=1 mask=OPEN cookie=0 len=16 name="open" | wd=1 mask=DELETE cookie=0 len=16 name="open"
+D	write-unlinked-no-excl	wd=1 mask=MODIFY cookie=0 len=16 name="open"
+D	write-unlinked-excl-unlink	wd=1 (parent was 1): (none)
+D	close-unlinked-excl-unlink	(none)
+H	wds	h=1 other=2
+H	open-three-names	wd=1 mask=OPEN cookie=0 len=16 name="a" | wd=1 mask=OPEN cookie=0 len=16 name="b" | wd=2 mask=OPEN cookie=0 len=16 name="c"
+H	write-via-a	wd=1 mask=MODIFY cookie=0 len=16 name="a"
+H	write-via-b	wd=1 mask=MODIFY cookie=0 len=16 name="b"
+H	write-via-other/c	wd=2 mask=MODIFY cookie=0 len=16 name="c"
+H	fchmod-via-a	wd=1 mask=ATTRIB cookie=0 len=16 name="a"
+H	write-via-a-after-rename-to-renamed	wd=1 mask=MODIFY cookie=0 len=16 name="renamed"
+H	write-via-a-after-move-to-other/moved	wd=2 mask=MODIFY cookie=0 len=16 name="moved"
+H	write-via-b-after-unlink-of-b	wd=1 mask=MODIFY cookie=0 len=16 name="b"
+H	closes	wd=2 mask=CLOSE_WRITE cookie=0 len=16 name="moved" | wd=1 mask=CLOSE_WRITE cookie=0 len=16 name="b" | wd=2 mask=CLOSE_WRITE cookie=0 len=16 name="c"
+L	name-length	1 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	2 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	11 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	12 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	13 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	15 chars: record=32 bytes len=16 zero-padded=1
+L	name-length	16 chars: record=48 bytes len=32 zero-padded=1
+L	name-length	17 chars: record=48 bytes len=32 zero-padded=1
+L	name-length	31 chars: record=48 bytes len=32 zero-padded=1
+L	name-length	32 chars: record=64 bytes len=48 zero-padded=1
+L	name-length	255 chars: record=272 bytes len=256 zero-padded=1
+L	sizeof	sizeof(struct inotify_event)=16
+C	three-writes	1 events: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+C	write-chmod-write	3 events: wd=1 mask=MODIFY cookie=0 len=16 name="f" | wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=MODIFY cookie=0 len=16 name="f"
+C	chmod-f-g-f	3 events: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=ATTRIB cookie=0 len=16 name="g" | wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+C	chmod-f-f	1 events: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+C	create-write-write-create	5 events: wd=1 mask=CREATE cookie=0 len=16 name="h" | wd=1 mask=MODIFY cookie=0 len=16 name="h" | wd=1 mask=MODIFY cookie=0 len=16 name="g" | wd=1 mask=CREATE cookie=0 len=16 name="i" | wd=1 mask=MODIFY cookie=0 len=16 name="i"
+C	separated-by-read	first read=32 second read=32
+R	count-0-with-event-queued	read(0)=-1 EINVAL
+R	count-15	read(15)=-1 EINVAL
+R	count-16	read(16)=-1 EINVAL
+R	count-31	read(31)=-1 EINVAL
+R	fionread-one-event	32
+R	count-32	read(32)=32
+R	fionread-two-events	64
+R	count-48-of-64	read(48)=32
+R	count-1024-rest	read(1024)=32
+R	count-0-empty	read(0)=-1 EAGAIN
+R	count-1024-empty	read(1024)=-1 EAGAIN
+R	null-buffer	read(NULL, 1024)=-1 EFAULT
+R	then-valid	read(1024)=-1 EAGAIN
+P	epoll-ctl-add	0
+P	epoll-wait-empty	0
+P	poll-with-event	poll=1 revents=0x1
+P	epoll-wait-with-event	n=1 events=0x1 data=7
+P	poll-after-drain	poll=0 revents=0x0
+P	poll-out-only	poll=0 revents=0x0
+P	epoll-level	first=1 second=1
+K	adjacent-renames	events=4 cookie1=cookie2:1 cookie3-cookie1=1
+K	first-cookie	7544 ~boot
+K	second-instance	events=4 same cookie as first instance=1
+A	wds	instance1=1 instance2=1 via-dup=1
+A	instance1-via-dup	wd=1 mask=CREATE cookie=0 len=16 name="x" | wd=1 mask=DELETE cookie=0 len=16 name="x"
+A	instance1-original-after-dup-drained	(none)
+A	instance2	wd=1 mask=CREATE cookie=0 len=16 name="x"
+A	after-dup-closed	wd=1 mask=CREATE cookie=0 len=16 name="y"
+O	sysctl	max_user_instances=128 max_user_watches=8982 max_queued_events=16384 ~boot
+O	fionread-full	524304 bytes after 21384 alternating chmods
+O	drained	records=16385 overflow-record-index=16384 (0-based) records-after-overflow=0 overflow=wd=-1 mask=Q_OVERFLOW cookie=0 len=0
+O	after-overflow-drained	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+O	second-fill	records=16385 overflow-records=1
+O	event-for-new-watch-while-full	late wd=2 records=16385 records-for-late=0
+O	late-after-drain	wd=2 mask=CREATE cookie=0 len=16 name="y"
+B	blocked-before-event	thread returned=0 after 100 ms
+B	event	returned=1 result=32  events=wd=1 mask=CREATE cookie=0 len=16 name="x"
+B	blocked-again	returned=0
+B	rm-watch-wakes	returned=1 result=16  events=wd=1 mask=IGNORED cookie=0 len=0 name=""
+B	no-watches	returned after 150 ms=0
+B	close-under-read	close=0; thread returned after 150 ms=0
+B	signal	returned=1 result=-1 EINTR
+B	signal-sa-restart	returned=0
+B	event-after-restart	returned=1 result=32 events=wd=1 mask=CREATE cookie=0 len=16 name="y"
+S	instances	created 127 before EMFILE (uid 0) ~boot
+S	watches	added 8981 before ENOSPC (stopped at 20000) ~boot

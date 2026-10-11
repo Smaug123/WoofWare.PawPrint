@@ -232,7 +232,7 @@ module TestPipeAgainstHost =
                 // Up a second before the pipe is made, so that its creation is
                 // not the epoch that Darwin reports as its birth.
                 { system with
-                    Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
+                    Scheduling = UnixSchedulingState.advanceClock 1_000_000_000L system.Scheduling
                 }
 
             let property (startNonBlocking : bool, ops : HostPipeOp list) : unit =
@@ -309,7 +309,7 @@ module TestPipeAgainstHost =
 
                         system <-
                             { system with
-                                Machine = UnixMachineState.advanceClock 1000L system.Machine
+                                Scheduling = UnixSchedulingState.advanceClock 1000L system.Scheduling
                             }
 
                         let liveSlots = List.toArray slots

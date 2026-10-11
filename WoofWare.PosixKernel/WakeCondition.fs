@@ -376,7 +376,7 @@ module WakeCondition =
         | WakePrimitive.ConnectionWritable (writer, remaining) ->
             let connectionEnd, transfer = connectionOfWaiter primitive writer system
             TcpTransfer.writeResumes connectionEnd remaining transfer
-        | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+        | WakePrimitive.DeadlinePassed deadline -> system.Scheduling.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
         // `satisfied` answers a call a close has ended before it asks any
         // primitive, so this is asked only of one no close has ended.

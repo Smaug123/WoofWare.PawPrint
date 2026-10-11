@@ -172,7 +172,7 @@ module UnixClock =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTimestamp
         =
-        truncate 1000 (UnixMachineState.realtime system.Machine)
+        truncate 1000 (UnixMachineState.realtime system.Scheduling system.Machine)
 
     /// `clock_gettime(2)`: read the clock `clockId` names on this machine's flavour.
     ///
@@ -207,9 +207,9 @@ module UnixClock =
         | ClockDecoding.Invalid -> Ok (Error UnixError.EINVAL)
         | ClockDecoding.Refused refusal -> Error refusal
         | ClockDecoding.Reads (ClockSource.Realtime granularity) ->
-            Ok (Ok (truncate granularity (UnixMachineState.realtime machine)))
+            Ok (Ok (truncate granularity (UnixMachineState.realtime system.Scheduling machine)))
         | ClockDecoding.Reads (ClockSource.SinceBoot granularity) ->
-            let sinceBoot = machine.NanosecondsSinceBoot
+            let sinceBoot = system.Scheduling.NanosecondsSinceBoot
 
             // Unreachable through the public API: only `advanceClock` moves the
             // uptime, and it refuses to make it negative.

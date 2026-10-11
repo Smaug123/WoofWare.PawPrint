@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 open System.Collections.Immutable
 
 /// The kernel-image facts a POSIX simulator owns: the platform it is
-/// impersonating, its filesystem, its clock and entropy, its network
+/// impersonating, its filesystem, when its clock started, its entropy, its network
 /// configuration, its open file descriptions and its socket and pipe tables,
 /// what clients draining its pipes have received, and the two numbers a process
 /// reads back about the machine it is running on.
@@ -184,17 +184,8 @@ type internal UnixMachineState =
             /// `SocketId`, but a replay trace does, and reuse would make two
             /// distinct sockets indistinguishable in it.
             NextSocketId : SocketId
-            /// Time since this machine booted, in nanoseconds: what its monotonic
-            /// clocks read. Never negative.
-            ///
-            /// Nothing in this library moves it. The client decides how fast its
-            /// simulated machine runs and when time passes, and says so through
-            /// `UnixMachineState.advanceClock`, the only way it changes; between two
-            /// advances every clock stands still, so readings taken between them all
-            /// name the same instant.
-            NanosecondsSinceBoot : int64
             /// What the realtime clock read when this machine booted. The realtime
-            /// clock reads this plus `NanosecondsSinceBoot`.
+            /// clock reads this plus `UnixSchedulingState.NanosecondsSinceBoot`.
             ///
             /// So the two clocks cannot drift apart, and the realtime clock never
             /// steps or slews on its own as a real one does under NTP or
@@ -218,20 +209,6 @@ type internal UnixMachineState =
             /// different value with `UnixBootImage.withProcessorCount`, which
             /// refuses anything below 1, since programs divide by it.
             ProcessorCount : int
-            /// The task running on each busy logical processor, by its thread ID:
-            /// what Linux calls a run queue's current task. An idle processor is
-            /// absent.
-            ///
-            /// The client reports each task it runs with `UnixScheduling.dispatch`,
-            /// which puts it here, displacing whichever task the processor ran
-            /// before, whatever process that task belongs to. A task leaves it when
-            /// it is dispatched elsewhere, when it parks in a syscall
-            /// (`UnixWait.park`), and when it exits or its process ends. Keyed by
-            /// processor, so no processor runs two tasks; on the machine rather
-            /// than a process, because the machine's processes share its
-            /// processors; and by thread ID, which no two live tasks on the machine
-            /// share.
-            Occupants : Map<CpuId, OsThreadId>
             /// Whether this machine's kernel screens a read or write buffer before
             /// it performs the operation, and if so the greatest value
             /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
@@ -327,48 +304,13 @@ module UnixMachineState =
 
     /// Latest `BootTime`, in whole seconds since the Unix epoch, from which the
     /// realtime clock stays inside `time_t` however long the machine stays up: the
-    /// largest `time_t`, less the whole seconds in the longest uptime
-    /// `NanosecondsSinceBoot` can hold, less one more second that the two
-    /// nanosecond parts can carry.
+    /// largest `time_t`, less the whole seconds in the longest uptime the clock
+    /// can hold (`Int64.MaxValue` nanoseconds), less one more second that the
+    /// two nanosecond parts can carry.
     [<Literal>]
     let maxBootTimeSeconds : int64 = 9223372027631403770L
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
-
-    /// Let `nanoseconds` pass on this machine: every clock it has moves forward
-    /// by that much. Advancing by zero changes nothing.
-    ///
-    /// Refuses a negative amount, since no clock this kernel models runs
-    /// backwards, and one that would take `NanosecondsSinceBoot` past
-    /// `Int64.MaxValue` (about 292 years of uptime), beyond which no monotonic
-    /// reading can be represented.
-    let internal advanceClock (nanoseconds : int64) (machine : UnixMachineState) : UnixMachineState =
-        if nanoseconds < 0L then
-            failwith
-                $"UnixMachineState.advanceClock: %d{nanoseconds} ns is negative, and every clock this kernel models is monotonic."
-
-        // Unreachable through the public API, which builds no machine but through
-        // this function and `UnixSystem.initial`; checked because
-        // the overflow test below is only sound for a non-negative uptime.
-        if machine.NanosecondsSinceBoot < 0L then
-            failwith
-                $"UnixMachineState.advanceClock: the machine has been up for %d{machine.NanosecondsSinceBoot} ns, which is negative. No uptime can be; the machine was assembled without this function."
-
-        if nanoseconds > System.Int64.MaxValue - machine.NanosecondsSinceBoot then
-            failwith
-                $"UnixMachineState.advanceClock: advancing %d{machine.NanosecondsSinceBoot} ns of uptime by %d{nanoseconds} ns passes %d{System.Int64.MaxValue} ns (about 292 years), the longest uptime this kernel represents."
-
-        { machine with
-            NanosecondsSinceBoot = machine.NanosecondsSinceBoot + nanoseconds
-        }
-
-    /// How long this machine has been up, to the nanosecond.
-    ///
-    /// The client that decides when time passes reads this through
-    /// `UnixSystem.nanosecondsSinceBoot`, to know how far to `advanceClock`. A
-    /// process reads the same instant through `UnixClock.clockGettime`, at the
-    /// granularity its flavour reports.
-    let internal nanosecondsSinceBoot (machine : UnixMachineState) : int64 = machine.NanosecondsSinceBoot
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
     /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs
@@ -412,27 +354,6 @@ module UnixMachineState =
     let internal hasProcessor (cpu : CpuId) (machine : UnixMachineState) : bool =
         let (CpuId.CpuId index) = cpu
         index >= 0 && index < machine.ProcessorCount
-
-    /// Whether `cpu` is running the task whose thread ID is `occupant`. See
-    /// `UnixMachineState.Occupants`.
-    let internal runs (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : bool =
-        // Allocates nothing, unlike `Map.tryFind cpu machine.Occupants = Some occupant`, since
-        // a client dispatches once per instruction.
-        let mutable running = Unchecked.defaultof<OsThreadId>
-
-        machine.Occupants.TryGetValue (cpu, &running)
-        && OsThreadId.toUInt64 running = OsThreadId.toUInt64 occupant
-
-    /// `machine` with the task whose thread ID is `occupant` taken off `cpu`,
-    /// if it is running there, leaving the processor idle. See
-    /// `UnixMachineState.Occupants`.
-    let internal vacate (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : UnixMachineState =
-        if runs cpu occupant machine then
-            { machine with
-                Occupants = Map.remove cpu machine.Occupants
-            }
-        else
-            machine
 
     /// Every write that has reached a client draining one of this machine's
     /// pipes, oldest first: what the outside world has received from the
@@ -1081,19 +1002,22 @@ module UnixMachineState =
     /// a `net.inet.tcp.sendspace` above it, and caps any buffer at it.
     let darwinSocketBufferMax : int = 8388608
 
-    /// The realtime clock's reading, to the nanosecond: `BootTime` plus
-    /// `NanosecondsSinceBoot`.
+    /// The realtime clock's reading, to the nanosecond, on `machine` when
+    /// `scheduling` is how long it has been up: `BootTime` plus
+    /// `UnixSchedulingState.NanosecondsSinceBoot`.
     ///
     /// This is the instant the kernel stamps on an inode it changes.
     /// `clock_gettime(CLOCK_REALTIME)` reports the same clock, but at the
     /// granularity its flavour reports it at; see `UnixClock.clockGettime`.
-    let internal realtime (machine : UnixMachineState) : UnixTimestamp =
+    let internal realtime (scheduling : UnixSchedulingState) (machine : UnixMachineState) : UnixTimestamp =
+        let sinceBoot = scheduling.NanosecondsSinceBoot
+
         // Both unreachable through the public API, which sets these only through
         // `withBootTime` and `advanceClock`; checked because the carry below is only sound when each
         // operand is inside the range those two admit.
-        if machine.NanosecondsSinceBoot < 0L then
+        if sinceBoot < 0L then
             failwith
-                $"UnixMachineState.realtime: the machine has been up for %d{machine.NanosecondsSinceBoot} ns, which is negative. No uptime can be; the machine was assembled without advanceClock."
+                $"UnixMachineState.realtime: the machine has been up for %d{sinceBoot} ns, which is negative. No uptime can be; the machine was assembled without advanceClock."
 
         let bootSeconds = UnixTimestamp.seconds machine.BootTime
 
@@ -1103,13 +1027,13 @@ module UnixMachineState =
 
         let nanoseconds =
             int64 (UnixTimestamp.nanoseconds machine.BootTime)
-            + machine.NanosecondsSinceBoot % nanosecondsPerSecond
+            + sinceBoot % nanosecondsPerSecond
 
         let carry = nanoseconds / nanosecondsPerSecond
 
         UnixTimestamp.createOrFail
             "UnixMachineState.realtime"
-            (bootSeconds + machine.NanosecondsSinceBoot / nanosecondsPerSecond + carry)
+            (bootSeconds + sinceBoot / nanosecondsPerSecond + carry)
             (int (nanoseconds % nanosecondsPerSecond))
 
     /// `machine` with the timestamps of the pipe `pipeId` passed through
@@ -1142,12 +1066,17 @@ module UnixMachineState =
 
     /// What a read reaching `pipeId`'s read operation, or ending a sleep on it,
     /// does to its timestamps: on Darwin, moves the read end's `st_atime` to
-    /// now; on Linux, nothing.
-    let internal touchedByPipeRead (pipeId : PipeId) (machine : UnixMachineState) : UnixMachineState =
+    /// now, the instant `scheduling` says; on Linux, nothing.
+    let internal touchedByPipeRead
+        (pipeId : PipeId)
+        (scheduling : UnixSchedulingState)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
         match SimulatedUnixPlatform.flavour machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> machine
         | SimulatedUnixFlavour.Darwin ->
-            let now = realtime machine
+            let now = realtime scheduling machine
 
             withPipeTimes
                 pipeId
@@ -1160,12 +1089,17 @@ module UnixMachineState =
 
     /// What a write reaching `pipeId`'s write operation, or ending a sleep on
     /// it, does to its timestamps: on Darwin, moves `st_mtime` and `st_ctime`
-    /// of both ends to now; on Linux, nothing.
-    let internal touchedByPipeWrite (pipeId : PipeId) (machine : UnixMachineState) : UnixMachineState =
+    /// of both ends to now, the instant `scheduling` says; on Linux, nothing.
+    let internal touchedByPipeWrite
+        (pipeId : PipeId)
+        (scheduling : UnixSchedulingState)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
         match SimulatedUnixPlatform.flavour machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> machine
         | SimulatedUnixFlavour.Darwin ->
-            let now = realtime machine
+            let now = realtime scheduling machine
 
             withPipeTimes
                 pipeId

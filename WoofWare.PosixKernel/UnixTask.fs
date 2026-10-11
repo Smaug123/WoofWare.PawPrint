@@ -618,7 +618,7 @@ type UnixTaskState =
             /// processor, as a blocked Linux task keeps its last processor
             /// (`docs/plans/2026-08-23-posix-kernel-extraction/cpu-placement.c`,
             /// section `sleeper`). Whether the task is running there is the
-            /// machine's record (`UnixMachineState.Occupants`), which
+            /// machine's record (`UnixSchedulingState.Occupants`), which
             /// `UnixScheduling.runningOn` reads; `sched_getcpu(3)` reports this
             /// only while the task runs.
             Cpu : CpuId

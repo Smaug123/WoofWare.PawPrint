@@ -24,7 +24,7 @@ module UnixWait =
     /// made before it, and taking the holds the call keeps on the open file
     /// descriptions it names (`ParkedSyscall.descriptions`). A task that sleeps
     /// is no longer running, so it leaves its processor idle
-    /// (`UnixMachineState.Occupants`).
+    /// (`UnixSchedulingState.Occupants`).
     ///
     /// Refuses to replace a park of one syscall with a park of another, and
     /// otherwise accepts a re-park of the same syscall, which moves the task to
@@ -49,7 +49,7 @@ module UnixWait =
                 { system.Machine with
                     NextParkOrdinal = ParkOrdinal.ParkOrdinal (ordinal + 1L)
                 }
-                |> UnixMachineState.vacate state.Cpu state.OsThreadId
+            Scheduling = UnixSchedulingState.vacate state.Cpu state.OsThreadId system.Scheduling
         }
         |> UnixParkState.setPark task taskPark
 
