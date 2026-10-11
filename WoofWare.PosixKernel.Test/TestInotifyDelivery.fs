@@ -35,6 +35,8 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///   name, then at the inode's own watch, `IN_ATTRIB` for a mode, an owner or
 ///   both times, `IN_MODIFY` for a truncation or the modification time alone,
 ///   and `IN_ACCESS`, which no watch can ask for, for the access time alone;
+/// - a record carries every event of its change, whichever the watch asked
+///   for;
 /// - `IN_ISDIR` when the inode is a directory; and a record repeating the
 ///   newest queued is dropped.
 [<TestFixture>]
@@ -266,7 +268,7 @@ module TestInotifyDelivery =
         walk "/" components
 
     /// `reference` with `events` reported to each instance's watch on `inode`
-    /// that asks for any of them, as one record each.
+    /// that asks for any of them, as one record each carrying all of them.
     let private notify
         (inode : int)
         (events : uint32)
@@ -282,14 +284,14 @@ module TestInotifyDelivery =
             | None -> reference
             | Some (wd, mask) ->
 
-            let asked = events &&& mask
-
-            if asked = 0u then
+            // The watch's mask decides whether the record is queued, not which
+            // events it carries.
+            if events &&& mask = 0u then
                 reference
             else
 
             let record : Expected =
-                wd, asked ||| (if isDir then 0x40000000u else 0u), cookie, entry
+                wd, events ||| (if isDir then 0x40000000u else 0u), cookie, entry
 
             let queued = reference.Queued.[instance]
 

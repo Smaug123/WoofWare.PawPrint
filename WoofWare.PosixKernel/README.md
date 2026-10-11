@@ -454,7 +454,7 @@ An instance is an open file description, `OpenFileTarget.Inotify`, holding its w
 `read(2)` takes whole records from it, each laid out as `struct inotify_event` (`InotifyRecord.toBytes`), and answers `EINVAL` if the oldest does not fit; with none queued it answers `EAGAIN` through a non-blocking description and otherwise sleeps.
 `poll(2)` and epoll report it readable while it holds a record, and `ioctl(FIONREAD)` (`UnixDescriptor.bytesAvailable`) reports the bytes it holds.
 Each user's instances and watches count against the machine's `InotifyLimits`, in every process.
-A change to the filesystem, made by any process, queues a record on every instance watching what it changed, of the events the watch asks for, in Linux's order:
+A change to the filesystem, made by any process, queues a record on every instance watching what it changed whose watch asks for any of its events, carrying all of them, in Linux's order:
 a name created, removed or renamed is `IN_CREATE`, `IN_DELETE`, or `IN_MOVED_FROM` and `IN_MOVED_TO` sharing a cookie, at the watch on its directory, with `IN_ISDIR` for a directory;
 an inode's gained or lost link (a hard link, an unlink, a rename over it) is `IN_ATTRIB` at its own watch;
 and `chmod`, `chown`, `utimensat` or an `open` with `O_TRUNC` through a path is one record, `IN_ATTRIB` or `IN_MODIFY` as Linux chooses, at the watch on the directory of the name the path reached and then at the inode's own.

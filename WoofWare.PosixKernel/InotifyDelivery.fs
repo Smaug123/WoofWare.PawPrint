@@ -81,8 +81,8 @@ type internal ChangeNotice =
     | Written
 
 /// One event Linux's fsnotify raises at the watches on one inode: what each
-/// inotify instance watching `Watched` queues, of the events it asks for, as
-/// one record.
+/// inotify instance watching `Watched` queues as one record, if it asks for
+/// any of `Events`.
 type internal InotifyNotification =
     {
         /// The inode whose watches hear of the event: a directory, for an
@@ -273,9 +273,12 @@ module internal InotifyDelivery =
 
     /// `openFiles` with each of `notifications` queued, in order, on every
     /// inotify instance that watches its inode and asks for any of its events:
-    /// one record of the events it asks for (`OpenFileTable.enqueueInotify`).
-    /// Instances hear of each notification in the order of their descriptions'
-    /// IDs.
+    /// one record carrying every one of its events, those the watch did not
+    /// ask for included (`OpenFileTable.enqueueInotify`). Measured
+    /// (`inotify-delivery-probe.c` rows Z open-trunc-modify-watch and
+    /// open-trunc-attrib-watch): a truncation that clears set-ID bits queues
+    /// `MODIFY+ATTRIB` under a watch asking for either alone. Instances hear
+    /// of each notification in the order of their descriptions' IDs.
     let deliver
         (maxQueuedEvents : int)
         (notifications : InotifyNotification list)
@@ -318,15 +321,13 @@ module internal InotifyDelivery =
                 | None -> table
                 | Some (watch, mask) ->
 
-                let asked = Set.intersect notification.Events mask.Events
-
-                if asked.IsEmpty then
+                if Set.intersect notification.Events mask.Events |> Set.isEmpty then
                     table
                 else
                     let record =
                         InotifyRecord.Event (
                             watch,
-                            asked,
+                            notification.Events,
                             notification.SubjectIsDirectory,
                             notification.Cookie,
                             notification.Name
