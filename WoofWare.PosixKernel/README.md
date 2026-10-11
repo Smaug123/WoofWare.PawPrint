@@ -49,7 +49,7 @@ After that come the parts of a running process that are the client's rather than
 
 The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* the machine: the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the processes on it and the directories they stand in, the clock, the entropy pool, and the platform being simulated;
+* the machine: the filesystem, the open file descriptions (with the state of each epoll instance, kqueue and inotify instance, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the processes on it and the directories they stand in, the clock, the entropy pool, and the platform being simulated;
 * the process: the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
 * the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything. A client looks a task up in `UnixSystem.tasks` by its own name for it, which has no entry for a task that was never created or has exited, and reads what it finds with `UnixTaskState`'s readers: `UnixTaskState.parkedIn` (the syscall it sleeps in), `UnixTaskState.cpu` and `UnixTaskState.osThreadId` (what `gettid(2)` answers).
 
@@ -83,6 +83,7 @@ In prose, as in the tables, a type's `'Task` and `'Handler` arguments are left o
 
 `UnixSystem.initial` builds the *boot image* of a machine of the given `SimulatedUnixPlatform` that has not done anything yet: a `UnixBootImage`, which no syscall takes.
 Configure it with the setters in the `UnixBootImage` module, such as `UnixBootImage.withFileSystem`, `UnixBootImage.withMount`, `UnixBootImage.withBootTime`, `UnixBootImage.withProcessorCount` and `UnixBootImage.withProcessId` (the first process's ID, where the machine's counters start).
+Sysctls are configuration too: `UnixBootImage.withInotifyLimits` sets Linux's `fs.inotify` limits (`InotifyLimits`), which default to `UnixSystem.defaultInotifyLimits` (128 instances and 8192 watches per user, 16384 records per instance).
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 
 How a process starts is a `ProcessLaunch`.
@@ -422,6 +423,23 @@ A connected TCP socket's `read` and `write` move bytes through its connection, w
 | Darwin's `kqueue(2)` | `UnixKqueue.kqueue` | `Result<int * UnixSystem, KqueueRefusal>` |
 | Darwin's `kevent(2)` | `UnixKqueue.kevent (task : 'Task) (kq : int) (nchanges : int) (changes : Kevent list) (nevents : int) (eventlist : UserBuffer) (timeout : KeventTimeout)` | `Result<KeventOutcome * UnixSystem, KeventRefusal>` |
 
+#### Watching the filesystem
+
+Linux's inotify.
+An instance is an open file description, `OpenFileTarget.Inotify`, holding its watches and the records it has queued (`InotifyState`); a `dup` of its descriptor shares it, and it goes with its last reference.
+`read(2)` takes whole records from it, each laid out as `struct inotify_event` (`InotifyRecord.toBytes`), and answers `EINVAL` if the oldest does not fit; with none queued it answers `EAGAIN` through a non-blocking description and otherwise sleeps.
+`poll(2)` and epoll report it readable while it holds a record, and `ioctl(FIONREAD)` (`UnixDescriptor.bytesAvailable`) reports the bytes it holds.
+Each user's instances and watches count against the machine's `InotifyLimits`, in every process.
+In this version no filesystem change is reported to a watch: the only records an instance queues are the `IN_IGNORED` of a watch `inotify_rm_watch` removes, and the `IN_Q_OVERFLOW` of a full queue.
+A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal`).
+Darwin has no inotify, and refuses every call.
+
+| Call | Function | Answers |
+| --- | --- | --- |
+| `inotify_init1(2)` | `UnixInotify.inotifyInit1 (flags : int)` | `Result<Result<int * UnixSystem, UnixError>, InotifyRefusal>` |
+| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (path : PathArgumentBytes) (mask : uint32)` | `Result<SyscallAnswer * UnixSystem, InotifyAddWatchRefusal>` |
+| `inotify_rm_watch(2)` | `UnixInotify.inotifyRmWatch (fd : int) (wd : int)` | `Result<SyscallAnswer * UnixSystem, InotifyRefusal>` |
+
 #### Signals
 
 | Call | Function | Answers |
@@ -489,7 +507,7 @@ A client that holds every argument already, such as a replayer, uses the one-sho
 #### One entry point
 
 `UnixSystem.step (task : 'Task) (call : Syscall)` reaches some of the syscalls through one function, as cases of the `Syscall` type, for a client that wants to log, replay or generate them; it answers `Result<SyscallOutcome * UnixSystem, SyscallRefusal>`.
-Only the calls with a `Syscall` case are reachable through it, from `dup` and `fcntl` to `setgroups`: each answers a `SyscallOutcome`, which is one integer, an errno, or a sleep.
+Only the calls with a `Syscall` case are reachable through it, from `dup` and `fcntl` to `setgroups`, `inotify_init1` and `inotify_rm_watch`: each answers a `SyscallOutcome`, which is one integer, an errno, or a sleep.
 Many calls are not there, `open`, `socket`, `bind`, `connect`, `kill` and `sigaction` among them, and are reached only through their own functions.
 
 ### Checking the tables
@@ -554,7 +572,7 @@ A woken task finishes its call through its family's finishing function, which ma
 | `ParkedSyscall.EpollWait` | `UnixPoll.finishEpollWait (task : 'Task)` |
 | `ParkedSyscall.Kevent` | `UnixKqueue.finishKevent (task : 'Task)` |
 | `ParkedSyscall.Accept` | `UnixConnection.finishAccept (task : 'Task)` |
-| `ParkedSyscall.PipeRead`, `ParkedSyscall.ConnectionRead` (a `read` or `recv`) | `UnixReadWrite.finishRead (task : 'Task)` |
+| `ParkedSyscall.PipeRead`, `ParkedSyscall.ConnectionRead`, `ParkedSyscall.InotifyRead` (a `read` or `recv`) | `UnixReadWrite.finishRead (task : 'Task)` |
 | `ParkedSyscall.PipeWrite`, `ParkedSyscall.ConnectionWrite` (a `write` or `send`) | `UnixReadWrite.admitFinishWrite (task : 'Task)`, then `UnixReadWrite.finishWrite (task : 'Task) (bytes : ImmutableArray<byte>)` |
 | `ParkedSyscall.SigSuspend` (a `sigsuspend`, `rt_sigsuspend` or `pause`) | `UnixSignal.finishSigsuspend (task : 'Task)` |
 
@@ -946,6 +964,9 @@ On Linux it is a devtmpfs holding a node for each device the kernel has a driver
 Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
 `CharacterDevice.Zero` and `CharacterDevice.Random` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names either.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
+
+Some interfaces are one flavour's alone, and the other flavour refuses every call of them rather than answering: no kernel of that flavour has the call, so there is no answer to measure.
+Linux has epoll and inotify, and Darwin kqueue.
 
 WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.
 A design goal of WoofWare.PosixKernel is that the library refuses rather than providing an answer which has not been measured on the platform it's been told to simulate.

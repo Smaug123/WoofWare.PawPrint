@@ -108,6 +108,11 @@ type internal UnixMachineState =
             /// Host configuration with a per-flavour default; see
             /// `UnixBootImage.withSoMaxConn` for the measured clamp rules.
             SoMaxConn : int
+            /// The `fs.inotify` sysctls: how many inotify instances and
+            /// watches one user may hold, and how many records an instance
+            /// queues. Host configuration; see `UnixBootImage.withInotifyLimits`
+            /// and `UnixSystem.defaultInotifyLimits`.
+            InotifyLimits : InotifyLimits
             /// The send buffer a new TCP socket starts with, in bytes: Darwin's
             /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
             /// default. Host configuration with a per-flavour default; see
@@ -498,6 +503,9 @@ module UnixMachineState =
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _
+            // A watch does not keep the inode it watches: the watch goes
+            // when the inode does.
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq

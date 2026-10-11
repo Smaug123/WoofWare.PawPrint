@@ -15,9 +15,10 @@ namespace WoofWare.PosixKernel
 /// `uint32` states both.
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
-/// answers, both ends of a pipe, and regular files, directories and character
-/// devices (which epoll will not register, but `poll` answers). An epoll
-/// instance is refused: what either waiter reports for one is not modelled.
+/// answers, both ends of a pipe, an inotify instance, and regular files,
+/// directories and character devices (which epoll will not register, but
+/// `poll` answers). An epoll instance is refused: what either waiter reports
+/// for one is not modelled.
 [<RequireQualifiedAccess>]
 module internal LinuxReadiness =
 
@@ -148,6 +149,14 @@ module internal LinuxReadiness =
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} is a kqueue, which only Darwin has, and Linux's readiness is asked only of a Linux-flavoured kernel (this is a bug in the caller's state construction)."
         | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "LinuxReadiness.ofDescription" inode
+        | OpenFileTarget.Inotify state ->
+            // Measured (`inotify-probe.c` section P): IN alone while a record
+            // is queued, without RDNORM, and nothing once the queue drains; never
+            // OUT.
+            if InotifyQueue.isEmpty state.Queue then
+                0u
+            else
+                EpollEvents.In
 
     /// What a Linux waiter's poll of the description `targetId` does besides
     /// reading its mask (`ofDescription`): a connected TCP socket it finds
@@ -243,6 +252,7 @@ module internal EpollReadyList =
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
@@ -287,6 +297,7 @@ module internal EpollReadyList =
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Fifo _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
@@ -743,6 +754,7 @@ module internal KqueueQueue =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Fifo _
+                | OpenFileTarget.Inotify _
                 | OpenFileTarget.Pipe _ -> openFiles
             )
 

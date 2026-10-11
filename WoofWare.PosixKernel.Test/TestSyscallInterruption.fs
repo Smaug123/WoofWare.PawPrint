@@ -750,6 +750,12 @@ module TestSyscallInterruption =
                     Descriptor = 3
                     PartnerOpens = 0L
                 }
+            ParkedSyscall.InotifyRead
+                {
+                    Instance = description
+                    Buffer = UserBuffer.Mapped
+                    Count = 64
+                }
         ]
 
     /// The measured rule, per flavour, stated here rather than read from
@@ -758,7 +764,8 @@ module TestSyscallInterruption =
     /// `poll`, `epoll_wait` and `kevent` as it says, and so `sigsuspend`
     /// (`sigsuspend-mask.c`) and `nanosleep`; each the same on both flavours.
     /// A FIFO open restarts under SA_RESTART on Linux 6.18.5, and answers
-    /// EINTR under it on Darwin 27.0.0.
+    /// EINTR under it on Darwin 27.0.0. A read of an inotify instance restarts
+    /// under it (`inotify-probe.c` section B; Linux only).
     let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         match parked with
         | ParkedSyscall.Flock _
@@ -766,7 +773,8 @@ module TestSyscallInterruption =
         | ParkedSyscall.PipeRead _
         | ParkedSyscall.PipeWrite _
         | ParkedSyscall.ConnectionRead _
-        | ParkedSyscall.ConnectionWrite _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.ConnectionWrite _
+        | ParkedSyscall.InotifyRead _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _

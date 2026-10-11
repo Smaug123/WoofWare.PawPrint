@@ -1314,6 +1314,8 @@ module UnixNamespace =
                     | OpenFileTarget.Pipe _
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.Epoll _
+                    // The anonymous inode an epoll instance is on.
+                    | OpenFileTarget.Inotify _
                     | OpenFileTarget.Kqueue _ -> Error UnixError.ENOENT
 
                 Ok named, UnixError.ENOENT
@@ -1541,7 +1543,9 @@ module UnixNamespace =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Kqueue _
-        | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Epoll _
+        // Measured on Linux (`inotify-descriptor-probe.c` row D getdents64).
+        | OpenFileTarget.Inotify _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
         | OpenFileTarget.Fifo (inode, _) ->
             match flavour with
             // Every kind measured above is ENOTDIR on Linux, whose

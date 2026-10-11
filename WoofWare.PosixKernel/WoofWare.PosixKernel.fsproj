@@ -38,6 +38,7 @@
         <Compile Include="Ipv6Address.fs" />
         <Compile Include="SocketAddress.fs" />
         <Compile Include="ProcessId.fs" />
+        <Compile Include="Inotify.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="FileSystemCommit.fs" />
         <Compile Include="Signal.fs" />
@@ -96,6 +97,7 @@
         <Compile Include="UnixScheduling.fs" />
         <Compile Include="UnixDescriptor.fs" />
         <Compile Include="UnixPathResolution.fs" />
+        <Compile Include="UnixInotify.fs" />
         <Compile Include="UnixReadWrite.fs" />
         <Compile Include="UnixPipe.fs" />
         <Compile Include="UnixEntropy.fs" />

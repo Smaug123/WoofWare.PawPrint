@@ -138,6 +138,10 @@ module SyscallInterruption =
         | ParkedSyscall.PipeWrite _
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _ -> SignalRestartRule.RestartsUnderSaRestart
+        // Measured on Linux 6.18.5 (`inotify-probe.c` section B): a read of an
+        // inotify instance with no record returned EINTR without SA_RESTART,
+        // and went on sleeping with it to return the next record.
+        | ParkedSyscall.InotifyRead _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _
