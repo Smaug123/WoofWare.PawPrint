@@ -35,6 +35,93 @@ type SimulatedMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             Processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>
         }
 
+/// What a sweep of a machine's sleeping tasks that woke none of them read:
+/// everything a wake condition is asked of but the clock, and the earliest
+/// deadline any of those tasks waits for.
+type internal RememberedSweep<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    {
+        Machine : UnixMachineState
+        Processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>
+        Asleep : Map<ProcessId, Set<'Task>>
+        /// The earliest `WakePrimitive.DeadlinePassed` among the wake
+        /// conditions of the tasks in `Asleep`, if any has one.
+        EarliestDeadline : int64 voption
+    }
+
+/// What `SimulatedMachine.wakesRemembering` remembers between calls, so that it
+/// can tell, without asking any wake condition, that a machine wakes no task:
+/// the last sweep it made, if that sweep woke none.
+///
+/// Opaque. A client starts from `WakeSweepMemo.empty`, and passes each call the
+/// memo the last one answered.
+[<ReferenceEquality>]
+type WakeSweepMemo<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    internal
+        {
+            Remembered : RememberedSweep<'Task, 'Handler> voption
+        }
+
+[<RequireQualifiedAccess>]
+module WakeSweepMemo =
+    /// A memo that remembers no sweep, so the next call sweeps.
+    let empty<'Task, 'Handler when 'Task : comparison and 'Handler : equality> : WakeSweepMemo<'Task, 'Handler> =
+        {
+            Remembered = ValueNone
+        }
+
+    /// Whether `machine` holds the machine state and every process's state
+    /// and tasks that `remembered` read, the same values rather than equal
+    /// ones, and `asleep` is the tasks `remembered` was asked about: whether
+    /// everything a wake condition reads but the clock is as `remembered`
+    /// found it.
+    let internal readsSame<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (remembered : RememberedSweep<'Task, 'Handler>)
+        (asleep : Map<ProcessId, Set<'Task>>)
+        (machine : UnixMachineState)
+        (processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>)
+        : bool
+        =
+        let sameSlots () : bool =
+            remembered.Processes.Count = processes.Count
+            && processes
+               |> Map.forall (fun processId slot ->
+                   match remembered.Processes.TryGetValue processId with
+                   | true, before ->
+                       // The leader is not compared: it is fixed when its
+                       // process is launched, and every launch makes a new
+                       // process state, so the same state means the same leader.
+                       LanguagePrimitives.PhysicalEquality before.Process slot.Process
+                       && LanguagePrimitives.PhysicalEquality before.Tasks slot.Tasks
+                   | false, _ -> false
+               )
+
+        LanguagePrimitives.PhysicalEquality remembered.Machine machine
+        && sameSlots ()
+        && (LanguagePrimitives.PhysicalEquality remembered.Asleep asleep
+            || remembered.Asleep = asleep)
+
+    /// Whether a sweep of a machine would wake no task because `remembered`
+    /// woke none: whether it `readsSame` as `remembered`, and the clock has not
+    /// reached the earliest deadline any task in `asleep` waits for.
+    ///
+    /// The clock is the one input a wake condition reads that changes between
+    /// syscalls, and only `WakePrimitive.DeadlinePassed` reads it; so with
+    /// everything else the same and the clock short of every deadline, each
+    /// primitive holds or does not exactly as it did, and the sweep's answer
+    /// is the same.
+    let internal covers<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (remembered : RememberedSweep<'Task, 'Handler>)
+        (asleep : Map<ProcessId, Set<'Task>>)
+        (machine : UnixMachineState)
+        (scheduling : UnixSchedulingState)
+        (processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>)
+        : bool
+        =
+        (match remembered.EarliestDeadline with
+         | ValueNone -> true
+         | ValueSome deadline -> scheduling.NanosecondsSinceBoot < deadline)
+        && readsSame remembered asleep machine processes
+
 /// A way a `SimulatedMachine` fails to be a machine any kernel could be in.
 /// `SimulatedMachine.checkInvariants` returns these.
 [<RequireQualifiedAccess>]
@@ -583,6 +670,79 @@ module SimulatedMachine =
 
         UnixWait.wakesAmong views machine.Machine
         |> List.map (fun (processId, task, fired) -> (processId, task), fired)
+
+    /// `wakes`, which a client asks of every state it reaches, made cheap for
+    /// the states in which nothing it reads has changed: the tasks it wakes,
+    /// and the memo to pass the next call.
+    ///
+    /// Answers that no task wakes, without asking any wake condition, when
+    /// `memo` remembers a sweep that woke none, and nothing that sweep read has
+    /// changed since but the clock, which has not reached the earliest
+    /// deadline any task in `asleep` waits for. Nothing a syscall can change
+    /// counts as unchanged unless it is the same value, so a client that makes
+    /// a syscall, or writes back a view that made one, is swept afresh; a
+    /// client that only moves the clock (`UnixSystem.advanceClock`) or reports
+    /// which task runs where (`UnixScheduling.dispatch`, to a processor the task
+    /// is already on) is not. Otherwise sweeps as `wakes` does, and remembers
+    /// the sweep if it woke nobody.
+    ///
+    /// The answer is always `wakes`'s, and `memo` decides only how much work it
+    /// takes. Fails loudly where `wakes` does.
+    let wakesRemembering<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (memo : WakeSweepMemo<'Task, 'Handler>)
+        (asleep : Map<ProcessId, Set<'Task>>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : ((ProcessId * 'Task) * Set<WakePrimitive>) list * WakeSweepMemo<'Task, 'Handler>
+        =
+        match memo.Remembered with
+        | ValueSome remembered when
+            WakeSweepMemo.covers remembered asleep machine.Machine machine.Scheduling machine.Processes
+            ->
+#if DEBUG
+            match wakes asleep machine with
+            | [] -> ()
+            | woken ->
+                failwith
+                    $"SimulatedMachine.wakesRemembering: the memo says the machine wakes no task, but a sweep wakes %A{woken} (this is a bug in this library)."
+#endif
+            [], memo
+        | ValueSome _
+        | ValueNone ->
+
+        match wakes asleep machine with
+        | _ :: _ as woken -> woken, WakeSweepMemo.empty
+        | [] ->
+            // `wakes` has failed loudly already for a task asleep in no park.
+            let deadlines =
+                asleep
+                |> Seq.collect (fun (KeyValue (processId, tasks)) ->
+                    let slot = machine.Processes.[processId]
+
+                    tasks
+                    |> Seq.collect (fun task ->
+                        match UnixTaskTable.parkOf task slot.Tasks with
+                        | Some park -> WakeCondition.deadlines (WakeCondition.ofPark park.Syscall)
+                        | None -> []
+                    )
+                )
+                |> List.ofSeq
+
+            let earliest =
+                match deadlines with
+                | [] -> ValueNone
+                | deadlines -> ValueSome (List.min deadlines)
+
+            [],
+            {
+                Remembered =
+                    ValueSome
+                        {
+                            Machine = machine.Machine
+                            Processes = machine.Processes
+                            Asleep = asleep
+                            EarliestDeadline = earliest
+                        }
+            }
 
     /// Every way `machine` fails to be a machine any kernel could be in: the
     /// clauses of `UnixSystem.checkInvariants` that concern the machine, read
