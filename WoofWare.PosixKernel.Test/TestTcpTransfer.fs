@@ -172,7 +172,7 @@ module internal TcpTransferReference =
 
     /// Whether bytes reaching `r` now are answered with a reset: on Darwin
     /// once it cannot receive, and on Linux once it has made its FIN too.
-    let private resetsOnArrival (m : Model) (r : ConnectionEnd) : bool =
+    let resetsOnArrival (m : Model) (r : ConnectionEnd) : bool =
         let e = m.Ends.[r]
 
         not e.Closed && not e.GotReset && readShut m r && (not m.Linux || writeShut m r)
