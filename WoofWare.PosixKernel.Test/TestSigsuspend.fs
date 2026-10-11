@@ -1328,8 +1328,9 @@ module TestSigsuspend =
         // rows: EINTR under SA_RESTART, on both flavours. The calls' own
         // finishing answers that without asking; this is the classification
         // any other reader of a park gets.
-        SyscallInterruption.ruleOf ParkedSyscall.SigSuspend
-        |> shouldEqual SignalRestartRule.FailsWithEintr
+        for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+            SyscallInterruption.ruleOf flavour ParkedSyscall.SigSuspend
+            |> shouldEqual SignalRestartRule.FailsWithEintr
 
     [<Test>]
     let ``Darwin: another thread's sigprocmask that would let a pending SIGCONT through to a sigsuspend is refused``
