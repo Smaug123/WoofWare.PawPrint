@@ -641,20 +641,23 @@ type CliType =
         (offset : int)
         (count : int)
         (length : int)
-        (description : string)
+        (value : CliType)
         : unit
         =
+        // `value` is formatted only once a check has failed: formatting a `CliType` walks it by
+        // reflection, and this check runs on every byte read and write of a non-struct value.
         if offset < 0 then
-            failwith $"%s{operation}: byte offset %i{offset} is negative for %s{description}"
+            failwith $"%s{operation}: byte offset %i{offset} is negative for CLI value %O{value}"
 
         if count < 0 then
-            failwith $"%s{operation}: byte count %i{count} is negative for %s{description}"
+            failwith $"%s{operation}: byte count %i{count} is negative for CLI value %O{value}"
 
         if count > length - offset then
             let start = int64 offset
             let endExclusive = start + int64 count
 
-            failwith $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte %s{description}"
+            failwith
+                $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte CLI value %O{value}"
 
     static member BytesAt (offset : int) (count : int) (value : CliType) : byte[] =
         match CliType.ByteAddressability value with
@@ -667,7 +670,7 @@ type CliType =
             | CliType.ValueType vt -> CliValueType.BytesAt offset count vt
             | _ ->
                 let bytes = CliType.ToBytes value
-                CliType.CheckByteRange "CliType.BytesAt" offset count bytes.Length $"CLI value %O{value}"
+                CliType.CheckByteRange "CliType.BytesAt" offset count bytes.Length value
 
                 let result = Array.zeroCreate<byte> count
                 Array.blit bytes offset result 0 count
@@ -684,7 +687,7 @@ type CliType =
         : Result<byte, CliByteAddressabilityRejection>[]
         =
         let checkRange (size : int) : unit =
-            CliType.CheckByteRange "CliType.ByteImageAt" offset count size $"CLI value %O{value}"
+            CliType.CheckByteRange "CliType.ByteImageAt" offset count size value
 
         match value with
         | CliType.ValueType vt -> CliValueType.ByteImageAt offset count vt
@@ -761,10 +764,10 @@ type CliType =
         match value with
         | CliType.ValueType vt -> CliValueType.SymbolicBytesAt offset count vt
         | CliType.Numeric (CliNumericType.UInt8 source) ->
-            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count 1 $"CLI value %O{value}"
+            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count 1 value
             Array.create count source
         | CliType.Numeric (CliNumericType.NativeInt source) ->
-            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count NATIVE_INT_SIZE $"CLI value %O{value}"
+            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count NATIVE_INT_SIZE value
             Array.init count (fun i -> UInt8Source.NativeIntByte (source, offset + i))
         | _ ->
             // `ByteAddressability` says this value is nameable, so every arm it can reach must be
@@ -1083,12 +1086,7 @@ type CliType =
             | _ ->
                 let existing = CliType.ToBytes value
 
-                CliType.CheckByteRange
-                    "CliType.WithBytesAtIfChanged"
-                    offset
-                    bytes.Length
-                    existing.Length
-                    $"CLI value %O{value}"
+                CliType.CheckByteRange "CliType.WithBytesAtIfChanged" offset bytes.Length existing.Length value
 
                 let mutable identical = true
                 let mutable i = 0
