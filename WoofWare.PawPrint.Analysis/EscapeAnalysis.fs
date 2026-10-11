@@ -72,7 +72,8 @@ type internal OutsideBodyFact =
     | Opaque of Opacity
     /// The runtime runs this method, which has no type variables: another module's initializer,
     /// as binding a token first activates the module, or what the runtime runs to throw that
-    /// initializer's own exception again.
+    /// initializer's own exception again, or the constructor it runs to make the exception a
+    /// failure to bind raises.
     | Runs of MethodKey
 
 /// How a call's token instantiates the method it names, as the calling body spells it.
@@ -229,8 +230,9 @@ type internal MethodInstance =
 type internal DispatchOutcome =
     /// It calls this instance.
     | Reaches of MethodInstance
-    /// It throws this instead of calling anything.
-    | Raises of ThrownType
+    /// It throws this instead of calling anything, which the runtime makes by running this
+    /// constructor, whose own raises escape in its place.
+    | Raises of ThrownType * made : MethodKey
     /// The receiver's type does not decide what runs.
     | Undecided
 
@@ -305,8 +307,9 @@ type EscapeAnalysisState =
 ///
 /// The runtime makes most of the exceptions it raises by itself by running the exception's
 /// parameterless constructor, which looks up its message, so what that constructor can raise is in
-/// the answer too. What it runs to make one with arguments is not followed: a failed binding's, and
-/// a multidimensional array constructor's <c>ArgumentOutOfRangeException</c>.
+/// the answer too, a failure to bind a member or to dispatch a call among them. What it runs to make
+/// one with arguments is not followed: a failed type binding's <c>TypeLoadException</c>, and a
+/// multidimensional array constructor's <c>ArgumentOutOfRangeException</c>.
 ///
 /// A type initializer runs where CoreCLR's <c>CEEInfo::initClass</c> runs it: at an access to a
 /// static field of its type, and at a call to a method of its type that is static, a constructor, or
@@ -498,6 +501,14 @@ module EscapeAnalysis =
         | ExceptionMaking.InitializerFailure ->
             failwith
                 $"BUG: %s{fullName} is raised for a type initializer, which the site running it accounts for (`initializerFailure`)"
+
+    /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
+    /// making it by running its parameterless constructor (`EEException::CreateThrowable`): the
+    /// exception, and that constructor.
+    let private constructedRaise (state : EscapeAnalysisState) (fullName : string) : ThrownType * MethodKey =
+        match runtimeRaises state fullName ExceptionMaking.ParameterlessConstructor with
+        | thrown, Some made -> thrown, made
+        | thrown, None -> failwith $"BUG: making %O{thrown} by its parameterless constructor runs no constructor"
 
     /// What the runtime raises for an `OpcodeFault` (`runtimeRaises`).
     let private faultRaises (state : EscapeAnalysisState) (fault : OpcodeFault) : ThrownType * MethodKey option =
@@ -1410,10 +1421,11 @@ module EscapeAnalysis =
 
                     match callTarget state assembly token with
                     | state, CallTarget.Missing ->
+                        let thrown, made = constructedRaise state "System.MissingMethodException"
+
                         state,
                         Some CallTarget.Missing,
-                        OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingMethodException"))
-                        :: signatureFailures
+                        OutsideBodyFact.Raises thrown :: OutsideBodyFact.Runs made :: signatureFailures
                     | state, CallTarget.TypeMissing ->
                         state, Some CallTarget.TypeMissing, raisesOf (Some BindFailure.TypeAbsent)
                     | state, CallTarget.AssemblyMissing ->
@@ -1435,11 +1447,8 @@ module EscapeAnalysis =
 
                     match target with
                     | FieldReferenceTarget.Missing ->
-                        state,
-                        None,
-                        [
-                            OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingFieldException"))
-                        ]
+                        let thrown, made = constructedRaise state "System.MissingFieldException"
+                        state, None, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs made ]
                     | FieldReferenceTarget.ParentTypeMissing _ -> state, None, raisesOf (Some BindFailure.TypeAbsent)
                     | FieldReferenceTarget.ParentAssemblyUnavailable _ ->
                         state, None, raisesOf (Some BindFailure.AssemblyUnavailable)
@@ -3076,13 +3085,9 @@ module EscapeAnalysis =
         | Some VirtualImplementation.NotOverridden
         | Some (VirtualImplementation.Unmodelled _) -> state, DispatchOutcome.Undecided
         | Some (VirtualImplementation.Ambiguous _) ->
-            state,
-            DispatchOutcome.Raises (
-                ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
-            )
+            state, DispatchOutcome.Raises (constructedRaise state "System.Runtime.AmbiguousImplementationException")
         | Some (VirtualImplementation.Reabstracted _) ->
-            state,
-            DispatchOutcome.Raises (ThrownType.Exactly (corelibType state "System" "EntryPointNotFoundException"))
+            state, DispatchOutcome.Raises (constructedRaise state "System.EntryPointNotFoundException")
         | Some (VirtualImplementation.Found runs) ->
             match runs.Definition.TryMetadata with
             | None -> state, DispatchOutcome.Undecided
@@ -3486,7 +3491,8 @@ module EscapeAnalysis =
                     | DispatchOutcome.Reaches reached ->
                         let ran, raised = landing state offset reached
                         reaching offset reached (state, ran @ callees, raised @ raises, undecided)
-                    | DispatchOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
+                    | DispatchOutcome.Raises (thrown, made) ->
+                        state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
                     | DispatchOutcome.Undecided ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
                 )

@@ -1174,6 +1174,17 @@ public static class SR
         |> Seq.exactlyOne
         |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
 
+    /// What the parameterless constructor of the host CoreLib's exception type of this full name
+    /// lets escape: the runtime runs it to make that exception where it raises one by itself.
+    let private making (analysis : EscapeAnalysisState) (fullName : string) : EscapeAnalysisState * Set<string> =
+        let dot = fullName.LastIndexOf '.'
+
+        let key =
+            parameterlessConstructor (hostCoreLib ()) (fullName.Substring (0, dot)) (fullName.Substring (dot + 1))
+
+        let analysis, escapes = EscapeAnalysis.escapes analysis key
+        analysis, render analysis escapes
+
     /// An analysis over the host's CoreLib and `assemblies`, with `bind` applied to the load
     /// context, for the host's JIT on a CPU `profile` describes.
     let private analysisUnder
@@ -2413,7 +2424,7 @@ public static class Uses
         let providerImage1 = compile "Provider" [] version1
         let clientAssembly = read "Client" (compile "Client" [ providerImage1 ] client)
 
-        let answers (provider : DumpedAssembly) : string -> Set<string> * bool =
+        let answers (provider : DumpedAssembly) : (string -> Set<string> * bool) * (string -> Set<string>) =
             let providerReference =
                 clientAssembly.AssemblyReferences.Values
                 |> Seq.find (fun r -> r.Name.Name = "Provider")
@@ -2423,15 +2434,20 @@ public static class Uses
                     [ clientAssembly ; provider ]
                     (fun loaded -> fst (loaded.WithBoundReference providerReference provider))
 
-            fun methodName ->
+            (fun methodName ->
                 let next, escapes =
                     EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
 
                 analysis <- next
                 render analysis escapes, escapes.Unknown
+            ),
+            fun fullName ->
+                let next, made = making analysis fullName
+                analysis <- next
+                made
 
-        let against1 = answers (read "Provider" providerImage1)
-        let against2 = answers (read "Provider" (compile "Provider" [] version2))
+        let against1, _ = answers (read "Provider" providerImage1)
+        let against2, making2 = answers (read "Provider" (compile "Provider" [] version2))
 
         for methodName, failure in
             [
@@ -2469,6 +2485,20 @@ public static class Uses
 
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+        // The runtime makes a missing member's exception by running its parameterless constructor,
+        // which looks up its message; what that raises escapes in its place.
+        for methodName, failure in
+            [
+                "Read", "System.MissingFieldException"
+                "CallGone", "System.MissingMethodException"
+            ] do
+            let made = making2 failure
+            let unbound, _ = against2 methodName
+
+            if not (Set.isSubset made unbound) then
+                failwith
+                    $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}, lacking some of what making %s{failure} raises, %A{Set.toList made}"
 
         // With no provider at all, binding any token naming it fails to find the assembly. The real
         // runtime raises `FileNotFoundException` if nothing else supplies one; but first it runs the
@@ -5325,6 +5355,15 @@ public static class Runners
                     if escapes.Unknown || shown.Contains ("=" + ambiguity) <> expected then
                         yield
                             $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected the ambiguity to escape: %b{expected}, and nothing unknown"
+
+                    // Making the exception runs its parameterless constructor.
+                    if expected then
+                        let next, made = making analysis ambiguity
+                        analysis <- next
+
+                        if not (Set.isSubset made shown) then
+                            yield
+                                $"%s{name}: %A{Set.toList shown}, lacking some of what making the ambiguity raises, %A{Set.toList made}"
             ]
 
         match failures with
@@ -5820,13 +5859,15 @@ public static class Runners
             EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
 
         let shown = render analysis escapes
+        let _, made = making analysis "System.Runtime.AmbiguousImplementationException"
 
         if
             escapes.Unknown
             || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
+            || not (Set.isSubset made shown)
         then
             failwith
-                $"Run.Call: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected AmbiguousImplementationException, and nothing unknown"
+                $"Run.Call: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected AmbiguousImplementationException, what making it raises (%A{Set.toList made}), and nothing unknown"
 
     [<Test>]
     let ``a constrained call whose default bodies conflict only through variance is not called ambiguous`` () : unit =
@@ -5886,9 +5927,14 @@ public static class Runners
                     EscapeAnalysis.escapes analysis (methodNamed entry "ReabstractionEntry.Cases" methodName)
 
                 let shown = render analysis escapes
+                let analysis, made = making analysis "System.EntryPointNotFoundException"
 
-                if escapes.Unknown || not (shown.Contains "=System.EntryPointNotFoundException") then
-                    $"Cases.%s{methodName}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected EntryPointNotFoundException, and nothing unknown"
+                if
+                    escapes.Unknown
+                    || not (shown.Contains "=System.EntryPointNotFoundException")
+                    || not (Set.isSubset made shown)
+                then
+                    $"Cases.%s{methodName}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected EntryPointNotFoundException, what making it raises (%A{Set.toList made}), and nothing unknown"
                     :: failures,
                     analysis
                 else
