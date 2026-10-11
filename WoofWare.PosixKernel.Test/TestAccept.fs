@@ -205,7 +205,7 @@ module TestAccept =
 
         // Bound at the *server* address, which is what the accepted socket's own
         // `getsockname` reports.
-        accepted.Binding
+        accepted.Ipv4Binding
         |> shouldEqual (
             Some
                 {

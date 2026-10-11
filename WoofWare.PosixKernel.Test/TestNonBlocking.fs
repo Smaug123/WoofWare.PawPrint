@@ -90,7 +90,7 @@ module TestNonBlocking =
 
         // A fresh socket is unbound, idle, and carries no reuse flag; all three
         // are what every later screen keys on.
-        socket.Binding |> shouldEqual None
+        socket.Ipv4Binding |> shouldEqual None
         socket.Phase |> shouldEqual SocketPhase.Idle
         socket.ReuseAddress |> shouldEqual false
 

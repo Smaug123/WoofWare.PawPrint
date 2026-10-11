@@ -141,7 +141,7 @@ module TestEphemeralPorts =
     let private localPort (fd : int) (system : UnixSystem<int, string>) : uint16 =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
-            match (UnixMachineState.socket socketId system.Machine).Binding with
+            match (UnixMachineState.socket socketId system.Machine).Ipv4Binding with
             | Some binding -> binding.Endpoint.Port
             | None -> failwith $"fd %d{fd} is unbound"
         | other -> failwith $"fd %d{fd} is %A{other}, not a socket"
@@ -384,7 +384,7 @@ module TestEphemeralPorts =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors run.System) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
-            socket.Phase, socket.Binding.IsSome
+            socket.Phase, socket.Ipv4Binding.IsSome
         | other -> failwith $"slot fd %d{fd} is %A{other}"
 
     /// Whether `connect` from the unbound socket behind `fd` towards
@@ -394,7 +394,7 @@ module TestEphemeralPorts =
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
 
-            let candidate (port : uint16) : SocketBinding =
+            let candidate (port : uint16) : Ipv4Binding =
                 {
                     Endpoint = loopback port
                     LockedAddress = None
@@ -522,7 +522,7 @@ module TestEphemeralPorts =
         let boundEndpoints =
             system.Machine.Sockets
             |> Map.toSeq
-            |> Seq.choose (fun (_, socket) -> socket.Binding |> Option.map (fun binding -> binding.Endpoint))
+            |> Seq.choose (fun (_, socket) -> socket.Ipv4Binding |> Option.map (fun binding -> binding.Endpoint))
             |> Set.ofSeq
 
         system.Machine.Connections
@@ -572,7 +572,7 @@ module TestEphemeralPorts =
                     run'.System.Machine.Sockets
                     |> Map.toList
                     |> List.choose (fun (socketId, socket) ->
-                        match socket.Binding, socket.Phase with
+                        match socket.Ipv4Binding, socket.Phase with
                         | Some binding, (SocketPhase.Idle | SocketPhase.Listening _) when
                             binding.Endpoint.Port <> listenerPort 0
                             && binding.Endpoint.Port <> listenerPort 1

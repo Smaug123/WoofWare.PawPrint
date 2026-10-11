@@ -1108,19 +1108,20 @@ module UnixReadWrite =
             // `127.0.0.1:0` reads back `127.0.0.1:<ephemeral>` after the
             // failed write.
             let bound : Result<UnixSystem<'Task, 'Handler>, WriteRefusal> =
-                match socket.Binding with
+                match socket.Ipv4Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> Ok system
                 | _ when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
-                | existing ->
+                | _ ->
 
-                match socket.Domain with
-                | SocketDomain.Inet6 -> Error (WriteRefusal.Inet6Binding socketId)
-                | SocketDomain.Unix ->
+                match socket.Addressing with
+                | SocketAddressing.Inet6DualMode _
+                | SocketAddressing.Inet6V6Only _ -> Error (WriteRefusal.Inet6Binding socketId)
+                | SocketAddressing.Unix _ ->
                     failwith
                         $"UnixReadWrite: a write on Unix-domain socket %O{socketId} binds it first, which no flavour does (this is a bug in this library)."
-                | SocketDomain.Inet ->
+                | SocketAddressing.Inet existing ->
 
-                let candidate (port : uint16) : SocketBinding =
+                let candidate (port : uint16) : Ipv4Binding =
                     match existing with
                     | Some halfBound ->
                         { halfBound with
@@ -1156,8 +1157,7 @@ module UnixReadWrite =
                                         Map.add
                                             socketId
                                             { socket with
-                                                Addressing =
-                                                    SocketAddressing.replaceBinding (Some binding) socket.Addressing
+                                                Addressing = SocketAddressing.Inet (Some binding)
                                             }
                                             machine.Sockets
                                 }
@@ -1436,8 +1436,8 @@ module UnixReadWrite =
     /// What a device's own write of `count` bytes by `task`, at most one call's
     /// worth, answers without the bytes, once everything ahead of the driver
     /// has passed; `None` where it copies them, which it then takes all of.
-    /// Neither device changes anything a later call could see, so a write
-    /// moves no timestamp, position or pool.
+    /// Neither device in `CharacterDevice.all` changes anything a later call
+    /// could see, so a write moves no timestamp, position or pool.
     let private deviceWriteWithoutBytes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (device : CharacterDevice)
@@ -1452,6 +1452,10 @@ module UnixReadWrite =
             // measured, through NULL and through unmapped memory alike, and
             // for every count (`devices.c`, WRITE rows).
             Ok (Some (WriteAnswer.Completed (int64 count)))
+        | CharacterDevice.Zero
+        | CharacterDevice.Random ->
+            failwith
+                $"UnixReadWrite.deviceWriteWithoutBytes: a write to %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
 
         if count = 0 then
@@ -1473,8 +1477,9 @@ module UnixReadWrite =
                 Ok None
 
     /// A device's own read of `count` bytes, at most one call's worth, once
-    /// everything ahead of the driver has passed. Neither device keeps a
-    /// position, so neither the description nor any timestamp moves.
+    /// everything ahead of the driver has passed. Neither device in
+    /// `CharacterDevice.all` keeps a position, so neither the description nor
+    /// any timestamp moves.
     let private readDevice<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (device : CharacterDevice)
@@ -1489,6 +1494,10 @@ module UnixReadWrite =
             // measured, 0 for every count, through NULL and through unmapped
             // memory alike (`devices.c`, READ rows).
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        | CharacterDevice.Zero
+        | CharacterDevice.Random ->
+            failwith
+                $"UnixReadWrite.readDevice: a read of %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
 
         if count = 0 then

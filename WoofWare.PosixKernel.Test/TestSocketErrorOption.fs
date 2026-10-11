@@ -58,7 +58,7 @@ module TestSocketErrorOption =
         (UnixMachineState.socket (socketIdOf fd system) system.Machine).Phase
 
     let private endpointOf (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
-        match (UnixMachineState.socket (socketIdOf fd system) system.Machine).Binding with
+        match (UnixMachineState.socket (socketIdOf fd system) system.Machine).Ipv4Binding with
         | Some binding -> binding.Endpoint
         | None -> failwith $"fd %d{fd} is not bound"
 

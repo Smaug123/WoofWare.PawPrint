@@ -239,7 +239,8 @@ type VirtualFileSystemDefect =
     /// number of an inode in the graph.
     | CoveredInodeInUse of root : InodeNumber * covered : InodeNumber
     /// An inode holds a kind of content that nothing in this version makes,
-    /// such as `InodeContent.Socket` or `InodeContent.Fifo`.
+    /// such as `InodeContent.Socket` or `InodeContent.Fifo`, or the node of a
+    /// device that `CharacterDevice.all` does not list.
     | ReservedContent of inode : InodeNumber
 
 /// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
@@ -2527,17 +2528,24 @@ module VirtualFileSystem =
 
         // Nothing in this version makes a socket inode or a FIFO inode:
         // `mknodat` of `S_IFSOCK` or `S_IFIFO`, and a Unix-domain `bind`, all
-        // refuse. So one here came from a bug.
+        // refuse. Nor a node for zero or random: only the device filesystem's
+        // mount makes device nodes, one for each device in
+        // `CharacterDevice.all`, and `mknod` makes none. So one here came from
+        // a bug.
         let reservedContent =
             vfs.Inodes
             |> Map.toList
             |> List.choose (fun (inode, entry) ->
                 match entry.Content with
                 | InodeContent.Socket _
-                | InodeContent.Fifo _ -> Some (VirtualFileSystemDefect.ReservedContent inode)
+                | InodeContent.Fifo _
+                | InodeContent.CharacterDevice (CharacterDevice.Zero, _)
+                | InodeContent.CharacterDevice (CharacterDevice.Random, _) ->
+                    Some (VirtualFileSystemDefect.ReservedContent inode)
+                | InodeContent.CharacterDevice (CharacterDevice.Null, _)
+                | InodeContent.CharacterDevice (CharacterDevice.URandom, _)
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
-                | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> None
             )
 

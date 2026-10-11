@@ -48,7 +48,7 @@ module TestPeerName =
     let private endpointOf (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
-            match (UnixMachineState.socket socketId system.Machine).Binding with
+            match (UnixMachineState.socket socketId system.Machine).Ipv4Binding with
             | Some binding -> binding.Endpoint
             | None -> failwith $"fd %d{fd} is not bound"
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"

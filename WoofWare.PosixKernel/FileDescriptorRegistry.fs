@@ -127,21 +127,23 @@ type SocketProtocol =
     /// UDP.
     | Udp
 
-/// The local address a socket holds, once `bind(2)` — or `listen(2)`'s implicit
-/// bind — has given it one.
-type SocketBinding =
+/// The local address an IP socket holds, once `bind(2)` — or a call that binds
+/// implicitly — has given it one. Generic in the family's endpoint and address,
+/// so that one definition serves IPv4 and IPv6 and an IPv4 binding cannot hold
+/// an IPv6 address: see `Ipv4Binding` and `Ipv6Binding`.
+type InetBinding<'Endpoint, 'Address> =
     {
         /// Where the socket is bound, with any source-address resolution a
-        /// connect performed already applied: a wildcard-bound or unbound
+        /// connect performed already applied: a wildcard-bound or unbound IPv4
         /// socket that connects over loopback reads back 127.0.0.1 here.
-        Endpoint : Ipv4Endpoint
+        Endpoint : 'Endpoint
         /// The address the process's own `bind(2)` gave the socket, or `None`
         /// when the binding arose implicitly (a connect or listen minted it).
         /// The kernel state Linux calls SOCK_BINDADDR_LOCK: a Linux refusal
         /// delivery reverts `Endpoint`'s address to this (the wildcard when
         /// `None`) while keeping the port — measured for all three
-        /// provenances — where Darwin keeps the resolved address.
-        LockedAddress : Ipv4Address option
+        /// provenances over IPv4 — where Darwin keeps the resolved address.
+        LockedAddress : 'Address option
         /// Whether the process's own `bind(2)` chose the port: true only when it
         /// asked for a non-zero one. The kernel state Linux calls
         /// SOCK_BINDPORT_LOCK: a datagram `connect(AF_UNSPEC)` there keeps a
@@ -151,6 +153,25 @@ type SocketBinding =
         /// `0.0.0.0:0` dissolves to nothing.
         LockedPort : bool
     }
+
+/// An IPv4 socket's local address: the binding of an `AF_INET` socket, and the
+/// transport of a dual-mode `AF_INET6` one bound to a v4-mapped address.
+type Ipv4Binding = InetBinding<Ipv4Endpoint, Ipv4Address>
+
+/// An IPv6 socket's native local address. This kernel has no IPv6 transport, so
+/// no socket holds one yet.
+type Ipv6Binding = InetBinding<Ipv6Endpoint, Ipv6Address>
+
+/// A dual-mode `AF_INET6` socket's local address (one with `IPV6_V6ONLY` off).
+[<RequireQualifiedAccess>]
+type DualModeBinding =
+    /// Bound to a v4-mapped address (`::ffff:a.b.c.d`): the socket's transport
+    /// is IPv4, and this is its IPv4 binding, which the socket presents to a
+    /// process as the v4-mapped IPv6 address.
+    | Mapped of Ipv4Binding
+    /// Bound to a native IPv6 address. This kernel has no IPv6 transport, so no
+    /// socket holds one yet.
+    | Native of Ipv6Binding
 
 /// `SO_LINGER` as a socket holds it.
 type SocketLinger =
@@ -315,8 +336,9 @@ type SocketPhase =
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
     /// visible to the process through the return codes.
     ///
-    /// This kernel connects only an IPv4 datagram socket, so the peer is
-    /// always a `SocketAddress.Inet`.
+    /// The peer is in the socket's own family, which
+    /// `UnixSystem.checkInvariants` checks. This kernel connects only an IPv4
+    /// datagram socket, so the peer is always a `SocketAddress.Inet`.
     | DatagramPeer of peer : SocketAddress
 
 [<RequireQualifiedAccess>]
@@ -346,27 +368,30 @@ module SocketPhase =
         | SocketPhase.DatagramPeer _ -> None
 
 /// A socket's domain, with its `IPV6_V6ONLY` where it is an IPv6 socket, and
-/// the local address it holds.
+/// the local address it holds, typed in the domain's own addresses.
 ///
 /// One value rather than three fields because they constrain one another.
-/// This kernel has no IPv6 transport: an IPv6 socket talks only to IPv4 peers,
-/// through v4-mapped addresses (`::ffff:a.b.c.d`), and only with
-/// `IPV6_V6ONLY` off. So a socket with `IPV6_V6ONLY` on has no address it
-/// could hold, and the case for it carries none. `IPV6_V6ONLY` changes only
-/// while a socket has no address (measured: EINVAL once it has one), so
-/// `setsockopt(2)` moves between the two IPv6 cases only without a binding.
+/// `IPV6_V6ONLY` changes only while a socket has no address (measured: EINVAL
+/// once it has one), so `setsockopt(2)` moves between the two IPv6 cases only
+/// without a binding.
+///
+/// This kernel has no IPv6 transport and binds no Unix-domain socket. An IPv6
+/// socket talks only to IPv4 peers, through v4-mapped addresses
+/// (`::ffff:a.b.c.d`), and only with `IPV6_V6ONLY` off. So the bindings of
+/// `Inet6V6Only` and `Unix`, and `DualModeBinding.Native`, are never held yet:
+/// `UnixSystem.checkInvariants` reports a socket holding one.
 [<RequireQualifiedAccess>]
 type SocketAddressing =
     /// `AF_INET`, and where it is bound, if anywhere.
-    | Inet of binding : SocketBinding option
-    /// `AF_INET6` with `IPV6_V6ONLY` off. Its binding is an IPv4 one, which the
-    /// socket presents to a process as the v4-mapped IPv6 address.
-    | Inet6DualMode of binding : SocketBinding option
-    /// `AF_INET6` with `IPV6_V6ONLY` on. Never bound: every address it could
-    /// hold is an IPv6 one.
-    | Inet6V6Only
-    /// `AF_UNIX`. Never bound: this kernel binds no Unix-domain socket.
-    | Unix
+    | Inet of binding : Ipv4Binding option
+    /// `AF_INET6` with `IPV6_V6ONLY` off, and where it is bound, if anywhere.
+    | Inet6DualMode of binding : DualModeBinding option
+    /// `AF_INET6` with `IPV6_V6ONLY` on, and where it is bound, if anywhere.
+    /// Every address it could hold is a native IPv6 one, so it is never bound
+    /// yet.
+    | Inet6V6Only of binding : Ipv6Binding option
+    /// `AF_UNIX`, and the name it is bound to, if any. Never bound yet.
+    | Unix of name : UnixSocketName option
 
 [<RequireQualifiedAccess>]
 module SocketAddressing =
@@ -375,16 +400,29 @@ module SocketAddressing =
         match addressing with
         | SocketAddressing.Inet _ -> SocketDomain.Inet
         | SocketAddressing.Inet6DualMode _
-        | SocketAddressing.Inet6V6Only -> SocketDomain.Inet6
-        | SocketAddressing.Unix -> SocketDomain.Unix
+        | SocketAddressing.Inet6V6Only _ -> SocketDomain.Inet6
+        | SocketAddressing.Unix _ -> SocketDomain.Unix
 
-    /// Where the socket is bound, if anywhere.
-    let binding (addressing : SocketAddressing) : SocketBinding option =
+    /// Whether the socket holds a local address, in any family.
+    let internal isBound (addressing : SocketAddressing) : bool =
         match addressing with
-        | SocketAddressing.Inet binding
-        | SocketAddressing.Inet6DualMode binding -> binding
-        | SocketAddressing.Inet6V6Only
-        | SocketAddressing.Unix -> None
+        | SocketAddressing.Inet binding -> binding.IsSome
+        | SocketAddressing.Inet6DualMode binding -> binding.IsSome
+        | SocketAddressing.Inet6V6Only binding -> binding.IsSome
+        | SocketAddressing.Unix name -> name.IsSome
+
+    /// The IPv4 binding the socket holds, if it holds one: an `AF_INET`
+    /// socket's binding, or a dual-mode socket's `DualModeBinding.Mapped` one.
+    /// `None` for a socket bound in any other way, as well as for an unbound
+    /// one: see `isBound`.
+    let internal ipv4Binding (addressing : SocketAddressing) : Ipv4Binding option =
+        match addressing with
+        | SocketAddressing.Inet binding -> binding
+        | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Mapped binding)) -> Some binding
+        | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Native _))
+        | SocketAddressing.Inet6DualMode None
+        | SocketAddressing.Inet6V6Only _
+        | SocketAddressing.Unix _ -> None
 
     /// What a new socket in `domain` starts with: no address, and on an IPv6
     /// socket the `IPV6_V6ONLY` the machine's sysctl gives
@@ -392,21 +430,25 @@ module SocketAddressing =
     let initial (domain : SocketDomain) (ipv6OnlyByDefault : bool) : SocketAddressing =
         match domain with
         | SocketDomain.Inet -> SocketAddressing.Inet None
-        | SocketDomain.Inet6 when ipv6OnlyByDefault -> SocketAddressing.Inet6V6Only
+        | SocketDomain.Inet6 when ipv6OnlyByDefault -> SocketAddressing.Inet6V6Only None
         | SocketDomain.Inet6 -> SocketAddressing.Inet6DualMode None
-        | SocketDomain.Unix -> SocketAddressing.Unix
+        | SocketDomain.Unix -> SocketAddressing.Unix None
 
-    /// The same socket bound at `binding` instead, or unbound for `None`.
+    /// The same socket bound at the IPv4 `binding` instead, or unbound for
+    /// `None`. A dual-mode socket holds an IPv4 binding as
+    /// `DualModeBinding.Mapped`.
     ///
-    /// Only a socket with an IPv4 transport can be bound: an `Inet6V6Only` or
-    /// `Unix` one given a binding is refused, as a bug in the caller, which
-    /// should have answered for the socket before it reached an IPv4 binding.
-    let replaceBinding (binding : SocketBinding option) (addressing : SocketAddressing) : SocketAddressing =
+    /// An `Inet6V6Only` or `Unix` socket has nowhere to hold an IPv4 binding,
+    /// so giving one a binding throws, as a bug in the caller, which should
+    /// have answered for the socket before it reached an IPv4 binding.
+    let internal replaceBinding (binding : Ipv4Binding option) (addressing : SocketAddressing) : SocketAddressing =
         match addressing, binding with
         | SocketAddressing.Inet _, _ -> SocketAddressing.Inet binding
-        | SocketAddressing.Inet6DualMode _, _ -> SocketAddressing.Inet6DualMode binding
-        | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), None -> addressing
-        | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), Some binding ->
+        | SocketAddressing.Inet6DualMode _, _ ->
+            SocketAddressing.Inet6DualMode (binding |> Option.map DualModeBinding.Mapped)
+        | SocketAddressing.Inet6V6Only _, None -> SocketAddressing.Inet6V6Only None
+        | SocketAddressing.Unix _, None -> SocketAddressing.Unix None
+        | (SocketAddressing.Inet6V6Only _ | SocketAddressing.Unix _), Some binding ->
             failwith
                 $"SocketAddressing.replaceBinding: %A{addressing} has no IPv4 transport, so it cannot be bound at %s{Ipv4Endpoint.toString binding.Endpoint} (this is a bug in the caller)."
 
@@ -417,8 +459,8 @@ module SocketAddressing =
 type SocketDescription =
     {
         /// The domain given to `socket(2)`, fixed for the socket's life, with
-        /// its `IPV6_V6ONLY` and its local address. `None` binding until
-        /// `bind(2)` or a call that binds implicitly.
+        /// its `IPV6_V6ONLY` and its local address. Unbound until `bind(2)` or
+        /// a call that binds implicitly.
         Addressing : SocketAddressing
         /// The socket's type, as `getsockopt(SO_TYPE)` reports it, and likewise
         /// fixed. Not always the type `socket(2)` was asked for: see `SocketKind`.
@@ -449,8 +491,10 @@ type SocketDescription =
     /// The domain given to `socket(2)`.
     member this.Domain : SocketDomain = SocketAddressing.domain this.Addressing
 
-    /// Where this socket is bound, if anywhere.
-    member this.Binding : SocketBinding option = SocketAddressing.binding this.Addressing
+    /// The IPv4 binding this socket holds, if it holds one. See
+    /// `SocketAddressing.ipv4Binding`.
+    member internal this.Ipv4Binding : Ipv4Binding option =
+        SocketAddressing.ipv4Binding this.Addressing
 
 /// What an open file description refers to — the kernel object on the far side
 /// of the descriptor.

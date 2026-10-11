@@ -1122,7 +1122,7 @@ module UnixSocket =
     let private bindAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (socket : SocketDescription)
-        (binding : SocketBinding)
+        (binding : Ipv4Binding)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
@@ -1130,7 +1130,7 @@ module UnixSocket =
             (if binding.Endpoint.Port > 0us then
                  Some (binding, system.Machine)
              else
-                 let candidate (port : uint16) : SocketBinding =
+                 let candidate (port : uint16) : Ipv4Binding =
                      { binding with
                          Endpoint =
                              { binding.Endpoint with
@@ -1288,7 +1288,7 @@ module UnixSocket =
                 && endpoint.Port < SimulatedUnixPlatform.privilegedPortCeiling
                 && UnixProcessState.callerPrivilege system.Process = CallerPrivilege.Unprivileged
 
-        let conflictsWith (binding : SocketBinding) : bool =
+        let conflictsWith (binding : Ipv4Binding) : bool =
             UnixMachineState.bindingConflicts socketId socket binding system.Machine
 
         // A request for port 0 conflicts with nothing here: the allocator's
@@ -1311,7 +1311,9 @@ module UnixSocket =
                 // the address: a datagram socket whose dissolve left it
                 // half-bound (`127.0.0.1:0`) rebinds -- measured, on both
                 // addresses and both kinds of port.
-                BindFault.AlreadyBound, (socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us))
+                BindFault.AlreadyBound,
+                (socket.Ipv4Binding
+                 |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us))
                 BindFault.AddressInUse, addressInUseFault
             ]
             |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
@@ -1392,10 +1394,15 @@ module UnixSocket =
             | None -> false
 
         let ipv6OnlyFault =
-            socket.Addressing = SocketAddressing.Inet6V6Only && mapped.IsSome
+            match socket.Addressing with
+            | SocketAddressing.Inet6V6Only _ -> mapped.IsSome
+            | SocketAddressing.Inet _
+            | SocketAddressing.Inet6DualMode _
+            | SocketAddressing.Unix _ -> false
 
         let alreadyBoundFault =
-            socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us)
+            socket.Ipv4Binding
+            |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us)
 
         let addressNotLocalFault =
             match mapped with
@@ -1572,10 +1579,11 @@ module UnixSocket =
 
         let socket = UnixMachineState.socket socketId system.Machine
 
-        match socket.Domain with
-        | SocketDomain.Inet6 -> Error (ListenRefusal.Ipv6Listener socketId)
-        | SocketDomain.Unix -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet ->
+        match socket.Addressing with
+        | SocketAddressing.Inet6DualMode _
+        | SocketAddressing.Inet6V6Only _ -> Error (ListenRefusal.Ipv6Listener socketId)
+        | SocketAddressing.Unix _ -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketAddressing.Inet binding ->
 
         match socket.Kind with
         | SocketKind.Datagram -> Ok (ListenAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1600,7 +1608,7 @@ module UnixSocket =
         // Darwin asks nothing of a socket that already has a port; see
         // `listenRescreensBinding` for why that is not a strictness difference
         // to round in the safe direction.
-        match socket.Binding with
+        match binding with
         | Some binding when
             SimulatedUnixPlatform.listenRescreensBinding system.Machine.UnixPlatform
             && UnixMachineState.bindingConflicts socketId socket binding system.Machine
@@ -1609,12 +1617,12 @@ module UnixSocket =
         | _ ->
 
         match
-            (match socket.Binding with
+            (match binding with
              | Some binding -> Some (binding, system.Machine)
              | None ->
                  // `listen(2)` on an unbound socket binds it to the wildcard and
                  // an ephemeral port. Measured on both.
-                 let candidate (port : uint16) : SocketBinding =
+                 let candidate (port : uint16) : Ipv4Binding =
                      {
                          Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                          // This implicit bind runs no `bind(2)`, so nothing is
@@ -1656,7 +1664,7 @@ module UnixSocket =
                             Map.add
                                 socketId
                                 { socket with
-                                    Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
+                                    Addressing = SocketAddressing.Inet (Some bound)
                                     Phase = listenPhase
                                 }
                                 machine.Sockets
@@ -1789,7 +1797,7 @@ module UnixSocket =
         // on Darwin the `sa_len` byte its layout puts in front of it, and a
         // fresh AF_INET6 one twenty-eight (`docs/probes/dual-mode/`, A1).
         let endpoint =
-            match socket.Binding with
+            match socket.Ipv4Binding with
             | Some binding -> binding.Endpoint
             | None -> Ipv4Endpoint.ofParts Ipv4Address.any 0us
 
@@ -2298,7 +2306,7 @@ module UnixSocket =
                         }
                 | ModelledOption.Ipv6Only ->
                     let hasAddress =
-                        socket.Binding.IsSome
+                        SocketAddressing.isBound socket.Addressing
                         || match socket.Phase with
                            | SocketPhase.Idle -> false
                            | SocketPhase.Listening _
@@ -2309,19 +2317,21 @@ module UnixSocket =
 
                     match socket.Addressing with
                     | SocketAddressing.Inet6DualMode _
-                    | SocketAddressing.Inet6V6Only when hasAddress -> Error (Ok UnixError.EINVAL)
+                    | SocketAddressing.Inet6V6Only _ when hasAddress -> Error (Ok UnixError.EINVAL)
+                    // Unbound, so the move between the two cases carries no
+                    // binding.
                     | SocketAddressing.Inet6DualMode _
-                    | SocketAddressing.Inet6V6Only ->
+                    | SocketAddressing.Inet6V6Only _ ->
                         Ok
                             { socket with
                                 Addressing =
                                     if field 0 <> 0 then
-                                        SocketAddressing.Inet6V6Only
+                                        SocketAddressing.Inet6V6Only None
                                     else
                                         SocketAddressing.Inet6DualMode None
                             }
                     | SocketAddressing.Inet _
-                    | SocketAddressing.Unix ->
+                    | SocketAddressing.Unix _ ->
                         failwith
                             $"UnixSocket.setsockopt: IPV6_V6ONLY reached socket %O{socketId}, which is %A{socket.Addressing}, though the option applies to no such socket and its errno is answered first (this is a bug in this library)."
                 | ModelledOption.Linger
@@ -2586,7 +2596,15 @@ module UnixSocket =
                         | SimulatedUnixFlavour.Darwin -> 4
 
                     ints [ flag socket.Options.NoDelay whenSet ], system
-                | ModelledOption.Ipv6Only -> ints [ flag (socket.Addressing = SocketAddressing.Inet6V6Only) 1 ], system
+                | ModelledOption.Ipv6Only ->
+                    let ipv6Only =
+                        match socket.Addressing with
+                        | SocketAddressing.Inet6V6Only _ -> true
+                        | SocketAddressing.Inet _
+                        | SocketAddressing.Inet6DualMode _
+                        | SocketAddressing.Unix _ -> false
+
+                    ints [ flag ipv6Only 1 ], system
                 | ModelledOption.Linger ->
                     match flavour with
                     | SimulatedUnixFlavour.Linux -> ints [ enabled ; int (linger.Hundredths / 100L) ], system
