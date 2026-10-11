@@ -320,46 +320,14 @@ WoofWare.PosixKernel.BindFault.IsPrivilegedPort [property]: [read-only] bool
 WoofWare.PosixKernel.BindFault.Length [static property]: [read-only] WoofWare.PosixKernel.BindFault
 WoofWare.PosixKernel.BindFault.PrivilegedPort [static property]: [read-only] WoofWare.PosixKernel.BindFault
 WoofWare.PosixKernel.BindFault.Tag [property]: [read-only] int
-WoofWare.PosixKernel.BindRefusal inherit obj, implements WoofWare.PosixKernel.BindRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.BindRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
-WoofWare.PosixKernel.BindRefusal+Copy inherit WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal+Copy.get_Item [method]: unit -> WoofWare.PosixKernel.SockaddrCopyRefusal
-WoofWare.PosixKernel.BindRefusal+Copy.Item [property]: [read-only] WoofWare.PosixKernel.SockaddrCopyRefusal
-WoofWare.PosixKernel.BindRefusal+EphemeralPortsExhausted inherit WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal+EphemeralPortsExhausted.get_Item2 [method]: unit -> System.UInt16
-WoofWare.PosixKernel.BindRefusal+EphemeralPortsExhausted.get_range [method]: unit -> System.UInt16
-WoofWare.PosixKernel.BindRefusal+EphemeralPortsExhausted.Item2 [property]: [read-only] System.UInt16
-WoofWare.PosixKernel.BindRefusal+EphemeralPortsExhausted.range [property]: [read-only] System.UInt16
-WoofWare.PosixKernel.BindRefusal+Tags inherit obj
-WoofWare.PosixKernel.BindRefusal+Tags.Copy [static field]: int = 0
-WoofWare.PosixKernel.BindRefusal+Tags.EphemeralPortsExhausted [static field]: int = 2
-WoofWare.PosixKernel.BindRefusal+Tags.UnmodelledIpv6Address [static field]: int = 3
-WoofWare.PosixKernel.BindRefusal+Tags.UnmodelledMulticast [static field]: int = 1
-WoofWare.PosixKernel.BindRefusal+UnmodelledIpv6Address inherit WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal+UnmodelledIpv6Address.address [property]: [read-only] WoofWare.PosixKernel.Ipv6Address
-WoofWare.PosixKernel.BindRefusal+UnmodelledIpv6Address.get_address [method]: unit -> WoofWare.PosixKernel.Ipv6Address
-WoofWare.PosixKernel.BindRefusal+UnmodelledIpv6Address.get_socket [method]: unit -> WoofWare.PosixKernel.SocketId
-WoofWare.PosixKernel.BindRefusal+UnmodelledIpv6Address.socket [property]: [read-only] WoofWare.PosixKernel.SocketId
-WoofWare.PosixKernel.BindRefusal+UnmodelledMulticast inherit WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal+UnmodelledMulticast.address [property]: [read-only] WoofWare.PosixKernel.Ipv4Address
-WoofWare.PosixKernel.BindRefusal+UnmodelledMulticast.get_address [method]: unit -> WoofWare.PosixKernel.Ipv4Address
-WoofWare.PosixKernel.BindRefusal+UnmodelledMulticast.get_socket [method]: unit -> WoofWare.PosixKernel.SocketId
-WoofWare.PosixKernel.BindRefusal+UnmodelledMulticast.socket [property]: [read-only] WoofWare.PosixKernel.SocketId
+WoofWare.PosixKernel.BindRefusal inherit obj, implements WoofWare.PosixKernel.BindRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.BindRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.BindRefusal.Equals [method]: (WoofWare.PosixKernel.BindRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.BindRefusal.get_IsCopy [method]: unit -> bool
-WoofWare.PosixKernel.BindRefusal.get_IsEphemeralPortsExhausted [method]: unit -> bool
-WoofWare.PosixKernel.BindRefusal.get_IsUnmodelledIpv6Address [method]: unit -> bool
-WoofWare.PosixKernel.BindRefusal.get_IsUnmodelledMulticast [method]: unit -> bool
-WoofWare.PosixKernel.BindRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.BindRefusal.IsCopy [property]: [read-only] bool
-WoofWare.PosixKernel.BindRefusal.IsEphemeralPortsExhausted [property]: [read-only] bool
-WoofWare.PosixKernel.BindRefusal.IsUnmodelledIpv6Address [property]: [read-only] bool
-WoofWare.PosixKernel.BindRefusal.IsUnmodelledMulticast [property]: [read-only] bool
-WoofWare.PosixKernel.BindRefusal.NewCopy [static method]: WoofWare.PosixKernel.SockaddrCopyRefusal -> WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal.NewEphemeralPortsExhausted [static method]: (System.UInt16, System.UInt16) -> WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal.NewUnmodelledIpv6Address [static method]: (WoofWare.PosixKernel.SocketId, WoofWare.PosixKernel.Ipv6Address) -> WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal.NewUnmodelledMulticast [static method]: (WoofWare.PosixKernel.SocketId, WoofWare.PosixKernel.Ipv4Address) -> WoofWare.PosixKernel.BindRefusal
-WoofWare.PosixKernel.BindRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.BindRefusalModule inherit obj
+WoofWare.PosixKernel.BindRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.BindRefusalModule+Reason.|Copy|_| [static method]: WoofWare.PosixKernel.BindRefusal -> WoofWare.PosixKernel.SockaddrCopyRefusal option
+WoofWare.PosixKernel.BindRefusalModule+Reason.|EphemeralPortsExhausted|_| [static method]: WoofWare.PosixKernel.BindRefusal -> (System.UInt16 * System.UInt16) option
+WoofWare.PosixKernel.BindRefusalModule+Reason.|UnmodelledIpv6Address|_| [static method]: WoofWare.PosixKernel.BindRefusal -> (WoofWare.PosixKernel.SocketId * WoofWare.PosixKernel.Ipv6Address) option
+WoofWare.PosixKernel.BindRefusalModule+Reason.|UnmodelledMulticast|_| [static method]: WoofWare.PosixKernel.BindRefusal -> (WoofWare.PosixKernel.SocketId * WoofWare.PosixKernel.Ipv4Address) option
 WoofWare.PosixKernel.BindRefusalModule.describe [static method]: WoofWare.PosixKernel.BindRefusal -> string
 WoofWare.PosixKernel.BootTimeRefusal inherit obj, implements WoofWare.PosixKernel.BootTimeRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.BootTimeRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.BootTimeRefusal+BeforeEpoch inherit WoofWare.PosixKernel.BootTimeRefusal
