@@ -2343,6 +2343,88 @@ module TestCliTypeBytes =
             |]
 
     [<Test>]
+    let ``Out-of-range byte accesses to a non-struct CLI value fail with the value in the message`` () : unit =
+        // Every (offset, count) on a grid around each value's extent, through every entry point
+        // that range-checks a non-struct value itself. Each must either succeed or fail with
+        // exactly the message below: the first check to fail, then the whole value.
+        let expectedFailure
+            (operation : string)
+            (length : int)
+            (value : CliType)
+            (offset : int)
+            (count : int)
+            : string option
+            =
+            if offset < 0 then
+                Some $"%s{operation}: byte offset %i{offset} is negative for CLI value %O{value}"
+            elif count < 0 then
+                Some $"%s{operation}: byte count %i{count} is negative for CLI value %O{value}"
+            elif count > length - offset then
+                Some
+                    $"%s{operation}: byte range [%d{offset}, %d{offset + count}) exceeds %i{length}-byte CLI value %O{value}"
+            else
+                None
+
+        let symbolicByte =
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (typeHandleSource, 2)))
+
+        let symbolicNativeInt = CliType.Numeric (CliNumericType.NativeInt typeHandleSource)
+
+        let cases : (string * CliType * int * (int -> int -> unit)) list =
+            [
+                let int32 = CliType.Numeric (CliNumericType.Int32 0x11223344)
+                "CliType.BytesAt", int32, 4, (fun o c -> CliType.BytesAt o c int32 |> ignore)
+
+                let float64 = CliType.Numeric (CliNumericType.Float64 1.5)
+
+                "CliType.WithBytesAtIfChanged",
+                float64,
+                8,
+                (fun o c -> CliType.WithBytesAtIfChanged o (Array.zeroCreate c) float64 |> ignore)
+
+                let int16 = CliType.Numeric (CliNumericType.Int16 0x1122s)
+                "CliType.ByteImageAt", int16, 2, (fun o c -> CliType.ByteImageAt o c int16 |> ignore)
+
+                "CliType.ByteImageAt",
+                CliType.ObjectRef None,
+                8,
+                (fun o c -> CliType.ByteImageAt o c (CliType.ObjectRef None) |> ignore)
+
+                "CliType.ByteImageAt",
+                symbolicNativeInt,
+                8,
+                (fun o c -> CliType.ByteImageAt o c symbolicNativeInt |> ignore)
+
+                "CliType.SymbolicBytesAt",
+                symbolicByte,
+                1,
+                (fun o c -> CliType.SymbolicBytesAt o c symbolicByte |> ignore)
+
+                "CliType.SymbolicBytesAt",
+                symbolicNativeInt,
+                8,
+                (fun o c -> CliType.SymbolicBytesAt o c symbolicNativeInt |> ignore)
+            ]
+
+        let mutable failuresSeen = 0
+
+        for operation, value, length, run in cases do
+            for offset in -2 .. length + 2 do
+                // `WithBytesAtIfChanged` takes the bytes themselves, so its count cannot be negative.
+                let lowestCount = if operation = "CliType.WithBytesAtIfChanged" then 0 else -2
+
+                for count in lowestCount .. length + 2 do
+                    match expectedFailure operation length value offset count with
+                    | None -> run offset count
+                    | Some expected ->
+                        let ex = Assert.Throws<System.Exception> (fun () -> run offset count)
+                        ex.Message |> shouldEqual expected
+                        failuresSeen <- failuresSeen + 1
+
+        // Guard against a grid that never reaches a failure.
+        failuresSeen |> shouldBeGreaterThan 100
+
+    [<Test>]
     let ``SymbolicBytesAt is verbatim where the slice misses the handle`` () : unit =
         let value = handleThenIntValueType () |> CliType.ValueType
 

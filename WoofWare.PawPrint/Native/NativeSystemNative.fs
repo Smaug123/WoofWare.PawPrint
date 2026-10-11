@@ -4020,6 +4020,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 // Unreachable, for the same reason.
@@ -5374,6 +5375,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.ConnectionRead _)
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 // Unreachable: a task parked in another syscall is not running
@@ -7406,6 +7408,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 // Unreachable, for the same reason.
@@ -7708,6 +7711,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.ConnectionRead _)
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 // Unreachable: a task parked in another syscall is not running

@@ -148,6 +148,20 @@ type WakePrimitive =
     /// interrupts; `SyscallInterruption.ruleOf` says how the interrupted call
     /// then ends.
     | SignalDeliverable
+    /// The FIFO whose end the open file description `opener` names has seen
+    /// more than `opens` opens of the other end: of the write end for an
+    /// `opener` opened for reading, and of the read end for one opened for
+    /// writing. One opened for both never sleeps.
+    ///
+    /// What a blocking open of one end of a FIFO waits for. A count rather
+    /// than "a partner is open" because a partner that opens and closes again
+    /// before the sleeper runs still completes its open, on both flavours.
+    /// `opener` is the description the sleeping call made and holds
+    /// (`ParkedFifoOpen.Opener`).
+    ///
+    /// Reserved: nothing parks a task in a FIFO open yet, so no condition this
+    /// library hands out contains it.
+    | FifoPartnerOpened of opener : OpenFileDescriptionId * opens : int64
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -265,6 +279,7 @@ module WakeCondition =
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
+        | Some (ParkedSyscall.FifoOpen _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -366,6 +381,9 @@ module WakeCondition =
         // `satisfied` answers a call a close has ended before it asks any
         // primitive, so this is asked only of one no close has ended.
         | WakePrimitive.EndedByClose -> false
+        | WakePrimitive.FifoPartnerOpened _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but this library keeps no count of a FIFO's opens to evaluate it against: nothing parks a task in a FIFO open yet (`ParkedSyscall.FifoOpen` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -451,7 +469,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.ConnectionReadable _)
         | WakeCondition.Primitive (WakePrimitive.ConnectionWritable _)
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
-        | WakeCondition.Primitive WakePrimitive.EndedByClose -> []
+        | WakeCondition.Primitive WakePrimitive.EndedByClose
+        | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -575,6 +594,12 @@ module WakeCondition =
             | ParkedSyscall.SigSuspend -> []
             // Its deadline, or a signal.
             | ParkedSyscall.Sleep sleep -> [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed sleep.Deadline) ]
+            // A partner's open, or a signal. No close ends it: no descriptor
+            // names its description until the call installs one.
+            | ParkedSyscall.FifoOpen fifoOpen ->
+                [
+                    WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened (fifoOpen.Opener, fifoOpen.PartnerOpens))
+                ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 
