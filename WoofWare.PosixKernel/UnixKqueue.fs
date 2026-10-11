@@ -711,7 +711,7 @@ module UnixKqueue =
 
         // Within `int64`: the screen above bounds `seconds` by INT32_MAX.
         let duration = seconds * nanosecondsPerSecond + nanoseconds
-        let now = system.Machine.NanosecondsSinceBoot
+        let now = system.Scheduling.NanosecondsSinceBoot
 
         if now > System.Int64.MaxValue - duration then
             Error (KeventRefusal.DeadlineBeyondClock (now, seconds, nanoseconds))
@@ -739,7 +739,7 @@ module UnixKqueue =
 
         let timedOut =
             match parked.Deadline with
-            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | Some deadline -> system.Scheduling.NanosecondsSinceBoot >= deadline
             | None -> false
 
         let completing (outcome : KeventOutcome) (answered : UnixSystem<'Task, 'Handler>) =

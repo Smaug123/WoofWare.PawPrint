@@ -65,7 +65,7 @@ module TestKqueue =
 
     let private after (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         { system with
-            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+            Scheduling = UnixSchedulingState.advanceClock nanoseconds system.Scheduling
         }
 
     /// A wait for one event, with no changes.
@@ -389,7 +389,7 @@ module TestKqueue =
                 with
                 | Ok (outcome, after) ->
                     try
-                        agreesWith system.Machine.NanosecondsSinceBoot rv errno slept outcome system after 1
+                        agreesWith system.Scheduling.NanosecondsSinceBoot rv errno slept outcome system after 1
                     with e ->
                         failwith $"line %A{line}: %s{e.Message}"
                 | Error refusal -> failwith $"line %A{line}: refused, %s{KeventRefusal.describe refusal}"
@@ -425,7 +425,7 @@ module TestKqueue =
                 with
                 | Ok (outcome, after) ->
                     try
-                        agreesWith system.Machine.NanosecondsSinceBoot rv errno slept outcome system after 2
+                        agreesWith system.Scheduling.NanosecondsSinceBoot rv errno slept outcome system after 2
                     with e ->
                         failwith $"line %A{line}: %s{e.Message}"
                 | Error refusal -> failwith $"line %A{line}: refused, %s{KeventRefusal.describe refusal}"

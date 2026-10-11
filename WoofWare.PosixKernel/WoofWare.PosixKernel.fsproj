@@ -75,6 +75,7 @@
         <Compile Include="FileSystemStatistics.fs" />
         <Compile Include="EntropyPool.fs" />
         <Compile Include="UnixProcess.fs" />
+        <Compile Include="UnixSchedulingState.fs" />
         <Compile Include="UnixMachine.fs" />
         <Compile Include="TcpBufferSizing.fs" />
         <Compile Include="UnixSystemState.fs" />

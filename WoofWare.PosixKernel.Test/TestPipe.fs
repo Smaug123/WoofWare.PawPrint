@@ -308,7 +308,7 @@ module TestPipe =
                 |> withSigPipe sigPipe
 
             let (readFd, writeFd), system = pipeOrFail flags bare
-            let created = UnixMachineState.realtime system.Machine
+            let created = UnixMachineState.realtime system.Scheduling system.Machine
             let mutable system = system
             let mutable nextGroup = 2
             // Set once a write's SIGPIPE has ended the process, after which
@@ -333,10 +333,10 @@ module TestPipe =
                 // seen to.
                 system <-
                     { system with
-                        Machine = UnixMachineState.advanceClock 1000L system.Machine
+                        Scheduling = UnixSchedulingState.advanceClock 1000L system.Scheduling
                     }
 
-                let now = UnixMachineState.realtime system.Machine
+                let now = UnixMachineState.realtime system.Scheduling system.Machine
                 let where = $"%O{platform}, call %d{i} (%A{op})"
 
                 let nonBlockingOf (fd : int) =
@@ -832,7 +832,7 @@ module TestPipe =
 
         let system =
             { system with
-                Machine = UnixMachineState.advanceClock 5_000_000L system.Machine
+                Scheduling = UnixSchedulingState.advanceClock 5_000_000L system.Scheduling
             }
 
         let _, system = writeOrFail w (payload 0 10) system
@@ -870,7 +870,7 @@ module TestPipe =
             pipeOrFail
                 0
                 { booted with
-                    Machine = UnixMachineState.advanceClock 1_000_000_000L booted.Machine
+                    Scheduling = UnixSchedulingState.advanceClock 1_000_000_000L booted.Scheduling
                 }
 
         let _, system = writeOrFail w (payload 0 10) system
@@ -900,18 +900,18 @@ module TestPipe =
 
         let tick (system : UnixSystem<int, string>) =
             { system with
-                Machine = UnixMachineState.advanceClock 1_000_000L system.Machine
+                Scheduling = UnixSchedulingState.advanceClock 1_000_000L system.Scheduling
             }
 
         let times fd system =
             let status = fstatOrFail fd system
             status.AccessTime, status.ModificationTime, status.StatusChangeTime
 
-        let start = UnixMachineState.realtime system.Machine
+        let start = UnixMachineState.realtime system.Scheduling system.Machine
 
         // A blocking read of 0 bytes: answered 0, and the read end's atime moves.
         let system = tick system
-        let t1 = UnixMachineState.realtime system.Machine
+        let t1 = UnixMachineState.realtime system.Scheduling system.Machine
         let answer, system = readOrFail r 0 system
         answer |> shouldEqual (ReadAnswer.Completed ImmutableArray.Empty)
         times r system |> shouldEqual (t1, start, start)
@@ -919,7 +919,7 @@ module TestPipe =
 
         // A write of 0 bytes moves both ends' mtime and ctime.
         let system = tick system
-        let t2 = UnixMachineState.realtime system.Machine
+        let t2 = UnixMachineState.realtime system.Scheduling system.Machine
         let answer, system = writeOrFail w ImmutableArray.Empty system
         answer |> shouldEqual (WriteAnswer.Completed 0L)
         times r system |> shouldEqual (t1, t2, t2)
@@ -927,7 +927,7 @@ module TestPipe =
 
         // An EFAULT write moves them too, and changes nothing else.
         let system = tick system
-        let t3 = UnixMachineState.realtime system.Machine
+        let t3 = UnixMachineState.realtime system.Scheduling system.Machine
 
         match WriteOutcomes.admitWrite w (UserBuffer.Unmapped 8UL) 5UL system with
         | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT), after) ->
@@ -942,7 +942,7 @@ module TestPipe =
 
         let system =
             { system with
-                Machine = UnixMachineState.advanceClock 1_000_000L system.Machine
+                Scheduling = UnixSchedulingState.advanceClock 1_000_000L system.Scheduling
             }
 
         let _, system = readOrFail r 5 system
@@ -1004,7 +1004,7 @@ module TestPipe =
                                     |> withSigPipe disposition
                                     |> fun system ->
                                         { system with
-                                            Machine = UnixMachineState.advanceClock 1000L system.Machine
+                                            Scheduling = UnixSchedulingState.advanceClock 1000L system.Scheduling
                                         }
 
                                 let actual =

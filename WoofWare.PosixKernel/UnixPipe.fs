@@ -197,7 +197,7 @@ module UnixPipe =
             | SimulatedUnixFlavour.Darwin ->
                 PipeInodes.PerEnd (InodeNumber rawInode, InodeNumber (rawInode + 1L)), InodeNumber (rawInode + 2L)
 
-        let now = UnixMachineState.realtime machine
+        let now = UnixMachineState.realtime system.Scheduling machine
 
         // Measured by pipe-syscalls.c and pipe-states.c, and held to the host
         // by `TestPipeAgainstHost`. Neither flavour applies the umask: the bits

@@ -2154,7 +2154,7 @@ module TestBlockingPipe =
     let ``Darwin: the close moves the timestamps of the transfer it ends`` () : unit =
         let later (system : UnixSystem<int, string>) =
             { system with
-                Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
+                Scheduling = UnixSchedulingState.advanceClock 1_000_000_000L system.Scheduling
             }
 
         let times (fd : int) (system : UnixSystem<int, string>) =
@@ -2169,7 +2169,7 @@ module TestBlockingPipe =
         let system = pipeHolding platform false 0 |> later |> readerAsleep |> later
         let duplicate, system = dupped 3 system
         let system = closed 3 system
-        let closedAt = UnixMachineState.realtime system.Machine
+        let closedAt = UnixMachineState.realtime system.Scheduling system.Machine
         let access, _, _ = times duplicate system
         access |> shouldEqual closedAt
 
@@ -2181,7 +2181,7 @@ module TestBlockingPipe =
         let system = pipeHolding platform false 65536 |> later |> writerAsleep 1 |> later
         let duplicate, system = dupped 4 system
         let system = closed 4 system
-        let closedAt = UnixMachineState.realtime system.Machine
+        let closedAt = UnixMachineState.realtime system.Scheduling system.Machine
         let _, modification, change = times duplicate system
         (modification, change) |> shouldEqual (closedAt, closedAt)
 
@@ -2197,7 +2197,7 @@ module TestBlockingPipe =
         // bytes in, and are the moment the call ends, however it ends.
         let later (system : UnixSystem<int, string>) =
             { system with
-                Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
+                Scheduling = UnixSchedulingState.advanceClock 1_000_000_000L system.Scheduling
             }
 
         let times (fd : int) (system : UnixSystem<int, string>) =
@@ -2242,7 +2242,7 @@ module TestBlockingPipe =
             // Nothing moved while it slept.
             times fd asleep |> shouldEqual atStart
             let ended = ending asleep |> later
-            let now = UnixMachineState.realtime ended.Machine
+            let now = UnixMachineState.realtime ended.Scheduling ended.Machine
 
             let after =
                 match writing with

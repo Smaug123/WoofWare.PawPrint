@@ -2200,7 +2200,7 @@ module TestUnixSystemStep =
             // The clock has to have moved, or the two answers coincide.
             let system =
                 { system with
-                    Machine = UnixMachineState.advanceClock 5_000_000_000L system.Machine
+                    Scheduling = UnixSchedulingState.advanceClock 5_000_000_000L system.Scheduling
                 }
 
             let after = Answered.rmdir (statPath "/d") system |> completed

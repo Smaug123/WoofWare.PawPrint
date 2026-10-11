@@ -155,9 +155,10 @@ module TestCloneFile =
 
         { system with
             Machine =
-                { UnixMachineState.advanceClock later system.Machine with
+                { system.Machine with
                     FileSystem = vfs
                 }
+            Scheduling = UnixSchedulingState.advanceClock later system.Scheduling
             Process =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
@@ -374,7 +375,7 @@ module TestCloneFile =
             let system =
                 systemOnWith (Launched.umask (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
 
-            let now = UnixMachineState.realtime system.Machine
+            let now = UnixMachineState.realtime system.Scheduling system.Machine
 
             match clone "src" "w/dst" 0x4 system with
             | Ok (SyscallAnswer.Completed 0L, after) ->

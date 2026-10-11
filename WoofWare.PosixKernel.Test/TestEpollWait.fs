@@ -193,7 +193,7 @@ module TestEpollWait =
 
     let private after (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         { system with
-            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+            Scheduling = UnixSchedulingState.advanceClock nanoseconds system.Scheduling
         }
 
     /// What the one registration reports when the listener is ready: `IN`, since

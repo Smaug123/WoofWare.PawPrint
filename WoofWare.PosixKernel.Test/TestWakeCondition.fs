@@ -212,7 +212,7 @@ module TestWakeCondition =
 
     let private at (clock : int64) : UnixSystem<int, string> =
         { system with
-            Machine = UnixMachineState.advanceClock clock system.Machine
+            Scheduling = UnixSchedulingState.advanceClock clock system.Scheduling
         }
 
     /// The task with a caught signal pending; the other, 0, has none.

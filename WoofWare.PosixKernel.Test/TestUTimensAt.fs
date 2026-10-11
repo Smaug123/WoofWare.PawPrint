@@ -675,10 +675,10 @@ module TestUTimensAt =
         // The probe let the clock move on before it looked.
         let system =
             { system with
-                Machine = UnixMachineState.advanceClock settling system.Machine
+                Scheduling = UnixSchedulingState.advanceClock settling system.Scheduling
             }
 
-        let now = UnixMachineState.realtime system.Machine
+        let now = UnixMachineState.realtime system.Scheduling system.Machine
         let paths = if reportObjects then objects caller else []
 
         let heldSnapshots (system : UnixSystem<int, string>) : (string * Snapshot option) list =

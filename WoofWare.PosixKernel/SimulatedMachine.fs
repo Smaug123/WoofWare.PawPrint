@@ -28,6 +28,9 @@ type SimulatedMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equ
     internal
         {
             Machine : UnixMachineState
+            /// How long the machine has been up, and which task each of its
+            /// processors runs: see `UnixSchedulingState`.
+            Scheduling : UnixSchedulingState
             /// Every process on the machine, by its process ID.
             Processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>
         }
@@ -120,10 +123,11 @@ module SimulatedMachine =
         =
         {
             Machine = machine.Machine
+            Scheduling = machine.Scheduling
             Process = slot.Process
             Tasks = slot.Tasks
             Leader = slot.Leader
-            Origin = FocusOrigin.FocusedFrom (machine.Machine, slot.Process, slot.Tasks)
+            Origin = FocusOrigin.FocusedFrom (machine.Machine, machine.Scheduling, slot.Process, slot.Tasks)
         }
 
     /// The machine `system` runs on, holding `system`'s process as its only
@@ -146,6 +150,7 @@ module SimulatedMachine =
 
         {
             Machine = system.Machine
+            Scheduling = system.Scheduling
             Processes =
                 Map.empty
                 |> Map.add
@@ -229,6 +234,7 @@ module SimulatedMachine =
                 pid,
                 {
                     Machine = launched
+                    Scheduling = machine.Scheduling
                     Processes =
                         Map.add
                             pid
@@ -298,31 +304,34 @@ module SimulatedMachine =
 
         let holds
             (machineState : UnixMachineState)
+            (scheduling : UnixSchedulingState)
             (proc : UnixProcessState<'Task, 'Handler>)
             (tasks : Map<'Task, UnixTaskState>)
             : bool
             =
             obj.ReferenceEquals (machineState, machine.Machine)
+            && obj.ReferenceEquals (scheduling, machine.Scheduling)
             && obj.ReferenceEquals (proc, slot.Process)
             && obj.ReferenceEquals (tasks, slot.Tasks)
 
         // A view the machine already holds exactly, wherever it was focused
         // from, writes nothing back; as the machine `ofSystem` made of a
         // system holds that system.
-        let unchanged = holds view.Machine view.Process view.Tasks
+        let unchanged = holds view.Machine view.Scheduling view.Process view.Tasks
 
         let current =
             match view.Origin with
-            | FocusOrigin.FocusedFrom (originMachine, originProcess, originTasks) ->
-                unchanged || holds originMachine originProcess originTasks
+            | FocusOrigin.FocusedFrom (originMachine, originScheduling, originProcess, originTasks) ->
+                unchanged || holds originMachine originScheduling originProcess originTasks
             | FocusOrigin.NotFocused -> unchanged
 
         if not current then
             failwith
                 $"%s{operation}: the view of process %O{processId} was not focused from the machine as it stands: another view has been written back since, or the machine has otherwise changed, or the view was focused from another history of it. Writing the view back would undo a change it never saw; focus the process again and repeat its call (this is a bug in the client)."
 
-    /// Write `view` back into `machine`: the view's machine replaces
-    /// `machine`'s, and the view's process replaces the process with its ID.
+    /// Write `view` back into `machine`: the view's machine, with its clock and
+    /// what its processors run, replaces `machine`'s, and the view's process
+    /// replaces the process with its ID.
     ///
     /// Fails loudly if `view` is not a view of `machine` as it stands: if no
     /// process on it has the view's process ID, or if the machine or the
@@ -347,6 +356,7 @@ module SimulatedMachine =
 
         {
             Machine = view.Machine
+            Scheduling = view.Scheduling
             Processes =
                 Map.add
                     processId
@@ -434,6 +444,7 @@ module SimulatedMachine =
         let dead =
             { view with
                 Machine = ended.Machine
+                Scheduling = ended.Scheduling
                 Process = ended.FinalProcess
                 Tasks = Map.empty
                 Origin = FocusOrigin.NotFocused
@@ -529,6 +540,7 @@ module SimulatedMachine =
                 ended.Termination,
                 {
                     Machine = dead.Machine
+                    Scheduling = dead.Scheduling
                     Processes = Map.remove processId machine.Processes
                 }
             )
@@ -593,6 +605,7 @@ module SimulatedMachine =
             UnixSystem.machineDefects
                 true
                 (slots |> List.map (fun (_, slot) -> slot.Process, slot.Tasks))
+                machine.Scheduling
                 machine.Machine
             |> List.map SimulatedMachineDefect.Machine
 
