@@ -392,6 +392,7 @@ module TestReadme =
             "UnixConnection"
             "UnixPoll"
             "UnixKqueue"
+            "UnixInotify"
             "UnixSignal"
             "UnixClock"
             "UnixEntropy"

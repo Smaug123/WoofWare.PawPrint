@@ -135,6 +135,7 @@ class LockAndPortWaiters
         | ParkedSyscall.SigSuspend
         | ParkedSyscall.Sleep _
         | ParkedSyscall.FifoOpen _
+        | ParkedSyscall.InotifyRead _
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _ -> false
 

@@ -15,8 +15,9 @@ open WoofWare.PosixKernel
 /// instances, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither epoll instance has anything to deliver;
 /// two kqueues, the first with a ready listener queued and the second drained;
-/// a connected client socket with nothing written either way; the standard
-/// streams, whose readiness is the launch shape's; and two tasks,
+/// a connected client socket with nothing written either way; two inotify
+/// instances, one holding a record and one empty; the standard streams, whose
+/// readiness is the launch shape's; and two tasks,
 /// of which only `signalled` has a caught signal pending.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -148,8 +149,34 @@ module TestWakeCondition =
 
         system, idOf lockerFd system, idOf blockedFd system
 
-    let private system : UnixSystem<int, string> =
+    /// Two inotify instances in `world`'s system, for `InotifyRecordQueued`'s
+    /// two answers: the first holds the `IN_IGNORED` record of a watch removed
+    /// from it, and the second holds nothing.
+    let private withInotify : UnixSystem<int, string> * OpenFileDescriptionId * OpenFileDescriptionId =
         let system, _, _ = world
+
+        let created (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+            match UnixInotify.inotifyInit1 0 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"creating an inotify instance: %A{other}"
+
+        let queuedFd, system = created system
+        let emptyFd, system = created system
+
+        let system =
+            match UnixInotify.inotifyAddWatch queuedFd (PathArg.ofText "/") 0x100u system with
+            | Ok (SyscallAnswer.Completed 1L, system) -> system
+            | other -> failwith $"watching the root: %A{other}"
+
+        let system =
+            match UnixInotify.inotifyRmWatch queuedFd 1 system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"removing the watch: %A{other}"
+
+        system, idOf queuedFd system, idOf emptyFd system
+
+    let private system : UnixSystem<int, string> =
+        let system, _, _ = withInotify
         system
 
     let private locker : OpenFileDescriptionId =
@@ -208,6 +235,8 @@ module TestWakeCondition =
             WakePrimitive.ConnectionReadable connectedClient, false
             WakePrimitive.ConnectionWritable (connectedClient, 1), true
             WakePrimitive.ConnectionWritable (connectedClient, 10_000_000), true
+            WakePrimitive.InotifyRecordQueued (let _, queued, _ = withInotify in queued), true
+            WakePrimitive.InotifyRecordQueued (let _, _, empty = withInotify in empty), false
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -237,7 +266,8 @@ module TestWakeCondition =
         | WakePrimitive.PipeReadWhileNonBlocking _
         | WakePrimitive.ConnectionReadable _
         | WakePrimitive.ConnectionWritable _
-        | WakePrimitive.FifoPartnerOpened _ ->
+        | WakePrimitive.FifoPartnerOpened _
+        | WakePrimitive.InotifyRecordQueued _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -464,6 +494,7 @@ module TestWakeCondition =
                         | WakePrimitive.ConnectionReadable _
                         | WakePrimitive.ConnectionWritable _
                         | WakePrimitive.FifoPartnerOpened _
+                        | WakePrimitive.InotifyRecordQueued _
                         | WakePrimitive.SignalDeliverable -> None
                     )
                 )

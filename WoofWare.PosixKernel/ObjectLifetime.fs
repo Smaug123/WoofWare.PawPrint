@@ -210,8 +210,10 @@ module ObjectLifetime =
         =
         match destroyed.Target with
         // An epoll instance's registrations are its own state, and a kqueue
-        // holds none, so neither is the last reference to anything.
+        // holds none, so neither is the last reference to anything. Nor is an
+        // inotify instance: its watches and records go with it.
         | OpenFileTarget.Epoll _
+        | OpenFileTarget.Inotify _
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)

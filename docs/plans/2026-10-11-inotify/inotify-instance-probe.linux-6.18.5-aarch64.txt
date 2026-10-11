@@ -1,0 +1,58 @@
+6.18.5 aarch64
+F	single-bits-accepted	04000,02000000 (others EINVAL)
+F	cloexec-nonblock	ok
+F	cloexec-plus-bit0	-1 EINVAL
+F	zero	F_GETFL=00 F_GETFD=0
+F	negative-one	-1 EINVAL
+G	bad-fd-mask-0	add(999, g, 0)=-1 EINVAL
+G	bad-fd-add-and-create	add(999, g, CREATE|MASK_ADD|MASK_CREATE)=-1 EBADF
+G	add-and-create	add(fd, g, CREATE|MASK_ADD|MASK_CREATE)=-1 EINVAL
+G	bad-fd-missing-path	add(999, missing, CREATE)=-1 EBADF
+G	regular-fd-missing-path	add(regular, missing, CREATE)=-1 EINVAL
+G	regular-fd-mask-0	add(regular, g, 0)=-1 EINVAL
+G	null-path	add(fd, NULL, CREATE)=-1 EFAULT
+G	null-path-mask-0	add(fd, NULL, 0)=-1 EINVAL
+G	empty-path	add(fd, "", CREATE)=-1 ENOENT
+G	through-file	add(fd, g/f/x, CREATE)=-1 ENOTDIR
+G	missing-mask-0	add(fd, missing, 0)=-1 EINVAL
+G	epoll-fd	add(epoll, g, CREATE)=-1 EINVAL
+G	rm-bad-fd	rm(999, 1)=-1 EBADF
+G	rm-regular-fd	rm(regular, 1)=-1 EINVAL
+G	rm-zero	rm(fd, 0)=-1 EINVAL
+G	perm-readable	uid 65534 add(0755 dir)=1
+G	perm-search-only	uid 65534 add(0711 dir)=-1 EACCES
+G	perm-none	uid 65534 add(0700 dir)=-1 EACCES
+G	perm-write-search	uid 65534 add(0733 dir)=-1 EACCES
+G	perm-write-only-file	uid 65534 add(0200 file)=-1 EACCES
+G	perm-none-mask-0	uid 65534 add(0700 dir, 0)=-1 EINVAL
+M	0x1000	-1 EINVAL
+M	0x08000000	-1 EINVAL
+M	IGNORED	1
+M	ISDIR	2
+M	Q_OVERFLOW	3
+M	UNMOUNT	4
+M	ONESHOT	5
+M	EXCL_UNLINK	6
+M	DONT_FOLLOW	7
+M	MASK_ADD	8
+M	MASK_CREATE	9
+M	CREATE|0x1000	-1 EINVAL
+M	CREATE|0x08000000	-1 EINVAL
+M	replace-with-isdir-alone	wd=10 again=10 then create: read=-1 EAGAIN
+U	instances	uid 65534 created 128 before EMFILE
+U	watches	uid 65534 added 8982 before ENOSPC
+U	watch-on-second-instance	-1 ENOSPC
+U	re-add-at-limit	1
+U	after-rm	2
+Q	full	FIONREAD=524288
+Q	identical-at-full	FIONREAD=524304 (full was 524288, +16 is an overflow record)
+Q	identical-at-full-drained	records=16385 overflows=1 first-overflow=16384
+Q	partial-read	read(64)=64
+Q	after-partial-read	records=16384 overflows=1 first-overflow=16382 (two read before)
+Q	read-one	read(32)=32
+Q	after-read-one	records=16384 overflows=1 first-overflow=16383 (one read before)
+Q	moved-from-twice	records=1
+T	edge	first record=1 again=0 second record=1 merged record=0
+X	null-count-0	read(NULL, 0)=-1 EINVAL
+X	after-null-count-0	FIONREAD=32
+X	partial-fault	FIONREAD before=64 read=-1 EFAULT FIONREAD after=0

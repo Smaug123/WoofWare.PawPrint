@@ -249,7 +249,13 @@ module UnixWait =
             | WakePrimitive.EndedByClose
             // A partner's open wakes every opener asleep on the FIFO, on both
             // flavours (measured, two sleepers of two).
-            | WakePrimitive.FifoPartnerOpened _ -> None
+            | WakePrimitive.FifoPartnerOpened _
+            // `inotify_read` waits on the instance's queue non-exclusively, so
+            // a record wakes every reader asleep on it, and the first to run
+            // takes it (from Linux's source; which reader runs first is not
+            // observable). Measured (`inotify-descriptor-probe.c` row S
+            // two-sleepers-one-record): of two readers, one took the record.
+            | WakePrimitive.InotifyRecordQueued _ -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             views
@@ -313,6 +319,9 @@ module UnixWait =
                        }
                 | Some {
                            Syscall = ParkedSyscall.FifoOpen _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.InotifyRead _
                        }
                 | None -> None
             )

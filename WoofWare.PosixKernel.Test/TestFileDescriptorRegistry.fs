@@ -1561,6 +1561,7 @@ module TestFileDescriptorRegistry =
         | Some (OpenFileTarget.Socket _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Fifo _)
+        | Some (OpenFileTarget.Inotify _)
         | Some (OpenFileTarget.CharacterDevice _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
         | Some (OpenFileTarget.Directory _) ->

@@ -475,6 +475,26 @@ type ParkedFifoOpen =
         PartnerOpens : int64
     }
 
+/// One task's in-flight blocking `read(2)` of an inotify instance that held no
+/// record.
+type ParkedInotifyRead =
+    {
+        /// The open file description of the instance the call was made
+        /// through, which it holds while it sleeps. A close of every descriptor
+        /// naming it leaves the call asleep (measured, `inotify-probe.c`
+        /// section B), so nothing ends the call but a record or a signal.
+        Instance : OpenFileDescriptionId
+        /// Where the records are to be copied out to, as the caller classified
+        /// it when the call was entered. Nothing is copied before the call
+        /// sleeps, so a buffer naming no storage faults only once there is a
+        /// record to copy.
+        Buffer : UserBuffer
+        /// The most bytes the call takes: its count, after the platform's
+        /// limit on one call's transfer. May be 0, or less than the record the
+        /// call wakes to, which it then answers `EINVAL` for.
+        Count : int
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -520,6 +540,9 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as
     /// `UnixSystemDefect.ReservedPark`.
     | FifoOpen of ParkedFifoOpen
+    /// A blocking `read(2)` of an inotify instance, waiting for a record or for
+    /// a signal with a handler. Holds the instance (`ParkedInotifyRead.Instance`).
+    | InotifyRead of ParkedInotifyRead
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -562,6 +585,7 @@ module ParkedSyscall =
         | ParkedSyscall.SigSuspend
         | ParkedSyscall.Sleep _ -> []
         | ParkedSyscall.FifoOpen fifoOpen -> [ fifoOpen.Opener ]
+        | ParkedSyscall.InotifyRead read -> [ read.Instance ]
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -785,6 +809,7 @@ module UnixTaskTable =
             | ParkedSyscall.SigSuspend -> 10
             | ParkedSyscall.Sleep _ -> 11
             | ParkedSyscall.FifoOpen _ -> 12
+            | ParkedSyscall.InotifyRead _ -> 13
 
         let sameSyscall =
             match existing.Parked with

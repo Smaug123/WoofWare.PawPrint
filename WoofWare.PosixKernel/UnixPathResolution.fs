@@ -128,7 +128,8 @@ type FStatRefusal =
     /// </remarks>
     | LaunchedPipe of pipe : PipeId
     /// <summary>
-    /// An event queue: an anonymous kernel object.
+    /// An event queue: an anonymous kernel object, an epoll instance, a kqueue
+    /// or an inotify instance.
     /// </summary>
     | EventQueue
     /// <summary>
@@ -551,6 +552,7 @@ module UnixPathResolution =
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Fifo _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
@@ -598,6 +600,7 @@ module UnixPathResolution =
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
+            | OpenFileTarget.Inotify _
             | OpenFileTarget.Kqueue _ -> Error (PathFailure.Refused (PathRefusal.UnmodelledStartingObject fd))
         | EmptyPathMeaning.NamesStartingPoint
         | EmptyPathMeaning.Walked ->
@@ -905,7 +908,11 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.Kqueue _)
-        | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.EventQueue
+        | Some (OpenFileTarget.Epoll _)
+        // On the anonymous inode an epoll instance is on: measured
+        // (`inotify-probe.c` row I fstat), the same `st_dev` and `st_ino`,
+        // mode 0600, one link.
+        | Some (OpenFileTarget.Inotify _) -> Error FStatRefusal.EventQueue
         | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
             let pipe = UnixMachineState.pipe pipeId system.Machine

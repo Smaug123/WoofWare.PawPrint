@@ -1213,7 +1213,8 @@ module TestMultiProcessFuzz =
             | Ok (SyscallOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
-        | Some (ParkedSyscall.PipeRead _) ->
+        | Some (ParkedSyscall.PipeRead _)
+        | Some (ParkedSyscall.InotifyRead _) ->
             match UnixReadWrite.finishRead task view with
             | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) -> Made.Answered after

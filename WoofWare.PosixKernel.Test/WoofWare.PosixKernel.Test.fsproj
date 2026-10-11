@@ -212,6 +212,10 @@
     <Compile Include="TestEpollCtl.fs" />
     <Compile Include="TestEpollCreate1.fs" />
     <Compile Include="TestEpollWait.fs" />
+    <Compile Include="TestInotifyQueue.fs" />
+    <Compile Include="TestInotifyMeasured.fs" />
+    <Compile Include="TestInotifyAgainstHost.fs" />
+    <Compile Include="TestInotifyInvariants.fs" />
     <Compile Include="TestKqueue.fs" />
     <Compile Include="KeventWorld.fs" />
     <Compile Include="TestKeventMeasured.fs" />
@@ -265,6 +269,14 @@
     <!-- What `epoll_ctl(2)` answered for every cell of the probe's ladder,
          measured on Linux; `TestEpollCtl` holds `UnixPoll.epollCtl` to it. -->
     <EmbeddedResource Include="epollCtl\linux-ladder.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What Linux 6.18.5 answered of inotify, measured by the probes in
+         docs/plans/2026-10-11-inotify. `TestInotifyMeasured` replays them. -->
+    <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotify.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-instance-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyInstance.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-descriptor-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDescriptor.linux.txt" />
   </ItemGroup>
 
   <ItemGroup>

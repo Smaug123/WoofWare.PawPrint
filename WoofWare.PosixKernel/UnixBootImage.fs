@@ -169,6 +169,43 @@ module SoMaxConnRefusal =
         | SoMaxConnRefusal.NotPositive value ->
             $"%d{value} is not positive, and no kernel was measured with a non-positive somaxconn, so the accept-queue capacity it would imply is a guess."
 
+/// Why `UnixBootImage.withInotifyLimits` refuses a value.
+[<RequireQualifiedAccess>]
+type InotifyLimitsRefusal =
+    /// The machine is of `flavour` (Darwin), which has no inotify, so nothing
+    /// would read the limits.
+    | NotReadOn of flavour : SimulatedUnixFlavour
+    /// `MaxUserInstances` is below 1. Unmeasured: Linux accepts 0, under which
+    /// every `inotify_init1` would be `EMFILE`, but no machine was measured
+    /// with it.
+    | MaxUserInstancesNotPositive of value : int
+    /// `MaxUserWatches` is below 1. Unmeasured, as for `MaxUserInstances`.
+    | MaxUserWatchesNotPositive of value : int
+    /// `MaxQueuedEvents` is below 1. Unmeasured: what an instance that may
+    /// queue nothing does with its first record is a guess.
+    | MaxQueuedEventsNotPositive of value : int
+    /// `MaxQueuedEvents` is above `largest` (`InotifyLimits.largestQueuedEvents`):
+    /// a full queue's bytes would pass what `ioctl(FIONREAD)`'s `int` holds,
+    /// where Linux's count wraps. Unmodelled.
+    | MaxQueuedEventsTooLarge of value : int * largest : int
+
+[<RequireQualifiedAccess>]
+module InotifyLimitsRefusal =
+    /// What this library knows about why it refused the value, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : InotifyLimitsRefusal) : string =
+        match refusal with
+        | InotifyLimitsRefusal.NotReadOn flavour ->
+            $"the machine is %O{flavour}-flavoured, which has no inotify, so nothing would read the limits."
+        | InotifyLimitsRefusal.MaxUserInstancesNotPositive value ->
+            $"max_user_instances %d{value} is not positive. Linux accepts 0, under which every inotify_init1 is EMFILE, but no machine was measured with a limit below 1."
+        | InotifyLimitsRefusal.MaxUserWatchesNotPositive value ->
+            $"max_user_watches %d{value} is not positive. Linux accepts 0, under which every new watch is ENOSPC, but no machine was measured with a limit below 1."
+        | InotifyLimitsRefusal.MaxQueuedEventsNotPositive value ->
+            $"max_queued_events %d{value} is not positive, and what an instance that may queue no record does with its first one was not measured."
+        | InotifyLimitsRefusal.MaxQueuedEventsTooLarge (value, largest) ->
+            $"max_queued_events %d{value} is above %d{largest}: a full queue's bytes would pass what ioctl(FIONREAD) reports in an int, where Linux's count wraps, which this kernel does not model."
+
 /// Why `UnixBootImage.withTcpSendSpace` refuses a value.
 [<RequireQualifiedAccess>]
 type TcpSendSpaceRefusal =
@@ -777,6 +814,36 @@ module UnixBootImage =
             }
             |> withMachine image
         )
+
+    /// Set Linux's `fs.inotify` sysctls (`InotifyLimits`); the defaults are
+    /// `UnixSystem.defaultInotifyLimits`. Each limit must be positive, the
+    /// queue's at most `InotifyLimits.largestQueuedEvents`, and the machine
+    /// Linux-flavoured: Darwin has no inotify to read them.
+    let withInotifyLimits<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (limits : InotifyLimits)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : Result<UnixBootImage<'Task, 'Handler>, InotifyLimitsRefusal>
+        =
+        match SimulatedUnixPlatform.flavour image.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (InotifyLimitsRefusal.NotReadOn SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        if limits.MaxUserInstances < 1 then
+            Error (InotifyLimitsRefusal.MaxUserInstancesNotPositive limits.MaxUserInstances)
+        elif limits.MaxUserWatches < 1 then
+            Error (InotifyLimitsRefusal.MaxUserWatchesNotPositive limits.MaxUserWatches)
+        elif limits.MaxQueuedEvents < 1 then
+            Error (InotifyLimitsRefusal.MaxQueuedEventsNotPositive limits.MaxQueuedEvents)
+        elif limits.MaxQueuedEvents > InotifyLimits.largestQueuedEvents then
+            Error (
+                InotifyLimitsRefusal.MaxQueuedEventsTooLarge (limits.MaxQueuedEvents, InotifyLimits.largestQueuedEvents)
+            )
+        else
+            { image.Machine with
+                InotifyLimits = limits
+            }
+            |> withMachine image
+            |> Ok
 
     /// Set the sysctl that gives a new IPv6 socket its `IPV6_V6ONLY`: Linux's
     /// `net.ipv6.bindv6only`, Darwin's `net.inet6.ip6.v6only`. Off by default

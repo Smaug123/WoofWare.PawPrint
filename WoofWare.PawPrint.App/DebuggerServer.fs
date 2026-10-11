@@ -341,6 +341,11 @@ module DebuggerServer =
                 let (OpenFileDescriptionId opener) = parked.Opener
                 writer.WriteNumber ("description", opener)
                 writer.WriteNumber ("fd", parked.Descriptor)
+            | Some (ParkedSyscall.InotifyRead parked) ->
+                writer.WriteString ("kind", "blockedInInotifyRead")
+                let (OpenFileDescriptionId instance) = parked.Instance
+                writer.WriteNumber ("description", instance)
+                writer.WriteNumber ("count", parked.Count)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

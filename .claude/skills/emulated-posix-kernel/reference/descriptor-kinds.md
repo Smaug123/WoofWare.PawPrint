@@ -7,6 +7,7 @@ are facts about *upstream source being misleading*.
 | descriptor kind | owned by |
 | --- | --- |
 | epoll instance (`epoll_create1`) | `TestLSeek` for the whence rows; `TestFileDescriptorRegistry`: `two socket event ports are two descriptions but one flock object`; `TestEpollCreate1`; `sourcesImpure/SocketEventPortLinux.cs` and `sourcesImpure/SocketEventsWaitLinux.cs` for the guest-visible answers |
+| inotify instance (`inotify_init1`) | `TestInotifyMeasured` replays the probes in `docs/plans/2026-10-11-inotify/` (the instance, watches, `read`, readiness, limits, and every call that is not inotify's own); `TestInotifyAgainstHost` holds the calls and the record bytes to a real instance on Linux; `TestInotifyQueue` the queue's rules; `TestInotifyInvariants` the limits across processes |
 | kqueue (`kqueue`) | `TestKqueue`, `TestKeventMeasured` and `TestKeventRegistration`; `sourcesImpure/SocketEventPortDarwin.cs`, `sourcesImpure/SocketEventsWaitDarwin.cs`, `sourcesImpure/KqueueWaitDarwin.cs`, `sourcesImpure/KqueueRegistrationDarwin.cs` and `sourcesImpure/SocketAsyncAcceptDarwin.cs` for the guest-visible answers |
 | socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs`; `read`/`write` with no peer in `TestUnconnectedSocketTransfer` and `sourcesImpure/SocketUnconnectedTransfer.cs` |
 | the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
@@ -43,7 +44,7 @@ the flag, and the kernel answers the first and refuses the second
 signal could end is not modelled.
 
 **A measurement is about the creator named, not its filesystem as a class.**
-Epoll descriptors and an `eventfd` share one `anon_inodefs` inode, which is why
+Epoll descriptors, inotify descriptors and an `eventfd` share one `anon_inodefs` inode (the inotify half measured by `inotify-probe.c` section I), which is why
 `OpenFileObject.AnonymousInode` is payload-free and two ports contend under
 `flock`. Linux hands a *distinct* inode to files made through
 `anon_inode_getfile_secure` and `anon_inode_create_getfile`, so a new descriptor

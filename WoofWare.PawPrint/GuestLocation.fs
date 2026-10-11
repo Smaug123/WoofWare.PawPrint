@@ -412,6 +412,8 @@ module GuestLocation =
                         | Some (ParkedSyscall.FifoOpen parked) ->
                             Some
                                 $"in an open of a FIFO, for its other end to be opened, holding open file description %O{parked.Opener} for fd %d{parked.Descriptor}"
+                        | Some (ParkedSyscall.InotifyRead parked) ->
+                            Some $"in a read of the inotify instance of open file description %O{parked.Instance}"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }
