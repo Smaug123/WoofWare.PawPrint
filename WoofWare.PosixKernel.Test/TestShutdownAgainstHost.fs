@@ -925,7 +925,7 @@ module TestShutdownAgainstHost =
     let private kernelPortOf (fd : int) (system : UnixSystem<int, string>) : int =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
-            match (UnixMachineState.socket socketId system.Machine).Binding with
+            match (UnixMachineState.socket socketId system.Machine).Ipv4Binding with
             | Some binding -> int binding.Endpoint.Port
             | None -> failwith $"fd %d{fd} is unbound"
         | other -> failwith $"fd %d{fd} names %A{other}"
