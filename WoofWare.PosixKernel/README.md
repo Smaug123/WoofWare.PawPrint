@@ -252,16 +252,10 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 
 ### Unions that gain cases
 
-From version 1.0, a minor version may add a case to a union.
+From version 1.0, a minor version may add a case to a union that isn't on the closed list below.
 The model grows: a refusal becomes an answer once its behaviour is measured, each newly measured difference between Linux and Darwin adds a refusal case, and each call newly modelled as sleeping adds a case to `ParkedSyscall` and `WakePrimitive`.
-So a client must not rely on matching a union exhaustively.
-F# cannot mark a union as open, so the compiler accepts an exhaustive match today, and a client built against an older version fails to match a new case at run time.
-Give each match a wildcard arm instead.
-For a refusal, the arm reports the refusal's `describe`.
-For any other union, the arm treats a case the client has no code for as a refusal of its own: it fails the call loudly, and never guesses an answer.
-The examples in this document do this.
 
-A few unions are closed, and gain a case only in a major version, so a client may match them exhaustively:
+These unions are closed, and gain a case only in a major version:
 
 * `SyscallAnswer`: a call returns a number or fails with an errno, and nothing else.
 * `UnixError` and `Signal`: each already has a case for every name in either flavour's `<errno.h>` or `<signal.h>`.
