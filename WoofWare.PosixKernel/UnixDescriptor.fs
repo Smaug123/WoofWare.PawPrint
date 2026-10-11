@@ -1045,7 +1045,10 @@ module UnixDescriptor =
     ///
     /// Not short-circuited when the file is already that length: unlike a write
     /// of no bytes, a truncation that moves no bytes still stamps the inode.
+    ///
+    /// The caller reached the file `through` a path or a descriptor.
     let internal truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (inode : InodeNumber)
         (length : int64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1058,9 +1061,33 @@ module UnixDescriptor =
             VirtualFileSystem.truncateFile inode length rule system.Process.Credentials now system.Machine.FileSystem
         with
         | Ok mutation ->
+            // Linux's `do_truncate` sets the size and the modification time,
+            // and the mode when it clears a set-ID bit, which the mutation
+            // reports as a change of attributes.
+            let set =
+                { AttributesSet.none with
+                    Size = true
+                    ModificationTime = true
+                    Mode =
+                        VfsMutation.changes mutation
+                        |> List.exists (fun change ->
+                            match change with
+                            | FsChange.AttributesChanged _ -> true
+                            | FsChange.ContentChanged _
+                            | FsChange.EntryAdded _
+                            | FsChange.EntryRemoved _
+                            | FsChange.EntryMoved _
+                            | FsChange.InodeForgotten _ -> false
+                        )
+                }
+
             Ok
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine =
+                        UnixMachineState.commitFileSystem
+                            (ChangeNotice.SetAttributes (through, set))
+                            mutation
+                            system.Machine
                 }
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
@@ -1129,7 +1156,7 @@ module UnixDescriptor =
         // Measured on Darwin 27.0.0 (`fcntl-dup.c`, WRITTEN rows): a truncation
         // that succeeds marks the description written, even to the length the
         // file already had; one that fails does not.
-        truncateAt inode length system
+        truncateAt ReachedThrough.Descriptor inode length system
         |> Result.map (fun system ->
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> SyscallAnswer.Completed 0L, system

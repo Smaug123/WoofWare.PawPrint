@@ -3395,7 +3395,7 @@ module UnixReadWrite =
                     (offset + int64 bytes.Length)
                     (UnixSystemState.fileDescriptors system))
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
                 })
 
     /// `write`, with a refusal answered as the `Error` rather than raised.
@@ -4633,7 +4633,7 @@ module UnixReadWrite =
         Ok (
             WriteAnswer.Completed (int64 bytes.Length),
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
             }
         )
 
@@ -4835,7 +4835,7 @@ module UnixReadWrite =
             Ok (
                 SyscallAnswer.Completed (int64 count),
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
                 }
                 |> UnixSystemState.withFileDescriptors registry
             )

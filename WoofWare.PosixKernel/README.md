@@ -454,7 +454,12 @@ An instance is an open file description, `OpenFileTarget.Inotify`, holding its w
 `read(2)` takes whole records from it, each laid out as `struct inotify_event` (`InotifyRecord.toBytes`), and answers `EINVAL` if the oldest does not fit; with none queued it answers `EAGAIN` through a non-blocking description and otherwise sleeps.
 `poll(2)` and epoll report it readable while it holds a record, and `ioctl(FIONREAD)` (`UnixDescriptor.bytesAvailable`) reports the bytes it holds.
 Each user's instances and watches count against the machine's `InotifyLimits`, in every process.
-In this version no filesystem change is reported to a watch: the only records an instance queues are the `IN_IGNORED` of a watch `inotify_rm_watch` removes, and the `IN_Q_OVERFLOW` of a full queue.
+A change to the filesystem, made by any process, queues a record on every instance watching what it changed, of the events the watch asks for, in Linux's order:
+a name created, removed or renamed is `IN_CREATE`, `IN_DELETE`, or `IN_MOVED_FROM` and `IN_MOVED_TO` sharing a cookie, at the watch on its directory, with `IN_ISDIR` for a directory;
+an inode's gained or lost link (a hard link, an unlink, a rename over it) is `IN_ATTRIB` at its own watch;
+and `chmod`, `chown`, `utimensat` or an `open` with `O_TRUNC` through a path is one record, `IN_ATTRIB` or `IN_MODIFY` as Linux chooses, at the watch on the directory of the name the path reached and then at the inode's own.
+A record repeating the newest queued is dropped, and a full queue takes one `IN_Q_OVERFLOW` record; `inotify_rm_watch` queues `IN_IGNORED`.
+In this version a change made through a descriptor (`write`, `ftruncate`, `fchmod`, `fchown`, `futimens`) is reported to no watch, and neither is a watched inode's own deletion or rename (`IN_DELETE_SELF`, `IN_MOVE_SELF`); a change through a current directory that `rmdir` has removed reaches its own watch, but not its old parent's, which Linux names it to under its old name.
 A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused.
 Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 

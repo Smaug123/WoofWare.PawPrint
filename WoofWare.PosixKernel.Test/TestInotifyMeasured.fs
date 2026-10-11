@@ -16,11 +16,10 @@ open WoofWare.PosixKernel
 /// N and S. Each test drives the model through the probe's calls, renders each
 /// row as the probe printed it, and compares the rows with the recorded ones.
 ///
-/// This kernel reports no filesystem change to a watch yet. Where the probe
-/// changed the filesystem to make a record, the replay queues that record on
-/// the instance directly (`queue`), so that what the rows measure of reading,
-/// readiness, waking and the queue is replayed now; which change makes which
-/// record is replayed with the delivery that makes it. A watch that asked for
+/// Where the probe changed the filesystem to make a record, the replay queues
+/// that record on the instance directly (`queue`), so that these rows measure
+/// reading, readiness, waking and the queue alone; which change makes which
+/// record is replayed in `TestInotifyDeliveryMeasured`. A watch that asked for
 /// the events this kernel does not raise (`IN_ALL_EVENTS`) asks instead for the
 /// ones it does; the rows record watch descriptors, not events.
 [<TestFixture>]
@@ -184,7 +183,7 @@ module TestInotifyMeasured =
         | None -> failwith $"fd %d{fd} names no description"
 
     /// The record the probe's filesystem change queued on the instance `fd`
-    /// names, which this kernel's delivery does not yet make.
+    /// names, queued directly.
     let private queue (fd : int) (record : InotifyRecord) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         UnixSystemState.mapOpenFiles
             (OpenFileTable.enqueueInotify system.Machine.InotifyLimits.MaxQueuedEvents (idOf fd system) record)
@@ -503,9 +502,11 @@ module TestInotifyMeasured =
 
         actual.Add ("bad-fd", $"add on fd 999=%s{badFd}; add on a regular file's fd=%s{onRegular}")
 
-        // The three mask rows record events, which this kernel does not yet
-        // deliver; their adds are made so that what follows numbers as
-        // measured, and the masks they store are checked here.
+        // The masks each add stores, checked here; and the changes the probe
+        // made under each, of which the first two rows record a write's
+        // `IN_MODIFY`, which this kernel does not report (it is made through a
+        // descriptor), and the first an `IN_OPEN`, which no watch here asks
+        // for.
         let maskOf (wd : int) =
             match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Inotify state) -> state.Watches.[WatchDescriptor wd].Mask.Events
@@ -513,13 +514,37 @@ module TestInotifyMeasured =
 
         add "w/d2" modify |> shouldEqual "2"
         maskOf 2 |> shouldEqual (Set.singleton InotifyEvent.Modify)
+
+        system <-
+            system
+            |> InotifyReplay.writeFile "w/d2/x" "1"
+            |> InotifyReplay.chmod "w/d2/x" 0o600
+
+        let _, s = drain fd system
+        system <- s
         add "w/d2" (attrib ||| maskAdd) |> shouldEqual "2"
 
         maskOf 2
         |> shouldEqual (Set.ofList [ InotifyEvent.Modify ; InotifyEvent.Attrib ])
 
-        add "w/d2" create |> shouldEqual "2"
+        system <-
+            system
+            |> InotifyReplay.chmod "w/d2/x" 0o644
+            |> InotifyReplay.writeFile "w/d2/x" "2"
+
+        let _, s = drain fd system
+        system <- s
+        let m3 = add "w/d2" create
         maskOf 2 |> shouldEqual (Set.singleton InotifyEvent.Create)
+
+        system <-
+            system
+            |> InotifyReplay.chmod "w/d2/x" 0o600
+            |> InotifyReplay.writeFile "w/d2/y" "1"
+
+        let drained, s = drain fd system
+        system <- s
+        actual.Add ("mask-replaced-again", $"wd=%s{m3}; chmod then create under CREATE: %s{drained}")
 
         actual.Add ("mask-create-existing", $"""add d2 with IN_MASK_CREATE=%s{add "w/d2" (create ||| maskCreate)}""")
 
@@ -542,7 +567,7 @@ module TestInotifyMeasured =
         actual.Add ("re-add-events", drained)
 
         List.ofSeq actual
-        |> shouldEqual (rows probe "W" [ "mask-replace" ; "mask-add" ; "mask-replaced-again" ])
+        |> shouldEqual (rows probe "W" [ "mask-replace" ; "mask-add" ])
 
     [<Test>]
     let ``IN_ALL_EVENTS is refused, naming the events this kernel does not raise, where the add would succeed``

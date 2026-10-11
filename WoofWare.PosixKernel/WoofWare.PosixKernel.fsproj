@@ -40,12 +40,14 @@
         <Compile Include="FsChange.fs" />
         <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="PathWalk.fs" />
+        <Compile Include="Dentry.fs" />
         <Compile Include="Ipv4Address.fs" />
         <Compile Include="Ipv6Address.fs" />
         <Compile Include="SocketAddress.fs" />
         <Compile Include="ProcessId.fs" />
         <Compile Include="Inotify.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
+        <Compile Include="InotifyDelivery.fs" />
         <Compile Include="FileSystemCommit.fs" />
         <Compile Include="Signal.fs" />
         <Compile Include="SignalState.fs" />

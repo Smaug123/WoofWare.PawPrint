@@ -167,10 +167,8 @@ type WakePrimitive =
     ///
     /// What a blocking `read(2)` of an instance that held none waits for.
     /// Every reader asleep on the instance wakes for it, and the first to run
-    /// takes the record. In this version only `inotify_rm_watch(2)` queues
-    /// one (`IN_IGNORED`): no filesystem change is reported to a watch yet, so
-    /// a reader of an instance whose watches are never removed sleeps until a
-    /// signal ends its read.
+    /// takes the record, which a change to what the instance watches queues,
+    /// in any process, or `inotify_rm_watch(2)`.
     | InotifyRecordQueued of reader : OpenFileDescriptionId
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first

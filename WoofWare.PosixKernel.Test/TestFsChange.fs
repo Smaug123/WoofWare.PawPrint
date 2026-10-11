@@ -842,7 +842,8 @@ module TestFsChange =
                 machine.FileSystem
             |> ok
 
-        let committed = UnixMachineState.commitFileSystem mutation machine
+        let committed =
+            UnixMachineState.commitFileSystem ChangeNotice.Names mutation machine
 
         Object.ReferenceEquals (committed.FileSystem, VfsMutation.after mutation)
         |> shouldEqual true
@@ -876,9 +877,10 @@ module TestFsChange =
                 machine.FileSystem
             |> ok
 
-        let committed = UnixMachineState.commitFileSystem first machine
+        let committed = UnixMachineState.commitFileSystem ChangeNotice.Names first machine
 
         Assert.Throws<Exception> (fun () ->
-            UnixMachineState.commitFileSystem stale committed |> ignore<UnixMachineState>
+            UnixMachineState.commitFileSystem ChangeNotice.Names stale committed
+            |> ignore<UnixMachineState>
         )
         |> ignore<Exception>

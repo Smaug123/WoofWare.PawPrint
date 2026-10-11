@@ -786,6 +786,32 @@ module UnixPathResolution =
         resolvePathFull directory policy TrailingSeparatorPolicy.Demand path system
         |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target |> Result.mapError PathFailure.Errno)
 
+    /// `resolvePath`, and the name the walk reached the inode through
+    /// (`Dentry.ofResolved`), for a call that changes the inode's attributes.
+    let internal resolvePathReached<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<InodeNumber * ReachedThrough, PathFailure>
+        =
+        resolvePathFull directory policy TrailingSeparatorPolicy.Demand path system
+        |> Result.bind (fun resolution ->
+            PathWalk.existingOf resolution.Target
+            |> Result.mapError PathFailure.Errno
+            |> Result.map (fun inode ->
+                inode, ReachedThrough.Path (Dentry.ofResolved resolution.Target system.Machine.FileSystem)
+            )
+        )
+
+    /// The current directory, reached as the path "." reaches it.
+    let private currentDirectoryReached<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : InodeNumber * ReachedThrough
+        =
+        let cwd = system.Process.CurrentDirectoryInode
+        cwd, ReachedThrough.Path (Dentry.ofDirectory cwd system.Machine.FileSystem)
+
     /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
     let private reportedLinkCount (platform : SimulatedUnixPlatform) (count : int64) : int64 =
         match SimulatedUnixPlatform.linkCountCeiling platform with
@@ -1189,7 +1215,9 @@ module UnixPathResolution =
     /// regular file, a device, a directory, or a symbolic link on a flavour
     /// whose links change (`SymlinkModeChange.ChangesLink`), this filesystem
     /// holds: EPERM changing nothing, or the new bits with `ctime` moved.
+    /// The caller reached `inode` `through` a path or a descriptor.
     let private changeModeOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (inode : InodeNumber)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1216,6 +1244,12 @@ module UnixPathResolution =
             { system with
                 Machine =
                     UnixMachineState.commitFileSystem
+                        (ChangeNotice.SetAttributes (
+                            through,
+                            { AttributesSet.none with
+                                Mode = true
+                            }
+                        ))
                         (VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem)
                         system.Machine
             }
@@ -1241,10 +1275,10 @@ module UnixPathResolution =
         // CALLS) a final link is the link itself, dangling or looping or not,
         // and "ld/" is still the directory and "lf/" ENOTDIR, as
         // `NoFollowFinal` answers.
-        match resolvePath directory policy path system with
+        match resolvePathReached directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
-        | Ok inode ->
+        | Ok (inode, through) ->
 
         match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
         | None ->
@@ -1265,7 +1299,7 @@ module UnixPathResolution =
             | InodeContent.CharacterDevice _ -> true
 
         if changeable then
-            changeModeOf inode mode system
+            changeModeOf through inode mode system
             |> Result.mapError ChModRefusal.UnmeasuredModeChange
         else
             Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1331,7 +1365,7 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeModeOf inode mode system
+            changeModeOf ReachedThrough.Descriptor inode mode system
             |> Result.mapError FChModRefusal.UnmeasuredModeChange
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1405,8 +1439,10 @@ module UnixPathResolution =
     /// What `chown`, `lchown` and `fchown` do once they have reached `inode`,
     /// which is an inode of any kind this filesystem holds: EPERM changing
     /// nothing, success changing nothing, or the new owner and bits with
-    /// `ctime` moved.
+    /// `ctime` moved. The caller reached `inode` `through` a path or a
+    /// descriptor.
     let private changeOwnerOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (inode : InodeNumber)
         (user : UserId option)
         (group : GroupId option)
@@ -1453,20 +1489,31 @@ module UnixPathResolution =
                 Group = defaultArg group entry.Owner.Group
             }
 
-        let machine =
-            UnixMachineState.commitFileSystem
-                (VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem)
-                system.Machine
+        let mutation = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
 
         // Measured on Darwin (`chmod-chown-at.c`, LINKSETID): a link's set-ID
-        // bits go exactly as a regular file's do.
-        let machine =
+        // bits go exactly as a regular file's do. One mutation with the owner's,
+        // because a watcher hears of the two as one event (measured,
+        // `inotify-delivery-probe.c` row Z chown-at-one-short).
+        let mutation =
             if changed = bits then
-                machine
+                mutation
             else
-                UnixMachineState.commitFileSystem
-                    (VirtualFileSystem.setPermissions inode changed now machine.FileSystem)
-                    machine
+                VfsMutation.andThen
+                    (VirtualFileSystem.setPermissions inode changed now (VfsMutation.after mutation))
+                    mutation
+
+        // Measured (`inotify-delivery-probe.c` section C): naming neither ID
+        // moves `ctime` and raises no event, and naming either, even the one
+        // the inode has, raises `IN_ATTRIB`.
+        let set =
+            { AttributesSet.none with
+                Owner = user.IsSome || group.IsSome
+                Mode = changed <> bits
+            }
+
+        let machine =
+            UnixMachineState.commitFileSystem (ChangeNotice.SetAttributes (through, set)) mutation system.Machine
 
         Ok (
             SyscallAnswer.Completed 0L,
@@ -1499,11 +1546,11 @@ module UnixPathResolution =
         // remaining path rows answer as `chown`'s do. `chmod-chown-at.c`
         // (LCHOWN): `fchownat` with AT_SYMLINK_NOFOLLOW answers every one of
         // those as `lchown` does.
-        match resolvePath directory policy path system with
+        match resolvePathReached directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
-        | Ok inode ->
-            changeOwnerOf inode user group system
+        | Ok (inode, through) ->
+            changeOwnerOf through inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
 
     /// `chown`, with a refusal answered as the `Error` rather than raised.
@@ -1600,7 +1647,7 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeOwnerOf inode user group system
+            changeOwnerOf ReachedThrough.Descriptor inode user group system
             |> Result.mapError FChOwnRefusal.UnmeasuredOwnerChange
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1716,7 +1763,9 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             tryFchmod fd mode system |> Result.mapError FChModAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            changeModeOf system.Process.CurrentDirectoryInode mode system
+            let cwd, through = currentDirectoryReached system
+
+            changeModeOf through cwd mode system
             |> Result.mapError (ChModRefusal.UnmeasuredModeChange >> FChModAtRefusal.ChMod)
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
@@ -1796,7 +1845,9 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             tryFchown fd user group system |> Result.mapError FChOwnAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            changeOwnerOf system.Process.CurrentDirectoryInode user group system
+            let cwd, through = currentDirectoryReached system
+
+            changeOwnerOf through cwd user group system
             |> Result.mapError (ChOwnRefusal.UnmeasuredOwnerChange >> FChOwnAtRefusal.ChOwn)
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
@@ -1838,6 +1889,7 @@ module UnixPathResolution =
     /// sets: Linux's EINVAL for a nanosecond field it does not accept, then
     /// the permission check, then the change.
     let private setTimesOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (object : OpenFileObject)
         (access : TimestampRequest)
         (modification : TimestampRequest)
@@ -1911,11 +1963,18 @@ module UnixPathResolution =
             let times =
                 TimestampChangeRules.changed flavour range now asNow access modification entry.Times
 
+            let set =
+                { AttributesSet.none with
+                    AccessTime = access <> TimestampRequest.Omit
+                    ModificationTime = modification <> TimestampRequest.Omit
+                }
+
             Ok (
                 SyscallAnswer.Completed 0L,
                 { system with
                     Machine =
                         UnixMachineState.commitFileSystem
+                            (ChangeNotice.SetAttributes (through, set))
                             (VirtualFileSystem.setTimes inode times system.Machine.FileSystem)
                             system.Machine
                 }
@@ -2034,7 +2093,7 @@ module UnixPathResolution =
         =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
-        | Some object -> setTimesOf object access modification system
+        | Some object -> setTimesOf ReachedThrough.Descriptor object access modification system
 
     /// `utimensat` once the times are read: screen the flag word, copy the
     /// path in (the null pointer is EFAULT here), and set the times of what
@@ -2073,7 +2132,8 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             setDescriptorTimes fd access modification system
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            setTimesOf (OpenFileObject.File system.Process.CurrentDirectoryInode) access modification system
+            let cwd, through = currentDirectoryReached system
+            setTimesOf through (OpenFileObject.File cwd) access modification system
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
 
@@ -2081,10 +2141,10 @@ module UnixPathResolution =
         // ENOTDIR and "ld/" the directory with or without
         // AT_SYMLINK_NOFOLLOW, and a dangling link is ENOENT unless it is not
         // followed, as `resolvePath` answers.
-        match resolvePath directory arguments.FinalSymlink path system with
+        match resolvePathReached directory arguments.FinalSymlink path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (UTimensAtRefusal.Path refusal)
-        | Ok inode -> setTimesOf (OpenFileObject.File inode) access modification system
+        | Ok (inode, through) -> setTimesOf through (OpenFileObject.File inode) access modification system
 
     /// `utimensat`, with a refusal answered as the `Error` rather than raised.
     let internal tryUtimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

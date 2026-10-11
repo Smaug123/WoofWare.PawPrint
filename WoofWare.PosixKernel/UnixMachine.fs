@@ -323,11 +323,27 @@ module UnixMachineState =
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
 
     /// `machine` with the filesystem `mutation` leaves, which must have been
-    /// made from `machine.FileSystem`. Every syscall that changes the
-    /// filesystem stores its change through here.
-    let internal commitFileSystem (mutation : VfsMutation) (machine : UnixMachineState) : UnixMachineState =
+    /// made from `machine.FileSystem`, and the records its changes raise
+    /// queued on the inotify instances watching what they changed, the
+    /// syscall having reached it as `notice` says. Every syscall that changes
+    /// the filesystem stores its change through here.
+    let internal commitFileSystem
+        (notice : ChangeNotice)
+        (mutation : VfsMutation)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        let committed, openFiles =
+            CommittedFileSystem.commit
+                notice
+                machine.InotifyLimits.MaxQueuedEvents
+                mutation
+                machine.OpenFiles
+                machine.CommittedFileSystem
+
         { machine with
-            CommittedFileSystem = CommittedFileSystem.commit mutation machine.CommittedFileSystem
+            CommittedFileSystem = committed
+            OpenFiles = openFiles
         }
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
