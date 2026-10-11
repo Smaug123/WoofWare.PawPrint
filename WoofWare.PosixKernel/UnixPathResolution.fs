@@ -787,7 +787,7 @@ module UnixPathResolution =
         |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target |> Result.mapError PathFailure.Errno)
 
     /// `resolvePath`, and the name the walk reached the inode through
-    /// (`Dentry.ofResolved`), for a call that changes the inode's attributes.
+    /// (`ReachedThrough.ofResolved`), for a call that changes the inode's attributes.
     let internal resolvePathReached<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (directory : AtDirectory)
         (policy : SymlinkPolicy)
@@ -799,9 +799,7 @@ module UnixPathResolution =
         |> Result.bind (fun resolution ->
             PathWalk.existingOf resolution.Target
             |> Result.mapError PathFailure.Errno
-            |> Result.map (fun inode ->
-                inode, ReachedThrough.Path (Dentry.ofResolved resolution.Target system.Machine.FileSystem)
-            )
+            |> Result.map (fun inode -> inode, ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem)
         )
 
     /// The current directory, reached as the path "." reaches it.
@@ -810,7 +808,7 @@ module UnixPathResolution =
         : InodeNumber * ReachedThrough
         =
         let cwd = system.Process.CurrentDirectoryInode
-        cwd, ReachedThrough.Path (Dentry.ofDirectory cwd system.Machine.FileSystem)
+        cwd, ReachedThrough.ofDirectory cwd system.Machine.FileSystem
 
     /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
     let private reportedLinkCount (platform : SimulatedUnixPlatform) (count : int64) : int64 =

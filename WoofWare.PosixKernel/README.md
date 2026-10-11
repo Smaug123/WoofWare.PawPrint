@@ -459,7 +459,10 @@ a name created, removed or renamed is `IN_CREATE`, `IN_DELETE`, or `IN_MOVED_FRO
 an inode's gained or lost link (a hard link, an unlink, a rename over it) is `IN_ATTRIB` at its own watch;
 and `chmod`, `chown`, `utimensat` or an `open` with `O_TRUNC` through a path is one record, `IN_ATTRIB` or `IN_MODIFY` as Linux chooses, at the watch on the directory of the name the path reached and then at the inode's own.
 A record repeating the newest queued is dropped, and a full queue takes one `IN_Q_OVERFLOW` record; `inotify_rm_watch` queues `IN_IGNORED`.
-In this version a change made through a descriptor (`write`, `ftruncate`, `fchmod`, `fchown`, `futimens`) is reported to no watch, and neither is a watched inode's own deletion or rename (`IN_DELETE_SELF`, `IN_MOVE_SELF`); a change through a current directory that `rmdir` has removed reaches its own watch, but not its old parent's, which Linux names it to under its old name.
+In this version a watched inode's own deletion or rename (`IN_DELETE_SELF`, `IN_MOVE_SELF`) is reported to no watch.
+Two changes are reported by Linux through a name this kernel does not keep, and are refused, by an exception naming that name, wherever a watch could hear of them; where none could, they go through:
+a change made through a descriptor (`write`, `pwrite`, `copy_file_range`, `ftruncate`, `fchmod`, `fchown`, `futimens`, or the empty path under `AT_EMPTY_PATH`), which Linux reports at the directory of the name the descriptor was opened through, is refused under a watch asking for an event it raises on the inode, on a directory holding a name of it, or, for a file with no name left, anywhere;
+and a change through a path to a directory `rmdir` removed (its "." as the current directory), which Linux reports at its old parent under its old name, is refused under a watch on that parent asking for an event it raises.
 A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused.
 Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 

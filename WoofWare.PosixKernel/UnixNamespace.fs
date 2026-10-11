@@ -1183,8 +1183,7 @@ module UnixNamespace =
         let truncated =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
-                let through =
-                    ReachedThrough.Path (Dentry.ofResolved resolution.Target system.Machine.FileSystem)
+                let through = ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem
 
                 match UnixDescriptor.truncateAt through inode 0L system with
                 | Ok system -> Ok (true, system)

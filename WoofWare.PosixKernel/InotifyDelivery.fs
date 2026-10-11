@@ -50,17 +50,6 @@ module internal AttributesSet =
         ]
         |> Set.ofList
 
-/// How a syscall reached the inode whose attributes it changed.
-[<RequireQualifiedAccess>]
-type internal ReachedThrough =
-    /// A path, whose walk reached the inode through the dentry
-    /// (`Dentry.ofResolved`).
-    | Path of Dentry option
-    /// A descriptor: `ftruncate(2)`, `fchmod(2)`, `fchown(2)`, `futimens(2)`,
-    /// and the `*at` calls' empty path under `AT_EMPTY_PATH` with a
-    /// descriptor. This kernel reports a change made through one to no watch.
-    | Descriptor
-
 /// How the syscall that made a `VfsMutation` reached what it changed, which
 /// decides who hears of its changes (`CommittedFileSystem.commit`).
 [<RequireQualifiedAccess>]
@@ -76,8 +65,8 @@ type internal ChangeNotice =
     /// `FsChange.AttributesChanged` the rest.
     | SetAttributes of through : ReachedThrough * set : AttributesSet
     /// A write through a descriptor: `write(2)`, `pwrite(2)` or
-    /// `copy_file_range(2)`, of one inode, which every change it holds is of.
-    /// This kernel reports it to no watch.
+    /// `copy_file_range(2)`, of one inode, which every change it holds is of:
+    /// its contents, and the set-ID bits it cleared.
     | Written
 
 /// One event Linux's fsnotify raises at the watches on one inode: what each
@@ -96,6 +85,20 @@ type internal InotifyNotification =
         /// itself.
         Name : DirectoryEntryName option
     }
+
+/// Events Linux raises that this kernel cannot place, because it does not
+/// keep the name the change went through: `CommittedFileSystem.commit`
+/// refuses the change if a watch could hear of them.
+[<RequireQualifiedAccess>]
+type internal Unplaced =
+    /// A change of `inode` through a descriptor, raising `events`: Linux
+    /// reports them at the inode's own watch, and at the watch on the
+    /// directory of the name the descriptor was opened through.
+    | ThroughDescriptor of inode : InodeNumber * events : Set<InotifyEvent>
+    /// A change of a directory whose last name has gone, through a path,
+    /// raising `events`, which Linux reports at `oldParent`'s watch under
+    /// the name the directory had there.
+    | AtOldParent of oldParent : InodeNumber * events : Set<InotifyEvent>
 
 /// The records a filesystem change queues on the inotify instances watching
 /// it, in Linux's order (docs/plans/2026-10-11-inotify.md, 4.2 and 4.5).
@@ -191,8 +194,8 @@ module internal InotifyDelivery =
         ]
 
     /// The events `mutation`, made under `notice`, raises, in the order Linux
-    /// raises them, and the next rename's cookie, `nextCookie` being this
-    /// one's.
+    /// raises them; those this kernel cannot place (`Unplaced`); and the next
+    /// rename's cookie, `nextCookie` being this one's.
     ///
     /// Every rename takes a cookie, whatever watches it (Linux's
     /// `fsnotify_get_cookie`, measured to count every rename since boot), and
@@ -202,7 +205,7 @@ module internal InotifyDelivery =
         (notice : ChangeNotice)
         (mutation : VfsMutation)
         (nextCookie : uint32)
-        : InotifyNotification list * uint32
+        : InotifyNotification list * Unplaced list * uint32
         =
         let changes = VfsMutation.changes mutation
         let isDirectory = isDirectoryIn mutation
@@ -253,7 +256,7 @@ module internal InotifyDelivery =
                     | FsChange.InodeForgotten _ -> reversed, cookie
                 )
 
-            List.rev reversed, cookie
+            List.rev reversed, [], cookie
         | ChangeNotice.SetAttributes (through, set) ->
             let inode, contents, attributes = attributeChanges "a setattr" changes
 
@@ -262,14 +265,103 @@ module internal InotifyDelivery =
 
             let events = AttributesSet.events set
 
+            if events.IsEmpty then
+                [], [], nextCookie
+            else
+
             match through with
-            | ReachedThrough.Path through when not events.IsEmpty ->
-                throughPath mutation through inode events, nextCookie
-            | ReachedThrough.Path _
-            | ReachedThrough.Descriptor -> [], nextCookie
+            | ReachedThrough.Path through -> throughPath mutation through inode events, [], nextCookie
+            // Linux reports the change at the old parent's watch, and then at
+            // the directory's own; only the second can be placed.
+            | ReachedThrough.RemovedDirectory oldParent ->
+                throughPath mutation None inode events, [ Unplaced.AtOldParent (oldParent, events) ], nextCookie
+            | ReachedThrough.Descriptor -> [], [ Unplaced.ThroughDescriptor (inode, events) ], nextCookie
         | ChangeNotice.Written ->
-            attributeChanges "a write" changes |> ignore<InodeNumber * bool * bool>
-            [], nextCookie
+            // Linux's `file_remove_privs` raises `IN_ATTRIB` for the set-ID
+            // bits a write clears, and the write `IN_MODIFY` (measured,
+            // `inotify-delivery-probe.c` row Z write).
+            let inode, contents, attributes = attributeChanges "a write" changes
+
+            let events =
+                [
+                    if attributes then
+                        InotifyEvent.Attrib
+                    if contents then
+                        InotifyEvent.Modify
+                ]
+                |> Set.ofList
+
+            [], [ Unplaced.ThroughDescriptor (inode, events) ], nextCookie
+
+    /// Fails, naming the name this kernel does not keep, if some watch in
+    /// `openFiles` asks for an event of `unplaced` and could be one Linux
+    /// reports it to, in `graph`, the filesystem after the change.
+    ///
+    /// For a change through a descriptor, that is a watch on the inode itself,
+    /// or on a directory holding a name of it; for an inode with no name left
+    /// (but the root and the root of a mounted filesystem, which no
+    /// directory's watch hears of), it is any watch, unless the inode is a
+    /// directory, whose old parent is known. For a change of a removed
+    /// directory through a path, it is a watch on its old parent.
+    let refuseUnplaced (graph : VirtualFileSystem) (unplaced : Unplaced list) (openFiles : OpenFileTable) : unit =
+        if not unplaced.IsEmpty then
+            let watches =
+                OpenFileTable.toSeq openFiles
+                |> Seq.collect (fun (instance, description) ->
+                    match description.Target with
+                    | OpenFileTarget.Inotify state ->
+                        state.Watches |> Map.toSeq |> Seq.map (fun (wd, watch) -> instance, wd, watch)
+                    | OpenFileTarget.File _
+                    | OpenFileTarget.Directory _
+                    | OpenFileTarget.Epoll _
+                    | OpenFileTarget.Kqueue _
+                    | OpenFileTarget.Socket _
+                    | OpenFileTarget.CharacterDevice _
+                    | OpenFileTarget.Fifo _
+                    | OpenFileTarget.Pipe _ -> Seq.empty
+                )
+                |> List.ofSeq
+
+            let asking (events : Set<InotifyEvent>) =
+                watches
+                |> List.filter (fun (_, _, watch) -> not (Set.intersect events watch.Mask.Events).IsEmpty)
+
+            let names (directory : InodeNumber) (inode : InodeNumber) : bool =
+                match VirtualFileSystem.tryGetDirectory directory graph with
+                | Some content -> content.Entries |> Map.exists (fun _ bound -> bound = inode)
+                | None -> false
+
+            for unplaced in unplaced do
+                match unplaced with
+                | Unplaced.ThroughDescriptor (inode, events) ->
+                    let unnamed =
+                        inode = VirtualFileSystem.root graph
+                        || (VirtualFileSystem.mountOf inode graph).IsSome
+
+                    let nameless = not unnamed && VirtualFileSystem.bindingCount inode graph = 0
+
+                    let hears (watched : InodeNumber) : bool =
+                        watched = inode
+                        || not unnamed
+                           && (names watched inode
+                               || nameless
+                                  && (
+                                      match VirtualFileSystem.tryGetDirectory inode graph with
+                                      | Some directory -> watched = directory.Parent
+                                      | None -> true
+                                  ))
+
+                    match asking events |> List.tryFind (fun (_, _, watch) -> hears watch.Inode) with
+                    | None -> ()
+                    | Some (instance, wd, watch) ->
+                        failwith
+                            $"CommittedFileSystem.commit: a change to inode %O{inode} through a descriptor raises %A{Set.toList events}, which watch %O{wd} of the inotify instance %O{instance}, on inode %O{watch.Inode}, asks for and could be the watch Linux reports it to: the watch on the inode itself, or on the directory of the name the descriptor was opened through. This kernel does not record the name the descriptor was opened through, so it refuses the change rather than report it to the wrong watches."
+                | Unplaced.AtOldParent (oldParent, events) ->
+                    match asking events |> List.tryFind (fun (_, _, watch) -> watch.Inode = oldParent) with
+                    | None -> ()
+                    | Some (instance, wd, _) ->
+                        failwith
+                            $"CommittedFileSystem.commit: a change through a path to a directory whose last name has gone raises %A{Set.toList events}, which Linux reports to watch %O{wd} of the inotify instance %O{instance}, on the directory it was last named in (inode %O{oldParent}), under the name it had there. This kernel does not keep that name, so it refuses the change rather than report it wrongly."
 
     /// `openFiles` with each of `notifications` queued, in order, on every
     /// inotify instance that watches its inode and asks for any of its events:

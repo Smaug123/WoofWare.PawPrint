@@ -38,6 +38,12 @@ module internal CommittedFileSystem =
     /// each instance's limit being `maxQueuedEvents` records
     /// (`InotifyDelivery`). `notice` says how the syscall reached what it
     /// changed.
+    ///
+    /// Fails, changing nothing, where Linux would report a change to a watch
+    /// through a name this kernel does not keep: the name a descriptor was
+    /// opened through, and the name a removed directory had
+    /// (`InotifyDelivery.refuseUnplaced`). Where no watch asks for an event the
+    /// change raises, the change is committed.
     let commit
         (notice : ChangeNotice)
         (maxQueuedEvents : int)
@@ -53,8 +59,10 @@ module internal CommittedFileSystem =
             failwith
                 "CommittedFileSystem.commit: the mutation was made from a graph other than the one this machine holds, so committing it would lose every change between the two (this is a bug in the caller)."
 
-        let notifications, nextCookie =
+        let notifications, unplaced, nextCookie =
             InotifyDelivery.notifications notice mutation committed.NextCookie
+
+        InotifyDelivery.refuseUnplaced (VfsMutation.after mutation) unplaced openFiles
 
         {
             Graph = VfsMutation.after mutation
