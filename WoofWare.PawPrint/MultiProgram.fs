@@ -42,7 +42,7 @@ type internal ProgramRoster =
 /// A struct because every tick makes a new one, and a few references copied by value cost a
 /// one-program run nothing over the program record it would otherwise have held directly.
 /// What changes only with several programs is in `Roster`, so that a tick of one program
-/// copies four references and allocates nothing for the driver.
+/// copies five references and allocates nothing for the driver.
 [<Struct>]
 type MultiProgram =
     internal
@@ -53,6 +53,9 @@ type MultiProgram =
             Current : RunningProgram
             /// How the machine's clock moves with each tick.
             Clock : MachineClock
+            /// What the last sweep for syscall wakes remembers, so that a tick at which nothing a
+            /// wake condition reads has changed sweeps nothing (`SimulatedMachine.wakesRemembering`).
+            WakeMemo : WakeSweepMemo<ThreadId, NativeSignalHandler>
             /// The programs other than the checked-out one, and how the driver chooses among
             /// them all.
             Roster : ProgramRoster
@@ -334,8 +337,11 @@ module MultiProgram =
     /// event port, the kernel wakes one per event.
     ///
     /// The machine asked is the checked-out program's view written back into the driver's
-    /// machine, which is then thrown away. A woken thread of an idle program is only flipped to
-    /// Runnable: its call is finished when it next runs, in its program's view.
+    /// machine, which is then thrown away. The driver keeps what the sweep remembers, so that at
+    /// a tick which changed nothing a wake condition reads but the clock, short of every
+    /// deadline, the kernel answers without asking any condition. A woken thread of an idle
+    /// program is only flipped to Runnable: its call is finished when it next runs, in its
+    /// program's view.
     let private wakeSyscalls (driver : MultiProgram) : MultiProgram =
         let current = driver.Current
 
@@ -366,9 +372,21 @@ module MultiProgram =
             | None -> idleAsleep
             | Some asleep -> Map.add currentPid asleep idleAsleep
 
-        let woken =
-            SimulatedMachine.wakes asleep (SimulatedMachine.unfocus current.State.Kernel.System driver.Machine)
-            |> List.map fst
+        let woken, memo =
+            SimulatedMachine.wakesRemembering
+                driver.WakeMemo
+                asleep
+                (SimulatedMachine.unfocus current.State.Kernel.System driver.Machine)
+
+        let driver =
+            if obj.ReferenceEquals (memo, driver.WakeMemo) then
+                driver
+            else
+                { driver with
+                    WakeMemo = memo
+                }
+
+        let woken = woken |> List.map fst
 
         let wokenIn (pid : ProcessId) : ThreadId list =
             woken |> List.choose (fun (p, thread) -> if p = pid then Some thread else None)
@@ -823,6 +841,7 @@ module MultiProgram =
             Machine = machine
             Current = first
             Clock = clock
+            WakeMemo = WakeSweepMemo.empty
             Roster =
                 {
                     Idle =
