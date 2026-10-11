@@ -239,7 +239,7 @@ type VirtualFileSystemDefect =
     /// number of an inode in the graph.
     | CoveredInodeInUse of root : InodeNumber * covered : InodeNumber
     /// An inode holds a kind of content that nothing in this version makes,
-    /// such as `InodeContent.Socket`.
+    /// such as `InodeContent.Socket` or `InodeContent.Fifo`.
     | ReservedContent of inode : InodeNumber
 
 /// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
@@ -926,6 +926,7 @@ module VirtualFileSystem =
         | None -> Error UnixError.ENOENT
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
         | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
         | Some (InodeContent.Directory content) ->
@@ -964,6 +965,9 @@ module VirtualFileSystem =
                 })
         | Some ({
                     Content = InodeContent.Socket _
+                })
+        | Some ({
+                    Content = InodeContent.Fifo _
                 })
         | Some ({
                     Content = InodeContent.Symlink _
@@ -1186,6 +1190,9 @@ module VirtualFileSystem =
                     Content = InodeContent.Socket _
                 } as existing)
         | Some ({
+                    Content = InodeContent.Fifo _
+                } as existing)
+        | Some ({
                     Content = InodeContent.Symlink _
                 } as existing) ->
             match bind directory name target now vfs with
@@ -1253,6 +1260,9 @@ module VirtualFileSystem =
                }
         | Some {
                    Content = InodeContent.Socket _
+               }
+        | Some {
+                   Content = InodeContent.Fifo _
                }
         | Some {
                    Content = InodeContent.Symlink _
@@ -1385,6 +1395,9 @@ module VirtualFileSystem =
                }
         | Some {
                    Content = InodeContent.Socket _
+               }
+        | Some {
+                   Content = InodeContent.Fifo _
                }
         | Some {
                    Content = InodeContent.Symlink _
@@ -1990,6 +2003,11 @@ module VirtualFileSystem =
                } ->
             failwith
                 $"VirtualFileSystem.writeFile: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in the caller)."
+        | Some {
+                   Content = InodeContent.Fifo _
+               } ->
+            failwith
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -2083,6 +2101,11 @@ module VirtualFileSystem =
                } ->
             failwith
                 $"VirtualFileSystem.truncateFile: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in the caller)."
+        | Some {
+                   Content = InodeContent.Fifo _
+               } ->
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -2143,6 +2166,7 @@ module VirtualFileSystem =
             | InodeContent.RegularFile (contents, _) -> InodeContent.RegularFile (contents, bits)
             | InodeContent.CharacterDevice (device, _) -> InodeContent.CharacterDevice (device, bits)
             | InodeContent.Socket _ -> InodeContent.Socket bits
+            | InodeContent.Fifo _ -> InodeContent.Fifo bits
             | InodeContent.Directory directory ->
                 InodeContent.Directory
                     { directory with
@@ -2232,6 +2256,7 @@ module VirtualFileSystem =
                 |> List.map (fun (name, target) -> inode, name, target)
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> []
         )
@@ -2249,6 +2274,7 @@ module VirtualFileSystem =
             | InodeContent.Directory _
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> None
         )
@@ -2388,6 +2414,7 @@ module VirtualFileSystem =
             | None -> [ VirtualFileSystemDefect.RootMissing vfs.Root ]
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> [ VirtualFileSystemDefect.RootIsNotDirectory vfs.Root ]
             | Some (InodeContent.Directory content) ->
@@ -2425,6 +2452,7 @@ module VirtualFileSystem =
                 match entry.Content with
                 | InodeContent.RegularFile _
                 | InodeContent.Socket _
+                | InodeContent.Fifo _
                 | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> []
                 | InodeContent.Directory directory ->
@@ -2442,6 +2470,7 @@ module VirtualFileSystem =
                     | None -> [ VirtualFileSystemDefect.DanglingParent (inode, recorded) ]
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _)
                     | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Symlink _) ->
                         [ VirtualFileSystemDefect.ParentIsNotDirectory (inode, recorded) ]
@@ -2496,14 +2525,16 @@ module VirtualFileSystem =
             |> List.filter (fun inode -> not (Set.contains inode pinned))
             |> List.map VirtualFileSystemDefect.UnreachableFromRoot
 
-        // Nothing in this version makes a socket inode: `mknodat(S_IFSOCK)`
-        // and a Unix-domain `bind` both refuse. So one here came from a bug.
+        // Nothing in this version makes a socket inode or a FIFO inode:
+        // `mknodat` of `S_IFSOCK` or `S_IFIFO`, and a Unix-domain `bind`, all
+        // refuse. So one here came from a bug.
         let reservedContent =
             vfs.Inodes
             |> Map.toList
             |> List.choose (fun (inode, entry) ->
                 match entry.Content with
-                | InodeContent.Socket _ -> Some (VirtualFileSystemDefect.ReservedContent inode)
+                | InodeContent.Socket _
+                | InodeContent.Fifo _ -> Some (VirtualFileSystemDefect.ReservedContent inode)
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.CharacterDevice _

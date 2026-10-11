@@ -190,6 +190,9 @@ type DirectoryEntryKind =
     /// `DT_SOCK`: an entry naming an `InodeContent.Socket`, which nothing in
     /// this version makes.
     | Socket
+    /// `DT_FIFO`: an entry naming an `InodeContent.Fifo`, which nothing in
+    /// this version makes.
+    | Fifo
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryKind =
@@ -201,6 +204,7 @@ module DirectoryEntryKind =
         | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
         | InodeContent.CharacterDevice _ -> DirectoryEntryKind.CharacterDevice
         | InodeContent.Socket _ -> DirectoryEntryKind.Socket
+        | InodeContent.Fifo _ -> DirectoryEntryKind.Fifo
 
 /// One entry of a directory, as `getdents(2)` reports it: the facts in a
 /// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
@@ -860,6 +864,9 @@ module UnixNamespace =
                 | Some (InodeContent.Socket _) ->
                     failwith
                         $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+                | Some (InodeContent.Fifo _) ->
+                    failwith
+                        $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
@@ -1055,6 +1062,9 @@ module UnixNamespace =
         | InodeContent.Socket _ ->
             failwith
                 $"UnixNamespace.openPath: resolution returned inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+        | InodeContent.Fifo _ ->
+            failwith
+                $"UnixNamespace.openPath: resolution returned inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
         | InodeContent.RegularFile _
         | InodeContent.Directory _
         | InodeContent.CharacterDevice _ ->
@@ -1134,6 +1144,9 @@ module UnixNamespace =
             | InodeContent.Socket _ ->
                 failwith
                     $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+            | InodeContent.Fifo _ ->
+                failwith
+                    $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
 
         truncated
         |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
@@ -1341,6 +1354,7 @@ module UnixNamespace =
         | InodeContent.Directory _
         | InodeContent.RegularFile _
         | InodeContent.Socket _
+        | InodeContent.Fifo _
         | InodeContent.CharacterDevice _ ->
             // Not a link: EINVAL for a path, which is what distinguishes "not a
             // link" from a failure to read one, and ENOENT for an empty path
@@ -2547,6 +2561,9 @@ module UnixNamespace =
         | Some (InodeContent.Socket _) ->
             failwith
                 $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+        | Some (InodeContent.Fifo _) ->
+            failwith
+                $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
         | Some (InodeContent.Symlink _)
         | None ->
             failwith
@@ -2639,6 +2656,7 @@ module UnixNamespace =
             | InodeContent.RegularFile (_, bits) -> bits
             | InodeContent.Directory _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 failwith

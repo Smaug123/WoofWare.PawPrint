@@ -345,6 +345,7 @@ module TestPathCursor =
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
 
@@ -446,6 +447,7 @@ module TestPathCursor =
                     walk found rest trailing finalSymlinkFollowed lastNavigation symlinks
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _ ->
                 if isFinal then
                     if trailing then

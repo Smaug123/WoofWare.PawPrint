@@ -46,6 +46,7 @@ module TestResolutionSplit =
         | Some (InodeContent.Directory content) -> Some content
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
         | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _)
         | None -> None
@@ -78,6 +79,7 @@ module TestResolutionSplit =
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
 
@@ -210,6 +212,7 @@ module TestResolutionSplit =
                     walk target rest trailing finalSymlinkFollowed lastNavigation symlinks
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _ ->
                 if isFinal then
                     if trailingActsOnFinal then
@@ -581,6 +584,7 @@ module TestResolutionSplit =
                 | InodeContent.Directory _ -> true
                 | InodeContent.RegularFile _
                 | InodeContent.Socket _
+                | InodeContent.Fifo _
                 | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> false
             )

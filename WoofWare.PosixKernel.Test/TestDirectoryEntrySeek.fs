@@ -111,6 +111,7 @@ module TestDirectoryEntrySeek =
             | InodeContent.Directory content -> Some (inode, content)
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> None
         )
@@ -306,6 +307,7 @@ module TestDirectoryEntrySeek =
             | InodeContent.Directory directory -> go directory.Parent vfs
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> vfs
 
