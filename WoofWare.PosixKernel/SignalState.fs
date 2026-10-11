@@ -216,33 +216,62 @@ type internal SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Hand
 
 /// Why this library will not say what a process's signal does: a case it does
 /// not model, rather than one a kernel refuses.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SignalReceiverRefusal.Reason`, and ends its match with a wildcard, where
+/// `SignalReceiverRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SignalReceiverRefusal =
-    /// `signal` is sent to the process as a whole, and its leader blocks it
-    /// while another task does not, so some task other than the leader would
-    /// take it: a caught one to run its handler, and under Linux's numbering an
-    /// ignored one (SIGCONT at its default included) to discard it, which
-    /// Linux leaves pending on the process until then. Which task differs
-    /// between flavours, and on Linux depends on which tasks took earlier
-    /// signals; this library delivers a process's own signals to its leader
-    /// only.
+    internal
+    /// See `SignalReceiverRefusal.Reason.LeaderBlocks`.
     | LeaderBlocks of signal : Signal
-    /// Returning to user mode, a task would take `signal`, whose default stops
-    /// or continues the process, after handler frames were pushed for other
-    /// signals at the same return. What a stopped process does with frames
-    /// already pushed has not been measured.
+    /// See `SignalReceiverRefusal.Reason.DefaultBehindHandlers`.
     | DefaultBehindHandlers of signal : Signal
-    /// Under Darwin's numbering, `signal`, a standard signal, would be left
-    /// pending on the process as a whole while an instance of it is pending on
-    /// the leader alone, or the other way round. Darwin holds the two as one
-    /// instance: it puts a signal sent to the process in the pending set of
-    /// the thread it chooses to take it, which is the leader whenever this
-    /// library answers. This library keeps the process's set apart from each
-    /// task's.
+    /// See `SignalReceiverRefusal.Reason.PendingForProcessAndLeader`.
     | PendingForProcessAndLeader of signal : Signal
 
 [<RequireQualifiedAccess>]
 module SignalReceiverRefusal =
+    /// The reasons this library will not say what a process's signal does, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A signal is sent to the process as a whole, and its leader blocks it
+        /// while another task does not, so some task other than the leader
+        /// would take it: a caught one to run its handler, and under Linux's
+        /// numbering an ignored one (SIGCONT at its default included) to
+        /// discard it, which Linux leaves pending on the process until then.
+        /// Which task differs between flavours, and on Linux depends on which
+        /// tasks took earlier signals; this library delivers a process's own
+        /// signals to its leader only. Gives the signal.
+        let (|LeaderBlocks|_|) (refusal : SignalReceiverRefusal) : Signal option =
+            match refusal with
+            | SignalReceiverRefusal.LeaderBlocks signal -> Some signal
+            | _ -> None
+
+        /// Returning to user mode, a task would take a signal whose default
+        /// stops or continues the process, after handler frames were pushed for
+        /// other signals at the same return. What a stopped process does with
+        /// frames already pushed has not been measured. Gives the signal.
+        let (|DefaultBehindHandlers|_|) (refusal : SignalReceiverRefusal) : Signal option =
+            match refusal with
+            | SignalReceiverRefusal.DefaultBehindHandlers signal -> Some signal
+            | _ -> None
+
+        /// Under Darwin's numbering, a standard signal would be left pending on
+        /// the process as a whole while an instance of it is pending on the
+        /// leader alone, or the other way round. Darwin holds the two as one
+        /// instance: it puts a signal sent to the process in the pending set of
+        /// the thread it chooses to take it, which is the leader whenever this
+        /// library answers. This library keeps the process's set apart from
+        /// each task's. Gives the signal.
+        let (|PendingForProcessAndLeader|_|) (refusal : SignalReceiverRefusal) : Signal option =
+            match refusal with
+            | SignalReceiverRefusal.PendingForProcessAndLeader signal -> Some signal
+            | _ -> None
+
     /// What this kernel knows about why it cannot say what the signal does.
     /// The client supplies its own half: which call or return reached it, and
     /// in which task.
@@ -740,7 +769,7 @@ module SignalState =
     /// `docs/plans/2026-08-23-posix-kernel-extraction/raise-sweep.c`), because it puts a signal sent to the process
     /// in the pending set of the thread it chooses to take it. `generate`
     /// refuses to leave such a pair pending
-    /// (`SignalReceiverRefusal.PendingForProcessAndLeader`); this function,
+    /// (`SignalReceiverRefusal.Reason.PendingForProcessAndLeader`); this function,
     /// which is not told the leader, holds them apart.
     let internal enqueue
         (entry : PendingSignal<'Task>)

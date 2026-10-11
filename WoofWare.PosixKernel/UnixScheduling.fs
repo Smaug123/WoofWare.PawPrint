@@ -24,13 +24,30 @@ type GetCpuAnswer =
     }
 
 /// Why this kernel will not answer a `getcpu(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetCpuRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetCpuRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetCpuRefusal =
-    /// This kernel is not Linux-flavoured, and only Linux has `getcpu`.
+    internal
+    /// See `GetCpuRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module GetCpuRefusal =
+    /// The reasons this kernel will not answer a `getcpu(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Linux-flavoured, and only Linux has `getcpu`.
+        /// Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : GetCpuRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | GetCpuRefusal.UnmodelledFlavour flavour -> Some flavour
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : GetCpuRefusal) : string =

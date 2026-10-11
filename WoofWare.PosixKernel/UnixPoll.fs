@@ -5,61 +5,31 @@ namespace WoofWare.PosixKernel
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PollRefusal.Reason`, and ends its match with a wildcard, where
+/// `PollRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PollRefusal =
-    /// The entry names an event queue, which this kernel does not answer
-    /// `poll(2)` for: under Linux an epoll instance, whatever was asked; under
-    /// Darwin a kqueue asked for a bit that registers `EVFILT_READ` on it.
-    ///
-    /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
-    /// targets it will accept, and `poll(2)` accepts any descriptor.
+    internal
+    /// See `PollRefusal.Reason.UnmodelledTarget`.
     | UnmodelledTarget of fd : int
-    /// Under Darwin, the entry asks a socket of a kind whose kqueue filters
-    /// this kernel does not model (anything but a stream socket of `AF_INET`
-    /// or `AF_INET6`) for a bit that registers one.
+    /// See `PollRefusal.Reason.UnmodelledSocket`.
     | UnmodelledSocket of fd : int * domain : SocketDomain * kind : SocketKind
-    /// Under Linux, the entry names a socket of a kind whose readiness this
-    /// kernel does not model, whatever was
-    /// asked: `HUP` is reported unasked, so even `events = 0` reads the level.
-    ///
-    /// That is an `AF_UNIX` `SOCK_SEQPACKET` socket. Its `poll` row is
-    /// measured but its epoll one is not, and the two waiters read one level,
-    /// so answering `poll` alone would make epoll delivery answer from an
-    /// inference.
+    /// See `PollRefusal.Reason.UnmeasuredSocketKind`.
     | UnmeasuredSocketKind of fd : int * domain : SocketDomain * kind : SocketKind
-    /// Under Darwin, nothing is ready and the call would sleep with an
-    /// `EVFILT_VNODE` filter registered on the regular file or directory `fd`
-    /// names: such a filter reports only when the file changes, which this
-    /// kernel does not model.
+    /// See `PollRefusal.Reason.UnmodelledVnodeWait`.
     | UnmodelledVnodeWait of fd : int
-    /// Under Darwin, nothing is ready and the call would sleep with a timeout
-    /// of `milliseconds`, which is negative and not -1.
-    ///
-    /// Darwin waits for ever on -1 alone. By its source it reads any other
-    /// timeout as an unsigned count of milliseconds, so -2 would wait about
-    /// 49.7 days: no measurement can tell that from waiting for ever, and a
-    /// client that advances its clock to the next deadline would reach it at
-    /// once.
+    /// See `PollRefusal.Reason.UnmeasuredNegativeTimeout`.
     | UnmeasuredNegativeTimeout of milliseconds : int
-    /// Under Darwin, the call has `count` entries, more than `FD_SETSIZE`
-    /// (1024) and no more than `OPEN_MAX` (10240). Darwin answers `EINVAL` for
-    /// such a count exactly when it exceeds the process's `RLIMIT_NOFILE` soft
-    /// limit, or for root only when it does and also exceeds 1024 (measured
-    /// for a process that is not root, `poll-darwin.c` section N); this kernel
-    /// assumes only that the limit is at least
-    /// `SimulatedUnixPlatform.descriptorBound`.
+    /// See `PollRefusal.Reason.UnmodelledEntryCount`.
     | UnmodelledEntryCount of count : int
-    /// Under Darwin, a sleeping call has both something to report and reached
-    /// its deadline. Darwin answers whichever reached the sleeping task first,
-    /// which this kernel does not record.
+    /// See `PollRefusal.Reason.EventsBesideDeadline`.
     | EventsBesideDeadline
-    /// Nothing is ready, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`,
-    /// an `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
-    /// `timeoutMilliseconds` overflows it.
+    /// See `PollRefusal.Reason.DeadlineBeyondClock`.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
-    /// The poll was asleep and a signal is pending for the task, and this
-    /// library will not say how the signal ends it.
+    /// See `PollRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
 
 /// What became of a `poll(2)` this kernel could answer.
@@ -80,6 +50,109 @@ type PollOutcome =
 
 [<RequireQualifiedAccess>]
 module PollRefusal =
+    /// The reasons this kernel will not answer a `poll(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The entry names an event queue, which this kernel does not answer
+        /// `poll(2)` for: under Linux an epoll instance, whatever was asked;
+        /// under Darwin a kqueue asked for a bit that registers `EVFILT_READ`
+        /// on it. Gives the entry's descriptor number.
+        ///
+        /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens
+        /// the targets it will accept, and `poll(2)` accepts any descriptor.
+        let (|UnmodelledTarget|_|) (refusal : PollRefusal) : int option =
+            match refusal with
+            | PollRefusal.UnmodelledTarget fd -> Some fd
+            | _ -> None
+
+        /// Under Darwin, the entry asks a socket of a kind whose kqueue filters
+        /// this kernel does not model (anything but a stream socket of
+        /// `AF_INET` or `AF_INET6`) for a bit that registers one. Gives the
+        /// entry's descriptor number, then the socket's domain, then its kind.
+        let (|UnmodelledSocket|_|) (refusal : PollRefusal) : (int * SocketDomain * SocketKind) option =
+            match refusal with
+            | PollRefusal.UnmodelledSocket (fd, domain, kind) -> Some (fd, domain, kind)
+            | _ -> None
+
+        /// Under Linux, the entry names a socket of a kind whose readiness this
+        /// kernel does not model, whatever was asked: `HUP` is reported
+        /// unasked, so even `events = 0` reads the level. Gives the entry's
+        /// descriptor number, then the socket's domain, then its kind.
+        ///
+        /// That is an `AF_UNIX` `SOCK_SEQPACKET` socket. Its `poll` row is
+        /// measured but its epoll one is not, and the two waiters read one
+        /// level, so answering `poll` alone would make epoll delivery answer
+        /// from an inference.
+        let (|UnmeasuredSocketKind|_|) (refusal : PollRefusal) : (int * SocketDomain * SocketKind) option =
+            match refusal with
+            | PollRefusal.UnmeasuredSocketKind (fd, domain, kind) -> Some (fd, domain, kind)
+            | _ -> None
+
+        /// Under Darwin, nothing is ready and the call would sleep with an
+        /// `EVFILT_VNODE` filter registered on the regular file or directory
+        /// the entry names: such a filter reports only when the file changes,
+        /// which this kernel does not model. Gives the entry's descriptor
+        /// number.
+        let (|UnmodelledVnodeWait|_|) (refusal : PollRefusal) : int option =
+            match refusal with
+            | PollRefusal.UnmodelledVnodeWait fd -> Some fd
+            | _ -> None
+
+        /// Under Darwin, nothing is ready and the call would sleep with a
+        /// timeout that is negative and not -1. Gives the timeout, in
+        /// milliseconds.
+        ///
+        /// Darwin waits for ever on -1 alone. By its source it reads any other
+        /// timeout as an unsigned count of milliseconds, so -2 would wait about
+        /// 49.7 days: no measurement can tell that from waiting for ever, and a
+        /// client that advances its clock to the next deadline would reach it
+        /// at once.
+        let (|UnmeasuredNegativeTimeout|_|) (refusal : PollRefusal) : int option =
+            match refusal with
+            | PollRefusal.UnmeasuredNegativeTimeout milliseconds -> Some milliseconds
+            | _ -> None
+
+        /// Under Darwin, the call has more entries than `FD_SETSIZE` (1024) and
+        /// no more than `OPEN_MAX` (10240). Darwin answers `EINVAL` for such a
+        /// count exactly when it exceeds the process's `RLIMIT_NOFILE` soft
+        /// limit, or for root only when it does and also exceeds 1024 (measured
+        /// for a process that is not root, `poll-darwin.c` section N); this
+        /// kernel assumes only that the limit is at least
+        /// `SimulatedUnixPlatform.descriptorBound`. Gives the number of
+        /// entries.
+        let (|UnmodelledEntryCount|_|) (refusal : PollRefusal) : int option =
+            match refusal with
+            | PollRefusal.UnmodelledEntryCount count -> Some count
+            | _ -> None
+
+        /// Under Darwin, a sleeping call has both something to report and
+        /// reached its deadline. Darwin answers whichever reached the sleeping
+        /// task first, which this kernel does not record.
+        let (|EventsBesideDeadline|_|) (refusal : PollRefusal) : unit option =
+            match refusal with
+            | PollRefusal.EventsBesideDeadline -> Some ()
+            | _ -> None
+
+        /// Nothing is ready, and the timeout ends past the last instant the
+        /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
+        /// `int64` of nanoseconds) can represent: the clock's reading plus the
+        /// timeout overflows it. Gives the clock's reading, then the timeout in
+        /// milliseconds.
+        let (|DeadlineBeyondClock|_|) (refusal : PollRefusal) : (int64 * int) option =
+            match refusal with
+            | PollRefusal.DeadlineBeyondClock (nanosecondsSinceBoot, timeoutMilliseconds) ->
+                Some (nanosecondsSinceBoot, timeoutMilliseconds)
+            | _ -> None
+
+        /// The poll was asleep and a signal is pending for the task, and this
+        /// library will not say how the signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : PollRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | PollRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : PollRefusal) : string =
@@ -111,16 +184,41 @@ module EpollCreateFlags =
     let CloseOnExec : int = OpenFlagNumbering.LinuxCloseOnExec
 
 /// Why this kernel will not answer an `epoll_create1(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `EpollCreateRefusal.Reason`, and ends its match with a wildcard, where
+/// `EpollCreateRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type EpollCreateRefusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `EpollCreateRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// This kernel is not Linux-flavoured, and only Linux has epoll.
+    /// See `EpollCreateRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module EpollCreateRefusal =
+    /// The reasons this kernel will not answer an `epoll_create1(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : EpollCreateRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | EpollCreateRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel is not Linux-flavoured, and only Linux has epoll. Gives
+        /// the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : EpollCreateRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | EpollCreateRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : EpollCreateRefusal) : string =
@@ -150,31 +248,77 @@ type EpollWaitOutcome =
     | WouldBlock of WakeCondition
 
 /// Why this kernel will not answer an `epoll_wait(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `EpollWaitRefusal.Reason`, and ends its match with a wildcard, where
+/// `EpollWaitRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type EpollWaitRefusal =
-    /// This kernel is not Linux-flavoured, and only Linux has epoll.
+    internal
+    /// See `EpollWaitRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// The buffer reached the up-front address screen and has no address to
-    /// screen.
+    /// See `EpollWaitRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The wait has events to deliver, and the buffer is unmapped, so copying
-    /// them out faults.
-    ///
-    /// Linux answers EFAULT only when the first event's copy faults, and a
-    /// real buffer can be partly mapped; which of the walked entries stay
-    /// pending after a fault is unmeasured.
+    /// See `EpollWaitRefusal.Reason.UnmeasuredCopyOutFault`.
     | UnmeasuredCopyOutFault of epoll : OpenFileDescriptionId
-    /// Nothing is deliverable, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
-    /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
-    /// `timeoutMilliseconds` overflows it.
+    /// See `EpollWaitRefusal.Reason.DeadlineBeyondClock`.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
-    /// The wait was asleep and a signal is pending for the task, and this
-    /// library will not say how the signal ends it.
+    /// See `EpollWaitRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module EpollWaitRefusal =
+    /// The reasons this kernel will not answer an `epoll_wait(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Linux-flavoured, and only Linux has epoll. Gives
+        /// the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : EpollWaitRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | EpollWaitRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// The buffer reached the up-front address screen and has no address to
+        /// screen. Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : EpollWaitRefusal) : BufferRefusal option =
+            match refusal with
+            | EpollWaitRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The wait has events to deliver, and the buffer is unmapped, so
+        /// copying them out faults. Gives the epoll instance's open file
+        /// description.
+        ///
+        /// Linux answers EFAULT only when the first event's copy faults, and a
+        /// real buffer can be partly mapped; which of the walked entries stay
+        /// pending after a fault is unmeasured.
+        let (|UnmeasuredCopyOutFault|_|) (refusal : EpollWaitRefusal) : OpenFileDescriptionId option =
+            match refusal with
+            | EpollWaitRefusal.UnmeasuredCopyOutFault epoll -> Some epoll
+            | _ -> None
+
+        /// Nothing is deliverable, and the timeout ends past the last instant
+        /// the machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
+        /// `int64` of nanoseconds) can represent: the clock's reading plus the
+        /// timeout overflows it. Gives the clock's reading, then the timeout in
+        /// milliseconds.
+        let (|DeadlineBeyondClock|_|) (refusal : EpollWaitRefusal) : (int64 * int) option =
+            match refusal with
+            | EpollWaitRefusal.DeadlineBeyondClock (nanosecondsSinceBoot, timeoutMilliseconds) ->
+                Some (nanosecondsSinceBoot, timeoutMilliseconds)
+            | _ -> None
+
+        /// The wait was asleep and a signal is pending for the task, and this
+        /// library will not say how the signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : EpollWaitRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | EpollWaitRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it actually passed.
     let describe (refusal : EpollWaitRefusal) : string =
@@ -279,44 +423,111 @@ type EpollCtlAnswer =
 /// is given only where the real call would succeed, having passed every check
 /// that could fail it; so a call that would fail is answered with its failure
 /// whatever it asks for.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `EpollCtlRefusal.Reason`, and ends its match with a wildcard, where
+/// `EpollCtlRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type EpollCtlRefusal =
-    /// This kernel is not Linux-flavoured, and only Linux has epoll.
+    internal
+    /// See `EpollCtlRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// An `EPOLL_CTL_ADD` whose target is itself an epoll instance.
-    ///
-    /// Linux accepts one, subject to a loop check and a nesting depth of at
-    /// most four epoll instances (`ELOOP` beyond either). This library does not model
-    /// what a nested epoll instance reports or how a wake propagates through it.
+    /// See `EpollCtlRefusal.Reason.NestedEpoll`.
     | NestedEpoll of targetFd : int
-    /// The event carries `EPOLLEXCLUSIVE`, which changes which of several epoll instances
-    /// on one target a wake reaches. This library's wakes reach every epoll instance.
+    /// See `EpollCtlRefusal.Reason.Exclusive`.
     | Exclusive
-    /// The event carries `EPOLLONESHOT`, which disarms the registration once it
-    /// has reported. This library's registrations stay armed.
+    /// See `EpollCtlRefusal.Reason.OneShot`.
     | OneShot
-    /// The event carries `EPOLLWAKEUP`. The kernel keeps it only for a caller
-    /// with `CAP_BLOCK_SUSPEND` on a kernel built with power management, and
-    /// silently clears it otherwise; this library models neither.
+    /// See `EpollCtlRefusal.Reason.WakeUp`.
     | WakeUp
-    /// The event lacks `EPOLLET`, asking to be level-triggered. This library's epoll
-    /// models edge-triggered registrations only: a wait consumes every entry it
-    /// walks and never re-arms a still-ready one, so a wait after a partly
-    /// drained level would sleep where a real `epoll_wait` returns again.
+    /// See `EpollCtlRefusal.Reason.LevelTriggered`.
     | LevelTriggered
-    /// An `EPOLL_CTL_ADD` whose target is an end of a pipe the process made.
-    /// An edge-triggered registration reports what the pipe's own wakes
-    /// signal, and which transfers and closes signal a pipe's waiters, and with
-    /// which events, is not measured.
+    /// See `EpollCtlRefusal.Reason.PipeTarget`.
     | PipeTarget of targetFd : int
-    /// An `EPOLL_CTL_ADD` whose target is a socket of a kind whose readiness
-    /// this kernel does not model: an
-    /// `AF_UNIX` `SOCK_SEQPACKET` socket, which Linux registers. What a wait
-    /// reports for one is unmeasured.
+    /// See `EpollCtlRefusal.Reason.UnmeasuredSocketKind`.
     | UnmeasuredSocketKind of targetFd : int * domain : SocketDomain * kind : SocketKind
 
 [<RequireQualifiedAccess>]
 module EpollCtlRefusal =
+    /// The reasons this kernel will not answer an `epoll_ctl(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Linux-flavoured, and only Linux has epoll. Gives
+        /// the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : EpollCtlRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | EpollCtlRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// An `EPOLL_CTL_ADD` whose target is itself an epoll instance. Gives
+        /// the target's descriptor number.
+        ///
+        /// Linux accepts one, subject to a loop check and a nesting depth of at
+        /// most four epoll instances (`ELOOP` beyond either). This library does
+        /// not model what a nested epoll instance reports or how a wake
+        /// propagates through it.
+        let (|NestedEpoll|_|) (refusal : EpollCtlRefusal) : int option =
+            match refusal with
+            | EpollCtlRefusal.NestedEpoll targetFd -> Some targetFd
+            | _ -> None
+
+        /// The event carries `EPOLLEXCLUSIVE`, which changes which of several
+        /// epoll instances on one target a wake reaches. This library's wakes
+        /// reach every epoll instance.
+        let (|Exclusive|_|) (refusal : EpollCtlRefusal) : unit option =
+            match refusal with
+            | EpollCtlRefusal.Exclusive -> Some ()
+            | _ -> None
+
+        /// The event carries `EPOLLONESHOT`, which disarms the registration
+        /// once it has reported. This library's registrations stay armed.
+        let (|OneShot|_|) (refusal : EpollCtlRefusal) : unit option =
+            match refusal with
+            | EpollCtlRefusal.OneShot -> Some ()
+            | _ -> None
+
+        /// The event carries `EPOLLWAKEUP`. The kernel keeps it only for a
+        /// caller with `CAP_BLOCK_SUSPEND` on a kernel built with power
+        /// management, and silently clears it otherwise; this library models
+        /// neither.
+        let (|WakeUp|_|) (refusal : EpollCtlRefusal) : unit option =
+            match refusal with
+            | EpollCtlRefusal.WakeUp -> Some ()
+            | _ -> None
+
+        /// The event lacks `EPOLLET`, asking to be level-triggered. This
+        /// library's epoll models edge-triggered registrations only: a wait
+        /// consumes every entry it walks and never re-arms a still-ready one,
+        /// so a wait after a partly drained level would sleep where a real
+        /// `epoll_wait` returns again.
+        let (|LevelTriggered|_|) (refusal : EpollCtlRefusal) : unit option =
+            match refusal with
+            | EpollCtlRefusal.LevelTriggered -> Some ()
+            | _ -> None
+
+        /// An `EPOLL_CTL_ADD` whose target is an end of a pipe the process
+        /// made. An edge-triggered registration reports what the pipe's own
+        /// wakes signal, and which transfers and closes signal a pipe's
+        /// waiters, and with which events, is not measured. Gives the target's
+        /// descriptor number.
+        let (|PipeTarget|_|) (refusal : EpollCtlRefusal) : int option =
+            match refusal with
+            | EpollCtlRefusal.PipeTarget targetFd -> Some targetFd
+            | _ -> None
+
+        /// An `EPOLL_CTL_ADD` whose target is a socket of a kind whose
+        /// readiness this kernel does not model: an `AF_UNIX` `SOCK_SEQPACKET`
+        /// socket, which Linux registers. What a wait reports for one is
+        /// unmeasured. Gives the target's descriptor number, then the socket's
+        /// domain, then its kind.
+        let (|UnmeasuredSocketKind|_|) (refusal : EpollCtlRefusal) : (int * SocketDomain * SocketKind) option =
+            match refusal with
+            | EpollCtlRefusal.UnmeasuredSocketKind (targetFd, domain, kind) -> Some (targetFd, domain, kind)
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. The client supplies
     /// its own half -- which of its entry points was asked, and on whose
     /// behalf.

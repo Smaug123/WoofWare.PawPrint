@@ -108,38 +108,240 @@ type Syscall =
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SyscallRefusal.Reason`, and ends its match with a wildcard, where
+/// `SyscallRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SyscallRefusal<'Task> =
+    internal
+    /// See `SyscallRefusal.Reason.Dup`.
     | Dup of DescriptorLimitRefusal
+    /// See `SyscallRefusal.Reason.Fcntl`.
     | Fcntl of FcntlRefusal
+    /// See `SyscallRefusal.Reason.Dup2`.
     | Dup2 of Dup2Refusal<'Task>
+    /// See `SyscallRefusal.Reason.Dup3`.
     | Dup3 of Dup3Refusal<'Task>
+    /// See `SyscallRefusal.Reason.LSeek`.
     | LSeek of LSeekRefusal
+    /// See `SyscallRefusal.Reason.FLock`.
     | FLock of FLockRefusal
+    /// See `SyscallRefusal.Reason.FTruncate`.
     | FTruncate of TruncationRefusal
+    /// See `SyscallRefusal.Reason.MkDir`.
     | MkDir of PathRefusal
+    /// See `SyscallRefusal.Reason.UnlinkAt`.
     | UnlinkAt of UnlinkAtRefusal
+    /// See `SyscallRefusal.Reason.ChDir`.
     | ChDir of PathRefusal
+    /// See `SyscallRefusal.Reason.FChModAt`.
     | FChModAt of FChModAtRefusal
+    /// See `SyscallRefusal.Reason.FChMod`.
     | FChMod of FChModRefusal
+    /// See `SyscallRefusal.Reason.FChOwnAt`.
     | FChOwnAt of FChOwnAtRefusal
+    /// See `SyscallRefusal.Reason.FChOwn`.
     | FChOwn of FChOwnRefusal
+    /// See `SyscallRefusal.Reason.Access`.
     | Access of AccessRefusal
+    /// See `SyscallRefusal.Reason.Symlink`.
     | Symlink of SymlinkRefusal
+    /// See `SyscallRefusal.Reason.Link`.
     | Link of LinkRefusal
+    /// See `SyscallRefusal.Reason.Close`.
     | Close of CloseRefusal<'Task>
+    /// See `SyscallRefusal.Reason.UTimensAt`.
     | UTimensAt of UTimensAtRefusal
+    /// See `SyscallRefusal.Reason.CopyFileRange`.
     | CopyFileRange of CopyFileRangeRefusal
+    /// See `SyscallRefusal.Reason.FileClone`.
     | FileClone of FileCloneRefusal
+    /// See `SyscallRefusal.Reason.CloneFile`.
     | CloneFile of CloneFileRefusal
-    /// `setresuid(2)` and `setresgid(2)` alike.
+    /// See `SyscallRefusal.Reason.SetIds`.
     | SetIds of SetIdsRefusal
+    /// See `SyscallRefusal.Reason.SetGroups`.
     | SetGroups of SetGroupsRefusal
-    /// `inotify_init1(2)` and `inotify_rm_watch(2)` alike.
+    /// See `SyscallRefusal.Reason.Inotify`.
     | Inotify of InotifyRefusal
 
 [<RequireQualifiedAccess>]
 module SyscallRefusal =
+    /// The syscalls this kernel will not answer, one partial pattern each,
+    /// which gives that call's own refusal. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel will not answer a `dup(2)`. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|Dup|_|) (refusal : SyscallRefusal<'Task>) : DescriptorLimitRefusal option =
+            match refusal with
+            | SyscallRefusal.Dup refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `fcntl(2)`. Gives the `FcntlRefusal`.
+        let (|Fcntl|_|) (refusal : SyscallRefusal<'Task>) : FcntlRefusal option =
+            match refusal with
+            | SyscallRefusal.Fcntl refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `dup2(2)`. Gives the `Dup2Refusal`.
+        let (|Dup2|_|) (refusal : SyscallRefusal<'Task>) : Dup2Refusal<'Task> option =
+            match refusal with
+            | SyscallRefusal.Dup2 refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `dup3(2)`. Gives the `Dup3Refusal`.
+        let (|Dup3|_|) (refusal : SyscallRefusal<'Task>) : Dup3Refusal<'Task> option =
+            match refusal with
+            | SyscallRefusal.Dup3 refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `lseek(2)`. Gives the `LSeekRefusal`.
+        let (|LSeek|_|) (refusal : SyscallRefusal<'Task>) : LSeekRefusal option =
+            match refusal with
+            | SyscallRefusal.LSeek refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `flock(2)`. Gives the `FLockRefusal`.
+        let (|FLock|_|) (refusal : SyscallRefusal<'Task>) : FLockRefusal option =
+            match refusal with
+            | SyscallRefusal.FLock refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `ftruncate(2)`. Gives the
+        /// `TruncationRefusal`.
+        let (|FTruncate|_|) (refusal : SyscallRefusal<'Task>) : TruncationRefusal option =
+            match refusal with
+            | SyscallRefusal.FTruncate refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `mkdirat(2)` or `mkdir(2)`. Gives the
+        /// `PathRefusal`.
+        let (|MkDir|_|) (refusal : SyscallRefusal<'Task>) : PathRefusal option =
+            match refusal with
+            | SyscallRefusal.MkDir refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `unlinkat(2)`, `unlink(2)` or
+        /// `rmdir(2)`. Gives the `UnlinkAtRefusal`.
+        let (|UnlinkAt|_|) (refusal : SyscallRefusal<'Task>) : UnlinkAtRefusal option =
+            match refusal with
+            | SyscallRefusal.UnlinkAt refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `chdir(2)`. Gives the `PathRefusal`.
+        let (|ChDir|_|) (refusal : SyscallRefusal<'Task>) : PathRefusal option =
+            match refusal with
+            | SyscallRefusal.ChDir refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `fchmodat(2)` or `chmod(2)`. Gives
+        /// the `FChModAtRefusal`.
+        let (|FChModAt|_|) (refusal : SyscallRefusal<'Task>) : FChModAtRefusal option =
+            match refusal with
+            | SyscallRefusal.FChModAt refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `fchmod(2)`. Gives the
+        /// `FChModRefusal`.
+        let (|FChMod|_|) (refusal : SyscallRefusal<'Task>) : FChModRefusal option =
+            match refusal with
+            | SyscallRefusal.FChMod refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `fchownat(2)`, `chown(2)` or
+        /// `lchown(2)`. Gives the `FChOwnAtRefusal`.
+        let (|FChOwnAt|_|) (refusal : SyscallRefusal<'Task>) : FChOwnAtRefusal option =
+            match refusal with
+            | SyscallRefusal.FChOwnAt refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `fchown(2)`. Gives the
+        /// `FChOwnRefusal`.
+        let (|FChOwn|_|) (refusal : SyscallRefusal<'Task>) : FChOwnRefusal option =
+            match refusal with
+            | SyscallRefusal.FChOwn refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `faccessat(2)` or `access(2)`. Gives
+        /// the `AccessRefusal`.
+        let (|Access|_|) (refusal : SyscallRefusal<'Task>) : AccessRefusal option =
+            match refusal with
+            | SyscallRefusal.Access refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `symlinkat(2)` or `symlink(2)`. Gives
+        /// the `SymlinkRefusal`.
+        let (|Symlink|_|) (refusal : SyscallRefusal<'Task>) : SymlinkRefusal option =
+            match refusal with
+            | SyscallRefusal.Symlink refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `linkat(2)` or `link(2)`. Gives the
+        /// `LinkRefusal`.
+        let (|Link|_|) (refusal : SyscallRefusal<'Task>) : LinkRefusal option =
+            match refusal with
+            | SyscallRefusal.Link refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `close(2)`. Gives the `CloseRefusal`.
+        let (|Close|_|) (refusal : SyscallRefusal<'Task>) : CloseRefusal<'Task> option =
+            match refusal with
+            | SyscallRefusal.Close refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `utimensat(2)`. Gives the
+        /// `UTimensAtRefusal`.
+        let (|UTimensAt|_|) (refusal : SyscallRefusal<'Task>) : UTimensAtRefusal option =
+            match refusal with
+            | SyscallRefusal.UTimensAt refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `copy_file_range(2)`. Gives the
+        /// `CopyFileRangeRefusal`.
+        let (|CopyFileRange|_|) (refusal : SyscallRefusal<'Task>) : CopyFileRangeRefusal option =
+            match refusal with
+            | SyscallRefusal.CopyFileRange refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `ioctl(2)` of `FICLONE`. Gives the
+        /// `FileCloneRefusal`.
+        let (|FileClone|_|) (refusal : SyscallRefusal<'Task>) : FileCloneRefusal option =
+            match refusal with
+            | SyscallRefusal.FileClone refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `clonefile(2)`. Gives the
+        /// `CloneFileRefusal`.
+        let (|CloneFile|_|) (refusal : SyscallRefusal<'Task>) : CloneFileRefusal option =
+            match refusal with
+            | SyscallRefusal.CloneFile refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `setresuid(2)` or `setresgid(2)`.
+        /// Gives the `SetIdsRefusal`.
+        let (|SetIds|_|) (refusal : SyscallRefusal<'Task>) : SetIdsRefusal option =
+            match refusal with
+            | SyscallRefusal.SetIds refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer a `setgroups(2)`. Gives the
+        /// `SetGroupsRefusal`.
+        let (|SetGroups|_|) (refusal : SyscallRefusal<'Task>) : SetGroupsRefusal option =
+            match refusal with
+            | SyscallRefusal.SetGroups refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel will not answer an `inotify_init1(2)` or
+        /// `inotify_rm_watch(2)`. Gives the `InotifyRefusal`.
+        let (|Inotify|_|) (refusal : SyscallRefusal<'Task>) : InotifyRefusal option =
+            match refusal with
+            | SyscallRefusal.Inotify refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, after the name of
     /// the syscall it refused. The client supplies its own half: which task
     /// made the call.

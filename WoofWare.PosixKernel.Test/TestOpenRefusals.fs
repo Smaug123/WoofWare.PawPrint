@@ -19,7 +19,41 @@ module TestOpenRefusals =
 
     /// The refusals whose cases are hidden. A union converted to an open one
     /// joins this list and leaves `unconverted`.
-    let private openRefusals : Type list = [ typeof<BindRefusal> ]
+    let private openRefusals : Type list =
+        [
+            typeof<BindRefusal>
+            typeof<CapacityRefusal>
+            typeof<ClockGettimeRefusal>
+            typeof<EpollCreateRefusal>
+            typeof<EpollCtlRefusal>
+            typeof<EpollWaitRefusal>
+            typeof<FileSystemIdRefusal>
+            typeof<GeometryRefusal>
+            typeof<GetCpuRefusal>
+            typeof<GetEntropyRefusal>
+            typeof<GetIdsRefusal>
+            typeof<GetRandomRefusal>
+            typeof<InotifyAddWatchRefusal>
+            typeof<InotifyRefusal>
+            typeof<KeventRefusal>
+            typeof<KillRefusal>
+            typeof<KqueueRefusal>
+            typeof<MountFieldsRefusal>
+            typeof<PollRefusal>
+            typeof<ProcessCreationRefusal>
+            typeof<ProcessEndRefusal>
+            typeof<SetGroupsRefusal>
+            typeof<SetIdsRefusal>
+            typeof<SignalReceiverRefusal>
+            typeof<SigprocmaskRefusal<int>>
+            typeof<SigsuspendRefusal>
+            typeof<SpawnRefusal<int>>
+            typeof<SyscallInterruptionRefusal>
+            typeof<SyscallRefusal<int>>
+            typeof<ThreadExitRefusal<int>>
+            typeof<ThreadKillRefusal>
+            typeof<WaitStatusRefusal>
+        ]
 
     /// Public unions named `*Refusal` that are closed by what they are: a
     /// client's own buffer, the error of a parser, or a flavour's rule. They
@@ -42,10 +76,8 @@ module TestOpenRefusals =
                 "AccessRefusal"
                 "BootTimeRefusal"
                 "BytesAvailableRefusal"
-                "CapacityRefusal"
                 "ChModRefusal"
                 "ChOwnRefusal"
-                "ClockGettimeRefusal"
                 "CloneFileRefusal"
                 "CloseRefusal"
                 "ConnectRefusal"
@@ -56,9 +88,6 @@ module TestOpenRefusals =
                 "Dup3Refusal"
                 "EndedWriteSignalRefusal"
                 "EphemeralPortRangeRefusal"
-                "EpollCreateRefusal"
-                "EpollCtlRefusal"
-                "EpollWaitRefusal"
                 "ExecutionRefusal"
                 "FChModAtRefusal"
                 "FChModRefusal"
@@ -69,21 +98,10 @@ module TestOpenRefusals =
                 "FStatRefusal"
                 "FcntlRefusal"
                 "FileCloneRefusal"
-                "FileSystemIdRefusal"
-                "GeometryRefusal"
-                "GetCpuRefusal"
                 "GetCwdRefusal"
-                "GetEntropyRefusal"
                 "GetGroupsRefusal"
-                "GetIdsRefusal"
-                "GetRandomRefusal"
                 "GetSockNameRefusal"
-                "InotifyAddWatchRefusal"
                 "InotifyLimitsRefusal"
-                "InotifyRefusal"
-                "KeventRefusal"
-                "KillRefusal"
-                "KqueueRefusal"
                 "LSeekRefusal"
                 "LaunchRefusal"
                 "LaunchTableRefusal"
@@ -93,7 +111,6 @@ module TestOpenRefusals =
                 "ListenRefusal"
                 "MkNodRefusal"
                 "ModeChangeRefusal"
-                "MountFieldsRefusal"
                 "MountRefusal"
                 "OpenRefusal"
                 "OwnerChangeRefusal"
@@ -102,10 +119,7 @@ module TestOpenRefusals =
                 "PathRefusal"
                 "Pipe2Refusal"
                 "PipeDeviceRefusal"
-                "PollRefusal"
                 "PosixFadviseRefusal"
-                "ProcessCreationRefusal"
-                "ProcessEndRefusal"
                 "ProcessIdRefusal"
                 "ProcessorCountRefusal"
                 "ProtectedFilesRefusal"
@@ -116,34 +130,23 @@ module TestOpenRefusals =
                 "RemovalRefusal"
                 "RenameRefusal"
                 "SendRefusal"
-                "SetGroupsRefusal"
                 "SetIdChangeRefusal"
-                "SetIdsRefusal"
                 "ShutdownRefusal"
-                "SignalReceiverRefusal"
-                "SigprocmaskRefusal"
-                "SigsuspendRefusal"
                 "SoMaxConnRefusal"
                 "SockaddrCopyRefusal"
                 "SocketOptionRefusal"
                 "SocketRefusal"
-                "SpawnRefusal"
                 "StatRefusal"
                 "StickyRefusal"
                 "SymlinkRefusal"
-                "SyscallInterruptionRefusal"
-                "SyscallRefusal"
                 "TcpReceiveSpaceRefusal"
                 "TcpSendSpaceMaxRefusal"
                 "TcpSendSpaceRefusal"
-                "ThreadExitRefusal"
-                "ThreadKillRefusal"
                 "TruncationRefusal"
                 "UTimensAtRefusal"
                 "UmaskRefusal"
                 "UnlinkAtRefusal"
                 "UserAddressLimitRefusal"
-                "WaitStatusRefusal"
                 "WriteRefusal"
             ]
 

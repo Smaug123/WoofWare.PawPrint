@@ -13,14 +13,30 @@ type PseudoFileSystem =
     | AnonymousInode
 
 /// Why this kernel does not state a filesystem's block size and name limit.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GeometryRefusal.Reason`, and ends its match with a wildcard, where
+/// `GeometryRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GeometryRefusal =
-    /// The filesystem is an NFS mount, whose block size and name limit come
-    /// from the server and the mount's negotiation with it.
+    internal
+    /// See `GeometryRefusal.Reason.Nfs`.
     | Nfs
 
 [<RequireQualifiedAccess>]
 module GeometryRefusal =
+    /// The reasons this kernel does not state a filesystem's block size and
+    /// name limit, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The filesystem is an NFS mount, whose block size and name limit come
+        /// from the server and the mount's negotiation with it.
+        let (|Nfs|_|) (refusal : GeometryRefusal) : unit option =
+            match refusal with
+            | GeometryRefusal.Nfs -> Some ()
+
     /// Human-readable description.
     let describe (refusal : GeometryRefusal) : string =
         match refusal with
@@ -28,20 +44,49 @@ module GeometryRefusal =
             "the filesystem is an NFS mount, whose block size and name limit are whatever the server and the mount's negotiation with it decided, which nothing in this machine determines."
 
 /// Why this kernel does not state a filesystem's block and file counts.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CapacityRefusal.Reason`, and ends its match with a wildcard, where
+/// `CapacityRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type CapacityRefusal =
-    /// The filesystem is an APFS volume, whose counts are those of the whole
-    /// container it shares with other volumes.
+    internal
+    /// See `CapacityRefusal.Reason.Apfs`.
     | Apfs
-    /// The filesystem is an NFS mount, whose counts are the server's.
+    /// See `CapacityRefusal.Reason.Nfs`.
     | Nfs
-    /// The filesystem is the device filesystem, whose file count counts every
-    /// node a real one holds, and whose block counts are a share of the
-    /// machine's memory.
+    /// See `CapacityRefusal.Reason.DeviceFileSystem`.
     | DeviceFileSystem
 
 [<RequireQualifiedAccess>]
 module CapacityRefusal =
+    /// The reasons this kernel does not state a filesystem's block and file
+    /// counts, one partial pattern each. A match over them is never complete:
+    /// end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The filesystem is an APFS volume, whose counts are those of the
+        /// whole container it shares with other volumes.
+        let (|Apfs|_|) (refusal : CapacityRefusal) : unit option =
+            match refusal with
+            | CapacityRefusal.Apfs -> Some ()
+            | _ -> None
+
+        /// The filesystem is an NFS mount, whose counts are the server's.
+        let (|Nfs|_|) (refusal : CapacityRefusal) : unit option =
+            match refusal with
+            | CapacityRefusal.Nfs -> Some ()
+            | _ -> None
+
+        /// The filesystem is the device filesystem, whose file count counts
+        /// every node a real one holds, and whose block counts are a share of
+        /// the machine's memory.
+        let (|DeviceFileSystem|_|) (refusal : CapacityRefusal) : unit option =
+            match refusal with
+            | CapacityRefusal.DeviceFileSystem -> Some ()
+            | _ -> None
+
     /// Human-readable description.
     let describe (refusal : CapacityRefusal) : string =
         match refusal with
@@ -53,17 +98,40 @@ module CapacityRefusal =
             "the filesystem is the device filesystem. Its free-file count is its inode limit less every node a real one holds, and this kernel's holds only the nodes of the devices it has drivers for; its block counts are a share of the machine's memory, which this machine does not describe."
 
 /// Why this kernel does not state a filesystem's `f_fsid`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FileSystemIdRefusal.Reason`, and ends its match with a wildcard, where
+/// `FileSystemIdRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FileSystemIdRefusal =
-    /// The descriptor names an object on one of Linux's internal
-    /// filesystems, whose `f_fsid` is a device number the kernel assigned
-    /// when it booted.
+    internal
+    /// See `FileSystemIdRefusal.Reason.PseudoFileSystemDevice`.
     | PseudoFileSystemDevice of fileSystem : PseudoFileSystem
-    /// The filesystem is an NFS mount.
+    /// See `FileSystemIdRefusal.Reason.Nfs`.
     | Nfs
 
 [<RequireQualifiedAccess>]
 module FileSystemIdRefusal =
+    /// The reasons this kernel does not state a filesystem's `f_fsid`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The descriptor names an object on one of Linux's internal
+        /// filesystems, whose `f_fsid` is a device number the kernel assigned
+        /// when it booted. Gives which internal filesystem.
+        let (|PseudoFileSystemDevice|_|) (refusal : FileSystemIdRefusal) : PseudoFileSystem option =
+            match refusal with
+            | FileSystemIdRefusal.PseudoFileSystemDevice fileSystem -> Some fileSystem
+            | _ -> None
+
+        /// The filesystem is an NFS mount.
+        let (|Nfs|_|) (refusal : FileSystemIdRefusal) : unit option =
+            match refusal with
+            | FileSystemIdRefusal.Nfs -> Some ()
+            | _ -> None
+
     /// Human-readable description.
     let describe (refusal : FileSystemIdRefusal) : string =
         match refusal with
@@ -73,13 +141,30 @@ module FileSystemIdRefusal =
 
 /// Why this kernel does not state what a filesystem's mount options and
 /// mount-point fields are.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `MountFieldsRefusal.Reason`, and ends its match with a wildcard, where
+/// `MountFieldsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type MountFieldsRefusal =
-    /// The filesystem is an NFS mount, whose options have not been measured.
+    internal
+    /// See `MountFieldsRefusal.Reason.Nfs`.
     | Nfs
 
 [<RequireQualifiedAccess>]
 module MountFieldsRefusal =
+    /// The reasons this kernel does not state a filesystem's mount options and
+    /// mount-point fields, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The filesystem is an NFS mount, whose options have not been
+        /// measured.
+        let (|Nfs|_|) (refusal : MountFieldsRefusal) : unit option =
+            match refusal with
+            | MountFieldsRefusal.Nfs -> Some ()
+
     /// Human-readable description.
     let describe (refusal : MountFieldsRefusal) : string =
         match refusal with

@@ -30,21 +30,44 @@ type GetIdsAnswer<'Id> =
     | Faulted of written : 'Id list
 
 /// Why this kernel will not answer a `setresuid(2)` or `setresgid(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SetIdsRefusal.Reason`, and ends its match with a wildcard, where
+/// `SetIdsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SetIdsRefusal =
-    /// This flavour has no such call: Darwin declares neither `setresuid` nor
-    /// `setresgid`.
+    internal
+    /// See `SetIdsRefusal.Reason.NoSuchCall`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
-    /// The call would change the effective ID of a process that writes core
-    /// dumps.
-    ///
-    /// Linux then makes the process dumpable or not according to the
-    /// `fs.suid_dumpable` sysctl, which this kernel does not model, so whether
-    /// the process still writes a core dump is unknown.
+    /// See `SetIdsRefusal.Reason.DumpabilityUnmodelled`.
     | DumpabilityUnmodelled
 
 [<RequireQualifiedAccess>]
 module SetIdsRefusal =
+    /// The reasons this kernel will not answer a `setresuid(2)` or
+    /// `setresgid(2)`, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This flavour has no such call: Darwin declares neither `setresuid`
+        /// nor `setresgid`. Gives the flavour.
+        let (|NoSuchCall|_|) (refusal : SetIdsRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | SetIdsRefusal.NoSuchCall flavour -> Some flavour
+            | _ -> None
+
+        /// The call would change the effective ID of a process that writes core
+        /// dumps.
+        ///
+        /// Linux then makes the process dumpable or not according to the
+        /// `fs.suid_dumpable` sysctl, which this kernel does not model, so
+        /// whether the process still writes a core dump is unknown.
+        let (|DumpabilityUnmodelled|_|) (refusal : SetIdsRefusal) : unit option =
+            match refusal with
+            | SetIdsRefusal.DumpabilityUnmodelled -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which IDs.
     let describe (refusal : SetIdsRefusal) : string =
@@ -55,14 +78,30 @@ module SetIdsRefusal =
             "the call changes the effective ID of a process that writes core dumps. Linux then sets the process's dumpable flag from the fs.suid_dumpable sysctl, which this kernel does not model, so whether the process would still write a core dump is unknown."
 
 /// Why this kernel will not answer a `setgroups(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SetGroupsRefusal.Reason`, and ends its match with a wildcard, where
+/// `SetGroupsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SetGroupsRefusal =
-    /// A privileged process on this flavour, whose `setgroups` has not been
-    /// measured, because measuring it needs root.
+    internal
+    /// See `SetGroupsRefusal.Reason.UnmeasuredPrivileged`.
     | UnmeasuredPrivileged of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module SetGroupsRefusal =
+    /// The reasons this kernel will not answer a `setgroups(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A privileged process on this flavour, whose `setgroups` has not been
+        /// measured, because measuring it needs root. Gives the flavour.
+        let (|UnmeasuredPrivileged|_|) (refusal : SetGroupsRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | SetGroupsRefusal.UnmeasuredPrivileged flavour -> Some flavour
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which list.
     let describe (refusal : SetGroupsRefusal) : string =
@@ -71,16 +110,40 @@ module SetGroupsRefusal =
             $"the process is privileged, and what %O{flavour}'s setgroups(2) does for a privileged process has not been measured: measuring it needs root."
 
 /// Why this kernel will not answer a `getresuid(2)` or `getresgid(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetIdsRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetIdsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetIdsRefusal =
-    /// This flavour has no such call: Darwin declares neither `getresuid` nor
-    /// `getresgid`.
+    internal
+    /// See `GetIdsRefusal.Reason.NoSuchCall`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
-    /// A buffer has no answer at the write that reaches it.
+    /// See `GetIdsRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
 
 [<RequireQualifiedAccess>]
 module GetIdsRefusal =
+    /// The reasons this kernel will not answer a `getresuid(2)` or
+    /// `getresgid(2)`, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This flavour has no such call: Darwin declares neither `getresuid`
+        /// nor `getresgid`. Gives the flavour.
+        let (|NoSuchCall|_|) (refusal : GetIdsRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | GetIdsRefusal.NoSuchCall flavour -> Some flavour
+            | _ -> None
+
+        /// A buffer has no answer at the write that reaches it. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : GetIdsRefusal) : BufferRefusal option =
+            match refusal with
+            | GetIdsRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and what the buffers were.
     let describe (refusal : GetIdsRefusal) : string =
@@ -231,7 +294,7 @@ module UnixCredentials =
     ///
     /// Refused on Darwin, which has no such call, and for a process that writes
     /// core dumps when its effective user ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
+    /// `SetIdsRefusal.Reason.DumpabilityUnmodelled`).
     let setresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserId option)
         (effective : UserId option)
@@ -280,7 +343,7 @@ module UnixCredentials =
     ///
     /// Refused on Darwin, which has no such call, and for a process that writes
     /// core dumps when its effective group ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
+    /// `SetIdsRefusal.Reason.DumpabilityUnmodelled`).
     let setresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : GroupId option)
         (effective : GroupId option)

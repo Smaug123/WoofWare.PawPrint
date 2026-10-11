@@ -464,27 +464,13 @@ WoofWare.PosixKernel.CallerPrivilege.IsUnprivileged [property]: [read-only] bool
 WoofWare.PosixKernel.CallerPrivilege.Privileged [static property]: [read-only] WoofWare.PosixKernel.CallerPrivilege
 WoofWare.PosixKernel.CallerPrivilege.Tag [property]: [read-only] int
 WoofWare.PosixKernel.CallerPrivilege.Unprivileged [static property]: [read-only] WoofWare.PosixKernel.CallerPrivilege
-WoofWare.PosixKernel.CapacityRefusal inherit obj, implements WoofWare.PosixKernel.CapacityRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CapacityRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.CapacityRefusal+Tags inherit obj
-WoofWare.PosixKernel.CapacityRefusal+Tags.Apfs [static field]: int = 0
-WoofWare.PosixKernel.CapacityRefusal+Tags.DeviceFileSystem [static field]: int = 2
-WoofWare.PosixKernel.CapacityRefusal+Tags.Nfs [static field]: int = 1
-WoofWare.PosixKernel.CapacityRefusal.Apfs [static property]: [read-only] WoofWare.PosixKernel.CapacityRefusal
-WoofWare.PosixKernel.CapacityRefusal.DeviceFileSystem [static property]: [read-only] WoofWare.PosixKernel.CapacityRefusal
+WoofWare.PosixKernel.CapacityRefusal inherit obj, implements WoofWare.PosixKernel.CapacityRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CapacityRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.CapacityRefusal.Equals [method]: (WoofWare.PosixKernel.CapacityRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.CapacityRefusal.get_Apfs [static method]: unit -> WoofWare.PosixKernel.CapacityRefusal
-WoofWare.PosixKernel.CapacityRefusal.get_DeviceFileSystem [static method]: unit -> WoofWare.PosixKernel.CapacityRefusal
-WoofWare.PosixKernel.CapacityRefusal.get_IsApfs [method]: unit -> bool
-WoofWare.PosixKernel.CapacityRefusal.get_IsDeviceFileSystem [method]: unit -> bool
-WoofWare.PosixKernel.CapacityRefusal.get_IsNfs [method]: unit -> bool
-WoofWare.PosixKernel.CapacityRefusal.get_Nfs [static method]: unit -> WoofWare.PosixKernel.CapacityRefusal
-WoofWare.PosixKernel.CapacityRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.CapacityRefusal.IsApfs [property]: [read-only] bool
-WoofWare.PosixKernel.CapacityRefusal.IsDeviceFileSystem [property]: [read-only] bool
-WoofWare.PosixKernel.CapacityRefusal.IsNfs [property]: [read-only] bool
-WoofWare.PosixKernel.CapacityRefusal.Nfs [static property]: [read-only] WoofWare.PosixKernel.CapacityRefusal
-WoofWare.PosixKernel.CapacityRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.CapacityRefusalModule inherit obj
+WoofWare.PosixKernel.CapacityRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.CapacityRefusalModule+Reason.|Apfs|_| [static method]: WoofWare.PosixKernel.CapacityRefusal -> unit option
+WoofWare.PosixKernel.CapacityRefusalModule+Reason.|DeviceFileSystem|_| [static method]: WoofWare.PosixKernel.CapacityRefusal -> unit option
+WoofWare.PosixKernel.CapacityRefusalModule+Reason.|Nfs|_| [static method]: WoofWare.PosixKernel.CapacityRefusal -> unit option
 WoofWare.PosixKernel.CapacityRefusalModule.describe [static method]: WoofWare.PosixKernel.CapacityRefusal -> string
 WoofWare.PosixKernel.CharacterDevice inherit obj, implements WoofWare.PosixKernel.CharacterDevice System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CharacterDevice System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
 WoofWare.PosixKernel.CharacterDevice+Tags inherit obj
@@ -591,40 +577,14 @@ WoofWare.PosixKernel.ClientEnd.NewSupplying [static method]: WoofWare.PosixKerne
 WoofWare.PosixKernel.ClientEnd.ReadEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
 WoofWare.PosixKernel.ClientEnd.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ClientEnd.WriteEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
-WoofWare.PosixKernel.ClockGettimeRefusal inherit obj, implements WoofWare.PosixKernel.ClockGettimeRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ClockGettimeRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
-WoofWare.PosixKernel.ClockGettimeRefusal+Coarse inherit WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal+Coarse.clockId [property]: [read-only] int
-WoofWare.PosixKernel.ClockGettimeRefusal+Coarse.get_clockId [method]: unit -> int
-WoofWare.PosixKernel.ClockGettimeRefusal+CpuTime inherit WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal+CpuTime.clockId [property]: [read-only] int
-WoofWare.PosixKernel.ClockGettimeRefusal+CpuTime.get_clockId [method]: unit -> int
-WoofWare.PosixKernel.ClockGettimeRefusal+EncodedClock inherit WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal+EncodedClock.clockId [property]: [read-only] int
-WoofWare.PosixKernel.ClockGettimeRefusal+EncodedClock.get_clockId [method]: unit -> int
-WoofWare.PosixKernel.ClockGettimeRefusal+MachineDependent inherit WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal+MachineDependent.clockId [property]: [read-only] int
-WoofWare.PosixKernel.ClockGettimeRefusal+MachineDependent.get_clockId [method]: unit -> int
-WoofWare.PosixKernel.ClockGettimeRefusal+Tags inherit obj
-WoofWare.PosixKernel.ClockGettimeRefusal+Tags.Coarse [static field]: int = 2
-WoofWare.PosixKernel.ClockGettimeRefusal+Tags.CpuTime [static field]: int = 0
-WoofWare.PosixKernel.ClockGettimeRefusal+Tags.EncodedClock [static field]: int = 1
-WoofWare.PosixKernel.ClockGettimeRefusal+Tags.MachineDependent [static field]: int = 3
+WoofWare.PosixKernel.ClockGettimeRefusal inherit obj, implements WoofWare.PosixKernel.ClockGettimeRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ClockGettimeRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ClockGettimeRefusal.Equals [method]: (WoofWare.PosixKernel.ClockGettimeRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.ClockGettimeRefusal.get_IsCoarse [method]: unit -> bool
-WoofWare.PosixKernel.ClockGettimeRefusal.get_IsCpuTime [method]: unit -> bool
-WoofWare.PosixKernel.ClockGettimeRefusal.get_IsEncodedClock [method]: unit -> bool
-WoofWare.PosixKernel.ClockGettimeRefusal.get_IsMachineDependent [method]: unit -> bool
-WoofWare.PosixKernel.ClockGettimeRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.ClockGettimeRefusal.IsCoarse [property]: [read-only] bool
-WoofWare.PosixKernel.ClockGettimeRefusal.IsCpuTime [property]: [read-only] bool
-WoofWare.PosixKernel.ClockGettimeRefusal.IsEncodedClock [property]: [read-only] bool
-WoofWare.PosixKernel.ClockGettimeRefusal.IsMachineDependent [property]: [read-only] bool
-WoofWare.PosixKernel.ClockGettimeRefusal.NewCoarse [static method]: int -> WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal.NewCpuTime [static method]: int -> WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal.NewEncodedClock [static method]: int -> WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal.NewMachineDependent [static method]: int -> WoofWare.PosixKernel.ClockGettimeRefusal
-WoofWare.PosixKernel.ClockGettimeRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ClockGettimeRefusalModule inherit obj
+WoofWare.PosixKernel.ClockGettimeRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.ClockGettimeRefusalModule+Reason.|Coarse|_| [static method]: WoofWare.PosixKernel.ClockGettimeRefusal -> int option
+WoofWare.PosixKernel.ClockGettimeRefusalModule+Reason.|CpuTime|_| [static method]: WoofWare.PosixKernel.ClockGettimeRefusal -> int option
+WoofWare.PosixKernel.ClockGettimeRefusalModule+Reason.|EncodedClock|_| [static method]: WoofWare.PosixKernel.ClockGettimeRefusal -> int option
+WoofWare.PosixKernel.ClockGettimeRefusalModule+Reason.|MachineDependent|_| [static method]: WoofWare.PosixKernel.ClockGettimeRefusal -> int option
 WoofWare.PosixKernel.ClockGettimeRefusalModule.describe [static method]: WoofWare.PosixKernel.ClockGettimeRefusal -> string
 WoofWare.PosixKernel.CloneFileProgress`2 inherit obj - union type with 2 cases
 WoofWare.PosixKernel.CloneFileProgress`2+Answered inherit WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
@@ -1684,26 +1644,12 @@ WoofWare.PosixKernel.EphemeralPortRangeRefusalModule inherit obj
 WoofWare.PosixKernel.EphemeralPortRangeRefusalModule.describe [static method]: WoofWare.PosixKernel.EphemeralPortRangeRefusal -> string
 WoofWare.PosixKernel.EpollCreateFlags inherit obj
 WoofWare.PosixKernel.EpollCreateFlags.CloseOnExec [static field]: int = 524288
-WoofWare.PosixKernel.EpollCreateRefusal inherit obj, implements WoofWare.PosixKernel.EpollCreateRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollCreateRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.EpollCreateRefusal+DescriptorLimit inherit WoofWare.PosixKernel.EpollCreateRefusal
-WoofWare.PosixKernel.EpollCreateRefusal+DescriptorLimit.get_Item [method]: unit -> WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.EpollCreateRefusal+DescriptorLimit.Item [property]: [read-only] WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.EpollCreateRefusal+Tags inherit obj
-WoofWare.PosixKernel.EpollCreateRefusal+Tags.DescriptorLimit [static field]: int = 0
-WoofWare.PosixKernel.EpollCreateRefusal+Tags.UnmodelledFlavour [static field]: int = 1
-WoofWare.PosixKernel.EpollCreateRefusal+UnmodelledFlavour inherit WoofWare.PosixKernel.EpollCreateRefusal
-WoofWare.PosixKernel.EpollCreateRefusal+UnmodelledFlavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.EpollCreateRefusal+UnmodelledFlavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
+WoofWare.PosixKernel.EpollCreateRefusal inherit obj, implements WoofWare.PosixKernel.EpollCreateRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollCreateRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.EpollCreateRefusal.Equals [method]: (WoofWare.PosixKernel.EpollCreateRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.EpollCreateRefusal.get_IsDescriptorLimit [method]: unit -> bool
-WoofWare.PosixKernel.EpollCreateRefusal.get_IsUnmodelledFlavour [method]: unit -> bool
-WoofWare.PosixKernel.EpollCreateRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.EpollCreateRefusal.IsDescriptorLimit [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCreateRefusal.IsUnmodelledFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCreateRefusal.NewDescriptorLimit [static method]: WoofWare.PosixKernel.DescriptorLimitRefusal -> WoofWare.PosixKernel.EpollCreateRefusal
-WoofWare.PosixKernel.EpollCreateRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.EpollCreateRefusal
-WoofWare.PosixKernel.EpollCreateRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.EpollCreateRefusalModule inherit obj
+WoofWare.PosixKernel.EpollCreateRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.EpollCreateRefusalModule+Reason.|DescriptorLimit|_| [static method]: WoofWare.PosixKernel.EpollCreateRefusal -> WoofWare.PosixKernel.DescriptorLimitRefusal option
+WoofWare.PosixKernel.EpollCreateRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.EpollCreateRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.EpollCreateRefusalModule.describe [static method]: WoofWare.PosixKernel.EpollCreateRefusal -> string
 WoofWare.PosixKernel.EpollCtlAnswer inherit obj, implements WoofWare.PosixKernel.EpollCtlAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollCtlAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.EpollCtlAnswer+Failed inherit WoofWare.PosixKernel.EpollCtlAnswer
@@ -1774,64 +1720,18 @@ WoofWare.PosixKernel.EpollCtlError.TargetNotPollable [static property]: [read-on
 WoofWare.PosixKernel.EpollCtlError.UnrecognisedOperation [static property]: [read-only] WoofWare.PosixKernel.EpollCtlError
 WoofWare.PosixKernel.EpollCtlErrorModule inherit obj
 WoofWare.PosixKernel.EpollCtlErrorModule.toErrno [static method]: WoofWare.PosixKernel.EpollCtlError -> WoofWare.PosixKernel.UnixError
-WoofWare.PosixKernel.EpollCtlRefusal inherit obj, implements WoofWare.PosixKernel.EpollCtlRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollCtlRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 8 cases
-WoofWare.PosixKernel.EpollCtlRefusal+NestedEpoll inherit WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal+NestedEpoll.get_targetFd [method]: unit -> int
-WoofWare.PosixKernel.EpollCtlRefusal+NestedEpoll.targetFd [property]: [read-only] int
-WoofWare.PosixKernel.EpollCtlRefusal+PipeTarget inherit WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal+PipeTarget.get_targetFd [method]: unit -> int
-WoofWare.PosixKernel.EpollCtlRefusal+PipeTarget.targetFd [property]: [read-only] int
-WoofWare.PosixKernel.EpollCtlRefusal+Tags inherit obj
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.Exclusive [static field]: int = 2
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.LevelTriggered [static field]: int = 5
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.NestedEpoll [static field]: int = 1
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.OneShot [static field]: int = 3
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.PipeTarget [static field]: int = 6
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.UnmeasuredSocketKind [static field]: int = 7
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.UnmodelledFlavour [static field]: int = 0
-WoofWare.PosixKernel.EpollCtlRefusal+Tags.WakeUp [static field]: int = 4
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind inherit WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.domain [property]: [read-only] WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.get_domain [method]: unit -> WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.get_kind [method]: unit -> WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.get_targetFd [method]: unit -> int
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.kind [property]: [read-only] WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.EpollCtlRefusal+UnmeasuredSocketKind.targetFd [property]: [read-only] int
-WoofWare.PosixKernel.EpollCtlRefusal+UnmodelledFlavour inherit WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal+UnmodelledFlavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.EpollCtlRefusal+UnmodelledFlavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
+WoofWare.PosixKernel.EpollCtlRefusal inherit obj, implements WoofWare.PosixKernel.EpollCtlRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollCtlRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.EpollCtlRefusal.Equals [method]: (WoofWare.PosixKernel.EpollCtlRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.Exclusive [static property]: [read-only] WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.get_Exclusive [static method]: unit -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsExclusive [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsLevelTriggered [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsNestedEpoll [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsOneShot [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsPipeTarget [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsUnmeasuredSocketKind [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsUnmodelledFlavour [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_IsWakeUp [method]: unit -> bool
-WoofWare.PosixKernel.EpollCtlRefusal.get_LevelTriggered [static method]: unit -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.get_OneShot [static method]: unit -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.EpollCtlRefusal.get_WakeUp [static method]: unit -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.IsExclusive [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsLevelTriggered [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsNestedEpoll [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsOneShot [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsPipeTarget [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsUnmeasuredSocketKind [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsUnmodelledFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.IsWakeUp [property]: [read-only] bool
-WoofWare.PosixKernel.EpollCtlRefusal.LevelTriggered [static property]: [read-only] WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.NewNestedEpoll [static method]: int -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.NewPipeTarget [static method]: int -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.NewUnmeasuredSocketKind [static method]: (int, WoofWare.PosixKernel.SocketDomain, WoofWare.PosixKernel.SocketKind) -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.OneShot [static property]: [read-only] WoofWare.PosixKernel.EpollCtlRefusal
-WoofWare.PosixKernel.EpollCtlRefusal.Tag [property]: [read-only] int
-WoofWare.PosixKernel.EpollCtlRefusal.WakeUp [static property]: [read-only] WoofWare.PosixKernel.EpollCtlRefusal
 WoofWare.PosixKernel.EpollCtlRefusalModule inherit obj
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|Exclusive|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> unit option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|LevelTriggered|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> unit option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|NestedEpoll|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> int option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|OneShot|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> unit option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|PipeTarget|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> int option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|UnmeasuredSocketKind|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> (int * WoofWare.PosixKernel.SocketDomain * WoofWare.PosixKernel.SocketKind) option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
+WoofWare.PosixKernel.EpollCtlRefusalModule+Reason.|WakeUp|_| [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> unit option
 WoofWare.PosixKernel.EpollCtlRefusalModule.describe [static method]: WoofWare.PosixKernel.EpollCtlRefusal -> string
 WoofWare.PosixKernel.EpollEventArgument inherit obj, implements WoofWare.PosixKernel.EpollEventArgument System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollEventArgument System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.EpollEventArgument+Readable inherit WoofWare.PosixKernel.EpollEventArgument
@@ -1910,49 +1810,15 @@ WoofWare.PosixKernel.EpollWaitOutcome.NewAnswered [static method]: (System.UInt6
 WoofWare.PosixKernel.EpollWaitOutcome.NewFailed [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.EpollWaitOutcome
 WoofWare.PosixKernel.EpollWaitOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.EpollWaitOutcome
 WoofWare.PosixKernel.EpollWaitOutcome.Tag [property]: [read-only] int
-WoofWare.PosixKernel.EpollWaitRefusal inherit obj, implements WoofWare.PosixKernel.EpollWaitRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollWaitRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 5 cases
-WoofWare.PosixKernel.EpollWaitRefusal+Buffer inherit WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+Buffer.get_Item [method]: unit -> WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+Buffer.Item [property]: [read-only] WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+DeadlineBeyondClock inherit WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+DeadlineBeyondClock.get_nanosecondsSinceBoot [method]: unit -> System.Int64
-WoofWare.PosixKernel.EpollWaitRefusal+DeadlineBeyondClock.get_timeoutMilliseconds [method]: unit -> int
-WoofWare.PosixKernel.EpollWaitRefusal+DeadlineBeyondClock.nanosecondsSinceBoot [property]: [read-only] System.Int64
-WoofWare.PosixKernel.EpollWaitRefusal+DeadlineBeyondClock.timeoutMilliseconds [property]: [read-only] int
-WoofWare.PosixKernel.EpollWaitRefusal+Interruption inherit WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+Interruption.get_Item [method]: unit -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+Interruption.Item [property]: [read-only] WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+Tags inherit obj
-WoofWare.PosixKernel.EpollWaitRefusal+Tags.Buffer [static field]: int = 1
-WoofWare.PosixKernel.EpollWaitRefusal+Tags.DeadlineBeyondClock [static field]: int = 3
-WoofWare.PosixKernel.EpollWaitRefusal+Tags.Interruption [static field]: int = 4
-WoofWare.PosixKernel.EpollWaitRefusal+Tags.UnmeasuredCopyOutFault [static field]: int = 2
-WoofWare.PosixKernel.EpollWaitRefusal+Tags.UnmodelledFlavour [static field]: int = 0
-WoofWare.PosixKernel.EpollWaitRefusal+UnmeasuredCopyOutFault inherit WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+UnmeasuredCopyOutFault.epoll [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.EpollWaitRefusal+UnmeasuredCopyOutFault.get_epoll [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.EpollWaitRefusal+UnmodelledFlavour inherit WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal+UnmodelledFlavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.EpollWaitRefusal+UnmodelledFlavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
+WoofWare.PosixKernel.EpollWaitRefusal inherit obj, implements WoofWare.PosixKernel.EpollWaitRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.EpollWaitRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.EpollWaitRefusal.Equals [method]: (WoofWare.PosixKernel.EpollWaitRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_IsBuffer [method]: unit -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_IsDeadlineBeyondClock [method]: unit -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_IsInterruption [method]: unit -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_IsUnmeasuredCopyOutFault [method]: unit -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_IsUnmodelledFlavour [method]: unit -> bool
-WoofWare.PosixKernel.EpollWaitRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.EpollWaitRefusal.IsBuffer [property]: [read-only] bool
-WoofWare.PosixKernel.EpollWaitRefusal.IsDeadlineBeyondClock [property]: [read-only] bool
-WoofWare.PosixKernel.EpollWaitRefusal.IsInterruption [property]: [read-only] bool
-WoofWare.PosixKernel.EpollWaitRefusal.IsUnmeasuredCopyOutFault [property]: [read-only] bool
-WoofWare.PosixKernel.EpollWaitRefusal.IsUnmodelledFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.EpollWaitRefusal.NewBuffer [static method]: WoofWare.PosixKernel.BufferRefusal -> WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal.NewDeadlineBeyondClock [static method]: (System.Int64, int) -> WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal.NewInterruption [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal.NewUnmeasuredCopyOutFault [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.EpollWaitRefusal
-WoofWare.PosixKernel.EpollWaitRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.EpollWaitRefusalModule inherit obj
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason.|Buffer|_| [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> WoofWare.PosixKernel.BufferRefusal option
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason.|DeadlineBeyondClock|_| [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> (System.Int64 * int) option
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason.|Interruption|_| [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> WoofWare.PosixKernel.SyscallInterruptionRefusal option
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason.|UnmeasuredCopyOutFault|_| [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> WoofWare.PosixKernel.OpenFileDescriptionId option
+WoofWare.PosixKernel.EpollWaitRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.EpollWaitRefusalModule.describe [static method]: WoofWare.PosixKernel.EpollWaitRefusal -> string
 WoofWare.PosixKernel.ExecutionRefusal inherit obj, implements WoofWare.PosixKernel.ExecutionRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ExecutionRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
 WoofWare.PosixKernel.ExecutionRefusal.bits [property]: [read-only] WoofWare.PosixKernel.PermissionBits
@@ -2556,24 +2422,12 @@ WoofWare.PosixKernel.FileSystemId.First [property]: [read-only] int
 WoofWare.PosixKernel.FileSystemId.get_First [method]: unit -> int
 WoofWare.PosixKernel.FileSystemId.get_Second [method]: unit -> int
 WoofWare.PosixKernel.FileSystemId.Second [property]: [read-only] int
-WoofWare.PosixKernel.FileSystemIdRefusal inherit obj, implements WoofWare.PosixKernel.FileSystemIdRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.FileSystemIdRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.FileSystemIdRefusal+PseudoFileSystemDevice inherit WoofWare.PosixKernel.FileSystemIdRefusal
-WoofWare.PosixKernel.FileSystemIdRefusal+PseudoFileSystemDevice.fileSystem [property]: [read-only] WoofWare.PosixKernel.PseudoFileSystem
-WoofWare.PosixKernel.FileSystemIdRefusal+PseudoFileSystemDevice.get_fileSystem [method]: unit -> WoofWare.PosixKernel.PseudoFileSystem
-WoofWare.PosixKernel.FileSystemIdRefusal+Tags inherit obj
-WoofWare.PosixKernel.FileSystemIdRefusal+Tags.Nfs [static field]: int = 1
-WoofWare.PosixKernel.FileSystemIdRefusal+Tags.PseudoFileSystemDevice [static field]: int = 0
+WoofWare.PosixKernel.FileSystemIdRefusal inherit obj, implements WoofWare.PosixKernel.FileSystemIdRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.FileSystemIdRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.FileSystemIdRefusal.Equals [method]: (WoofWare.PosixKernel.FileSystemIdRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.FileSystemIdRefusal.get_IsNfs [method]: unit -> bool
-WoofWare.PosixKernel.FileSystemIdRefusal.get_IsPseudoFileSystemDevice [method]: unit -> bool
-WoofWare.PosixKernel.FileSystemIdRefusal.get_Nfs [static method]: unit -> WoofWare.PosixKernel.FileSystemIdRefusal
-WoofWare.PosixKernel.FileSystemIdRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.FileSystemIdRefusal.IsNfs [property]: [read-only] bool
-WoofWare.PosixKernel.FileSystemIdRefusal.IsPseudoFileSystemDevice [property]: [read-only] bool
-WoofWare.PosixKernel.FileSystemIdRefusal.NewPseudoFileSystemDevice [static method]: WoofWare.PosixKernel.PseudoFileSystem -> WoofWare.PosixKernel.FileSystemIdRefusal
-WoofWare.PosixKernel.FileSystemIdRefusal.Nfs [static property]: [read-only] WoofWare.PosixKernel.FileSystemIdRefusal
-WoofWare.PosixKernel.FileSystemIdRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.FileSystemIdRefusalModule inherit obj
+WoofWare.PosixKernel.FileSystemIdRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.FileSystemIdRefusalModule+Reason.|Nfs|_| [static method]: WoofWare.PosixKernel.FileSystemIdRefusal -> unit option
+WoofWare.PosixKernel.FileSystemIdRefusalModule+Reason.|PseudoFileSystemDevice|_| [static method]: WoofWare.PosixKernel.FileSystemIdRefusal -> WoofWare.PosixKernel.PseudoFileSystem option
 WoofWare.PosixKernel.FileSystemIdRefusalModule.describe [static method]: WoofWare.PosixKernel.FileSystemIdRefusal -> string
 WoofWare.PosixKernel.FileSystemSeed inherit obj
 WoofWare.PosixKernel.FileSystemSeed.empty [static property]: [read-only] Map<WoofWare.PosixKernel.DirectoryEntryName, WoofWare.PosixKernel.SeedEntry>
@@ -2807,13 +2661,11 @@ WoofWare.PosixKernel.FStatRefusal.NewSocket [static method]: WoofWare.PosixKerne
 WoofWare.PosixKernel.FStatRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.FStatRefusalModule inherit obj
 WoofWare.PosixKernel.FStatRefusalModule.describe [static method]: WoofWare.PosixKernel.FStatRefusal -> string
-WoofWare.PosixKernel.GeometryRefusal inherit obj, implements WoofWare.PosixKernel.GeometryRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GeometryRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.GeometryRefusal inherit obj, implements WoofWare.PosixKernel.GeometryRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GeometryRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GeometryRefusal.Equals [method]: (WoofWare.PosixKernel.GeometryRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.GeometryRefusal.get_Nfs [static method]: unit -> WoofWare.PosixKernel.GeometryRefusal
-WoofWare.PosixKernel.GeometryRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.GeometryRefusal.Nfs [static property]: [read-only] WoofWare.PosixKernel.GeometryRefusal
-WoofWare.PosixKernel.GeometryRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.GeometryRefusalModule inherit obj
+WoofWare.PosixKernel.GeometryRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.GeometryRefusalModule+Reason.|Nfs|_| [static method]: WoofWare.PosixKernel.GeometryRefusal -> unit option
 WoofWare.PosixKernel.GeometryRefusalModule.describe [static method]: WoofWare.PosixKernel.GeometryRefusal -> string
 WoofWare.PosixKernel.GetCpuAnswer inherit obj, implements WoofWare.PosixKernel.GetCpuAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetCpuAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GetCpuAnswer..ctor [constructor]: (WoofWare.PosixKernel.CpuId, WoofWare.PosixKernel.NumaNode)
@@ -2822,14 +2674,11 @@ WoofWare.PosixKernel.GetCpuAnswer.Equals [method]: (WoofWare.PosixKernel.GetCpuA
 WoofWare.PosixKernel.GetCpuAnswer.get_Cpu [method]: unit -> WoofWare.PosixKernel.CpuId
 WoofWare.PosixKernel.GetCpuAnswer.get_Node [method]: unit -> WoofWare.PosixKernel.NumaNode
 WoofWare.PosixKernel.GetCpuAnswer.Node [property]: [read-only] WoofWare.PosixKernel.NumaNode
-WoofWare.PosixKernel.GetCpuRefusal inherit obj, implements WoofWare.PosixKernel.GetCpuRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetCpuRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.GetCpuRefusal inherit obj, implements WoofWare.PosixKernel.GetCpuRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetCpuRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GetCpuRefusal.Equals [method]: (WoofWare.PosixKernel.GetCpuRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.GetCpuRefusal.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetCpuRefusal.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetCpuRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.GetCpuRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.GetCpuRefusal
-WoofWare.PosixKernel.GetCpuRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.GetCpuRefusalModule inherit obj
+WoofWare.PosixKernel.GetCpuRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.GetCpuRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.GetCpuRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.GetCpuRefusalModule.describe [static method]: WoofWare.PosixKernel.GetCpuRefusal -> string
 WoofWare.PosixKernel.GetCwdAnswer inherit obj, implements WoofWare.PosixKernel.GetCwdAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetCwdAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.GetCwdAnswer+Failed inherit WoofWare.PosixKernel.GetCwdAnswer
@@ -2918,26 +2767,12 @@ WoofWare.PosixKernel.GetEntropyAnswer.IsFailed [property]: [read-only] bool
 WoofWare.PosixKernel.GetEntropyAnswer.NewCompleted [static method]: WoofWare.PosixKernel.EntropyDraw -> WoofWare.PosixKernel.GetEntropyAnswer
 WoofWare.PosixKernel.GetEntropyAnswer.NewFailed [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.GetEntropyAnswer
 WoofWare.PosixKernel.GetEntropyAnswer.Tag [property]: [read-only] int
-WoofWare.PosixKernel.GetEntropyRefusal inherit obj, implements WoofWare.PosixKernel.GetEntropyRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetEntropyRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.GetEntropyRefusal+Buffer inherit WoofWare.PosixKernel.GetEntropyRefusal
-WoofWare.PosixKernel.GetEntropyRefusal+Buffer.get_Item [method]: unit -> WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetEntropyRefusal+Buffer.Item [property]: [read-only] WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetEntropyRefusal+NoSuchSyscall inherit WoofWare.PosixKernel.GetEntropyRefusal
-WoofWare.PosixKernel.GetEntropyRefusal+NoSuchSyscall.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetEntropyRefusal+NoSuchSyscall.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetEntropyRefusal+Tags inherit obj
-WoofWare.PosixKernel.GetEntropyRefusal+Tags.Buffer [static field]: int = 0
-WoofWare.PosixKernel.GetEntropyRefusal+Tags.NoSuchSyscall [static field]: int = 1
+WoofWare.PosixKernel.GetEntropyRefusal inherit obj, implements WoofWare.PosixKernel.GetEntropyRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetEntropyRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GetEntropyRefusal.Equals [method]: (WoofWare.PosixKernel.GetEntropyRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.GetEntropyRefusal.get_IsBuffer [method]: unit -> bool
-WoofWare.PosixKernel.GetEntropyRefusal.get_IsNoSuchSyscall [method]: unit -> bool
-WoofWare.PosixKernel.GetEntropyRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.GetEntropyRefusal.IsBuffer [property]: [read-only] bool
-WoofWare.PosixKernel.GetEntropyRefusal.IsNoSuchSyscall [property]: [read-only] bool
-WoofWare.PosixKernel.GetEntropyRefusal.NewBuffer [static method]: WoofWare.PosixKernel.BufferRefusal -> WoofWare.PosixKernel.GetEntropyRefusal
-WoofWare.PosixKernel.GetEntropyRefusal.NewNoSuchSyscall [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.GetEntropyRefusal
-WoofWare.PosixKernel.GetEntropyRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.GetEntropyRefusalModule inherit obj
+WoofWare.PosixKernel.GetEntropyRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.GetEntropyRefusalModule+Reason.|Buffer|_| [static method]: WoofWare.PosixKernel.GetEntropyRefusal -> WoofWare.PosixKernel.BufferRefusal option
+WoofWare.PosixKernel.GetEntropyRefusalModule+Reason.|NoSuchSyscall|_| [static method]: WoofWare.PosixKernel.GetEntropyRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.GetEntropyRefusalModule.describe [static method]: WoofWare.PosixKernel.GetEntropyRefusal -> string
 WoofWare.PosixKernel.GetGroupsAnswer inherit obj, implements WoofWare.PosixKernel.GetGroupsAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetGroupsAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.GetGroupsAnswer+Copied inherit WoofWare.PosixKernel.GetGroupsAnswer
@@ -3009,26 +2844,12 @@ WoofWare.PosixKernel.GetIdsAnswer`1.IsFaulted [property]: [read-only] bool
 WoofWare.PosixKernel.GetIdsAnswer`1.NewCopied [static method]: ('Id, 'Id, 'Id) -> 'Id WoofWare.PosixKernel.GetIdsAnswer
 WoofWare.PosixKernel.GetIdsAnswer`1.NewFaulted [static method]: 'Id list -> 'Id WoofWare.PosixKernel.GetIdsAnswer
 WoofWare.PosixKernel.GetIdsAnswer`1.Tag [property]: [read-only] int
-WoofWare.PosixKernel.GetIdsRefusal inherit obj, implements WoofWare.PosixKernel.GetIdsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetIdsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.GetIdsRefusal+Buffer inherit WoofWare.PosixKernel.GetIdsRefusal
-WoofWare.PosixKernel.GetIdsRefusal+Buffer.get_Item [method]: unit -> WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetIdsRefusal+Buffer.Item [property]: [read-only] WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetIdsRefusal+NoSuchCall inherit WoofWare.PosixKernel.GetIdsRefusal
-WoofWare.PosixKernel.GetIdsRefusal+NoSuchCall.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetIdsRefusal+NoSuchCall.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetIdsRefusal+Tags inherit obj
-WoofWare.PosixKernel.GetIdsRefusal+Tags.Buffer [static field]: int = 1
-WoofWare.PosixKernel.GetIdsRefusal+Tags.NoSuchCall [static field]: int = 0
+WoofWare.PosixKernel.GetIdsRefusal inherit obj, implements WoofWare.PosixKernel.GetIdsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetIdsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GetIdsRefusal.Equals [method]: (WoofWare.PosixKernel.GetIdsRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.GetIdsRefusal.get_IsBuffer [method]: unit -> bool
-WoofWare.PosixKernel.GetIdsRefusal.get_IsNoSuchCall [method]: unit -> bool
-WoofWare.PosixKernel.GetIdsRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.GetIdsRefusal.IsBuffer [property]: [read-only] bool
-WoofWare.PosixKernel.GetIdsRefusal.IsNoSuchCall [property]: [read-only] bool
-WoofWare.PosixKernel.GetIdsRefusal.NewBuffer [static method]: WoofWare.PosixKernel.BufferRefusal -> WoofWare.PosixKernel.GetIdsRefusal
-WoofWare.PosixKernel.GetIdsRefusal.NewNoSuchCall [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.GetIdsRefusal
-WoofWare.PosixKernel.GetIdsRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.GetIdsRefusalModule inherit obj
+WoofWare.PosixKernel.GetIdsRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.GetIdsRefusalModule+Reason.|Buffer|_| [static method]: WoofWare.PosixKernel.GetIdsRefusal -> WoofWare.PosixKernel.BufferRefusal option
+WoofWare.PosixKernel.GetIdsRefusalModule+Reason.|NoSuchCall|_| [static method]: WoofWare.PosixKernel.GetIdsRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.GetIdsRefusalModule.describe [static method]: WoofWare.PosixKernel.GetIdsRefusal -> string
 WoofWare.PosixKernel.GetRandomAnswer inherit obj, implements WoofWare.PosixKernel.GetRandomAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetRandomAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.GetRandomAnswer+Completed inherit WoofWare.PosixKernel.GetRandomAnswer
@@ -3053,33 +2874,13 @@ WoofWare.PosixKernel.GetRandomFlags inherit obj
 WoofWare.PosixKernel.GetRandomFlags.Insecure [static field]: System.UInt32 = 4
 WoofWare.PosixKernel.GetRandomFlags.NonBlock [static field]: System.UInt32 = 1
 WoofWare.PosixKernel.GetRandomFlags.Random [static field]: System.UInt32 = 2
-WoofWare.PosixKernel.GetRandomRefusal inherit obj, implements WoofWare.PosixKernel.GetRandomRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetRandomRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.GetRandomRefusal+Buffer inherit WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal+Buffer.get_Item [method]: unit -> WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetRandomRefusal+Buffer.Item [property]: [read-only] WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.GetRandomRefusal+NoSuchSyscall inherit WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal+NoSuchSyscall.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetRandomRefusal+NoSuchSyscall.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.GetRandomRefusal+SignalAtPageBoundary inherit WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal+SignalAtPageBoundary.count [property]: [read-only] int
-WoofWare.PosixKernel.GetRandomRefusal+SignalAtPageBoundary.get_count [method]: unit -> int
-WoofWare.PosixKernel.GetRandomRefusal+Tags inherit obj
-WoofWare.PosixKernel.GetRandomRefusal+Tags.Buffer [static field]: int = 0
-WoofWare.PosixKernel.GetRandomRefusal+Tags.NoSuchSyscall [static field]: int = 1
-WoofWare.PosixKernel.GetRandomRefusal+Tags.SignalAtPageBoundary [static field]: int = 2
+WoofWare.PosixKernel.GetRandomRefusal inherit obj, implements WoofWare.PosixKernel.GetRandomRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetRandomRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.GetRandomRefusal.Equals [method]: (WoofWare.PosixKernel.GetRandomRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.GetRandomRefusal.get_IsBuffer [method]: unit -> bool
-WoofWare.PosixKernel.GetRandomRefusal.get_IsNoSuchSyscall [method]: unit -> bool
-WoofWare.PosixKernel.GetRandomRefusal.get_IsSignalAtPageBoundary [method]: unit -> bool
-WoofWare.PosixKernel.GetRandomRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.GetRandomRefusal.IsBuffer [property]: [read-only] bool
-WoofWare.PosixKernel.GetRandomRefusal.IsNoSuchSyscall [property]: [read-only] bool
-WoofWare.PosixKernel.GetRandomRefusal.IsSignalAtPageBoundary [property]: [read-only] bool
-WoofWare.PosixKernel.GetRandomRefusal.NewBuffer [static method]: WoofWare.PosixKernel.BufferRefusal -> WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal.NewNoSuchSyscall [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal.NewSignalAtPageBoundary [static method]: int -> WoofWare.PosixKernel.GetRandomRefusal
-WoofWare.PosixKernel.GetRandomRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.GetRandomRefusalModule inherit obj
+WoofWare.PosixKernel.GetRandomRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.GetRandomRefusalModule+Reason.|Buffer|_| [static method]: WoofWare.PosixKernel.GetRandomRefusal -> WoofWare.PosixKernel.BufferRefusal option
+WoofWare.PosixKernel.GetRandomRefusalModule+Reason.|NoSuchSyscall|_| [static method]: WoofWare.PosixKernel.GetRandomRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
+WoofWare.PosixKernel.GetRandomRefusalModule+Reason.|SignalAtPageBoundary|_| [static method]: WoofWare.PosixKernel.GetRandomRefusal -> int option
 WoofWare.PosixKernel.GetRandomRefusalModule.describe [static method]: WoofWare.PosixKernel.GetRandomRefusal -> string
 WoofWare.PosixKernel.GetSockNameAnswer inherit obj, implements WoofWare.PosixKernel.GetSockNameAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.GetSockNameAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.GetSockNameAnswer+Failed inherit WoofWare.PosixKernel.GetSockNameAnswer
@@ -3369,43 +3170,15 @@ WoofWare.PosixKernel.InodeTimes.get_Modification [method]: unit -> WoofWare.Posi
 WoofWare.PosixKernel.InodeTimes.get_StatusChange [method]: unit -> WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.Modification [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.StatusChange [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
-WoofWare.PosixKernel.InotifyAddWatchRefusal inherit obj, implements WoofWare.PosixKernel.InotifyAddWatchRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyAddWatchRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 5 cases
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Flavour inherit WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Flavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Flavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Path inherit WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Path.get_Item [method]: unit -> WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Path.Item [property]: [read-only] WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags inherit obj
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags.Flavour [static field]: int = 0
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags.OneShot [static field]: int = 2
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags.Path [static field]: int = 3
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags.UnmodelledEvents [static field]: int = 1
-WoofWare.PosixKernel.InotifyAddWatchRefusal+Tags.WatchDescriptorsExhausted [static field]: int = 4
-WoofWare.PosixKernel.InotifyAddWatchRefusal+UnmodelledEvents inherit WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal+UnmodelledEvents.events [property]: [read-only] WoofWare.PosixKernel.InotifyEvent list
-WoofWare.PosixKernel.InotifyAddWatchRefusal+UnmodelledEvents.get_events [method]: unit -> WoofWare.PosixKernel.InotifyEvent list
+WoofWare.PosixKernel.InotifyAddWatchRefusal inherit obj, implements WoofWare.PosixKernel.InotifyAddWatchRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyAddWatchRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.InotifyAddWatchRefusal.Equals [method]: (WoofWare.PosixKernel.InotifyAddWatchRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_IsFlavour [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_IsOneShot [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_IsPath [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_IsUnmodelledEvents [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_IsWatchDescriptorsExhausted [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_OneShot [static method]: unit -> WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.InotifyAddWatchRefusal.get_WatchDescriptorsExhausted [static method]: unit -> WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.IsFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.IsOneShot [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.IsPath [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.IsUnmodelledEvents [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.IsWatchDescriptorsExhausted [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchRefusal.NewFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.NewPath [static method]: WoofWare.PosixKernel.PathRefusal -> WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.NewUnmodelledEvents [static method]: WoofWare.PosixKernel.InotifyEvent list -> WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.OneShot [static property]: [read-only] WoofWare.PosixKernel.InotifyAddWatchRefusal
-WoofWare.PosixKernel.InotifyAddWatchRefusal.Tag [property]: [read-only] int
-WoofWare.PosixKernel.InotifyAddWatchRefusal.WatchDescriptorsExhausted [static property]: [read-only] WoofWare.PosixKernel.InotifyAddWatchRefusal
 WoofWare.PosixKernel.InotifyAddWatchRefusalModule inherit obj
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason.|Flavour|_| [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason.|OneShot|_| [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> unit option
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason.|Path|_| [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> WoofWare.PosixKernel.PathRefusal option
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason.|UnmodelledEvents|_| [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> WoofWare.PosixKernel.InotifyEvent list option
+WoofWare.PosixKernel.InotifyAddWatchRefusalModule+Reason.|WatchDescriptorsExhausted|_| [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> unit option
 WoofWare.PosixKernel.InotifyAddWatchRefusalModule.describe [static method]: WoofWare.PosixKernel.InotifyAddWatchRefusal -> string
 WoofWare.PosixKernel.InotifyEvent inherit obj, implements WoofWare.PosixKernel.InotifyEvent System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyEvent System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 13 cases
 WoofWare.PosixKernel.InotifyEvent+Tags inherit obj
@@ -3592,26 +3365,12 @@ WoofWare.PosixKernel.InotifyRecordModule inherit obj
 WoofWare.PosixKernel.InotifyRecordModule.HeaderSize [static field]: int = 16
 WoofWare.PosixKernel.InotifyRecordModule.size [static method]: WoofWare.PosixKernel.InotifyRecord -> int
 WoofWare.PosixKernel.InotifyRecordModule.toBytes [static method]: WoofWare.PosixKernel.InotifyRecord -> System.Byte System.Collections.Immutable.ImmutableArray
-WoofWare.PosixKernel.InotifyRefusal inherit obj, implements WoofWare.PosixKernel.InotifyRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.InotifyRefusal+DescriptorLimit inherit WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.InotifyRefusal+DescriptorLimit.get_Item [method]: unit -> WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.InotifyRefusal+DescriptorLimit.Item [property]: [read-only] WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.InotifyRefusal+Flavour inherit WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.InotifyRefusal+Flavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.InotifyRefusal+Flavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.InotifyRefusal+Tags inherit obj
-WoofWare.PosixKernel.InotifyRefusal+Tags.DescriptorLimit [static field]: int = 1
-WoofWare.PosixKernel.InotifyRefusal+Tags.Flavour [static field]: int = 0
+WoofWare.PosixKernel.InotifyRefusal inherit obj, implements WoofWare.PosixKernel.InotifyRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.InotifyRefusal.Equals [method]: (WoofWare.PosixKernel.InotifyRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.InotifyRefusal.get_IsDescriptorLimit [method]: unit -> bool
-WoofWare.PosixKernel.InotifyRefusal.get_IsFlavour [method]: unit -> bool
-WoofWare.PosixKernel.InotifyRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.InotifyRefusal.IsDescriptorLimit [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyRefusal.IsFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyRefusal.NewDescriptorLimit [static method]: WoofWare.PosixKernel.DescriptorLimitRefusal -> WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.InotifyRefusal.NewFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.InotifyRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.InotifyRefusalModule inherit obj
+WoofWare.PosixKernel.InotifyRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.InotifyRefusalModule+Reason.|DescriptorLimit|_| [static method]: WoofWare.PosixKernel.InotifyRefusal -> WoofWare.PosixKernel.DescriptorLimitRefusal option
+WoofWare.PosixKernel.InotifyRefusalModule+Reason.|Flavour|_| [static method]: WoofWare.PosixKernel.InotifyRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.InotifyRefusalModule.describe [static method]: WoofWare.PosixKernel.InotifyRefusal -> string
 WoofWare.PosixKernel.InotifyState inherit obj, implements WoofWare.PosixKernel.InotifyState System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyState System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.InotifyState..ctor [constructor]: (WoofWare.PosixKernel.UserId, Map<WoofWare.PosixKernel.WatchDescriptor, WoofWare.PosixKernel.InotifyWatch>, int, WoofWare.PosixKernel.InotifyQueue)
@@ -3796,113 +3555,23 @@ WoofWare.PosixKernel.KeventOutcome.NewFailed [static method]: WoofWare.PosixKern
 WoofWare.PosixKernel.KeventOutcome.NewFailedAfterEchoing [static method]: (WoofWare.PosixKernel.UnixError, WoofWare.PosixKernel.Kevent list) -> WoofWare.PosixKernel.KeventOutcome
 WoofWare.PosixKernel.KeventOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.KeventOutcome
 WoofWare.PosixKernel.KeventOutcome.Tag [property]: [read-only] int
-WoofWare.PosixKernel.KeventRefusal inherit obj, implements WoofWare.PosixKernel.KeventRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KeventRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 13 cases
-WoofWare.PosixKernel.KeventRefusal+Buffer inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+Buffer.get_Item [method]: unit -> WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.KeventRefusal+Buffer.Item [property]: [read-only] WoofWare.PosixKernel.BufferRefusal
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.get_nanoseconds [method]: unit -> System.Int64
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.get_nanosecondsSinceBoot [method]: unit -> System.Int64
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.get_seconds [method]: unit -> System.Int64
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.nanoseconds [property]: [read-only] System.Int64
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.nanosecondsSinceBoot [property]: [read-only] System.Int64
-WoofWare.PosixKernel.KeventRefusal+DeadlineBeyondClock.seconds [property]: [read-only] System.Int64
-WoofWare.PosixKernel.KeventRefusal+DrainBesideDeadline inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+DrainBesideDeadline.get_kqueue [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+DrainBesideDeadline.kqueue [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+DrainBesideEvents inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+DrainBesideEvents.get_kqueue [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+DrainBesideEvents.kqueue [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+EventsBesideDeadline inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+EventsBesideDeadline.get_kqueue [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+EventsBesideDeadline.kqueue [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+Interruption inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+Interruption.get_Item [method]: unit -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.KeventRefusal+Interruption.Item [property]: [read-only] WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.KeventRefusal+Tags inherit obj
-WoofWare.PosixKernel.KeventRefusal+Tags.Buffer [static field]: int = 6
-WoofWare.PosixKernel.KeventRefusal+Tags.DeadlineBeyondClock [static field]: int = 8
-WoofWare.PosixKernel.KeventRefusal+Tags.DrainBesideDeadline [static field]: int = 9
-WoofWare.PosixKernel.KeventRefusal+Tags.DrainBesideEvents [static field]: int = 10
-WoofWare.PosixKernel.KeventRefusal+Tags.EventsBesideDeadline [static field]: int = 11
-WoofWare.PosixKernel.KeventRefusal+Tags.Interruption [static field]: int = 12
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmeasuredCopyOutFault [static field]: int = 7
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledFilter [static field]: int = 2
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledFilterParameters [static field]: int = 3
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledFlags [static field]: int = 1
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledFlavour [static field]: int = 0
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledSocket [static field]: int = 5
-WoofWare.PosixKernel.KeventRefusal+Tags.UnmodelledTarget [static field]: int = 4
-WoofWare.PosixKernel.KeventRefusal+UnmeasuredCopyOutFault inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmeasuredCopyOutFault.get_kqueue [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+UnmeasuredCopyOutFault.kqueue [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilter inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilter.change [property]: [read-only] WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilter.get_change [method]: unit -> WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilterParameters inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilterParameters.change [property]: [read-only] WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFilterParameters.get_change [method]: unit -> WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlags inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlags.change [property]: [read-only] WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlags.get_change [method]: unit -> WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlavour inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.KeventRefusal+UnmodelledFlavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.change [property]: [read-only] WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.domain [property]: [read-only] WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.get_change [method]: unit -> WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.get_domain [method]: unit -> WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.get_kind [method]: unit -> WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.KeventRefusal+UnmodelledSocket.kind [property]: [read-only] WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.KeventRefusal+UnmodelledTarget inherit WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal+UnmodelledTarget.change [property]: [read-only] WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledTarget.get_change [method]: unit -> WoofWare.PosixKernel.Kevent
-WoofWare.PosixKernel.KeventRefusal+UnmodelledTarget.get_target [method]: unit -> WoofWare.PosixKernel.OpenFileTarget
-WoofWare.PosixKernel.KeventRefusal+UnmodelledTarget.target [property]: [read-only] WoofWare.PosixKernel.OpenFileTarget
+WoofWare.PosixKernel.KeventRefusal inherit obj, implements WoofWare.PosixKernel.KeventRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KeventRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.KeventRefusal.Equals [method]: (WoofWare.PosixKernel.KeventRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsBuffer [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsDeadlineBeyondClock [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsDrainBesideDeadline [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsDrainBesideEvents [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsEventsBesideDeadline [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsInterruption [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmeasuredCopyOutFault [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledFilter [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledFilterParameters [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledFlags [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledFlavour [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledSocket [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_IsUnmodelledTarget [method]: unit -> bool
-WoofWare.PosixKernel.KeventRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.KeventRefusal.IsBuffer [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsDeadlineBeyondClock [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsDrainBesideDeadline [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsDrainBesideEvents [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsEventsBesideDeadline [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsInterruption [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmeasuredCopyOutFault [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledFilter [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledFilterParameters [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledFlags [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledSocket [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.IsUnmodelledTarget [property]: [read-only] bool
-WoofWare.PosixKernel.KeventRefusal.NewBuffer [static method]: WoofWare.PosixKernel.BufferRefusal -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewDeadlineBeyondClock [static method]: (System.Int64, System.Int64, System.Int64) -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewDrainBesideDeadline [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewDrainBesideEvents [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewEventsBesideDeadline [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewInterruption [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmeasuredCopyOutFault [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledFilter [static method]: WoofWare.PosixKernel.Kevent -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledFilterParameters [static method]: WoofWare.PosixKernel.Kevent -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledFlags [static method]: WoofWare.PosixKernel.Kevent -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledSocket [static method]: (WoofWare.PosixKernel.Kevent, WoofWare.PosixKernel.SocketDomain, WoofWare.PosixKernel.SocketKind) -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.NewUnmodelledTarget [static method]: (WoofWare.PosixKernel.Kevent, WoofWare.PosixKernel.OpenFileTarget) -> WoofWare.PosixKernel.KeventRefusal
-WoofWare.PosixKernel.KeventRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KeventRefusalModule inherit obj
+WoofWare.PosixKernel.KeventRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|Buffer|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.BufferRefusal option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|DeadlineBeyondClock|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> (System.Int64 * System.Int64 * System.Int64) option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|DrainBesideDeadline|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.OpenFileDescriptionId option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|DrainBesideEvents|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.OpenFileDescriptionId option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|EventsBesideDeadline|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.OpenFileDescriptionId option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|Interruption|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.SyscallInterruptionRefusal option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmeasuredCopyOutFault|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.OpenFileDescriptionId option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledFilterParameters|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.Kevent option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledFilter|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.Kevent option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledFlags|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.Kevent option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledSocket|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> (WoofWare.PosixKernel.Kevent * WoofWare.PosixKernel.SocketDomain * WoofWare.PosixKernel.SocketKind) option
+WoofWare.PosixKernel.KeventRefusalModule+Reason.|UnmodelledTarget|_| [static method]: WoofWare.PosixKernel.KeventRefusal -> (WoofWare.PosixKernel.Kevent * WoofWare.PosixKernel.OpenFileTarget) option
 WoofWare.PosixKernel.KeventRefusalModule.describe [static method]: WoofWare.PosixKernel.KeventRefusal -> string
 WoofWare.PosixKernel.KeventTimeout inherit obj, implements WoofWare.PosixKernel.KeventTimeout System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KeventTimeout System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.KeventTimeout+Readable inherit WoofWare.PosixKernel.KeventTimeout
@@ -3956,38 +3625,14 @@ WoofWare.PosixKernel.KillOutcome`2.NewProcessContinues [static method]: WoofWare
 WoofWare.PosixKernel.KillOutcome`2.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.KillOutcome`2.NewProcessStopped [static method]: (WoofWare.PosixKernel.Signal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.KillOutcome`2.Tag [property]: [read-only] int
-WoofWare.PosixKernel.KillRefusal inherit obj, implements WoofWare.PosixKernel.KillRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KillRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
-WoofWare.PosixKernel.KillRefusal+OtherProcess inherit WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal+OtherProcess.get_pid [method]: unit -> int
-WoofWare.PosixKernel.KillRefusal+OtherProcess.pid [property]: [read-only] int
-WoofWare.PosixKernel.KillRefusal+ProcessGroup inherit WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal+ProcessGroup.get_pid [method]: unit -> int
-WoofWare.PosixKernel.KillRefusal+ProcessGroup.pid [property]: [read-only] int
-WoofWare.PosixKernel.KillRefusal+Receiver inherit WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal+Receiver.get_Item [method]: unit -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.KillRefusal+Receiver.Item [property]: [read-only] WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.KillRefusal+Tags inherit obj
-WoofWare.PosixKernel.KillRefusal+Tags.InitProcess [static field]: int = 2
-WoofWare.PosixKernel.KillRefusal+Tags.OtherProcess [static field]: int = 0
-WoofWare.PosixKernel.KillRefusal+Tags.ProcessGroup [static field]: int = 1
-WoofWare.PosixKernel.KillRefusal+Tags.Receiver [static field]: int = 3
+WoofWare.PosixKernel.KillRefusal inherit obj, implements WoofWare.PosixKernel.KillRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KillRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.KillRefusal.Equals [method]: (WoofWare.PosixKernel.KillRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KillRefusal.get_InitProcess [static method]: unit -> WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal.get_IsInitProcess [method]: unit -> bool
-WoofWare.PosixKernel.KillRefusal.get_IsOtherProcess [method]: unit -> bool
-WoofWare.PosixKernel.KillRefusal.get_IsProcessGroup [method]: unit -> bool
-WoofWare.PosixKernel.KillRefusal.get_IsReceiver [method]: unit -> bool
-WoofWare.PosixKernel.KillRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.KillRefusal.InitProcess [static property]: [read-only] WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal.IsInitProcess [property]: [read-only] bool
-WoofWare.PosixKernel.KillRefusal.IsOtherProcess [property]: [read-only] bool
-WoofWare.PosixKernel.KillRefusal.IsProcessGroup [property]: [read-only] bool
-WoofWare.PosixKernel.KillRefusal.IsReceiver [property]: [read-only] bool
-WoofWare.PosixKernel.KillRefusal.NewOtherProcess [static method]: int -> WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal.NewProcessGroup [static method]: int -> WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal.NewReceiver [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.KillRefusal
-WoofWare.PosixKernel.KillRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KillRefusalModule inherit obj
+WoofWare.PosixKernel.KillRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.KillRefusalModule+Reason.|InitProcess|_| [static method]: WoofWare.PosixKernel.KillRefusal -> unit option
+WoofWare.PosixKernel.KillRefusalModule+Reason.|OtherProcess|_| [static method]: WoofWare.PosixKernel.KillRefusal -> int option
+WoofWare.PosixKernel.KillRefusalModule+Reason.|ProcessGroup|_| [static method]: WoofWare.PosixKernel.KillRefusal -> int option
+WoofWare.PosixKernel.KillRefusalModule+Reason.|Receiver|_| [static method]: WoofWare.PosixKernel.KillRefusal -> WoofWare.PosixKernel.SignalReceiverRefusal option
 WoofWare.PosixKernel.KillRefusalModule.describe [static method]: WoofWare.PosixKernel.KillRefusal -> string
 WoofWare.PosixKernel.KqueueFilter inherit obj, implements WoofWare.PosixKernel.KqueueFilter System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueFilter System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.KqueueFilter+Tags inherit obj
@@ -4004,26 +3649,12 @@ WoofWare.PosixKernel.KqueueFilter.IsWrite [property]: [read-only] bool
 WoofWare.PosixKernel.KqueueFilter.Read [static property]: [read-only] WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KqueueFilter.Write [static property]: [read-only] WoofWare.PosixKernel.KqueueFilter
-WoofWare.PosixKernel.KqueueRefusal inherit obj, implements WoofWare.PosixKernel.KqueueRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.KqueueRefusal+DescriptorLimit inherit WoofWare.PosixKernel.KqueueRefusal
-WoofWare.PosixKernel.KqueueRefusal+DescriptorLimit.get_Item [method]: unit -> WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.KqueueRefusal+DescriptorLimit.Item [property]: [read-only] WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.KqueueRefusal+Tags inherit obj
-WoofWare.PosixKernel.KqueueRefusal+Tags.DescriptorLimit [static field]: int = 0
-WoofWare.PosixKernel.KqueueRefusal+Tags.UnmodelledFlavour [static field]: int = 1
-WoofWare.PosixKernel.KqueueRefusal+UnmodelledFlavour inherit WoofWare.PosixKernel.KqueueRefusal
-WoofWare.PosixKernel.KqueueRefusal+UnmodelledFlavour.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.KqueueRefusal+UnmodelledFlavour.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
+WoofWare.PosixKernel.KqueueRefusal inherit obj, implements WoofWare.PosixKernel.KqueueRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.KqueueRefusal.Equals [method]: (WoofWare.PosixKernel.KqueueRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KqueueRefusal.get_IsDescriptorLimit [method]: unit -> bool
-WoofWare.PosixKernel.KqueueRefusal.get_IsUnmodelledFlavour [method]: unit -> bool
-WoofWare.PosixKernel.KqueueRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.KqueueRefusal.IsDescriptorLimit [property]: [read-only] bool
-WoofWare.PosixKernel.KqueueRefusal.IsUnmodelledFlavour [property]: [read-only] bool
-WoofWare.PosixKernel.KqueueRefusal.NewDescriptorLimit [static method]: WoofWare.PosixKernel.DescriptorLimitRefusal -> WoofWare.PosixKernel.KqueueRefusal
-WoofWare.PosixKernel.KqueueRefusal.NewUnmodelledFlavour [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.KqueueRefusal
-WoofWare.PosixKernel.KqueueRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KqueueRefusalModule inherit obj
+WoofWare.PosixKernel.KqueueRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.KqueueRefusalModule+Reason.|DescriptorLimit|_| [static method]: WoofWare.PosixKernel.KqueueRefusal -> WoofWare.PosixKernel.DescriptorLimitRefusal option
+WoofWare.PosixKernel.KqueueRefusalModule+Reason.|UnmodelledFlavour|_| [static method]: WoofWare.PosixKernel.KqueueRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.KqueueRefusalModule.describe [static method]: WoofWare.PosixKernel.KqueueRefusal -> string
 WoofWare.PosixKernel.KqueueRegistration inherit obj, implements WoofWare.PosixKernel.KqueueRegistration System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueRegistration System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.KqueueRegistration..ctor [constructor]: (bool, bool, System.UInt64, System.Int64, WoofWare.PosixKernel.SocketId)
@@ -4653,13 +4284,11 @@ WoofWare.PosixKernel.MountedFileSystem.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.MountedFileSystem.IsDevfs [property]: [read-only] bool
 WoofWare.PosixKernel.MountedFileSystem.IsDevtmpfs [property]: [read-only] bool
 WoofWare.PosixKernel.MountedFileSystem.Tag [property]: [read-only] int
-WoofWare.PosixKernel.MountFieldsRefusal inherit obj, implements WoofWare.PosixKernel.MountFieldsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.MountFieldsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.MountFieldsRefusal inherit obj, implements WoofWare.PosixKernel.MountFieldsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.MountFieldsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.MountFieldsRefusal.Equals [method]: (WoofWare.PosixKernel.MountFieldsRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.MountFieldsRefusal.get_Nfs [static method]: unit -> WoofWare.PosixKernel.MountFieldsRefusal
-WoofWare.PosixKernel.MountFieldsRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.MountFieldsRefusal.Nfs [static property]: [read-only] WoofWare.PosixKernel.MountFieldsRefusal
-WoofWare.PosixKernel.MountFieldsRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.MountFieldsRefusalModule inherit obj
+WoofWare.PosixKernel.MountFieldsRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.MountFieldsRefusalModule+Reason.|Nfs|_| [static method]: WoofWare.PosixKernel.MountFieldsRefusal -> unit option
 WoofWare.PosixKernel.MountFieldsRefusalModule.describe [static method]: WoofWare.PosixKernel.MountFieldsRefusal -> string
 WoofWare.PosixKernel.MountRefusal inherit obj, implements WoofWare.PosixKernel.MountRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.MountRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
 WoofWare.PosixKernel.MountRefusal.Equals [method]: (WoofWare.PosixKernel.MountRefusal, System.Collections.IEqualityComparer) -> bool
@@ -5658,83 +5287,19 @@ WoofWare.PosixKernel.PollQueueId.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.PollQueueId.Item [property]: [read-only] System.Int64
 WoofWare.PosixKernel.PollQueueId.NewPollQueueId [static method]: System.Int64 -> WoofWare.PosixKernel.PollQueueId
 WoofWare.PosixKernel.PollQueueId.Tag [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal inherit obj, implements WoofWare.PosixKernel.PollRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 9 cases
-WoofWare.PosixKernel.PollRefusal+DeadlineBeyondClock inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+DeadlineBeyondClock.get_nanosecondsSinceBoot [method]: unit -> System.Int64
-WoofWare.PosixKernel.PollRefusal+DeadlineBeyondClock.get_timeoutMilliseconds [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+DeadlineBeyondClock.nanosecondsSinceBoot [property]: [read-only] System.Int64
-WoofWare.PosixKernel.PollRefusal+DeadlineBeyondClock.timeoutMilliseconds [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+Interruption inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+Interruption.get_Item [method]: unit -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.PollRefusal+Interruption.Item [property]: [read-only] WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.PollRefusal+Tags inherit obj
-WoofWare.PosixKernel.PollRefusal+Tags.DeadlineBeyondClock [static field]: int = 7
-WoofWare.PosixKernel.PollRefusal+Tags.EventsBesideDeadline [static field]: int = 6
-WoofWare.PosixKernel.PollRefusal+Tags.Interruption [static field]: int = 8
-WoofWare.PosixKernel.PollRefusal+Tags.UnmeasuredNegativeTimeout [static field]: int = 4
-WoofWare.PosixKernel.PollRefusal+Tags.UnmeasuredSocketKind [static field]: int = 2
-WoofWare.PosixKernel.PollRefusal+Tags.UnmodelledEntryCount [static field]: int = 5
-WoofWare.PosixKernel.PollRefusal+Tags.UnmodelledSocket [static field]: int = 1
-WoofWare.PosixKernel.PollRefusal+Tags.UnmodelledTarget [static field]: int = 0
-WoofWare.PosixKernel.PollRefusal+Tags.UnmodelledVnodeWait [static field]: int = 3
-WoofWare.PosixKernel.PollRefusal+UnmeasuredNegativeTimeout inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmeasuredNegativeTimeout.get_milliseconds [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+UnmeasuredNegativeTimeout.milliseconds [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.domain [property]: [read-only] WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.fd [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.get_domain [method]: unit -> WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.get_fd [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.get_kind [method]: unit -> WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.PollRefusal+UnmeasuredSocketKind.kind [property]: [read-only] WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.PollRefusal+UnmodelledEntryCount inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmodelledEntryCount.count [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmodelledEntryCount.get_count [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.domain [property]: [read-only] WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.fd [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.get_domain [method]: unit -> WoofWare.PosixKernel.SocketDomain
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.get_fd [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.get_kind [method]: unit -> WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.PollRefusal+UnmodelledSocket.kind [property]: [read-only] WoofWare.PosixKernel.SocketKind
-WoofWare.PosixKernel.PollRefusal+UnmodelledTarget inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmodelledTarget.fd [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmodelledTarget.get_fd [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal+UnmodelledVnodeWait inherit WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal+UnmodelledVnodeWait.fd [property]: [read-only] int
-WoofWare.PosixKernel.PollRefusal+UnmodelledVnodeWait.get_fd [method]: unit -> int
+WoofWare.PosixKernel.PollRefusal inherit obj, implements WoofWare.PosixKernel.PollRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.PollRefusal.Equals [method]: (WoofWare.PosixKernel.PollRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.PollRefusal.EventsBesideDeadline [static property]: [read-only] WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.get_EventsBesideDeadline [static method]: unit -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.get_IsDeadlineBeyondClock [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsEventsBesideDeadline [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsInterruption [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmeasuredNegativeTimeout [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmeasuredSocketKind [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmodelledEntryCount [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmodelledSocket [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmodelledTarget [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_IsUnmodelledVnodeWait [method]: unit -> bool
-WoofWare.PosixKernel.PollRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.PollRefusal.IsDeadlineBeyondClock [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsEventsBesideDeadline [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsInterruption [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmeasuredNegativeTimeout [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmeasuredSocketKind [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmodelledEntryCount [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmodelledSocket [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmodelledTarget [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.IsUnmodelledVnodeWait [property]: [read-only] bool
-WoofWare.PosixKernel.PollRefusal.NewDeadlineBeyondClock [static method]: (System.Int64, int) -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewInterruption [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmeasuredNegativeTimeout [static method]: int -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmeasuredSocketKind [static method]: (int, WoofWare.PosixKernel.SocketDomain, WoofWare.PosixKernel.SocketKind) -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmodelledEntryCount [static method]: int -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmodelledSocket [static method]: (int, WoofWare.PosixKernel.SocketDomain, WoofWare.PosixKernel.SocketKind) -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmodelledTarget [static method]: int -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.NewUnmodelledVnodeWait [static method]: int -> WoofWare.PosixKernel.PollRefusal
-WoofWare.PosixKernel.PollRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.PollRefusalModule inherit obj
+WoofWare.PosixKernel.PollRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.PollRefusalModule+Reason.|DeadlineBeyondClock|_| [static method]: WoofWare.PosixKernel.PollRefusal -> (System.Int64 * int) option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|EventsBesideDeadline|_| [static method]: WoofWare.PosixKernel.PollRefusal -> unit option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|Interruption|_| [static method]: WoofWare.PosixKernel.PollRefusal -> WoofWare.PosixKernel.SyscallInterruptionRefusal option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmeasuredNegativeTimeout|_| [static method]: WoofWare.PosixKernel.PollRefusal -> int option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmeasuredSocketKind|_| [static method]: WoofWare.PosixKernel.PollRefusal -> (int * WoofWare.PosixKernel.SocketDomain * WoofWare.PosixKernel.SocketKind) option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmodelledEntryCount|_| [static method]: WoofWare.PosixKernel.PollRefusal -> int option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmodelledSocket|_| [static method]: WoofWare.PosixKernel.PollRefusal -> (int * WoofWare.PosixKernel.SocketDomain * WoofWare.PosixKernel.SocketKind) option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmodelledTarget|_| [static method]: WoofWare.PosixKernel.PollRefusal -> int option
+WoofWare.PosixKernel.PollRefusalModule+Reason.|UnmodelledVnodeWait|_| [static method]: WoofWare.PosixKernel.PollRefusal -> int option
 WoofWare.PosixKernel.PollRefusalModule.describe [static method]: WoofWare.PosixKernel.PollRefusal -> string
 WoofWare.PosixKernel.PollRegistration inherit obj, implements WoofWare.PosixKernel.PollRegistration System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollRegistration System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.PollRegistration..ctor [constructor]: (int, bool, int, WoofWare.PosixKernel.SocketId option)
@@ -5806,45 +5371,20 @@ WoofWare.PosixKernel.PrivilegedModeChange.IsUnmeasured [property]: [read-only] b
 WoofWare.PosixKernel.PrivilegedModeChange.SetsRequestedBits [static property]: [read-only] WoofWare.PosixKernel.PrivilegedModeChange
 WoofWare.PosixKernel.PrivilegedModeChange.Tag [property]: [read-only] int
 WoofWare.PosixKernel.PrivilegedModeChange.Unmeasured [static property]: [read-only] WoofWare.PosixKernel.PrivilegedModeChange
-WoofWare.PosixKernel.ProcessCreationRefusal inherit obj, implements WoofWare.PosixKernel.ProcessCreationRefusal System.IEquatable, System.Collections.IStructuralEquatable - union type with 4 cases
-WoofWare.PosixKernel.ProcessCreationRefusal+DarwinPidMaxReached inherit WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal+DarwinPidMaxReached.get_pidMax [method]: unit -> int
-WoofWare.PosixKernel.ProcessCreationRefusal+DarwinPidMaxReached.pidMax [property]: [read-only] int
-WoofWare.PosixKernel.ProcessCreationRefusal+Launch inherit WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal+Launch.get_Item [method]: unit -> WoofWare.PosixKernel.LaunchRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal+Launch.Item [property]: [read-only] WoofWare.PosixKernel.LaunchRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal+Tags inherit obj
-WoofWare.PosixKernel.ProcessCreationRefusal+Tags.DarwinPidMaxReached [static field]: int = 2
-WoofWare.PosixKernel.ProcessCreationRefusal+Tags.DarwinThreadIdCounterExhausted [static field]: int = 3
-WoofWare.PosixKernel.ProcessCreationRefusal+Tags.Launch [static field]: int = 0
-WoofWare.PosixKernel.ProcessCreationRefusal+Tags.NoFreeProcessId [static field]: int = 1
-WoofWare.PosixKernel.ProcessCreationRefusal.DarwinThreadIdCounterExhausted [static property]: [read-only] WoofWare.PosixKernel.ProcessCreationRefusal
+WoofWare.PosixKernel.ProcessCreationRefusal inherit obj, implements WoofWare.PosixKernel.ProcessCreationRefusal System.IEquatable, System.Collections.IStructuralEquatable
 WoofWare.PosixKernel.ProcessCreationRefusal.Equals [method]: (WoofWare.PosixKernel.ProcessCreationRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.ProcessCreationRefusal.get_DarwinThreadIdCounterExhausted [static method]: unit -> WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal.get_IsDarwinPidMaxReached [method]: unit -> bool
-WoofWare.PosixKernel.ProcessCreationRefusal.get_IsDarwinThreadIdCounterExhausted [method]: unit -> bool
-WoofWare.PosixKernel.ProcessCreationRefusal.get_IsLaunch [method]: unit -> bool
-WoofWare.PosixKernel.ProcessCreationRefusal.get_IsNoFreeProcessId [method]: unit -> bool
-WoofWare.PosixKernel.ProcessCreationRefusal.get_NoFreeProcessId [static method]: unit -> WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.ProcessCreationRefusal.IsDarwinPidMaxReached [property]: [read-only] bool
-WoofWare.PosixKernel.ProcessCreationRefusal.IsDarwinThreadIdCounterExhausted [property]: [read-only] bool
-WoofWare.PosixKernel.ProcessCreationRefusal.IsLaunch [property]: [read-only] bool
-WoofWare.PosixKernel.ProcessCreationRefusal.IsNoFreeProcessId [property]: [read-only] bool
-WoofWare.PosixKernel.ProcessCreationRefusal.NewDarwinPidMaxReached [static method]: int -> WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal.NewLaunch [static method]: WoofWare.PosixKernel.LaunchRefusal -> WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal.NoFreeProcessId [static property]: [read-only] WoofWare.PosixKernel.ProcessCreationRefusal
-WoofWare.PosixKernel.ProcessCreationRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ProcessCreationRefusalModule inherit obj
+WoofWare.PosixKernel.ProcessCreationRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.ProcessCreationRefusalModule+Reason.|DarwinPidMaxReached|_| [static method]: WoofWare.PosixKernel.ProcessCreationRefusal -> int option
+WoofWare.PosixKernel.ProcessCreationRefusalModule+Reason.|DarwinThreadIdCounterExhausted|_| [static method]: WoofWare.PosixKernel.ProcessCreationRefusal -> unit option
+WoofWare.PosixKernel.ProcessCreationRefusalModule+Reason.|Launch|_| [static method]: WoofWare.PosixKernel.ProcessCreationRefusal -> WoofWare.PosixKernel.LaunchRefusal option
+WoofWare.PosixKernel.ProcessCreationRefusalModule+Reason.|NoFreeProcessId|_| [static method]: WoofWare.PosixKernel.ProcessCreationRefusal -> unit option
 WoofWare.PosixKernel.ProcessCreationRefusalModule.describe [static method]: WoofWare.PosixKernel.ProcessCreationRefusal -> string
-WoofWare.PosixKernel.ProcessEndRefusal inherit obj, implements WoofWare.PosixKernel.ProcessEndRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ProcessEndRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.ProcessEndRefusal inherit obj, implements WoofWare.PosixKernel.ProcessEndRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ProcessEndRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ProcessEndRefusal.Equals [method]: (WoofWare.PosixKernel.ProcessEndRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.ProcessEndRefusal.get_Item [method]: unit -> WoofWare.PosixKernel.DescriptionReleaseRefusal
-WoofWare.PosixKernel.ProcessEndRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.ProcessEndRefusal.Item [property]: [read-only] WoofWare.PosixKernel.DescriptionReleaseRefusal
-WoofWare.PosixKernel.ProcessEndRefusal.NewRelease [static method]: WoofWare.PosixKernel.DescriptionReleaseRefusal -> WoofWare.PosixKernel.ProcessEndRefusal
-WoofWare.PosixKernel.ProcessEndRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ProcessEndRefusalModule inherit obj
+WoofWare.PosixKernel.ProcessEndRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.ProcessEndRefusalModule+Reason.|Release|_| [static method]: WoofWare.PosixKernel.ProcessEndRefusal -> WoofWare.PosixKernel.DescriptionReleaseRefusal option
 WoofWare.PosixKernel.ProcessEndRefusalModule.describe [static method]: WoofWare.PosixKernel.ProcessEndRefusal -> string
 WoofWare.PosixKernel.ProcessId inherit System.ValueType, implements WoofWare.PosixKernel.ProcessId System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ProcessId System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ProcessId.Equals [method]: (WoofWare.PosixKernel.ProcessId, System.Collections.IEqualityComparer) -> bool
@@ -6749,14 +6289,11 @@ WoofWare.PosixKernel.SetGroupIdOnWrite.IsStripWhenGroupExecutableOrWriterOutside
 WoofWare.PosixKernel.SetGroupIdOnWrite.StripAlways [static property]: [read-only] WoofWare.PosixKernel.SetGroupIdOnWrite
 WoofWare.PosixKernel.SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup [static property]: [read-only] WoofWare.PosixKernel.SetGroupIdOnWrite
 WoofWare.PosixKernel.SetGroupIdOnWrite.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SetGroupsRefusal inherit obj, implements WoofWare.PosixKernel.SetGroupsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetGroupsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.SetGroupsRefusal inherit obj, implements WoofWare.PosixKernel.SetGroupsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetGroupsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SetGroupsRefusal.Equals [method]: (WoofWare.PosixKernel.SetGroupsRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SetGroupsRefusal.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SetGroupsRefusal.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SetGroupsRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SetGroupsRefusal.NewUnmeasuredPrivileged [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.SetGroupsRefusal
-WoofWare.PosixKernel.SetGroupsRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SetGroupsRefusalModule inherit obj
+WoofWare.PosixKernel.SetGroupsRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.SetGroupsRefusalModule+Reason.|UnmeasuredPrivileged|_| [static method]: WoofWare.PosixKernel.SetGroupsRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.SetGroupsRefusalModule.describe [static method]: WoofWare.PosixKernel.SetGroupsRefusal -> string
 WoofWare.PosixKernel.SetIdBitsOnTruncation inherit obj, implements WoofWare.PosixKernel.SetIdBitsOnTruncation System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetIdBitsOnTruncation System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SetIdBitsOnTruncation+Tags inherit obj
@@ -6798,24 +6335,12 @@ WoofWare.PosixKernel.SetIdChangeRefusal.NewUnmeasuredDarwinWrite [static method]
 WoofWare.PosixKernel.SetIdChangeRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SetIdChangeRefusalModule inherit obj
 WoofWare.PosixKernel.SetIdChangeRefusalModule.describe [static method]: WoofWare.PosixKernel.SetIdChangeRefusal -> string
-WoofWare.PosixKernel.SetIdsRefusal inherit obj, implements WoofWare.PosixKernel.SetIdsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetIdsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.SetIdsRefusal+NoSuchCall inherit WoofWare.PosixKernel.SetIdsRefusal
-WoofWare.PosixKernel.SetIdsRefusal+NoSuchCall.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SetIdsRefusal+NoSuchCall.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SetIdsRefusal+Tags inherit obj
-WoofWare.PosixKernel.SetIdsRefusal+Tags.DumpabilityUnmodelled [static field]: int = 1
-WoofWare.PosixKernel.SetIdsRefusal+Tags.NoSuchCall [static field]: int = 0
-WoofWare.PosixKernel.SetIdsRefusal.DumpabilityUnmodelled [static property]: [read-only] WoofWare.PosixKernel.SetIdsRefusal
+WoofWare.PosixKernel.SetIdsRefusal inherit obj, implements WoofWare.PosixKernel.SetIdsRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetIdsRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SetIdsRefusal.Equals [method]: (WoofWare.PosixKernel.SetIdsRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SetIdsRefusal.get_DumpabilityUnmodelled [static method]: unit -> WoofWare.PosixKernel.SetIdsRefusal
-WoofWare.PosixKernel.SetIdsRefusal.get_IsDumpabilityUnmodelled [method]: unit -> bool
-WoofWare.PosixKernel.SetIdsRefusal.get_IsNoSuchCall [method]: unit -> bool
-WoofWare.PosixKernel.SetIdsRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SetIdsRefusal.IsDumpabilityUnmodelled [property]: [read-only] bool
-WoofWare.PosixKernel.SetIdsRefusal.IsNoSuchCall [property]: [read-only] bool
-WoofWare.PosixKernel.SetIdsRefusal.NewNoSuchCall [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.SetIdsRefusal
-WoofWare.PosixKernel.SetIdsRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SetIdsRefusalModule inherit obj
+WoofWare.PosixKernel.SetIdsRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.SetIdsRefusalModule+Reason.|DumpabilityUnmodelled|_| [static method]: WoofWare.PosixKernel.SetIdsRefusal -> unit option
+WoofWare.PosixKernel.SetIdsRefusalModule+Reason.|NoSuchCall|_| [static method]: WoofWare.PosixKernel.SetIdsRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.SetIdsRefusalModule.describe [static method]: WoofWare.PosixKernel.SetIdsRefusal -> string
 WoofWare.PosixKernel.SetNonBlockingAnswer inherit obj, implements WoofWare.PosixKernel.SetNonBlockingAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SetNonBlockingAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SetNonBlockingAnswer+Failed inherit WoofWare.PosixKernel.SetNonBlockingAnswer
@@ -7211,33 +6736,13 @@ WoofWare.PosixKernel.SignalNumbering.IsDarwin [property]: [read-only] bool
 WoofWare.PosixKernel.SignalNumbering.IsLinux [property]: [read-only] bool
 WoofWare.PosixKernel.SignalNumbering.Linux [static property]: [read-only] WoofWare.PosixKernel.SignalNumbering
 WoofWare.PosixKernel.SignalNumbering.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SignalReceiverRefusal inherit obj, implements WoofWare.PosixKernel.SignalReceiverRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SignalReceiverRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.SignalReceiverRefusal+DefaultBehindHandlers inherit WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal+DefaultBehindHandlers.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+DefaultBehindHandlers.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+LeaderBlocks inherit WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal+LeaderBlocks.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+LeaderBlocks.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+PendingForProcessAndLeader inherit WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal+PendingForProcessAndLeader.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+PendingForProcessAndLeader.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SignalReceiverRefusal+Tags inherit obj
-WoofWare.PosixKernel.SignalReceiverRefusal+Tags.DefaultBehindHandlers [static field]: int = 1
-WoofWare.PosixKernel.SignalReceiverRefusal+Tags.LeaderBlocks [static field]: int = 0
-WoofWare.PosixKernel.SignalReceiverRefusal+Tags.PendingForProcessAndLeader [static field]: int = 2
+WoofWare.PosixKernel.SignalReceiverRefusal inherit obj, implements WoofWare.PosixKernel.SignalReceiverRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SignalReceiverRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SignalReceiverRefusal.Equals [method]: (WoofWare.PosixKernel.SignalReceiverRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SignalReceiverRefusal.get_IsDefaultBehindHandlers [method]: unit -> bool
-WoofWare.PosixKernel.SignalReceiverRefusal.get_IsLeaderBlocks [method]: unit -> bool
-WoofWare.PosixKernel.SignalReceiverRefusal.get_IsPendingForProcessAndLeader [method]: unit -> bool
-WoofWare.PosixKernel.SignalReceiverRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SignalReceiverRefusal.IsDefaultBehindHandlers [property]: [read-only] bool
-WoofWare.PosixKernel.SignalReceiverRefusal.IsLeaderBlocks [property]: [read-only] bool
-WoofWare.PosixKernel.SignalReceiverRefusal.IsPendingForProcessAndLeader [property]: [read-only] bool
-WoofWare.PosixKernel.SignalReceiverRefusal.NewDefaultBehindHandlers [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal.NewLeaderBlocks [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal.NewPendingForProcessAndLeader [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SignalReceiverRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SignalReceiverRefusalModule inherit obj
+WoofWare.PosixKernel.SignalReceiverRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.SignalReceiverRefusalModule+Reason.|DefaultBehindHandlers|_| [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.Signal option
+WoofWare.PosixKernel.SignalReceiverRefusalModule+Reason.|LeaderBlocks|_| [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.Signal option
+WoofWare.PosixKernel.SignalReceiverRefusalModule+Reason.|PendingForProcessAndLeader|_| [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.Signal option
 WoofWare.PosixKernel.SignalReceiverRefusalModule.describe [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> string
 WoofWare.PosixKernel.SignalRestartRule inherit obj, implements WoofWare.PosixKernel.SignalRestartRule System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SignalRestartRule System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SignalRestartRule+Tags inherit obj
@@ -7268,16 +6773,11 @@ WoofWare.PosixKernel.SignalState.tasksWithMasksToRestore [static method]: WoofWa
 WoofWare.PosixKernel.SignalState`2 inherit obj, implements WoofWare.PosixKernel.SignalState<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SignalState<'Task, 'Handler> System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SignalState`2.Equals [method]: (WoofWare.PosixKernel.SignalState<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.SigprocmaskRefusal inherit obj
+WoofWare.PosixKernel.SigprocmaskRefusal+Reason inherit obj
+WoofWare.PosixKernel.SigprocmaskRefusal+Reason.|DarwinUnblockedForAnotherTask|_| [static method]: 'Task WoofWare.PosixKernel.SigprocmaskRefusal -> ('Task * WoofWare.PosixKernel.Signal) option
 WoofWare.PosixKernel.SigprocmaskRefusal.describe [static method]: 'Task WoofWare.PosixKernel.SigprocmaskRefusal -> string
-WoofWare.PosixKernel.SigprocmaskRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SigprocmaskRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SigprocmaskRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.SigprocmaskRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SigprocmaskRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SigprocmaskRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SigprocmaskRefusal`1.Equals [method]: ('Task WoofWare.PosixKernel.SigprocmaskRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SigprocmaskRefusal`1.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SigprocmaskRefusal`1.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SigprocmaskRefusal`1.get_task [method]: unit -> 'Task
-WoofWare.PosixKernel.SigprocmaskRefusal`1.NewDarwinUnblockedForAnotherTask [static method]: ('Task, WoofWare.PosixKernel.Signal) -> 'Task WoofWare.PosixKernel.SigprocmaskRefusal
-WoofWare.PosixKernel.SigprocmaskRefusal`1.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SigprocmaskRefusal`1.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SigprocmaskRefusal`1.task [property]: [read-only] 'Task
 WoofWare.PosixKernel.SigsuspendOutcome inherit obj, implements WoofWare.PosixKernel.SigsuspendOutcome System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SigsuspendOutcome System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SigsuspendOutcome+Failed inherit WoofWare.PosixKernel.SigsuspendOutcome
 WoofWare.PosixKernel.SigsuspendOutcome+Failed.error [property]: [read-only] WoofWare.PosixKernel.UnixError
@@ -7297,31 +6797,13 @@ WoofWare.PosixKernel.SigsuspendOutcome.IsWouldBlock [property]: [read-only] bool
 WoofWare.PosixKernel.SigsuspendOutcome.NewFailed [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.SigsuspendOutcome
 WoofWare.PosixKernel.SigsuspendOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.SigsuspendOutcome
 WoofWare.PosixKernel.SigsuspendOutcome.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SigsuspendRefusal inherit obj, implements WoofWare.PosixKernel.SigsuspendRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SigsuspendRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.SigsuspendRefusal+DefaultStop inherit WoofWare.PosixKernel.SigsuspendRefusal
-WoofWare.PosixKernel.SigsuspendRefusal+DefaultStop.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SigsuspendRefusal+DefaultStop.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SigsuspendRefusal+Receiver inherit WoofWare.PosixKernel.SigsuspendRefusal
-WoofWare.PosixKernel.SigsuspendRefusal+Receiver.get_Item [method]: unit -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SigsuspendRefusal+Receiver.Item [property]: [read-only] WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SigsuspendRefusal+Tags inherit obj
-WoofWare.PosixKernel.SigsuspendRefusal+Tags.DarwinPendingContinue [static field]: int = 2
-WoofWare.PosixKernel.SigsuspendRefusal+Tags.DefaultStop [static field]: int = 1
-WoofWare.PosixKernel.SigsuspendRefusal+Tags.Receiver [static field]: int = 0
-WoofWare.PosixKernel.SigsuspendRefusal.DarwinPendingContinue [static property]: [read-only] WoofWare.PosixKernel.SigsuspendRefusal
+WoofWare.PosixKernel.SigsuspendRefusal inherit obj, implements WoofWare.PosixKernel.SigsuspendRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SigsuspendRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SigsuspendRefusal.Equals [method]: (WoofWare.PosixKernel.SigsuspendRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SigsuspendRefusal.get_DarwinPendingContinue [static method]: unit -> WoofWare.PosixKernel.SigsuspendRefusal
-WoofWare.PosixKernel.SigsuspendRefusal.get_IsDarwinPendingContinue [method]: unit -> bool
-WoofWare.PosixKernel.SigsuspendRefusal.get_IsDefaultStop [method]: unit -> bool
-WoofWare.PosixKernel.SigsuspendRefusal.get_IsReceiver [method]: unit -> bool
-WoofWare.PosixKernel.SigsuspendRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SigsuspendRefusal.IsDarwinPendingContinue [property]: [read-only] bool
-WoofWare.PosixKernel.SigsuspendRefusal.IsDefaultStop [property]: [read-only] bool
-WoofWare.PosixKernel.SigsuspendRefusal.IsReceiver [property]: [read-only] bool
-WoofWare.PosixKernel.SigsuspendRefusal.NewDefaultStop [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.SigsuspendRefusal
-WoofWare.PosixKernel.SigsuspendRefusal.NewReceiver [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.SigsuspendRefusal
-WoofWare.PosixKernel.SigsuspendRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SigsuspendRefusalModule inherit obj
+WoofWare.PosixKernel.SigsuspendRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.SigsuspendRefusalModule+Reason.|DarwinPendingContinue|_| [static method]: WoofWare.PosixKernel.SigsuspendRefusal -> unit option
+WoofWare.PosixKernel.SigsuspendRefusalModule+Reason.|DefaultStop|_| [static method]: WoofWare.PosixKernel.SigsuspendRefusal -> WoofWare.PosixKernel.Signal option
+WoofWare.PosixKernel.SigsuspendRefusalModule+Reason.|Receiver|_| [static method]: WoofWare.PosixKernel.SigsuspendRefusal -> WoofWare.PosixKernel.SignalReceiverRefusal option
 WoofWare.PosixKernel.SigsuspendRefusalModule.describe [static method]: WoofWare.PosixKernel.SigsuspendRefusal -> string
 WoofWare.PosixKernel.SimulatedMachine inherit obj
 WoofWare.PosixKernel.SimulatedMachine.checkInvariants [static method]: WoofWare.PosixKernel.SimulatedMachine<'Task, 'Handler> -> 'Task WoofWare.PosixKernel.SimulatedMachineDefect list
@@ -8083,13 +7565,11 @@ WoofWare.PosixKernel.SpawnAnswer.NewFailed [static method]: WoofWare.PosixKernel
 WoofWare.PosixKernel.SpawnAnswer.NewSpawned [static method]: WoofWare.PosixKernel.OsThreadId -> WoofWare.PosixKernel.SpawnAnswer
 WoofWare.PosixKernel.SpawnAnswer.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SpawnRefusal inherit obj
+WoofWare.PosixKernel.SpawnRefusal+Reason inherit obj
+WoofWare.PosixKernel.SpawnRefusal+Reason.|ThreadIdCounterExhausted|_| [static method]: 'Task WoofWare.PosixKernel.SpawnRefusal -> unit option
 WoofWare.PosixKernel.SpawnRefusal.describe [static method]: 'Task WoofWare.PosixKernel.SpawnRefusal -> string
-WoofWare.PosixKernel.SpawnRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SpawnRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SpawnRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.SpawnRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SpawnRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SpawnRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SpawnRefusal`1.Equals [method]: ('Task WoofWare.PosixKernel.SpawnRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SpawnRefusal`1.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SpawnRefusal`1.get_ThreadIdCounterExhausted [static method]: unit -> 'Task WoofWare.PosixKernel.SpawnRefusal
-WoofWare.PosixKernel.SpawnRefusal`1.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SpawnRefusal`1.ThreadIdCounterExhausted [static property]: [read-only] 'Task WoofWare.PosixKernel.SpawnRefusal
 WoofWare.PosixKernel.SpliceLengthRecheck inherit System.ValueType, implements WoofWare.PosixKernel.SpliceLengthRecheck System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SpliceLengthRecheck System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SpliceLengthRecheck+Tags inherit obj
 WoofWare.PosixKernel.SpliceLengthRecheck+Tags.NoRecheck [static field]: int = 1
@@ -8627,42 +8107,14 @@ WoofWare.PosixKernel.SyscallAnswer.NewFailed [static method]: WoofWare.PosixKern
 WoofWare.PosixKernel.SyscallAnswer.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SyscallInterruptionModule inherit obj
 WoofWare.PosixKernel.SyscallInterruptionModule.ruleOf [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.ParkedSyscall -> WoofWare.PosixKernel.SignalRestartRule
-WoofWare.PosixKernel.SyscallInterruptionRefusal inherit obj, implements WoofWare.PosixKernel.SyscallInterruptionRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SyscallInterruptionRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
-WoofWare.PosixKernel.SyscallInterruptionRefusal+DefaultAction inherit WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+DefaultAction.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+DefaultAction.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+MixedRestartFlags inherit WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+MixedRestartFlags.failing [property]: [read-only] WoofWare.PosixKernel.Signal list
-WoofWare.PosixKernel.SyscallInterruptionRefusal+MixedRestartFlags.get_failing [method]: unit -> WoofWare.PosixKernel.Signal list
-WoofWare.PosixKernel.SyscallInterruptionRefusal+MixedRestartFlags.get_restarting [method]: unit -> WoofWare.PosixKernel.Signal list
-WoofWare.PosixKernel.SyscallInterruptionRefusal+MixedRestartFlags.restarting [property]: [read-only] WoofWare.PosixKernel.Signal list
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Receiver inherit WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Receiver.get_Item [method]: unit -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Receiver.Item [property]: [read-only] WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+SignalBesideCompletion inherit WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal+SignalBesideCompletion.flavour [property]: [read-only] WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SyscallInterruptionRefusal+SignalBesideCompletion.get_flavour [method]: unit -> WoofWare.PosixKernel.SimulatedUnixFlavour
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Tags inherit obj
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Tags.DefaultAction [static field]: int = 1
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Tags.MixedRestartFlags [static field]: int = 2
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Tags.Receiver [static field]: int = 0
-WoofWare.PosixKernel.SyscallInterruptionRefusal+Tags.SignalBesideCompletion [static field]: int = 3
+WoofWare.PosixKernel.SyscallInterruptionRefusal inherit obj, implements WoofWare.PosixKernel.SyscallInterruptionRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SyscallInterruptionRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SyscallInterruptionRefusal.Equals [method]: (WoofWare.PosixKernel.SyscallInterruptionRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.get_IsDefaultAction [method]: unit -> bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.get_IsMixedRestartFlags [method]: unit -> bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.get_IsReceiver [method]: unit -> bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.get_IsSignalBesideCompletion [method]: unit -> bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SyscallInterruptionRefusal.IsDefaultAction [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.IsMixedRestartFlags [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.IsReceiver [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.IsSignalBesideCompletion [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallInterruptionRefusal.NewDefaultAction [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal.NewMixedRestartFlags [static method]: (WoofWare.PosixKernel.Signal list, WoofWare.PosixKernel.Signal list) -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal.NewReceiver [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal.NewSignalBesideCompletion [static method]: WoofWare.PosixKernel.SimulatedUnixFlavour -> WoofWare.PosixKernel.SyscallInterruptionRefusal
-WoofWare.PosixKernel.SyscallInterruptionRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SyscallInterruptionRefusalModule inherit obj
+WoofWare.PosixKernel.SyscallInterruptionRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.SyscallInterruptionRefusalModule+Reason.|DefaultAction|_| [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.Signal option
+WoofWare.PosixKernel.SyscallInterruptionRefusalModule+Reason.|MixedRestartFlags|_| [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> (WoofWare.PosixKernel.Signal list * WoofWare.PosixKernel.Signal list) option
+WoofWare.PosixKernel.SyscallInterruptionRefusalModule+Reason.|Receiver|_| [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.SignalReceiverRefusal option
+WoofWare.PosixKernel.SyscallInterruptionRefusalModule+Reason.|SignalBesideCompletion|_| [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> WoofWare.PosixKernel.SimulatedUnixFlavour option
 WoofWare.PosixKernel.SyscallInterruptionRefusalModule.describe [static method]: WoofWare.PosixKernel.SyscallInterruptionRefusal -> string
 WoofWare.PosixKernel.SyscallOutcome inherit obj, implements WoofWare.PosixKernel.SyscallOutcome System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SyscallOutcome System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.SyscallOutcome+Answered inherit WoofWare.PosixKernel.SyscallOutcome
@@ -8689,187 +8141,35 @@ WoofWare.PosixKernel.SyscallOutcome.NewWouldBlock [static method]: WoofWare.Posi
 WoofWare.PosixKernel.SyscallOutcome.Restarts [static property]: [read-only] WoofWare.PosixKernel.SyscallOutcome
 WoofWare.PosixKernel.SyscallOutcome.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SyscallRefusal inherit obj
+WoofWare.PosixKernel.SyscallRefusal+Reason inherit obj
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Access|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.AccessRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|ChDir|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.PathRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|CloneFile|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.CloneFileRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Close|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> 'Task WoofWare.PosixKernel.CloseRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|CopyFileRange|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.CopyFileRangeRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Dup2|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> 'Task WoofWare.PosixKernel.Dup2Refusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Dup3|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> 'Task WoofWare.PosixKernel.Dup3Refusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Dup|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.DescriptorLimitRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FChModAt|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FChModAtRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FChMod|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FChModRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FChOwnAt|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FChOwnAtRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FChOwn|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FChOwnRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Fcntl|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FcntlRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FileClone|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FileCloneRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FLock|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.FLockRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|FTruncate|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.TruncationRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Inotify|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.InotifyRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Link|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.LinkRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|LSeek|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.LSeekRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|MkDir|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.PathRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|SetGroups|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.SetGroupsRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|SetIds|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.SetIdsRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|Symlink|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.SymlinkRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|UnlinkAt|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.UnlinkAtRefusal option
+WoofWare.PosixKernel.SyscallRefusal+Reason.|UTimensAt|_| [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> WoofWare.PosixKernel.UTimensAtRefusal option
 WoofWare.PosixKernel.SyscallRefusal.describe [static method]: 'Task WoofWare.PosixKernel.SyscallRefusal -> string
-WoofWare.PosixKernel.SyscallRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SyscallRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SyscallRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 25 cases
-WoofWare.PosixKernel.SyscallRefusal`1+Access inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Access.get_Item [method]: unit -> WoofWare.PosixKernel.AccessRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Access.Item [property]: [read-only] WoofWare.PosixKernel.AccessRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+ChDir inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+ChDir.get_Item [method]: unit -> WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+ChDir.Item [property]: [read-only] WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CloneFile inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CloneFile.get_Item [method]: unit -> WoofWare.PosixKernel.CloneFileRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CloneFile.Item [property]: [read-only] WoofWare.PosixKernel.CloneFileRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Close inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Close.get_Item [method]: unit -> 'Task WoofWare.PosixKernel.CloseRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Close.Item [property]: [read-only] 'Task WoofWare.PosixKernel.CloseRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CopyFileRange inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CopyFileRange.get_Item [method]: unit -> WoofWare.PosixKernel.CopyFileRangeRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+CopyFileRange.Item [property]: [read-only] WoofWare.PosixKernel.CopyFileRangeRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup.get_Item [method]: unit -> WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup.Item [property]: [read-only] WoofWare.PosixKernel.DescriptorLimitRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup2 inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup2.get_Item [method]: unit -> 'Task WoofWare.PosixKernel.Dup2Refusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup2.Item [property]: [read-only] 'Task WoofWare.PosixKernel.Dup2Refusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup3 inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup3.get_Item [method]: unit -> 'Task WoofWare.PosixKernel.Dup3Refusal
-WoofWare.PosixKernel.SyscallRefusal`1+Dup3.Item [property]: [read-only] 'Task WoofWare.PosixKernel.Dup3Refusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChMod inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChMod.get_Item [method]: unit -> WoofWare.PosixKernel.FChModRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChMod.Item [property]: [read-only] WoofWare.PosixKernel.FChModRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChModAt inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChModAt.get_Item [method]: unit -> WoofWare.PosixKernel.FChModAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChModAt.Item [property]: [read-only] WoofWare.PosixKernel.FChModAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwn inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwn.get_Item [method]: unit -> WoofWare.PosixKernel.FChOwnRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwn.Item [property]: [read-only] WoofWare.PosixKernel.FChOwnRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwnAt inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwnAt.get_Item [method]: unit -> WoofWare.PosixKernel.FChOwnAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FChOwnAt.Item [property]: [read-only] WoofWare.PosixKernel.FChOwnAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Fcntl inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Fcntl.get_Item [method]: unit -> WoofWare.PosixKernel.FcntlRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Fcntl.Item [property]: [read-only] WoofWare.PosixKernel.FcntlRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FileClone inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FileClone.get_Item [method]: unit -> WoofWare.PosixKernel.FileCloneRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FileClone.Item [property]: [read-only] WoofWare.PosixKernel.FileCloneRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FLock inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FLock.get_Item [method]: unit -> WoofWare.PosixKernel.FLockRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FLock.Item [property]: [read-only] WoofWare.PosixKernel.FLockRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FTruncate inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FTruncate.get_Item [method]: unit -> WoofWare.PosixKernel.TruncationRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+FTruncate.Item [property]: [read-only] WoofWare.PosixKernel.TruncationRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Inotify inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Inotify.get_Item [method]: unit -> WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Inotify.Item [property]: [read-only] WoofWare.PosixKernel.InotifyRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Link inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Link.get_Item [method]: unit -> WoofWare.PosixKernel.LinkRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Link.Item [property]: [read-only] WoofWare.PosixKernel.LinkRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+LSeek inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+LSeek.get_Item [method]: unit -> WoofWare.PosixKernel.LSeekRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+LSeek.Item [property]: [read-only] WoofWare.PosixKernel.LSeekRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+MkDir inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+MkDir.get_Item [method]: unit -> WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+MkDir.Item [property]: [read-only] WoofWare.PosixKernel.PathRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetGroups inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetGroups.get_Item [method]: unit -> WoofWare.PosixKernel.SetGroupsRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetGroups.Item [property]: [read-only] WoofWare.PosixKernel.SetGroupsRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetIds inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetIds.get_Item [method]: unit -> WoofWare.PosixKernel.SetIdsRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+SetIds.Item [property]: [read-only] WoofWare.PosixKernel.SetIdsRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Symlink inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Symlink.get_Item [method]: unit -> WoofWare.PosixKernel.SymlinkRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Symlink.Item [property]: [read-only] WoofWare.PosixKernel.SymlinkRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+Tags inherit obj
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Access [static field]: int = 14
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.ChDir [static field]: int = 9
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.CloneFile [static field]: int = 21
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Close [static field]: int = 17
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.CopyFileRange [static field]: int = 19
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Dup [static field]: int = 0
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Dup2 [static field]: int = 2
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Dup3 [static field]: int = 3
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FChMod [static field]: int = 11
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FChModAt [static field]: int = 10
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FChOwn [static field]: int = 13
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FChOwnAt [static field]: int = 12
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Fcntl [static field]: int = 1
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FileClone [static field]: int = 20
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FLock [static field]: int = 5
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.FTruncate [static field]: int = 6
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Inotify [static field]: int = 24
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Link [static field]: int = 16
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.LSeek [static field]: int = 4
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.MkDir [static field]: int = 7
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.SetGroups [static field]: int = 23
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.SetIds [static field]: int = 22
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.Symlink [static field]: int = 15
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.UnlinkAt [static field]: int = 8
-WoofWare.PosixKernel.SyscallRefusal`1+Tags.UTimensAt [static field]: int = 18
-WoofWare.PosixKernel.SyscallRefusal`1+UnlinkAt inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+UnlinkAt.get_Item [method]: unit -> WoofWare.PosixKernel.UnlinkAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+UnlinkAt.Item [property]: [read-only] WoofWare.PosixKernel.UnlinkAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+UTimensAt inherit 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+UTimensAt.get_Item [method]: unit -> WoofWare.PosixKernel.UTimensAtRefusal
-WoofWare.PosixKernel.SyscallRefusal`1+UTimensAt.Item [property]: [read-only] WoofWare.PosixKernel.UTimensAtRefusal
+WoofWare.PosixKernel.SyscallRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.SyscallRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.SyscallRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.SyscallRefusal`1.Equals [method]: ('Task WoofWare.PosixKernel.SyscallRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsAccess [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsChDir [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsCloneFile [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsClose [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsCopyFileRange [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsDup [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsDup2 [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsDup3 [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFChMod [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFChModAt [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFChOwn [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFChOwnAt [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFcntl [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFileClone [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFLock [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsFTruncate [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsInotify [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsLink [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsLSeek [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsMkDir [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsSetGroups [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsSetIds [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsSymlink [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsUnlinkAt [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_IsUTimensAt [method]: unit -> bool
-WoofWare.PosixKernel.SyscallRefusal`1.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SyscallRefusal`1.IsAccess [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsChDir [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsCloneFile [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsClose [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsCopyFileRange [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsDup [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsDup2 [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsDup3 [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFChMod [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFChModAt [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFChOwn [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFChOwnAt [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFcntl [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFileClone [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFLock [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsFTruncate [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsInotify [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsLink [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsLSeek [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsMkDir [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsSetGroups [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsSetIds [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsSymlink [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsUnlinkAt [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.IsUTimensAt [property]: [read-only] bool
-WoofWare.PosixKernel.SyscallRefusal`1.NewAccess [static method]: WoofWare.PosixKernel.AccessRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewChDir [static method]: WoofWare.PosixKernel.PathRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewCloneFile [static method]: WoofWare.PosixKernel.CloneFileRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewClose [static method]: 'Task WoofWare.PosixKernel.CloseRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewCopyFileRange [static method]: WoofWare.PosixKernel.CopyFileRangeRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewDup [static method]: WoofWare.PosixKernel.DescriptorLimitRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewDup2 [static method]: 'Task WoofWare.PosixKernel.Dup2Refusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewDup3 [static method]: 'Task WoofWare.PosixKernel.Dup3Refusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFChMod [static method]: WoofWare.PosixKernel.FChModRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFChModAt [static method]: WoofWare.PosixKernel.FChModAtRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFChOwn [static method]: WoofWare.PosixKernel.FChOwnRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFChOwnAt [static method]: WoofWare.PosixKernel.FChOwnAtRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFcntl [static method]: WoofWare.PosixKernel.FcntlRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFileClone [static method]: WoofWare.PosixKernel.FileCloneRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFLock [static method]: WoofWare.PosixKernel.FLockRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewFTruncate [static method]: WoofWare.PosixKernel.TruncationRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewInotify [static method]: WoofWare.PosixKernel.InotifyRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewLink [static method]: WoofWare.PosixKernel.LinkRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewLSeek [static method]: WoofWare.PosixKernel.LSeekRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewMkDir [static method]: WoofWare.PosixKernel.PathRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewSetGroups [static method]: WoofWare.PosixKernel.SetGroupsRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewSetIds [static method]: WoofWare.PosixKernel.SetIdsRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewSymlink [static method]: WoofWare.PosixKernel.SymlinkRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewUnlinkAt [static method]: WoofWare.PosixKernel.UnlinkAtRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.NewUTimensAt [static method]: WoofWare.PosixKernel.UTimensAtRefusal -> 'Task WoofWare.PosixKernel.SyscallRefusal
-WoofWare.PosixKernel.SyscallRefusal`1.Tag [property]: [read-only] int
 WoofWare.PosixKernel.TaskOutcome`2 inherit obj, implements WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 2 cases
 WoofWare.PosixKernel.TaskOutcome`2+Continues inherit WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.TaskOutcome`2+Continues.get_Item [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
@@ -9021,58 +8321,24 @@ WoofWare.PosixKernel.TerminalAttributesAnswer.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.TerminalAttributesAnswer.NewNotATerminal [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.TerminalAttributesAnswer
 WoofWare.PosixKernel.TerminalAttributesAnswer.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ThreadExitRefusal inherit obj
+WoofWare.PosixKernel.ThreadExitRefusal+Reason inherit obj
+WoofWare.PosixKernel.ThreadExitRefusal+Reason.|LastTaskOnDarwin|_| [static method]: 'Task WoofWare.PosixKernel.ThreadExitRefusal -> 'Task option
+WoofWare.PosixKernel.ThreadExitRefusal+Reason.|LeaderBeforeOthers|_| [static method]: 'Task WoofWare.PosixKernel.ThreadExitRefusal -> 'Task option
+WoofWare.PosixKernel.ThreadExitRefusal+Reason.|Parked|_| [static method]: 'Task WoofWare.PosixKernel.ThreadExitRefusal -> ('Task * WoofWare.PosixKernel.TaskPark) option
 WoofWare.PosixKernel.ThreadExitRefusal.describe [static method]: 'Task WoofWare.PosixKernel.ThreadExitRefusal -> string
-WoofWare.PosixKernel.ThreadExitRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.ThreadExitRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.ThreadExitRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.ThreadExitRefusal`1+LastTaskOnDarwin inherit 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1+LastTaskOnDarwin.get_task [method]: unit -> 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+LastTaskOnDarwin.task [property]: [read-only] 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+LeaderBeforeOthers inherit 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1+LeaderBeforeOthers.get_task [method]: unit -> 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+LeaderBeforeOthers.task [property]: [read-only] 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+Parked inherit 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1+Parked.get_park [method]: unit -> WoofWare.PosixKernel.TaskPark
-WoofWare.PosixKernel.ThreadExitRefusal`1+Parked.get_task [method]: unit -> 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+Parked.park [property]: [read-only] WoofWare.PosixKernel.TaskPark
-WoofWare.PosixKernel.ThreadExitRefusal`1+Parked.task [property]: [read-only] 'Task
-WoofWare.PosixKernel.ThreadExitRefusal`1+Tags inherit obj
-WoofWare.PosixKernel.ThreadExitRefusal`1+Tags.LastTaskOnDarwin [static field]: int = 2
-WoofWare.PosixKernel.ThreadExitRefusal`1+Tags.LeaderBeforeOthers [static field]: int = 1
-WoofWare.PosixKernel.ThreadExitRefusal`1+Tags.Parked [static field]: int = 0
+WoofWare.PosixKernel.ThreadExitRefusal`1 inherit obj, implements 'Task WoofWare.PosixKernel.ThreadExitRefusal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.ThreadExitRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ThreadExitRefusal`1.Equals [method]: ('Task WoofWare.PosixKernel.ThreadExitRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.get_IsLastTaskOnDarwin [method]: unit -> bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.get_IsLeaderBeforeOthers [method]: unit -> bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.get_IsParked [method]: unit -> bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.ThreadExitRefusal`1.IsLastTaskOnDarwin [property]: [read-only] bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.IsLeaderBeforeOthers [property]: [read-only] bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.IsParked [property]: [read-only] bool
-WoofWare.PosixKernel.ThreadExitRefusal`1.NewLastTaskOnDarwin [static method]: 'Task -> 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1.NewLeaderBeforeOthers [static method]: 'Task -> 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1.NewParked [static method]: ('Task, WoofWare.PosixKernel.TaskPark) -> 'Task WoofWare.PosixKernel.ThreadExitRefusal
-WoofWare.PosixKernel.ThreadExitRefusal`1.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ThreadIdAllocator inherit obj, implements WoofWare.PosixKernel.ThreadIdAllocator System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ThreadIdAllocator System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ThreadIdAllocator.Equals [method]: (WoofWare.PosixKernel.ThreadIdAllocator, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ThreadIdAllocatorModule inherit obj
 WoofWare.PosixKernel.ThreadIdAllocatorModule.linuxPidMaxCeiling [static field]: int = 4194304
 WoofWare.PosixKernel.ThreadIdAllocatorModule.linuxPidMaxFloor [static field]: int = 301
-WoofWare.PosixKernel.ThreadKillRefusal inherit obj, implements WoofWare.PosixKernel.ThreadKillRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ThreadKillRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.ThreadKillRefusal+Receiver inherit WoofWare.PosixKernel.ThreadKillRefusal
-WoofWare.PosixKernel.ThreadKillRefusal+Receiver.get_Item [method]: unit -> WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.ThreadKillRefusal+Receiver.Item [property]: [read-only] WoofWare.PosixKernel.SignalReceiverRefusal
-WoofWare.PosixKernel.ThreadKillRefusal+Tags inherit obj
-WoofWare.PosixKernel.ThreadKillRefusal+Tags.InitProcess [static field]: int = 0
-WoofWare.PosixKernel.ThreadKillRefusal+Tags.Receiver [static field]: int = 1
+WoofWare.PosixKernel.ThreadKillRefusal inherit obj, implements WoofWare.PosixKernel.ThreadKillRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ThreadKillRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ThreadKillRefusal.Equals [method]: (WoofWare.PosixKernel.ThreadKillRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.ThreadKillRefusal.get_InitProcess [static method]: unit -> WoofWare.PosixKernel.ThreadKillRefusal
-WoofWare.PosixKernel.ThreadKillRefusal.get_IsInitProcess [method]: unit -> bool
-WoofWare.PosixKernel.ThreadKillRefusal.get_IsReceiver [method]: unit -> bool
-WoofWare.PosixKernel.ThreadKillRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.ThreadKillRefusal.InitProcess [static property]: [read-only] WoofWare.PosixKernel.ThreadKillRefusal
-WoofWare.PosixKernel.ThreadKillRefusal.IsInitProcess [property]: [read-only] bool
-WoofWare.PosixKernel.ThreadKillRefusal.IsReceiver [property]: [read-only] bool
-WoofWare.PosixKernel.ThreadKillRefusal.NewReceiver [static method]: WoofWare.PosixKernel.SignalReceiverRefusal -> WoofWare.PosixKernel.ThreadKillRefusal
-WoofWare.PosixKernel.ThreadKillRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ThreadKillRefusalModule inherit obj
+WoofWare.PosixKernel.ThreadKillRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.ThreadKillRefusalModule+Reason.|InitProcess|_| [static method]: WoofWare.PosixKernel.ThreadKillRefusal -> unit option
+WoofWare.PosixKernel.ThreadKillRefusalModule+Reason.|Receiver|_| [static method]: WoofWare.PosixKernel.ThreadKillRefusal -> WoofWare.PosixKernel.SignalReceiverRefusal option
 WoofWare.PosixKernel.ThreadKillRefusalModule.describe [static method]: WoofWare.PosixKernel.ThreadKillRefusal -> string
 WoofWare.PosixKernel.TimesArgument inherit obj, implements WoofWare.PosixKernel.TimesArgument System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.TimesArgument System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.TimesArgument+Fields inherit WoofWare.PosixKernel.TimesArgument
@@ -11879,14 +11145,11 @@ WoofWare.PosixKernel.WaitIdCode.IsExited [property]: [read-only] bool
 WoofWare.PosixKernel.WaitIdCode.IsKilled [property]: [read-only] bool
 WoofWare.PosixKernel.WaitIdCode.Killed [static property]: [read-only] WoofWare.PosixKernel.WaitIdCode
 WoofWare.PosixKernel.WaitIdCode.Tag [property]: [read-only] int
-WoofWare.PosixKernel.WaitStatusRefusal inherit obj, implements WoofWare.PosixKernel.WaitStatusRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WaitStatusRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
+WoofWare.PosixKernel.WaitStatusRefusal inherit obj, implements WoofWare.PosixKernel.WaitStatusRefusal System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WaitStatusRefusal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.WaitStatusRefusal.Equals [method]: (WoofWare.PosixKernel.WaitStatusRefusal, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.WaitStatusRefusal.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.WaitStatusRefusal.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.WaitStatusRefusal.NewCoreDumpOnDarwin [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.WaitStatusRefusal
-WoofWare.PosixKernel.WaitStatusRefusal.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.WaitStatusRefusal.Tag [property]: [read-only] int
 WoofWare.PosixKernel.WaitStatusRefusalModule inherit obj
+WoofWare.PosixKernel.WaitStatusRefusalModule+Reason inherit obj
+WoofWare.PosixKernel.WaitStatusRefusalModule+Reason.|CoreDumpOnDarwin|_| [static method]: WoofWare.PosixKernel.WaitStatusRefusal -> WoofWare.PosixKernel.Signal option
 WoofWare.PosixKernel.WaitStatusRefusalModule.describe [static method]: WoofWare.PosixKernel.WaitStatusRefusal -> string
 WoofWare.PosixKernel.WakeCondition inherit obj, implements WoofWare.PosixKernel.WakeCondition System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WakeCondition System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.WakeCondition+AnyOf inherit WoofWare.PosixKernel.WakeCondition

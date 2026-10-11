@@ -106,7 +106,7 @@ module MinipalRandom =
             | Ok (GetRandomAnswer.Failed error, _) ->
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes into storage PawPrint owns answered %O{error} (this is a bug in the kernel library)."
-            | Error (GetRandomRefusal.SignalAtPageBoundary _ as refusal) ->
+            | Error (GetRandomRefusal.Reason.SignalAtPageBoundary _ as refusal) ->
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread}, which has a signal pending, was refused: %s{GetRandomRefusal.describe refusal}"
             | Error refusal ->

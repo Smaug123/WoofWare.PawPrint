@@ -2,26 +2,62 @@ namespace WoofWare.PosixKernel
 
 /// Why this library will not answer a `kill(2)`: something it does not model,
 /// rather than an error a kernel would report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `KillRefusal.Reason`, and ends its match with a wildcard, where
+/// `KillRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type KillRefusal =
-    /// A positive process ID other than the calling process's own. A real
-    /// kernel's answer depends on whether that process exists and on what the
-    /// signal does to it, and a process's view holds no other process: sending
-    /// a signal to another process is not modelled.
+    internal
+    /// See `KillRefusal.Reason.OtherProcess`.
     | OtherProcess of pid : int32
-    /// Zero or a negative number: a process group, or every process the caller
-    /// may signal.
+    /// See `KillRefusal.Reason.ProcessGroup`.
     | ProcessGroup of pid : int32
-    /// The calling process is process ID 1. An init process ignores, from
-    /// inside its own PID namespace, every signal it has not installed a
-    /// handler for, SIGKILL included, and this library does not model that.
+    /// See `KillRefusal.Reason.InitProcess`.
     | InitProcess
-    /// The signal is sent to the calling process, and which of its tasks would
-    /// receive it is not modelled.
+    /// See `KillRefusal.Reason.Receiver`.
     | Receiver of SignalReceiverRefusal
 
 [<RequireQualifiedAccess>]
 module KillRefusal =
+    /// The reasons this library will not answer a `kill(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A positive process ID other than the calling process's own. A real
+        /// kernel's answer depends on whether that process exists and on what
+        /// the signal does to it, and a process's view holds no other process:
+        /// sending a signal to another process is not modelled. Gives the
+        /// process ID.
+        let (|OtherProcess|_|) (refusal : KillRefusal) : int32 option =
+            match refusal with
+            | KillRefusal.OtherProcess pid -> Some pid
+            | _ -> None
+
+        /// Zero or a negative number: a process group, or every process the
+        /// caller may signal. Gives the call's `pid` argument.
+        let (|ProcessGroup|_|) (refusal : KillRefusal) : int32 option =
+            match refusal with
+            | KillRefusal.ProcessGroup pid -> Some pid
+            | _ -> None
+
+        /// The calling process is process ID 1. An init process ignores, from
+        /// inside its own PID namespace, every signal it has not installed a
+        /// handler for, SIGKILL included, and this library does not model that.
+        let (|InitProcess|_|) (refusal : KillRefusal) : unit option =
+            match refusal with
+            | KillRefusal.InitProcess -> Some ()
+            | _ -> None
+
+        /// The signal is sent to the calling process, and which of its tasks
+        /// would receive it is not modelled. Gives the `SignalReceiverRefusal`.
+        let (|Receiver|_|) (refusal : KillRefusal) : SignalReceiverRefusal option =
+            match refusal with
+            | KillRefusal.Receiver refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which task made the call.
     let describe (refusal : KillRefusal) : string =
@@ -36,17 +72,41 @@ module KillRefusal =
 
 /// Why this library will not answer a `pthread_kill(3)`: something it does not
 /// model, rather than an error a kernel would report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ThreadKillRefusal.Reason`, and ends its match with a wildcard, where
+/// `ThreadKillRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ThreadKillRefusal =
-    /// The calling process is process ID 1. An init process ignores, from
-    /// inside its own PID namespace, every signal it has not installed a
-    /// handler for, SIGKILL included, and this library does not model that.
+    internal
+    /// See `ThreadKillRefusal.Reason.InitProcess`.
     | InitProcess
-    /// What the signal would do to the process is not modelled.
+    /// See `ThreadKillRefusal.Reason.Receiver`.
     | Receiver of SignalReceiverRefusal
 
 [<RequireQualifiedAccess>]
 module ThreadKillRefusal =
+    /// The reasons this library will not answer a `pthread_kill(3)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The calling process is process ID 1. An init process ignores, from
+        /// inside its own PID namespace, every signal it has not installed a
+        /// handler for, SIGKILL included, and this library does not model that.
+        let (|InitProcess|_|) (refusal : ThreadKillRefusal) : unit option =
+            match refusal with
+            | ThreadKillRefusal.InitProcess -> Some ()
+            | _ -> None
+
+        /// What the signal would do to the process is not modelled. Gives the
+        /// `SignalReceiverRefusal`.
+        let (|Receiver|_|) (refusal : ThreadKillRefusal) : SignalReceiverRefusal option =
+            match refusal with
+            | ThreadKillRefusal.Receiver refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which task made the call, and at which task it aimed.
     let describe (refusal : ThreadKillRefusal) : string =
@@ -57,24 +117,42 @@ module ThreadKillRefusal =
 
 /// Why this library will not answer a `sigprocmask(2)`: something it does not
 /// model, rather than an error a kernel would report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SigprocmaskRefusal.Reason`, and ends its match with a wildcard, where
+/// `SigprocmaskRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SigprocmaskRefusal<'Task> =
-    /// Under Darwin, whose `sigprocmask` changes every task's mask, the call
-    /// would unblock `signal` for `task`, which is not the caller, while
-    /// `signal` is pending where `task` would take it: on `task` itself, or,
-    /// for the process's leader, on the process.
-    ///
-    /// Darwin was measured not to wake such a task, if it is asleep in a
-    /// system call, and not always to deliver the signal as the task next
-    /// returns to user mode: whether it did depended on the call the task was
-    /// in and on what the task had done since the signal was sent, which this
-    /// library does not record. This library delivers every signal a task's
-    /// mask lets through at its next return to user mode, and wakes a sleeping
-    /// task for one, so it cannot express what the task does next.
+    internal
+    /// See `SigprocmaskRefusal.Reason.DarwinUnblockedForAnotherTask`.
     | DarwinUnblockedForAnotherTask of task : 'Task * signal : Signal
 
 [<RequireQualifiedAccess>]
 module SigprocmaskRefusal =
+    /// The reasons this library will not answer a `sigprocmask(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Under Darwin, whose `sigprocmask` changes every task's mask, the
+        /// call would unblock a signal for a task other than the caller, while
+        /// that signal is pending where the task would take it: on the task
+        /// itself, or, for the process's leader, on the process. Gives the
+        /// task, then the signal.
+        ///
+        /// Darwin was measured not to wake such a task, if it is asleep in a
+        /// system call, and not always to deliver the signal as the task next
+        /// returns to user mode: whether it did depended on the call the task
+        /// was in and on what the task had done since the signal was sent,
+        /// which this library does not record. This library delivers every
+        /// signal a task's mask lets through at its next return to user mode,
+        /// and wakes a sleeping task for one, so it cannot express what the
+        /// task does next.
+        let (|DarwinUnblockedForAnotherTask|_|) (refusal : SigprocmaskRefusal<'Task>) : ('Task * Signal) option =
+            match refusal with
+            | SigprocmaskRefusal.DarwinUnblockedForAnotherTask (task, signal) -> Some (task, signal)
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which task made the call.
     let describe<'Task> (refusal : SigprocmaskRefusal<'Task>) : string =
@@ -215,7 +293,7 @@ module UnixSignal =
     /// under Linux's, which leaves one the leader blocks pending on the
     /// process until another task takes it and discards it.
     ///
-    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
+    /// Refuses (`KillRefusal.Reason.Receiver`) a signal sent to the process that only
     /// a task other than the leader could receive, where it is caught, or,
     /// under Linux's numbering, ignored; and, under
     /// Darwin's numbering, a standard signal it would leave pending on the
@@ -737,7 +815,7 @@ module UnixSignal =
     ///
     /// Refuses, on Darwin, a call that would unblock a pending signal for a
     /// task other than the caller (see
-    /// `SigprocmaskRefusal.DarwinUnblockedForAnotherTask`), changing nothing.
+    /// `SigprocmaskRefusal.Reason.DarwinUnblockedForAnotherTask`), changing nothing.
     /// The caller's own pending signals it unblocks are deliverable to it as it
     /// returns from the call, as `pthreadSigmask` describes.
     ///

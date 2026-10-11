@@ -149,24 +149,60 @@ type SimulatedMachineDefect<'Task> =
     | DuplicateProcessId of processId : ProcessId
 
 /// Why `SimulatedMachine.launch` will not start a process.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ProcessCreationRefusal.Reason`, and ends its match with a wildcard, where
+/// `ProcessCreationRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ProcessCreationRefusal =
-    /// The launch itself is refused; see `LaunchRefusal`.
+    internal
+    /// See `ProcessCreationRefusal.Reason.Launch`.
     | Launch of LaunchRefusal
-    /// On Linux, every ID the machine would hand out, from 300 up to its
-    /// `pid_max`, is a live thread's, so `fork(2)` would answer EAGAIN.
+    /// See `ProcessCreationRefusal.Reason.NoFreeProcessId`.
     | NoFreeProcessId
-    /// On Darwin, the process ID counter has reached `pidMax`
-    /// (`ProcessIdTable.darwinPidMax`). xnu wraps it back to 100, skipping IDs
-    /// in use; that has not been measured, so this library does not wrap.
+    /// See `ProcessCreationRefusal.Reason.DarwinPidMaxReached`.
     | DarwinPidMaxReached of pidMax : int32
-    /// On Darwin, the 64-bit thread ID counter has reached the top of its
-    /// range, so the new process's leader would take an ID beyond it; what
-    /// Darwin does then has not been measured.
+    /// See `ProcessCreationRefusal.Reason.DarwinThreadIdCounterExhausted`.
     | DarwinThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
 module ProcessCreationRefusal =
+    /// The reasons `SimulatedMachine.launch` will not start a process, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The launch itself is refused. Gives the `LaunchRefusal`.
+        let (|Launch|_|) (refusal : ProcessCreationRefusal) : LaunchRefusal option =
+            match refusal with
+            | ProcessCreationRefusal.Launch refusal -> Some refusal
+            | _ -> None
+
+        /// On Linux, every ID the machine would hand out, from 300 up to its
+        /// `pid_max`, is a live thread's, so `fork(2)` would answer EAGAIN.
+        let (|NoFreeProcessId|_|) (refusal : ProcessCreationRefusal) : unit option =
+            match refusal with
+            | ProcessCreationRefusal.NoFreeProcessId -> Some ()
+            | _ -> None
+
+        /// On Darwin, the process ID counter has reached its maximum
+        /// (`ProcessIdTable.darwinPidMax`). xnu wraps it back to 100, skipping
+        /// IDs in use; that has not been measured, so this library does not
+        /// wrap. Gives that maximum.
+        let (|DarwinPidMaxReached|_|) (refusal : ProcessCreationRefusal) : int32 option =
+            match refusal with
+            | ProcessCreationRefusal.DarwinPidMaxReached pidMax -> Some pidMax
+            | _ -> None
+
+        /// On Darwin, the 64-bit thread ID counter has reached the top of its
+        /// range, so the new process's leader would take an ID beyond it; what
+        /// Darwin does then has not been measured.
+        let (|DarwinThreadIdCounterExhausted|_|) (refusal : ProcessCreationRefusal) : unit option =
+            match refusal with
+            | ProcessCreationRefusal.DarwinThreadIdCounterExhausted -> Some ()
+            | _ -> None
+
     /// What this library knows about why it would not start the process, for
     /// a client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessCreationRefusal) : string =
@@ -181,16 +217,33 @@ module ProcessCreationRefusal =
 
 /// Why `SimulatedMachine.endProcess` will not end a process: what closing
 /// its descriptors would do has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ProcessEndRefusal.Reason`, and ends its match with a wildcard, where
+/// `ProcessEndRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ProcessEndRefusal =
-    /// Closing the process's descriptors releases an open file description
-    /// this library will not release (`DescriptionReleaseRefusal`): so far,
-    /// the last reference to a connected socket whose `SO_LINGER` would make
-    /// its close reset the connection or wait.
+    internal
+    /// See `ProcessEndRefusal.Reason.Release`.
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
 module ProcessEndRefusal =
+    /// The reasons `SimulatedMachine.endProcess` will not end a process, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Closing the process's descriptors releases an open file description
+        /// this library will not release (`DescriptionReleaseRefusal`): so far,
+        /// the last reference to a connected socket whose `SO_LINGER` would
+        /// make its close reset the connection or wait. Gives the
+        /// `DescriptionReleaseRefusal`.
+        let (|Release|_|) (refusal : ProcessEndRefusal) : DescriptionReleaseRefusal option =
+            match refusal with
+            | ProcessEndRefusal.Release refusal -> Some refusal
+
     /// What this library knows about why it will not end the process, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessEndRefusal) : string =

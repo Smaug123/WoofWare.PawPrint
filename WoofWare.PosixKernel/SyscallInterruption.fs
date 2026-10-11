@@ -24,27 +24,63 @@ type internal SyscallInterruption =
 
 /// Why this library will not say how a signal ends the syscall a task is asleep
 /// in.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SyscallInterruptionRefusal.Reason`, and ends its match with a wildcard,
+/// where `SyscallInterruptionRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SyscallInterruptionRefusal =
-    /// The library will not say what the task takes as it returns to user
-    /// mode.
+    internal
+    /// See `SyscallInterruptionRefusal.Reason.Receiver`.
     | Receiver of SignalReceiverRefusal
-    /// The first signal the task would take as it returns to user mode is at
-    /// its default disposition, which terminates, stops or continues the
-    /// process, rather than caught.
+    /// See `SyscallInterruptionRefusal.Reason.DefaultAction`.
     | DefaultAction of signal : Signal
-    /// The syscall is one that `SA_RESTART` restarts, and of the handlers the
-    /// task would run, those for `restarting` were installed with it and those
-    /// for `failing` without.
+    /// See `SyscallInterruptionRefusal.Reason.MixedRestartFlags`.
     | MixedRestartFlags of restarting : Signal list * failing : Signal list
-    /// The syscall has its own answer to give and a signal with a handler is
-    /// deliverable to the task too, under a flavour whose kernel answers
-    /// whichever of the two reached the sleeping task first, which this
-    /// library does not record.
+    /// See `SyscallInterruptionRefusal.Reason.SignalBesideCompletion`.
     | SignalBesideCompletion of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module SyscallInterruptionRefusal =
+    /// The reasons this library will not say how a signal ends the syscall a
+    /// task is asleep in, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The library will not say what the task takes as it returns to user
+        /// mode. Gives the `SignalReceiverRefusal`.
+        let (|Receiver|_|) (refusal : SyscallInterruptionRefusal) : SignalReceiverRefusal option =
+            match refusal with
+            | SyscallInterruptionRefusal.Receiver refusal -> Some refusal
+            | _ -> None
+
+        /// The first signal the task would take as it returns to user mode is
+        /// at its default disposition, which terminates, stops or continues the
+        /// process, rather than caught. Gives the signal.
+        let (|DefaultAction|_|) (refusal : SyscallInterruptionRefusal) : Signal option =
+            match refusal with
+            | SyscallInterruptionRefusal.DefaultAction signal -> Some signal
+            | _ -> None
+
+        /// The syscall is one that `SA_RESTART` restarts, and of the handlers
+        /// the task would run, some were installed with it and some without.
+        /// Gives the signals whose handlers were installed with it, then those
+        /// whose handlers were installed without.
+        let (|MixedRestartFlags|_|) (refusal : SyscallInterruptionRefusal) : (Signal list * Signal list) option =
+            match refusal with
+            | SyscallInterruptionRefusal.MixedRestartFlags (restarting, failing) -> Some (restarting, failing)
+            | _ -> None
+
+        /// The syscall has its own answer to give and a signal with a handler
+        /// is deliverable to the task too, under a flavour whose kernel answers
+        /// whichever of the two reached the sleeping task first, which this
+        /// library does not record. Gives the flavour.
+        let (|SignalBesideCompletion|_|) (refusal : SyscallInterruptionRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | SyscallInterruptionRefusal.SignalBesideCompletion flavour -> Some flavour
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which call was asleep, and in which task.
     let describe (refusal : SyscallInterruptionRefusal) : string =
@@ -61,30 +97,61 @@ module SyscallInterruptionRefusal =
 /// Why this library will not answer a `sigsuspend(2)` or `pause(2)`, or the
 /// finishing of one: something it does not model, rather than an error a
 /// kernel would report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SigsuspendRefusal.Reason`, and ends its match with a wildcard, where
+/// `SigsuspendRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SigsuspendRefusal =
-    /// The library will not say what the task takes as it returns to user
-    /// mode.
+    internal
+    /// See `SigsuspendRefusal.Reason.Receiver`.
     | Receiver of SignalReceiverRefusal
-    /// The first signal the task would take under the temporary mask is
-    /// `signal`, at its default, which stops the process. Stopped and then
-    /// continued with no handler run, a real kernel restarts the call, so that
-    /// it sleeps on under the temporary mask (measured on both flavours); this
-    /// library models no stopped process for the call to sleep on in.
+    /// See `SigsuspendRefusal.Reason.DefaultStop`.
     | DefaultStop of signal : Signal
-    /// Under Darwin, the task could take a pending SIGCONT under the temporary
-    /// mask, ignored or at its default. Darwin leaves one generated while the
-    /// task blocked it pending under such a mask, without ending the call, and
-    /// does not end it even once a handler is installed for the signal, until
-    /// another signal ends the call and both are delivered (measured). This
-    /// library wakes a sleeping task from the state alone, so cannot leave a
-    /// signal it could deliver undelivered. One generated during the sleep
-    /// never gets here: the temporary mask lets it through, so it is
-    /// discarded as it is sent (measured).
+    /// See `SigsuspendRefusal.Reason.DarwinPendingContinue`.
     | DarwinPendingContinue
 
 [<RequireQualifiedAccess>]
 module SigsuspendRefusal =
+    /// The reasons this library will not answer a `sigsuspend(2)` or
+    /// `pause(2)`, or the finishing of one, one partial pattern each. A match
+    /// over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The library will not say what the task takes as it returns to user
+        /// mode. Gives the `SignalReceiverRefusal`.
+        let (|Receiver|_|) (refusal : SigsuspendRefusal) : SignalReceiverRefusal option =
+            match refusal with
+            | SigsuspendRefusal.Receiver refusal -> Some refusal
+            | _ -> None
+
+        /// The first signal the task would take under the temporary mask is at
+        /// its default, which stops the process. Stopped and then continued
+        /// with no handler run, a real kernel restarts the call, so that it
+        /// sleeps on under the temporary mask (measured on both flavours); this
+        /// library models no stopped process for the call to sleep on in. Gives
+        /// the signal.
+        let (|DefaultStop|_|) (refusal : SigsuspendRefusal) : Signal option =
+            match refusal with
+            | SigsuspendRefusal.DefaultStop signal -> Some signal
+            | _ -> None
+
+        /// Under Darwin, the task could take a pending SIGCONT under the
+        /// temporary mask, ignored or at its default. Darwin leaves one
+        /// generated while the task blocked it pending under such a mask,
+        /// without ending the call, and does not end it even once a handler is
+        /// installed for the signal, until another signal ends the call and
+        /// both are delivered (measured). This library wakes a sleeping task
+        /// from the state alone, so cannot leave a signal it could deliver
+        /// undelivered. One generated during the sleep never gets here: the
+        /// temporary mask lets it through, so it is discarded as it is sent
+        /// (measured).
+        let (|DarwinPendingContinue|_|) (refusal : SigsuspendRefusal) : unit option =
+            match refusal with
+            | SigsuspendRefusal.DarwinPendingContinue -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which call was made, and by which task.
     let describe (refusal : SigsuspendRefusal) : string =

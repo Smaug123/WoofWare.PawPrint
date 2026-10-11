@@ -59,7 +59,7 @@ type SignalPoll =
 /// A thread's mask can now hold a signal back (`NativeLibcSignalMask`), and
 /// the leader is still the only task asked. A signal sent to the process that
 /// the leader blocks and another thread does not is refused by the kernel
-/// (`SignalReceiverRefusal.LeaderBlocks`), when it is sent or at this poll,
+/// (`SignalReceiverRefusal.Reason.LeaderBlocks`), when it is sent or at this poll,
 /// and the refusal fails the run.
 ///
 /// A default action the leader's return applies is refused loudly when it

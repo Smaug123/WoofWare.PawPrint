@@ -65,13 +65,30 @@ type WaitIdCode =
 
 /// Why this library will not render a termination as a status a parent would read:
 /// a case whose encoding has not been measured.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `WaitStatusRefusal.Reason`, and ends its match with a wildcard, where
+/// `WaitStatusRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type WaitStatusRefusal =
-    /// A death by `signal` that wrote a core dump, on Darwin.
+    internal
+    /// See `WaitStatusRefusal.Reason.CoreDumpOnDarwin`.
     | CoreDumpOnDarwin of signal : Signal
 
 [<RequireQualifiedAccess>]
 module WaitStatusRefusal =
+    /// The reasons this library will not render a termination as a status a
+    /// parent would read, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A death by a signal that wrote a core dump, on Darwin. Gives the
+        /// signal.
+        let (|CoreDumpOnDarwin|_|) (refusal : WaitStatusRefusal) : Signal option =
+            match refusal with
+            | WaitStatusRefusal.CoreDumpOnDarwin signal -> Some signal
+
 
     /// A human-readable account of why the status was refused.
     let describe (refusal : WaitStatusRefusal) : string =

@@ -252,7 +252,9 @@ The library cannot answer, either because its model of the domain is not complet
 Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
 Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
 A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
-`BindRefusal` is open in this way; each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+`BindRefusal` is open in this way.
+So are the refusals of the calls that wait for events, signal, read a clock, entropy or the process's identity, and start or end a task or a process: `PollRefusal`, `EpollCreateRefusal`, `EpollCtlRefusal`, `EpollWaitRefusal`, `KqueueRefusal`, `KeventRefusal`, `InotifyRefusal`, `InotifyAddWatchRefusal`, `KillRefusal`, `ThreadKillRefusal`, `SigprocmaskRefusal`, `SigsuspendRefusal`, `ClockGettimeRefusal`, `GetRandomRefusal`, `GetEntropyRefusal`, `GetIdsRefusal`, `SetIdsRefusal`, `SetGroupsRefusal`, `GetCpuRefusal`, `SpawnRefusal`, `ThreadExitRefusal`, `ProcessCreationRefusal`, `ProcessEndRefusal` and `WaitStatusRefusal`; those of a filesystem's statistics, `GeometryRefusal`, `CapacityRefusal`, `FileSystemIdRefusal` and `MountFieldsRefusal`; the signal refusals the others carry, `SyscallInterruptionRefusal` and `SignalReceiverRefusal`, which a client matches nested, as `PollRefusal.Reason.Interruption (SyscallInterruptionRefusal.Reason.Receiver (SignalReceiverRefusal.Reason.LeaderBlocks signal))`; and `SyscallRefusal`, whose patterns each give the refusal of the call that was refused.
+Each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
 
 ```fsharp
 open System.Collections.Immutable
@@ -730,7 +732,7 @@ match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine
 `kill` of another process, or of a process group, is refused.
 A signal the process ignores, and a `SIGCONT` at its default, which has nothing to resume, are discarded as they are sent, unless the task they are aimed at blocks them: for a signal sent to the process, that is the leader under Linux and every task under Darwin. So such a signal never wakes a sleeping call.
 One sent while blocked stays pending, and is discarded as a task takes it.
-Under Linux, `kill` of such a signal that the leader blocks while another task does not is refused (`SignalReceiverRefusal.LeaderBlocks`), as a caught one is: Linux would queue it for that other task, and this library delivers a process's signals to its leader only.
+Under Linux, `kill` of such a signal that the leader blocks while another task does not is refused (`SignalReceiverRefusal.Reason.LeaderBlocks`), as a caught one is: Linux would queue it for that other task, and this library delivers a process's signals to its leader only.
 `UnixSignal.sigaction` installs a `SignalDisposition`: `SignalDisposition.Default`, `SignalDisposition.Ignore`, or `SignalDisposition.Catch` of a `SignalCatch`, made with `SignalCatch.ofHandler`, which holds the client's `'Handler`.
 
 `UnixSignal.sigprocmask` changes every task's mask on Darwin, as Darwin's does, and refuses (`SigprocmaskRefusal`) a call that would unblock a signal pending for a task other than the caller: Darwin was measured neither to wake that task for it nor always to deliver it as the task next returns to user mode, both of which this library would do.

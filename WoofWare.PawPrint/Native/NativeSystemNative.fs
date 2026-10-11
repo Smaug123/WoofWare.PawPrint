@@ -7231,12 +7231,8 @@ module NativeSystemNative =
             // reach into a frame it does not own from some other thread's step.
             let refuse (refusal : EpollWaitRefusal) : NativeHandlerResult option =
                 match refusal with
-                | EpollWaitRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | EpollWaitRefusal.UnmeasuredCopyOutFault _
-                | EpollWaitRefusal.UnmodelledFlavour _
-                | EpollWaitRefusal.DeadlineBeyondClock _
-                | EpollWaitRefusal.Interruption _ ->
-                    failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal} The event buffer was %O{buffer}."
+                | EpollWaitRefusal.Reason.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | _ -> failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal} The event buffer was %O{buffer}."
 
             let settle
                 (outcome : EpollWaitOutcome)
@@ -7619,20 +7615,15 @@ module NativeSystemNative =
                     // which guest call asked, and what a guest could do instead.
                     let reachedBy =
                         match refusal with
-                        | PollRefusal.UnmodelledTarget _ ->
+                        | PollRefusal.Reason.UnmodelledTarget _ ->
                             " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
-                        | PollRefusal.DeadlineBeyondClock _ ->
+                        | PollRefusal.Reason.DeadlineBeyondClock _ ->
                             " PawPrint's virtual clock stops far short of this horizon, so the guest has been jumping it with long timed waits."
                         // The wrapper answers EINVAL for every timeout below -1
                         // before it reaches the kernel, so a guest never gets here
                         // through it.
-                        | PollRefusal.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
-                        | PollRefusal.UnmodelledSocket _
-                        | PollRefusal.UnmeasuredSocketKind _
-                        | PollRefusal.UnmodelledVnodeWait _
-                        | PollRefusal.UnmodelledEntryCount _
-                        | PollRefusal.EventsBesideDeadline
-                        | PollRefusal.Interruption _ -> ""
+                        | PollRefusal.Reason.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
+                        | _ -> ""
 
                     failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
                 | Ok (PollOutcome.Answered (reported, triggeredCount), system) ->

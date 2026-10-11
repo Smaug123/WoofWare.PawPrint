@@ -77,16 +77,41 @@ type KeventTimeout =
     | Unreadable
 
 /// Why this kernel will not answer a `kqueue(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `KqueueRefusal.Reason`, and ends its match with a wildcard, where
+/// `KqueueRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type KqueueRefusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `KqueueRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
+    /// See `KqueueRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module KqueueRefusal =
+    /// The reasons this kernel will not answer a `kqueue(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : KqueueRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | KqueueRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
+        /// Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : KqueueRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | KqueueRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : KqueueRefusal) : string =
@@ -133,61 +158,160 @@ type KeventOutcome =
     | WouldBlock of WakeCondition
 
 /// Why this kernel will not answer a `kevent(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `KeventRefusal.Reason`, and ends its match with a wildcard, where
+/// `KeventRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type KeventRefusal =
-    /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
+    internal
+    /// See `KeventRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// The changelist holds this change, whose flags are not one of the
-    /// combinations this library applies: `EV_ADD`, optionally with
-    /// `EV_CLEAR` and `EV_RECEIPT`, or `EV_DELETE`, optionally with
-    /// `EV_RECEIPT`.
+    /// See `KeventRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of change : Kevent
-    /// The changelist holds this change, whose filter is neither `EVFILT_READ`
-    /// nor `EVFILT_WRITE`.
+    /// See `KeventRefusal.Reason.UnmodelledFilter`.
     | UnmodelledFilter of change : Kevent
-    /// The changelist holds this change, whose `fflags` or `data` is not zero.
-    /// What a filter makes of its parameters (`NOTE_LOWAT`, for instance) is
-    /// not modelled.
+    /// See `KeventRefusal.Reason.UnmodelledFilterParameters`.
     | UnmodelledFilterParameters of change : Kevent
-    /// The changelist holds this `EV_ADD`, whose descriptor names something
-    /// other than a socket. A regular file, a pipe and a kqueue register on
-    /// Darwin, and what they report is not modelled.
+    /// See `KeventRefusal.Reason.UnmodelledTarget`.
     | UnmodelledTarget of change : Kevent * target : OpenFileTarget
-    /// The changelist holds this `EV_ADD`, whose descriptor names a socket of
-    /// a kind whose filters this library does not model: anything but a
-    /// stream socket of `AF_INET` or `AF_INET6`.
+    /// See `KeventRefusal.Reason.UnmodelledSocket`.
     | UnmodelledSocket of change : Kevent * domain : SocketDomain * kind : SocketKind
-    /// The eventlist reached a copy and has no address to copy to, or bytes
-    /// the caller cannot produce.
+    /// See `KeventRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The call has events to copy out to the eventlist, and the eventlist is
-    /// unmapped, so the copy faults. What Darwin answers then for several
-    /// events, and what becomes of each, is not measured. (An entry of the
-    /// changelist echoed into such an eventlist is answered: `EFAULT`.)
+    /// See `KeventRefusal.Reason.UnmeasuredCopyOutFault`.
     | UnmeasuredCopyOutFault of kqueue : OpenFileDescriptionId
-    /// Nothing is reportable, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
-    /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus the
-    /// timeout overflows it.
+    /// See `KeventRefusal.Reason.DeadlineBeyondClock`.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * seconds : int64 * nanoseconds : int64
-    /// The wait was asleep, and both a close has drained the kqueue and the
-    /// wait's deadline has passed. Darwin answers whichever of the two reached
-    /// the sleeping task first, which this library does not record.
+    /// See `KeventRefusal.Reason.DrainBesideDeadline`.
     | DrainBesideDeadline of kqueue : OpenFileDescriptionId
-    /// The wait was asleep, and both a close has drained the kqueue and it has
-    /// an event to report. Darwin answers whichever of the two reached the
-    /// sleeping task first, which this library does not record.
+    /// See `KeventRefusal.Reason.DrainBesideEvents`.
     | DrainBesideEvents of kqueue : OpenFileDescriptionId
-    /// The wait was asleep, and both its deadline has passed and the kqueue has
-    /// an event to report. Darwin answers whichever of the two reached the
-    /// sleeping task first, which this library does not record.
+    /// See `KeventRefusal.Reason.EventsBesideDeadline`.
     | EventsBesideDeadline of kqueue : OpenFileDescriptionId
-    /// The wait was asleep and a signal is pending for the task, and this
-    /// library will not say how the signal ends it.
+    /// See `KeventRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module KeventRefusal =
+    /// The reasons this kernel will not answer a `kevent(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
+        /// Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : KeventRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | KeventRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// The changelist holds this change, whose flags are not one of the
+        /// combinations this library applies: `EV_ADD`, optionally with
+        /// `EV_CLEAR` and `EV_RECEIPT`, or `EV_DELETE`, optionally with
+        /// `EV_RECEIPT`. Gives the change.
+        let (|UnmodelledFlags|_|) (refusal : KeventRefusal) : Kevent option =
+            match refusal with
+            | KeventRefusal.UnmodelledFlags change -> Some change
+            | _ -> None
+
+        /// The changelist holds this change, whose filter is neither
+        /// `EVFILT_READ` nor `EVFILT_WRITE`. Gives the change.
+        let (|UnmodelledFilter|_|) (refusal : KeventRefusal) : Kevent option =
+            match refusal with
+            | KeventRefusal.UnmodelledFilter change -> Some change
+            | _ -> None
+
+        /// The changelist holds this change, whose `fflags` or `data` is not
+        /// zero. What a filter makes of its parameters (`NOTE_LOWAT`, for
+        /// instance) is not modelled. Gives the change.
+        let (|UnmodelledFilterParameters|_|) (refusal : KeventRefusal) : Kevent option =
+            match refusal with
+            | KeventRefusal.UnmodelledFilterParameters change -> Some change
+            | _ -> None
+
+        /// The changelist holds this `EV_ADD`, whose descriptor names something
+        /// other than a socket. A regular file, a pipe and a kqueue register on
+        /// Darwin, and what they report is not modelled. Gives the change, then
+        /// what its descriptor names.
+        let (|UnmodelledTarget|_|) (refusal : KeventRefusal) : (Kevent * OpenFileTarget) option =
+            match refusal with
+            | KeventRefusal.UnmodelledTarget (change, target) -> Some (change, target)
+            | _ -> None
+
+        /// The changelist holds this `EV_ADD`, whose descriptor names a socket
+        /// of a kind whose filters this library does not model: anything but a
+        /// stream socket of `AF_INET` or `AF_INET6`. Gives the change, then the
+        /// socket's domain, then its kind.
+        let (|UnmodelledSocket|_|) (refusal : KeventRefusal) : (Kevent * SocketDomain * SocketKind) option =
+            match refusal with
+            | KeventRefusal.UnmodelledSocket (change, domain, kind) -> Some (change, domain, kind)
+            | _ -> None
+
+        /// The eventlist reached a copy and has no address to copy to, or bytes
+        /// the caller cannot produce. Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : KeventRefusal) : BufferRefusal option =
+            match refusal with
+            | KeventRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The call has events to copy out to the eventlist, and the eventlist
+        /// is unmapped, so the copy faults. What Darwin answers then for
+        /// several events, and what becomes of each, is not measured. (An entry
+        /// of the changelist echoed into such an eventlist is answered:
+        /// `EFAULT`.) Gives the kqueue's open file description.
+        let (|UnmeasuredCopyOutFault|_|) (refusal : KeventRefusal) : OpenFileDescriptionId option =
+            match refusal with
+            | KeventRefusal.UnmeasuredCopyOutFault kqueue -> Some kqueue
+            | _ -> None
+
+        /// Nothing is reportable, and the timeout ends past the last instant
+        /// the machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
+        /// `int64` of nanoseconds) can represent: the clock's reading plus the
+        /// timeout overflows it. Gives the clock's reading, then the timeout's
+        /// seconds, then its nanoseconds.
+        let (|DeadlineBeyondClock|_|) (refusal : KeventRefusal) : (int64 * int64 * int64) option =
+            match refusal with
+            | KeventRefusal.DeadlineBeyondClock (nanosecondsSinceBoot, seconds, nanoseconds) ->
+                Some (nanosecondsSinceBoot, seconds, nanoseconds)
+            | _ -> None
+
+        /// The wait was asleep, and both a close has drained the kqueue and the
+        /// wait's deadline has passed. Darwin answers whichever of the two
+        /// reached the sleeping task first, which this library does not record.
+        /// Gives the kqueue's open file description.
+        let (|DrainBesideDeadline|_|) (refusal : KeventRefusal) : OpenFileDescriptionId option =
+            match refusal with
+            | KeventRefusal.DrainBesideDeadline kqueue -> Some kqueue
+            | _ -> None
+
+        /// The wait was asleep, and both a close has drained the kqueue and it
+        /// has an event to report. Darwin answers whichever of the two reached
+        /// the sleeping task first, which this library does not record. Gives
+        /// the kqueue's open file description.
+        let (|DrainBesideEvents|_|) (refusal : KeventRefusal) : OpenFileDescriptionId option =
+            match refusal with
+            | KeventRefusal.DrainBesideEvents kqueue -> Some kqueue
+            | _ -> None
+
+        /// The wait was asleep, and both its deadline has passed and the kqueue
+        /// has an event to report. Darwin answers whichever of the two reached
+        /// the sleeping task first, which this library does not record. Gives
+        /// the kqueue's open file description.
+        let (|EventsBesideDeadline|_|) (refusal : KeventRefusal) : OpenFileDescriptionId option =
+            match refusal with
+            | KeventRefusal.EventsBesideDeadline kqueue -> Some kqueue
+            | _ -> None
+
+        /// The wait was asleep and a signal is pending for the task, and this
+        /// library will not say how the signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : KeventRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | KeventRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it actually passed.
     let describe (refusal : KeventRefusal) : string =

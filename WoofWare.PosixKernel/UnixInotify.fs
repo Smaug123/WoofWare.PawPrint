@@ -16,17 +16,42 @@ module InotifyInitFlags =
 
 /// Why this kernel will not answer an `inotify_init1(2)` or an
 /// `inotify_rm_watch(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `InotifyRefusal.Reason`, and ends its match with a wildcard, where
+/// `InotifyRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type InotifyRefusal =
-    /// This kernel is of `flavour` (Darwin), which has no inotify: no Darwin
-    /// kernel has the call, so there is no answer to measure.
+    internal
+    /// See `InotifyRefusal.Reason.Flavour`.
     | Flavour of flavour : SimulatedUnixFlavour
-    /// A descriptor `inotify_init1` would make lies at or above the bound this
-    /// kernel assumes the process's `RLIMIT_NOFILE` reaches.
+    /// See `InotifyRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
 
 [<RequireQualifiedAccess>]
 module InotifyRefusal =
+    /// The reasons this kernel will not answer an `inotify_init1(2)` or an
+    /// `inotify_rm_watch(2)`, one partial pattern each. A match over them is
+    /// never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is Darwin-flavoured, which has no inotify: no Darwin
+        /// kernel has the call, so there is no answer to measure. Gives the
+        /// flavour.
+        let (|Flavour|_|) (refusal : InotifyRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | InotifyRefusal.Flavour flavour -> Some flavour
+            | _ -> None
+
+        /// A descriptor `inotify_init1` would make lies at or above the bound
+        /// this kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : InotifyRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | InotifyRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which of its entry points asked.
     let describe (refusal : InotifyRefusal) : string =
@@ -36,26 +61,69 @@ module InotifyRefusal =
         | InotifyRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
 
 /// Why this kernel will not answer an `inotify_add_watch(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `InotifyAddWatchRefusal.Reason`, and ends its match with a wildcard, where
+/// `InotifyAddWatchRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type InotifyAddWatchRefusal =
-    /// This kernel is of `flavour` (Darwin), which has no inotify.
+    internal
+    /// See `InotifyAddWatchRefusal.Reason.Flavour`.
     | Flavour of flavour : SimulatedUnixFlavour
-    /// The call would succeed, and the watch would ask for `events`, none of
-    /// which this kernel raises (see `InotifyEvent.modelled`). Unmodelled.
+    /// See `InotifyAddWatchRefusal.Reason.UnmodelledEvents`.
     | UnmodelledEvents of events : InotifyEvent list
-    /// The call would succeed with `IN_ONESHOT`, which removes a watch after
-    /// its first event. Unmodelled.
+    /// See `InotifyAddWatchRefusal.Reason.OneShot`.
     | OneShot
-    /// The path has no answer here.
+    /// See `InotifyAddWatchRefusal.Reason.Path`.
     | Path of PathRefusal
-    /// The call would make a new watch, and the instance has handed out every
-    /// watch descriptor up to `Int32.MaxValue`. Linux would hand out that one
-    /// and then start again from 1, skipping those in use; this kernel does
-    /// not model the wrap.
+    /// See `InotifyAddWatchRefusal.Reason.WatchDescriptorsExhausted`.
     | WatchDescriptorsExhausted
 
 [<RequireQualifiedAccess>]
 module InotifyAddWatchRefusal =
+    /// The reasons this kernel will not answer an `inotify_add_watch(2)`, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is Darwin-flavoured, which has no inotify. Gives the
+        /// flavour.
+        let (|Flavour|_|) (refusal : InotifyAddWatchRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | InotifyAddWatchRefusal.Flavour flavour -> Some flavour
+            | _ -> None
+
+        /// The call would succeed, and the watch would ask for events this
+        /// kernel does not raise (see `InotifyEvent.modelled`). Unmodelled.
+        /// Gives those events.
+        let (|UnmodelledEvents|_|) (refusal : InotifyAddWatchRefusal) : InotifyEvent list option =
+            match refusal with
+            | InotifyAddWatchRefusal.UnmodelledEvents events -> Some events
+            | _ -> None
+
+        /// The call would succeed with `IN_ONESHOT`, which removes a watch
+        /// after its first event. Unmodelled.
+        let (|OneShot|_|) (refusal : InotifyAddWatchRefusal) : unit option =
+            match refusal with
+            | InotifyAddWatchRefusal.OneShot -> Some ()
+            | _ -> None
+
+        /// The path has no answer here. Gives the `PathRefusal`.
+        let (|Path|_|) (refusal : InotifyAddWatchRefusal) : PathRefusal option =
+            match refusal with
+            | InotifyAddWatchRefusal.Path refusal -> Some refusal
+            | _ -> None
+
+        /// The call would make a new watch, and the instance has handed out
+        /// every watch descriptor up to `Int32.MaxValue`. Linux would hand out
+        /// that one and then start again from 1, skipping those in use; this
+        /// kernel does not model the wrap.
+        let (|WatchDescriptorsExhausted|_|) (refusal : InotifyAddWatchRefusal) : unit option =
+            match refusal with
+            | InotifyAddWatchRefusal.WatchDescriptorsExhausted -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which of its entry points asked.
     let describe (refusal : InotifyAddWatchRefusal) : string =
@@ -234,8 +302,8 @@ module UnixInotify =
     /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
     /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
     /// succeed asking for an event this kernel does not raise, or with
-    /// `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal.UnmodelledEvents`,
-    /// `InotifyAddWatchRefusal.OneShot`); one that fails answers its errno.
+    /// `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal.Reason.UnmodelledEvents`,
+    /// `InotifyAddWatchRefusal.Reason.OneShot`); one that fails answers its errno.
     ///
     /// Adding a watch queues nothing. Under the Darwin flavour every call is
     /// refused.

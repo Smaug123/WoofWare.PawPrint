@@ -37,18 +37,50 @@ type GetRandomAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `getrandom`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetRandomRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetRandomRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetRandomRefusal =
-    /// The buffer has no answer at the step the call reached.
+    internal
+    /// See `GetRandomRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The simulated kernel has no `getrandom` system call.
+    /// See `GetRandomRefusal.Reason.NoSuchSyscall`.
     | NoSuchSyscall of flavour : SimulatedUnixFlavour
-    /// A request that moves `count` bytes, more than a page, by a task with a
-    /// signal pending that it would take on its return to user mode.
+    /// See `GetRandomRefusal.Reason.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module GetRandomRefusal =
+    /// The reasons this kernel will not answer a `getrandom`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the call reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : GetRandomRefusal) : BufferRefusal option =
+            match refusal with
+            | GetRandomRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The simulated kernel has no `getrandom` system call. Gives the
+        /// flavour.
+        let (|NoSuchSyscall|_|) (refusal : GetRandomRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | GetRandomRefusal.NoSuchSyscall flavour -> Some flavour
+            | _ -> None
+
+        /// A request that moves more than a page of bytes, by a task with a
+        /// signal pending that it would take on its return to user mode. Gives
+        /// how many bytes the request moves.
+        let (|SignalAtPageBoundary|_|) (refusal : GetRandomRefusal) : int option =
+            match refusal with
+            | GetRandomRefusal.SignalAtPageBoundary count -> Some count
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetRandomRefusal) : string =
@@ -75,15 +107,40 @@ type GetEntropyAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `getentropy`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `GetEntropyRefusal.Reason`, and ends its match with a wildcard, where
+/// `GetEntropyRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type GetEntropyRefusal =
-    /// The buffer has no answer at the step the call reached.
+    internal
+    /// See `GetEntropyRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The simulated kernel has no `getentropy` system call.
+    /// See `GetEntropyRefusal.Reason.NoSuchSyscall`.
     | NoSuchSyscall of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module GetEntropyRefusal =
+    /// The reasons this kernel will not answer a `getentropy`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the call reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : GetEntropyRefusal) : BufferRefusal option =
+            match refusal with
+            | GetEntropyRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The simulated kernel has no `getentropy` system call. Gives the
+        /// flavour.
+        let (|NoSuchSyscall|_|) (refusal : GetEntropyRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | GetEntropyRefusal.NoSuchSyscall flavour -> Some flavour
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetEntropyRefusal) : string =
@@ -192,7 +249,7 @@ module UnixEntropy =
     ///
     /// `task` is the task making the call, which must be one of the process's.
     /// A request that moves more than a page, by a task with a signal pending,
-    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
+    /// is refused (`GetRandomRefusal.Reason.SignalAtPageBoundary`): a real one stops
     /// short at the first page boundary.
     let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)

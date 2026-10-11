@@ -4,29 +4,67 @@ namespace WoofWare.PosixKernel
 ///
 /// Distinct from an errno: each case is a clock id that a real kernel of the
 /// simulated flavour answers, naming a clock this kernel does not model.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ClockGettimeRefusal.Reason`, and ends its match with a wildcard, where
+/// `ClockGettimeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ClockGettimeRefusal =
-    /// `CLOCK_PROCESS_CPUTIME_ID` or `CLOCK_THREAD_CPUTIME_ID`. This kernel does
-    /// not account the CPU time a process or thread consumes.
+    internal
+    /// See `ClockGettimeRefusal.Reason.CpuTime`.
     | CpuTime of clockId : int
-    /// A negative clock id on Linux. It encodes the CPU-time clock of a process
-    /// or thread by its ID, or a clock device by a file descriptor, and this
-    /// kernel models neither.
+    /// See `ClockGettimeRefusal.Reason.EncodedClock`.
     | EncodedClock of clockId : int
-    /// A clock that reads an approximation of a finer one as of some earlier
-    /// moment: Darwin's `CLOCK_MONOTONIC_RAW_APPROX` and
-    /// `CLOCK_UPTIME_RAW_APPROX`. Not modelled.
+    /// See `ClockGettimeRefusal.Reason.Coarse`.
     | Coarse of clockId : int
-    /// A clock whose reading depends on something this kernel's machine does not
-    /// describe: Linux's `CLOCK_REALTIME_ALARM` and `CLOCK_BOOTTIME_ALARM`, which
-    /// exist only on a machine with a real-time-clock device; `CLOCK_TAI`, whose
-    /// offset from the realtime clock is whatever a time daemon set; and Linux's
-    /// auxiliary clocks, ids 16 to 23, which exist only when the kernel was built
-    /// with them and answer only once an administrator has enabled them.
+    /// See `ClockGettimeRefusal.Reason.MachineDependent`.
     | MachineDependent of clockId : int
 
 [<RequireQualifiedAccess>]
 module ClockGettimeRefusal =
+    /// The reasons this kernel will not answer a `clock_gettime`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// `CLOCK_PROCESS_CPUTIME_ID` or `CLOCK_THREAD_CPUTIME_ID`. This kernel
+        /// does not account the CPU time a process or thread consumes. Gives
+        /// the clock id.
+        let (|CpuTime|_|) (refusal : ClockGettimeRefusal) : int option =
+            match refusal with
+            | ClockGettimeRefusal.CpuTime clockId -> Some clockId
+            | _ -> None
+
+        /// A negative clock id on Linux. It encodes the CPU-time clock of a
+        /// process or thread by its ID, or a clock device by a file descriptor,
+        /// and this kernel models neither. Gives the clock id.
+        let (|EncodedClock|_|) (refusal : ClockGettimeRefusal) : int option =
+            match refusal with
+            | ClockGettimeRefusal.EncodedClock clockId -> Some clockId
+            | _ -> None
+
+        /// A clock that reads an approximation of a finer one as of some
+        /// earlier moment: Darwin's `CLOCK_MONOTONIC_RAW_APPROX` and
+        /// `CLOCK_UPTIME_RAW_APPROX`. Not modelled. Gives the clock id.
+        let (|Coarse|_|) (refusal : ClockGettimeRefusal) : int option =
+            match refusal with
+            | ClockGettimeRefusal.Coarse clockId -> Some clockId
+            | _ -> None
+
+        /// A clock whose reading depends on something this kernel's machine
+        /// does not describe: Linux's `CLOCK_REALTIME_ALARM` and
+        /// `CLOCK_BOOTTIME_ALARM`, which exist only on a machine with a
+        /// real-time-clock device; `CLOCK_TAI`, whose offset from the realtime
+        /// clock is whatever a time daemon set; and Linux's auxiliary clocks,
+        /// ids 16 to 23, which exist only when the kernel was built with them
+        /// and answer only once an administrator has enabled them. Gives the
+        /// clock id.
+        let (|MachineDependent|_|) (refusal : ClockGettimeRefusal) : int option =
+            match refusal with
+            | ClockGettimeRefusal.MachineDependent clockId -> Some clockId
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : ClockGettimeRefusal) : string =

@@ -76,20 +76,51 @@ type TaskOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 /// Why this library will not answer a task's thread exit: a case it does not
 /// model, rather than an error a kernel would report, because the thread-exit
 /// syscall cannot fail.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ThreadExitRefusal.Reason`, and ends its match with a wildcard, where
+/// `ThreadExitRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ThreadExitRefusal<'Task> =
-    /// The task is blocked in a syscall, so it cannot be making another one.
+    internal
+    /// See `ThreadExitRefusal.Reason.Parked`.
     | Parked of task : 'Task * park : TaskPark
-    /// The task is the process's leader, and other tasks live. On both flavours
-    /// the process carries on, with a leader that has gone (a zombie task on
-    /// Linux); this library keeps the leader until the process ends.
+    /// See `ThreadExitRefusal.Reason.LeaderBeforeOthers`.
     | LeaderBeforeOthers of task : 'Task
-    /// The task is the last one on Darwin, where what its thread exit does has not
-    /// been measured.
+    /// See `ThreadExitRefusal.Reason.LastTaskOnDarwin`.
     | LastTaskOnDarwin of task : 'Task
 
 [<RequireQualifiedAccess>]
 module ThreadExitRefusal =
+    /// The reasons this library will not answer a task's thread exit, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The task is blocked in a syscall, so it cannot be making another
+        /// one. Gives the task, then what it is parked in.
+        let (|Parked|_|) (refusal : ThreadExitRefusal<'Task>) : ('Task * TaskPark) option =
+            match refusal with
+            | ThreadExitRefusal.Parked (task, park) -> Some (task, park)
+            | _ -> None
+
+        /// The task is the process's leader, and other tasks live. On both
+        /// flavours the process carries on, with a leader that has gone (a
+        /// zombie task on Linux); this library keeps the leader until the
+        /// process ends. Gives the task.
+        let (|LeaderBeforeOthers|_|) (refusal : ThreadExitRefusal<'Task>) : 'Task option =
+            match refusal with
+            | ThreadExitRefusal.LeaderBeforeOthers task -> Some task
+            | _ -> None
+
+        /// The task is the last one on Darwin, where what its thread exit does
+        /// has not been measured. Gives the task.
+        let (|LastTaskOnDarwin|_|) (refusal : ThreadExitRefusal<'Task>) : 'Task option =
+            match refusal with
+            | ThreadExitRefusal.LastTaskOnDarwin task -> Some task
+            | _ -> None
+
 
     /// A human-readable account of why the exit was refused.
     let describe<'Task> (refusal : ThreadExitRefusal<'Task>) : string =
@@ -114,15 +145,31 @@ type SpawnAnswer =
 /// Why this library will not answer a `clone(2)` with `CLONE_THREAD`: a case it
 /// does not model or has not measured, rather than an error a kernel would
 /// report.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SpawnRefusal.Reason`, and ends its match with a wildcard, where
+/// `SpawnRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SpawnRefusal<'Task> =
-    /// Unmeasured. Darwin's 64-bit thread ID counter has reached the top of its
-    /// range, and what Darwin does when a thread is created then has not been
-    /// measured.
+    internal
+    /// See `SpawnRefusal.Reason.ThreadIdCounterExhausted`.
     | ThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
 module SpawnRefusal =
+    /// The reasons this library will not answer a `clone(2)` with
+    /// `CLONE_THREAD`, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// Unmeasured. Darwin's 64-bit thread ID counter has reached the top of
+        /// its range, and what Darwin does when a thread is created then has
+        /// not been measured.
+        let (|ThreadIdCounterExhausted|_|) (refusal : SpawnRefusal<'Task>) : unit option =
+            match refusal with
+            | SpawnRefusal.ThreadIdCounterExhausted -> Some ()
+
 
     /// A human-readable account of why the thread's creation was refused.
     let describe<'Task> (refusal : SpawnRefusal<'Task>) : string =
@@ -264,7 +311,7 @@ module UnixTaskLifecycle =
     /// `pid_max` is in use, leaving the system as it was.
     ///
     /// Refuses a spawn on Darwin once the machine's thread ID counter has
-    /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
+    /// reached the top of its range (`SpawnRefusal.Reason.ThreadIdCounterExhausted`).
     ///
     /// Fails loudly if `parent` names no task or is parked in a syscall, if
     /// `child` already names a task, or if `cpu` is not one of the machine's
