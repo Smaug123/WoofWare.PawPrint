@@ -125,9 +125,8 @@ type BindRefusal =
     /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
     /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard `::ffff:0.0.0.0`,
     /// whose conflicts with other sockets Darwin decides differently from the
-    /// IPv4 wildcard's (measured). `address` is the sixteen bytes of
-    /// `sin6_addr`.
-    | UnmodelledIpv6Address of socket : SocketId * address : ImmutableArray<byte>
+    /// IPv4 wildcard's (measured). `address` is `sin6_addr`.
+    | UnmodelledIpv6Address of socket : SocketId * address : Ipv6Address
 
 [<RequireQualifiedAccess>]
 module BindRefusal =
@@ -141,8 +140,7 @@ module BindRefusal =
         | BindRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
         | BindRefusal.UnmodelledIpv6Address (socket, address) ->
-            let text = System.Net.IPAddress(address.AsSpan ()).ToString ()
-            $"IPv6 socket %O{socket} asked to bind [%s{text}]. This kernel has no IPv6 transport, so it binds an IPv6 socket only to a specific v4-mapped address (::ffff:a.b.c.d). A native address needs IPv6, and the mapped wildcard ::ffff:0.0.0.0 (and ::, which also takes it) conflicts with other sockets by rules Darwin does not share with the IPv4 wildcard."
+            $"IPv6 socket %O{socket} asked to bind [%s{Ipv6Address.toString address}]. This kernel has no IPv6 transport, so it binds an IPv6 socket only to a specific v4-mapped address (::ffff:a.b.c.d). A native address needs IPv6, and the mapped wildcard ::ffff:0.0.0.0 (and ::, which also takes it) conflicts with other sockets by rules Darwin does not share with the IPv4 wildcard."
 
 /// What a `listen(2)` answered.
 [<RequireQualifiedAccess>]
@@ -1282,7 +1280,7 @@ module UnixSocket =
         let port =
             match copied.Destination with
             | Some (Ipv6Destination.V4Mapped endpoint) -> Some endpoint.Port
-            | Some (Ipv6Destination.Native (_, port)) -> Some port
+            | Some (Ipv6Destination.Native endpoint) -> Some endpoint.Port
             | None -> None
 
         let lengthFault =
@@ -1364,12 +1362,11 @@ module UnixSocket =
         // faults judged before the address are known to precede.
         let unmodelled =
             match copied.Destination, socket.Addressing with
-            | Some (Ipv6Destination.Native (address, _)), _ -> Some address
+            | Some (Ipv6Destination.Native endpoint), _ -> Some endpoint.Address
             | Some (Ipv6Destination.V4Mapped endpoint), SocketAddressing.Inet6DualMode _ when
                 endpoint.Address = Ipv4Address.any
                 ->
-                // `::ffff:0.0.0.0`.
-                Some (ImmutableArray.CreateRange (Array.init 16 (fun i -> if i = 10 || i = 11 then 0xFFuy else 0uy)))
+                Some (Ipv6Address.v4Mapped Ipv4Address.any)
             | Some (Ipv6Destination.V4Mapped _), _
             | None, _ -> None
 
@@ -1669,10 +1666,20 @@ module UnixSocket =
                 | SocketPhase.Listening _
                 | SocketPhase.DatagramPeer _ -> false
 
-            let address =
-                SimulatedUnixPlatform.presentedIpv6Address platform connectionFailed endpoint.Address
-
-            Ok (SimulatedUnixPlatform.encodeInternetV6Sockaddr platform address endpoint.Port)
+            // A socket whose transport is IPv4 reports a zero flow info and
+            // scope id: measured for `getpeername` on both, after a connect
+            // that passed a non-zero one of each
+            // (`docs/probes/dual-mode/dual-mode.c`, A11 and A12).
+            Ok (
+                SimulatedUnixPlatform.encodeInternetV6Sockaddr
+                    platform
+                    {
+                        Address = SimulatedUnixPlatform.presentedIpv6Address platform connectionFailed endpoint.Address
+                        Port = endpoint.Port
+                        FlowInfo = 0u
+                        ScopeId = 0u
+                    }
+            )
         | SocketDomain.Inet6, (SocketKind.Datagram | SocketKind.SeqPacket) ->
             Error (GetSockNameRefusal.UnmodelledInet6Kind (socketId, socket.Kind))
 

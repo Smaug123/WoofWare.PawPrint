@@ -190,9 +190,11 @@ type ConnectRefusal =
     /// interface to broadcast on, so it does not record such a peer.
     | DatagramGroupDestination of socket : SocketId * destination : Ipv4Endpoint
     /// An IPv6 socket would connect to an IPv6 address that is not v4-mapped,
-    /// which needs an IPv6 transport this kernel does not have. `address` is
-    /// the sixteen bytes of `sin6_addr`.
-    | Ipv6Destination of socket : SocketId * address : ImmutableArray<byte> * port : uint16
+    /// which needs an IPv6 transport this kernel does not have. `destination`
+    /// is the `struct sockaddr_in6` the caller passed; its scope id is 0 if
+    /// the caller's length stopped short of `sin6_scope_id`, as Linux reads
+    /// such a length.
+    | Ipv6Destination of socket : SocketId * destination : Ipv6Endpoint
 
 [<RequireQualifiedAccess>]
 module ConnectRefusal =
@@ -232,9 +234,8 @@ module ConnectRefusal =
             $"destination %s{Ipv4Endpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
         | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
             $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
-        | ConnectRefusal.Ipv6Destination (socket, address, port) ->
-            let text = System.Net.IPAddress(address.AsSpan ()).ToString ()
-            $"IPv6 socket %O{socket} would connect to [%s{text}]:%d{port}. This kernel has no IPv6 transport: an IPv6 socket reaches only IPv4 peers, through v4-mapped addresses (::ffff:a.b.c.d), with IPV6_V6ONLY off."
+        | ConnectRefusal.Ipv6Destination (socket, destination) ->
+            $"IPv6 socket %O{socket} would connect to %s{Ipv6Endpoint.toString destination}. This kernel has no IPv6 transport: an IPv6 socket reaches only IPv4 peers, through v4-mapped addresses (::ffff:a.b.c.d), with IPV6_V6ONLY off."
         | ConnectRefusal.DatagramGroupDestination (socket, destination) ->
             $"datagram socket %O{socket} would connect to %s{Ipv4Endpoint.toString destination}, a broadcast or multicast destination. This kernel models no group membership and no interface to broadcast on, so it does not record such a peer. Model multicast and broadcast before connecting to either."
 
@@ -255,9 +256,8 @@ type internal ConnectAddress =
         /// The IPv4 destination, a v4-mapped one on an IPv6 socket, when the
         /// copy reached it.
         Destination : Ipv4Endpoint option
-        /// On an IPv6 socket, a destination that is not v4-mapped: the sixteen
-        /// bytes of `sin6_addr` and the port.
-        NativeDestination : (ImmutableArray<byte> * uint16) option
+        /// On an IPv6 socket, a destination that is not v4-mapped.
+        NativeDestination : Ipv6Endpoint option
         /// The IPv4 address read with every byte past the copy as zero, which
         /// Darwin judges a broadcast or multicast destination by; `Ipv4Address.any` for a
         /// native IPv6 destination.
@@ -332,7 +332,7 @@ module UnixConnection =
         // IPv6 transport, refused at the point the ladder would use it.
         let nativeDestination () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
             address.NativeDestination
-            |> Option.map (fun (bytes, port) -> Error (ConnectRefusal.Ipv6Destination (socketId, bytes, port)))
+            |> Option.map (fun destination -> Error (ConnectRefusal.Ipv6Destination (socketId, destination)))
 
         // An IPv6 socket with IPV6_V6ONLY on reaches no IPv4 destination, and
         // binds nothing on the way: measured on both, at every v4-mapped
@@ -1394,7 +1394,7 @@ module UnixConnection =
             let destination, native =
                 match decoded.Destination with
                 | Some (Ipv6Destination.V4Mapped endpoint) -> Some endpoint, None
-                | Some (Ipv6Destination.Native (address, port)) -> None, Some (address, port)
+                | Some (Ipv6Destination.Native endpoint) -> None, Some endpoint
                 | None -> None, None
 
             {
