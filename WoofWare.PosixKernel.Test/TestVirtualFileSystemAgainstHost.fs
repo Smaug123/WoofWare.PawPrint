@@ -1881,6 +1881,7 @@ module TestVirtualFileSystemAgainstHost =
                 )
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> []

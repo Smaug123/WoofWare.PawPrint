@@ -39,6 +39,7 @@ module DirectoryEntryPal =
     /// `S_IFMT` numbering `stat` reports.
     let nodeType (kind : DirectoryEntryKind) : int =
         match kind with
+        | DirectoryEntryKind.Fifo -> 1
         | DirectoryEntryKind.CharacterDevice -> 2
         | DirectoryEntryKind.Directory -> 4
         | DirectoryEntryKind.RegularFile -> 8

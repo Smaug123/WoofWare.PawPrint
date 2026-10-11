@@ -347,6 +347,7 @@ module TestMkNod =
                 | InodeContent.Symlink _ -> "lnk"
                 | InodeContent.CharacterDevice _ -> "chr"
                 | InodeContent.Socket _ -> "sock"
+                | InodeContent.Fifo _ -> "fifo"
 
             let parent = holder path after
             let egid = after.Process.Credentials.EffectiveGroup

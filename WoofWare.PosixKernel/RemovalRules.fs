@@ -307,6 +307,7 @@ module private RemovalChecks =
         | Some (InodeContent.Directory _) -> true
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
         | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> false
         | None ->
@@ -329,6 +330,7 @@ module private RemovalChecks =
         | Some (InodeContent.Directory directory) -> Map.isEmpty directory.Entries
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
         | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) ->
             failwith
@@ -584,6 +586,9 @@ module internal OpenDirRules =
                }
         | Some {
                    Content = InodeContent.Socket _
+               }
+        | Some {
+                   Content = InodeContent.Fifo _
                }
         | Some {
                    Content = InodeContent.Symlink _
