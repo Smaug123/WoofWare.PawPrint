@@ -64,11 +64,11 @@ module TestRmDirRules =
         let root = VirtualFileSystem.root vfs
 
         let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
             |> ok
 
         let file (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createFile
+            GraphMutators.createFile
                 parent
                 (name n)
                 SeedEntry.defaultPermsForRegularFile
@@ -80,14 +80,7 @@ module TestRmDirRules =
             |> snd
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
-                parent
-                (name n)
-                SymlinkModes.linux
-                Owners.linuxDefault
-                buildTime
-                (target t)
-                vfs
+            GraphMutators.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
             |> ok
             |> snd
 

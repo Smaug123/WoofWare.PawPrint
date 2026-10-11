@@ -373,24 +373,24 @@ module TestInodeOwner =
         let root = VirtualFileSystem.root vfs
 
         let p, vfs =
-            VirtualFileSystem.createDirectory root (name "p") (mode 0o755) b epoch vfs |> ok
+            GraphMutators.createDirectory root (name "p") (mode 0o755) b epoch vfs |> ok
 
         let q, vfs =
-            VirtualFileSystem.createDirectory root (name "q") (mode 0o755) c epoch vfs |> ok
+            GraphMutators.createDirectory root (name "q") (mode 0o755) c epoch vfs |> ok
 
         let file, vfs =
-            VirtualFileSystem.createFile p (name "f") (mode 0o644) d epoch ImmutableArray.Empty vfs
+            GraphMutators.createFile p (name "f") (mode 0o644) d epoch ImmutableArray.Empty vfs
             |> ok
 
         let sub, vfs =
-            VirtualFileSystem.createDirectory p (name "sub") (mode 0o755) e epoch vfs |> ok
+            GraphMutators.createDirectory p (name "sub") (mode 0o755) e epoch vfs |> ok
 
         let other, vfs =
-            VirtualFileSystem.createFile q (name "g") (mode 0o644) f epoch ImmutableArray.Empty vfs
+            GraphMutators.createFile q (name "g") (mode 0o644) f epoch ImmutableArray.Empty vfs
             |> ok
 
         let link, vfs =
-            VirtualFileSystem.createSymlink
+            GraphMutators.createSymlink
                 q
                 (name "l")
                 SymlinkModes.linux
@@ -405,25 +405,24 @@ module TestInodeOwner =
         let later = UnixTimestamp.ofMillisecondsSinceEpoch 1000L
 
         let added, vfs =
-            VirtualFileSystem.createFile p (name "new") (mode 0o644) fresh later ImmutableArray.Empty vfs
+            GraphMutators.createFile p (name "new") (mode 0o644) fresh later ImmutableArray.Empty vfs
             |> ok
 
-        let vfs = VirtualFileSystem.hardLink q (name "f2") file later vfs |> ok
+        let vfs = GraphMutators.hardLink q (name "f2") file later vfs |> ok
 
         let _, vfs =
-            VirtualFileSystem.unbind UnbindTargetEffect.LostALink q (name "g") later vfs
-            |> ok
+            GraphMutators.unbind UnbindTargetEffect.LostALink q (name "g") later vfs |> ok
 
         // Within one directory, which rebuilds that directory once...
-        let _, vfs = VirtualFileSystem.rename q (name "f2") q (name "f4") later vfs |> ok
+        let _, vfs = GraphMutators.rename q (name "f2") q (name "f4") later vfs |> ok
 
         // ...and across directories, a file and then a directory, whose `..` moves.
-        let _, vfs = VirtualFileSystem.rename p (name "f") q (name "f3") later vfs |> ok
+        let _, vfs = GraphMutators.rename p (name "f") q (name "f3") later vfs |> ok
 
-        let _, vfs = VirtualFileSystem.rename p (name "sub") q (name "sub2") later vfs |> ok
+        let _, vfs = GraphMutators.rename p (name "sub") q (name "sub2") later vfs |> ok
 
         let vfs =
-            VirtualFileSystem.writeFile
+            GraphMutators.writeFile
                 file
                 0L
                 (ImmutableArray.Create 1uy)
@@ -434,7 +433,7 @@ module TestInodeOwner =
             |> ok
 
         let vfs =
-            VirtualFileSystem.truncateFile file 0L SetIdBitsOnTruncation.Strip Owners.linuxDefaultCaller later vfs
+            GraphMutators.truncateFile file 0L SetIdBitsOnTruncation.Strip Owners.linuxDefaultCaller later vfs
             |> ok
 
         let after = VirtualFileSystem.inodes vfs |> Map.map (fun _ inode -> inode.Owner)

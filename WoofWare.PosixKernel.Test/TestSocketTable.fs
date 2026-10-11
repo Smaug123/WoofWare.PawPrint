@@ -350,7 +350,7 @@ module TestSocketTable =
                 { initialSystem with
                     Machine =
                         { initialSystem.Machine with
-                            FileSystem = filesystem
+                            CommittedFileSystem = CommittedFileSystem.initial filesystem
                         }
                     Process =
                         { initialSystem.Process with
@@ -475,7 +475,7 @@ module TestSocketTable =
                         let holder, chosen = removable.[rng.Next removable.Length]
 
                         match
-                            VirtualFileSystem.unbind
+                            GraphMutators.unbind
                                 UnbindTargetEffect.LostALink
                                 holder
                                 chosen
@@ -490,7 +490,7 @@ module TestSocketTable =
                                 { kernel with
                                     Machine =
                                         { kernel.Machine with
-                                            FileSystem = filesystem
+                                            CommittedFileSystem = CommittedFileSystem.initial filesystem
                                         }
                                 }
                                 |> ObjectLifetime.forgetIfUnheld inode

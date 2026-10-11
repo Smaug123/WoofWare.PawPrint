@@ -247,7 +247,7 @@ module TestUnblockForAnotherTask =
 
         let inode, filesystem =
             match
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     (InodeNumber 1L)
                     (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
@@ -269,7 +269,7 @@ module TestUnblockForAnotherTask =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = filesystem
+                        CommittedFileSystem = CommittedFileSystem.initial filesystem
                     }
             }
             |> UnixSystemState.withFileDescriptors registry

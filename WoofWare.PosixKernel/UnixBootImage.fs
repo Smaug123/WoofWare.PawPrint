@@ -504,7 +504,7 @@ module UnixBootImage =
             Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name)
         | Ok filesystem ->
             { machine with
-                FileSystem = filesystem
+                CommittedFileSystem = CommittedFileSystem.initial filesystem
             }
             |> withMachine image
             |> Ok

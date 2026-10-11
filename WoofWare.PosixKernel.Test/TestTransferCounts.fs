@@ -95,7 +95,7 @@ module TestTransferCounts =
         =
         let inode, filesystem =
             match
-                VirtualFileSystem.createFile
+                GraphMutators.createFile
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
@@ -116,7 +116,7 @@ module TestTransferCounts =
             { system with
                 Machine =
                     { system.Machine with
-                        FileSystem = filesystem
+                        CommittedFileSystem = CommittedFileSystem.initial filesystem
                     }
             })
 

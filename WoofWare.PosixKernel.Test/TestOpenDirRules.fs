@@ -60,23 +60,16 @@ module TestOpenDirRules =
         let root = VirtualFileSystem.root vfs
 
         let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
+            GraphMutators.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs
             |> ok
 
         let file (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createFile parent (name n) bits Owners.linuxDefault buildTime noBytes vfs
+            GraphMutators.createFile parent (name n) bits Owners.linuxDefault buildTime noBytes vfs
             |> ok
             |> snd
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink
-                parent
-                (name n)
-                SymlinkModes.linux
-                Owners.linuxDefault
-                buildTime
-                (target t)
-                vfs
+            GraphMutators.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
             |> ok
             |> snd
 

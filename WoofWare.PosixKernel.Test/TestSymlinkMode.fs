@@ -103,15 +103,13 @@ module TestSymlinkMode =
         let root = VirtualFileSystem.root vfs
 
         let vfs =
-            match
-                VirtualFileSystem.createFile root (name "f") (bits 0o644) other epoch ImmutableArray<byte>.Empty vfs
-            with
+            match GraphMutators.createFile root (name "f") (bits 0o644) other epoch ImmutableArray<byte>.Empty vfs with
             | Ok (_, vfs) -> vfs
             | Error error -> failwith $"%s{context}: could not create f: %O{error}"
 
         let vfs =
             match
-                VirtualFileSystem.createSymlink
+                GraphMutators.createSymlink
                     root
                     (name "l")
                     (bits linkBits)
@@ -126,7 +124,7 @@ module TestSymlinkMode =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Process =
                 { system.Process with

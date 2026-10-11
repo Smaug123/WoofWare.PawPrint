@@ -938,13 +938,10 @@ module UnixDescriptor =
         match
             VirtualFileSystem.truncateFile inode length rule system.Process.Credentials now system.Machine.FileSystem
         with
-        | Ok filesystem ->
+        | Ok mutation ->
             Ok
                 { system with
-                    Machine =
-                        { system.Machine with
-                            FileSystem = filesystem
-                        }
+                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 }
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))

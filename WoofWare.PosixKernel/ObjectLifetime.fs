@@ -156,9 +156,9 @@ module ObjectLifetime =
         let freed =
             { system with
                 Machine =
-                    { system.Machine with
-                        FileSystem = VirtualFileSystem.forget inode system.Machine.FileSystem
-                    }
+                    UnixMachineState.commitFileSystem
+                        (VirtualFileSystem.forget inode system.Machine.FileSystem)
+                        system.Machine
             }
 
         // A directory freed here was the last thing holding its parent's ".."

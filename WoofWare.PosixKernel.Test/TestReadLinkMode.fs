@@ -120,17 +120,17 @@ module TestReadLinkMode =
             (fun vfs entry ->
                 match entry with
                 | Entry.File n ->
-                    VirtualFileSystem.createFile directory (name n) (bits 0o644) owner epoch ImmutableArray.Empty vfs
+                    GraphMutators.createFile directory (name n) (bits 0o644) owner epoch ImmutableArray.Empty vfs
                     |> created n
                     |> snd
                 | Entry.Directory (n, mode, dirOwner, children) ->
                     let inode, vfs =
-                        VirtualFileSystem.createDirectory directory (name n) (bits mode) dirOwner epoch vfs
+                        GraphMutators.createDirectory directory (name n) (bits mode) dirOwner epoch vfs
                         |> created n
 
                     populate inode dirOwner children vfs
                 | Entry.Link (n, target, mode, linkOwner) ->
-                    VirtualFileSystem.createSymlink
+                    GraphMutators.createSymlink
                         directory
                         (name n)
                         (bits mode)
@@ -162,7 +162,7 @@ module TestReadLinkMode =
 
         let cellInode, vfs =
             match
-                VirtualFileSystem.createDirectory
+                GraphMutators.createDirectory
                     (VirtualFileSystem.root vfs)
                     (name "w")
                     (bits cellMode)
@@ -178,7 +178,7 @@ module TestReadLinkMode =
         { system with
             Machine =
                 { system.Machine with
-                    FileSystem = vfs
+                    CommittedFileSystem = CommittedFileSystem.initial vfs
                 }
             Process =
                 { system.Process with
