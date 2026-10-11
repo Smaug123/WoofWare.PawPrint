@@ -190,7 +190,7 @@ module TestConnectLadderMeasured =
         match socket.Phase with
         | SocketPhase.Established _
         | SocketPhase.EstablishedPendingReport _ -> true
-        | SocketPhase.DatagramPeer endpoint -> endpoint.Port <> 0us
+        | SocketPhase.DatagramPeer (SocketAddress.Inet endpoint) -> endpoint.Port <> 0us
         | _ -> false
 
     /// What this kernel answers for `call`, in the probe's words.

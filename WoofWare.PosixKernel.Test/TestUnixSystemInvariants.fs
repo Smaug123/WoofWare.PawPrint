@@ -72,7 +72,7 @@ module TestUnixSystemInvariants =
         let kind = if stream then SocketKind.Stream else SocketKind.SeqPacket
 
         let phase =
-            SocketPhase.DatagramPeer (Ipv4Endpoint.ofParts Ipv4Address.loopback 80us)
+            SocketPhase.DatagramPeer (SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 80us))
 
         let forged =
             (UnixSystemState.withFileDescriptors

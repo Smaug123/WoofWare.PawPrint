@@ -1224,7 +1224,7 @@ module TestConnectedTransfer =
                     match
                         CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback 0us)) system
                     with
-                    | Ok (BindAnswer.Bound endpoint, system) ->
+                    | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint), system) ->
                         assertClean system
                         Some endpoint.Port
                     | Error (BindRefusal.EphemeralPortsExhausted _) -> None

@@ -1023,7 +1023,7 @@ module TestSocketTable =
 
         match connectRefused (SocketId 3L) (loopback 5000us) kernel with
         | ConnectRefusal.AcceptQueueFull (_, destination, queued) ->
-            destination |> shouldEqual (loopback 5000us)
+            destination |> shouldEqual (SocketAddress.Inet (loopback 5000us))
             queued |> shouldEqual 2
         | other -> failwith $"expected the queue to be full, got %A{other}"
 
@@ -1047,7 +1047,7 @@ module TestSocketTable =
 
         match connectRefused (SocketId 2L) (loopback 5000us) kernel with
         | ConnectRefusal.AcceptQueueFull (_, destination, queued) ->
-            destination |> shouldEqual (loopback 5000us)
+            destination |> shouldEqual (SocketAddress.Inet (loopback 5000us))
             queued |> shouldEqual 1
         | other -> failwith $"expected the queue to be full, got %A{other}"
 
@@ -1281,13 +1281,13 @@ module TestSocketTable =
         outcome |> shouldEqual ConnectOutcome.Completed
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
-        |> shouldEqual (SocketPhase.DatagramPeer (loopback 9999us))
+        |> shouldEqual (SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 9999us)))
 
         // Re-connect re-targets.
         let _, kernel = connect (SocketId 0L) false (loopback 1234us) kernel
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
-        |> shouldEqual (SocketPhase.DatagramPeer (loopback 1234us))
+        |> shouldEqual (SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 1234us)))
 
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
         // drops the implicit binding entirely, port included.
@@ -1964,7 +1964,7 @@ module TestSocketTable =
 
         // Bound and idle: the measured dropped-SYN refusal.
         connectRefused (SocketId 1L) (loopback 5000us) (kernelWith SocketPhase.Idle Map.empty)
-        |> shouldEqual (ConnectRefusal.DarwinSynDropped (loopback 5000us))
+        |> shouldEqual (ConnectRefusal.DarwinSynDropped (SocketAddress.Inet (loopback 5000us)))
 
         // Established at the port (its listener long closed): RST, so the
         // connect is refused like any closed port — and this socket latches

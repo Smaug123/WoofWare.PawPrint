@@ -85,6 +85,7 @@
     <Compile Include="TestIpv4Address.fs" />
     <Compile Include="TestIpv4Prefix.fs" />
     <Compile Include="TestIpv6Address.fs" />
+    <Compile Include="TestSocketAddress.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
