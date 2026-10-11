@@ -49,8 +49,9 @@ module ExceptionName =
 /// of scope, as for `OpcodeFaults`.
 type NativeContract =
     {
-        /// Calling the method can raise exceptions of exactly these CoreLib types, and nothing else.
-        /// The empty list is a positive claim that it cannot fault.
+        /// The method can raise exceptions of exactly these CoreLib types, and nothing else. CoreCLR
+        /// makes each by running its parameterless constructor, whose own exceptions escape in its
+        /// place. The empty list is a positive claim that it cannot fault.
         Raises : ExceptionName list
         /// Whether the method can return. False would mean every call raises or ends the process.
         CanReturn : bool
@@ -90,7 +91,9 @@ type NativeContractRow =
     }
 
 /// The contracts of CoreLib's native methods, as checked in beside this file
-/// (`NativeContractTable.tsv`, embedded). Every native method a row names runs no managed code.
+/// (`NativeContractTable.tsv`, embedded). Every native method a row names runs no managed code but
+/// the parameterless constructor of each exception it raises, which CoreCLR runs to make it, and
+/// whose own exceptions escape in its place.
 [<RequireQualifiedAccess>]
 module NativeContractTable =
 

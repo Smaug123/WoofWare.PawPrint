@@ -1969,7 +1969,11 @@ module EscapeAnalysis =
         | Runs.Primitive primitive ->
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
             state, contracted (List.map fst raised) [] (List.choose snd raised)
-        | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) [] []
+        | Runs.Native native ->
+            // CoreCLR makes each exception a native raises by running its parameterless constructor
+            // (`EEException::CreateThrowable`).
+            let raises = (NativeMethod.contract native).Raises
+            state, contracted (exactly raises) [] (raises |> List.map (parameterlessConstructor state))
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.

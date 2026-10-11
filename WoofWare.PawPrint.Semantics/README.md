@@ -57,11 +57,12 @@ What lives here:
 * `NativeContractTable` — the contract table: what each of a list of CoreLib's FCalls and QCalls
   can raise, read from the pinned runtime's C++, one row each in the embedded
   `NativeContractTable.tsv` with the functions it was read from and a sentence saying why. Every
-  native a row names runs no managed code. A QCall is described only when it is called as a
+  native a row names runs no managed code but the parameterless constructor of each exception it
+  raises, which CoreCLR runs to make it. A QCall is described only when it is called as a
   shim function is. `TestNativeContractTable` checks that each row names a native both CoreLibs
   declare and recognise as that row, raises only CoreLib exception types, and cites code the
   pinned source defines and binds the native to; `TestEscapeAnalysis` checks that the analysis
-  reports exactly what each row says. `TestNativeMethod` checks the recognition against both
+  reports exactly what each row says, and what the constructors of the exceptions it names raise. `TestNativeMethod` checks the recognition against both
   CoreLibs' metadata and against fabricated images, calls each maths function on real .NET over
   its edge values, and checks on real .NET that an exception thrown into native code by a
   callback ends the process rather than reaching the caller.
