@@ -4124,9 +4124,8 @@ module NativeSystemNative =
                     fileOffset
                     state.Kernel.System
             with
-            | Error (PReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Error (PReadRefusal.SignalAtPageBoundary _ as refusal) ->
-                failwith $"%s{operation}: fd %d{fd}: %s{PReadRefusal.describe refusal}"
+            | Error (PReadRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{PReadRefusal.describe refusal}"
             | Ok (ReadFailed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -4195,17 +4194,16 @@ module NativeSystemNative =
 
             let refused (refusal : PWriteRefusal) : NativeHandlerResult option =
                 match refusal with
-                | PWriteRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | PWriteRefusal.ExceedsRepresentableLength _ ->
+                | PWriteRefusal.Reason.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | PWriteRefusal.Reason.ExceedsRepresentableLength _ ->
                     // The library says which limit of the model was reached;
                     // PawPrint says which managed caller could have reached it.
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal} Reachable from the BCL: `RandomAccess.WriteAtOffset` passes the guest's own offset through, so a guest writing far past the end of a file gets here. Represent file contents sparsely (issue #956) before answering it."
-                | PWriteRefusal.UnmeasuredSetIdChange _ ->
+                | PWriteRefusal.Reason.UnmeasuredSetIdChange _ ->
                     failwith
                         $"%s{operation}: fd %d{fd}: PWriteRefusal.UnmeasuredSetIdChange: %s{PWriteRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-                | PWriteRefusal.SignalAtPageBoundary _ ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal}"
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal}"
 
             match
                 UnixReadWrite.admitPWrite
@@ -4306,21 +4304,19 @@ module NativeSystemNative =
                 : NativeHandlerResult option
                 =
                 match outcome with
-                | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error (ReadRefusal.UnmodelledSocketPhase _ as refusal)
-                | Error (ReadRefusal.ConnectionBecameNonBlocking _ as refusal)
-                | Error (ReadRefusal.ConnectionFault _ as refusal)
-                | Error (ReadRefusal.DatagramSleep _ as refusal) ->
+                | Error (ReadRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error (ReadRefusal.Reason.UnmodelledSocketPhase _ as refusal)
+                | Error (ReadRefusal.Reason.ConnectionBecameNonBlocking _ as refusal)
+                | Error (ReadRefusal.Reason.ConnectionFault _ as refusal)
+                | Error (ReadRefusal.Reason.DatagramSleep _ as refusal) ->
                     // The library says what it measured; PawPrint says which managed
                     // caller could have reached it, which is a fact about CoreLib.
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL reaches this: CoreLib reads a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
-                | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
+                | Error (ReadRefusal.Reason.ScannedDirectoryPosition _ as refusal) ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
-                | Error (ReadRefusal.Interruption _ as refusal)
-                | Error (ReadRefusal.SignalAtPageBoundary _ as refusal) ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal}"
+                | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal}"
                 | Ok (ReadOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Accept` does: the frame
                     // stays and the caller's program counter still names the call,
@@ -5902,14 +5898,14 @@ module NativeSystemNative =
                 let fd = fdArgument operation instruction.Arguments.[0]
 
                 match UnixReadWrite.finishRead ctx.Thread state.Kernel.System with
-                | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error (ReadRefusal.Interruption _ as refusal) ->
+                | Error (ReadRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error (ReadRefusal.Reason.Interruption _ as refusal) ->
                     refused
                         fd
                         (ReadRefusal.describe refusal)
                         "A signal with a handler reached a receive asleep on a socket at the moment the socket had an answer for it, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
-                | Error (ReadRefusal.ConnectionBecameNonBlocking _ as refusal)
-                | Error (ReadRefusal.ConnectionFault _ as refusal) ->
+                | Error (ReadRefusal.Reason.ConnectionBecameNonBlocking _ as refusal)
+                | Error (ReadRefusal.Reason.ConnectionFault _ as refusal) ->
                     refused
                         fd
                         (ReadRefusal.describe refusal)
@@ -5949,25 +5945,26 @@ module NativeSystemNative =
                     flags
                     state.Kernel.System
             with
-            | Error (ReceiveRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Error (ReceiveRefusal.UnmodelledFlags _ as refusal) ->
+            | Error (ReceiveRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (ReceiveRefusal.Reason.UnmodelledFlags _ as refusal) ->
                 refused
                     fd
                     (ReceiveRefusal.describe refusal)
                     $"The guest passed SocketFlags 0x%x{palFlags}: CoreLib passes a caller's SocketFlags through, so a Socket.Receive given OutOfBand, DontRoute, Truncated or ControlDataTruncated reaches this."
-            | Error (ReceiveRefusal.UnmodelledSocketPhase _ as refusal) ->
+            | Error (ReceiveRefusal.Reason.UnmodelledSocketPhase _ as refusal) ->
                 refused
                     fd
                     (ReceiveRefusal.describe refusal)
                     "A Socket.Receive on a socket that is not connected reaches this."
-            | Error (ReceiveRefusal.ConnectionFault _ as refusal) ->
+            | Error (ReceiveRefusal.Reason.ConnectionFault _ as refusal) ->
                 refused
                     fd
                     (ReceiveRefusal.describe refusal)
                     $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
-            | Error (ReceiveRefusal.UnmeasuredCount _ as refusal) ->
+            | Error (ReceiveRefusal.Reason.UnmeasuredCount _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{ReceiveRefusal.describe refusal} The shim passes an int32_t it has screened for a negative, so no count above INT_MAX reaches the kernel (this is an interpreter bug)."
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{ReceiveRefusal.describe refusal}"
             | Ok outcome -> settle fd outcome
         // `int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t
         // bufferLen, int32_t flags, int32_t* sent)` (pal_networking.c): the
@@ -6019,69 +6016,71 @@ module NativeSystemNative =
             // answer, with PawPrint's account of how a guest got there.
             let refusedFinishing (fd : int) (refusal : WriteRefusal) : 'a =
                 match refusal with
-                | WriteRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | WriteRefusal.Interruption _ ->
+                | WriteRefusal.Reason.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | WriteRefusal.Reason.Interruption _ ->
                     refused
                         fd
                         (WriteRefusal.describe refusal)
                         "A signal with a handler reached a send asleep on a socket at the moment the socket had room for it, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
-                | WriteRefusal.ConnectionBecameNonBlocking _
-                | WriteRefusal.ConnectionFault _ ->
+                | WriteRefusal.Reason.ConnectionBecameNonBlocking _
+                | WriteRefusal.Reason.ConnectionFault _ ->
                     refused
                         fd
                         (WriteRefusal.describe refusal)
                         "CoreLib's own sends make the socket non-blocking before they first wait, and pass a buffer they hold, so this is a hand-rolled P/Invoke."
-                | WriteRefusal.SignalReceiver _ ->
+                | WriteRefusal.Reason.SignalReceiver _ ->
                     refused
                         fd
                         (WriteRefusal.describe refusal)
                         "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                | WriteRefusal.InitProcess _ ->
+                | WriteRefusal.Reason.InitProcess _ ->
                     refused
                         fd
                         (WriteRefusal.describe refusal)
                         "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                | WriteRefusal.UnmodelledSocketPhase _
-                | WriteRefusal.SendBuffer _
-                | WriteRefusal.Inet6Binding _
-                | WriteRefusal.EphemeralPortsExhausted _
-                | WriteRefusal.ExceedsRepresentableLength _
-                | WriteRefusal.UnmeasuredSetIdChange _
-                | WriteRefusal.SignalAtPageBoundary _ ->
+                | WriteRefusal.Reason.UnmodelledSocketPhase _
+                | WriteRefusal.Reason.SendBuffer _
+                | WriteRefusal.Reason.Inet6Binding _
+                | WriteRefusal.Reason.EphemeralPortsExhausted _
+                | WriteRefusal.Reason.ExceedsRepresentableLength _
+                | WriteRefusal.Reason.UnmeasuredSetIdChange _
+                | WriteRefusal.Reason.SignalAtPageBoundary _ ->
                     failwith
                         $"%s{operation}: fd %d{fd}: finishing a send asleep on a connected socket was refused with %A{refusal}, which only a write to another object gives (this is an interpreter bug)."
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal}"
 
             let refusedSending (fd : int) (refusal : SendRefusal) : 'a =
                 match refusal with
-                | SendRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | SendRefusal.UnmodelledFlags _ ->
+                | SendRefusal.Reason.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | SendRefusal.Reason.UnmodelledFlags _ ->
                     refused
                         fd
                         (SendRefusal.describe refusal)
                         $"The guest passed SocketFlags 0x%x{palFlags}: CoreLib passes a caller's SocketFlags through, so a Socket.Send given OutOfBand, Peek, DontRoute, Truncated or ControlDataTruncated reaches this."
-                | SendRefusal.UnmodelledSocketPhase _ ->
+                | SendRefusal.Reason.UnmodelledSocketPhase _ ->
                     refused
                         fd
                         (SendRefusal.describe refusal)
                         "A Socket.Send on a socket that is not connected reaches this."
-                | SendRefusal.ConnectionFault _ ->
+                | SendRefusal.Reason.ConnectionFault _ ->
                     refused
                         fd
                         (SendRefusal.describe refusal)
                         $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
-                | SendRefusal.SignalReceiver _ ->
+                | SendRefusal.Reason.SignalReceiver _ ->
                     refused
                         fd
                         (SendRefusal.describe refusal)
                         "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                | SendRefusal.InitProcess _ ->
+                | SendRefusal.Reason.InitProcess _ ->
                     refused
                         fd
                         (SendRefusal.describe refusal)
                         "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                | SendRefusal.UnmeasuredCount _ ->
+                | SendRefusal.Reason.UnmeasuredCount _ ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{SendRefusal.describe refusal} The shim passes an int32_t it has screened for a negative, so no count above INT_MAX reaches the kernel (this is an interpreter bug)."
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{SendRefusal.describe refusal}"
 
             /// What `outcome` leaves the guest with, as `SystemNative_Write`'s
             /// `finish` does, storing through `sent`.
@@ -7827,25 +7826,27 @@ module NativeSystemNative =
                 // managed caller could have reached it.
                 let reachability =
                     match refusal with
-                    | WriteRefusal.UnmodelledSocketPhase _
-                    | WriteRefusal.ConnectionBecameNonBlocking _
-                    | WriteRefusal.ConnectionFault _
-                    | WriteRefusal.SendBuffer _
-                    | WriteRefusal.Inet6Binding _
-                    | WriteRefusal.EphemeralPortsExhausted _ ->
+                    | WriteRefusal.Reason.UnmodelledSocketPhase _
+                    | WriteRefusal.Reason.ConnectionBecameNonBlocking _
+                    | WriteRefusal.Reason.ConnectionFault _
+                    | WriteRefusal.Reason.SendBuffer _
+                    | WriteRefusal.Reason.Inet6Binding _
+                    | WriteRefusal.Reason.EphemeralPortsExhausted _ ->
                         "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
-                    | WriteRefusal.ExceedsRepresentableLength _ ->
+                    | WriteRefusal.Reason.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
-                    | WriteRefusal.Interruption _ ->
+                    | WriteRefusal.Reason.Interruption _ ->
                         "A signal with a handler reached a write asleep in a pipe at the moment the pipe changed, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
-                    | WriteRefusal.InitProcess _ -> "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                    | WriteRefusal.SignalReceiver _ ->
+                    | WriteRefusal.Reason.InitProcess _ ->
+                        "Configure a process ID other than 1 (KernelConfig.ProcessId)."
+                    | WriteRefusal.Reason.SignalReceiver _ ->
                         "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                    | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
-                    | WriteRefusal.UnmeasuredSetIdChange _ ->
+                    | WriteRefusal.Reason.Buffer _ -> "Pass a buffer that names guest storage."
+                    | WriteRefusal.Reason.UnmeasuredSetIdChange _ ->
                         $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
-                    | WriteRefusal.SignalAtPageBoundary _ ->
+                    | WriteRefusal.Reason.SignalAtPageBoundary _ ->
                         "Reachable from the BCL: a FileStream write of more than a page to /dev/urandom while a signal is pending for the writing thread."
+                    | _ -> ""
 
                 failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
 
@@ -7955,7 +7956,7 @@ module NativeSystemNative =
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
                 match UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System with
-                | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error (WriteRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
                 | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
                     match UnixReadWrite.finishWrite ctx.Thread (extract buffer offset count) admitted with
@@ -8010,7 +8011,7 @@ module NativeSystemNative =
                     (uint64 bufferSize)
                     state.Kernel.System
             with
-            | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (WriteRefusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
             | Error refusal -> refused refusal
             | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
                 finish (WriteOutcome.Returns (answer, admitted)) noEffect

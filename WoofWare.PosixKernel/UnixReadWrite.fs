@@ -25,43 +25,111 @@ type ReadAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `read`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ReadRefusal.Reason`, and ends its match with a wildcard, where
+/// `ReadRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ReadRefusal =
-    /// The buffer has no answer at the step the read reached.
+    internal
+    /// See `ReadRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// A socket in `phase`, which has a datagram peer or a refused
-    /// connection's error: what a read does there is not modelled.
+    /// See `ReadRefusal.Reason.UnmodelledSocketPhase`.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
-    /// A read asleep on a connected socket, which finds nothing to answer
-    /// when it is finished (something woke it, and another read took what
-    /// there was), through a description that has become non-blocking while
-    /// it slept. Whether it then answers `EAGAIN` or sleeps on is unmeasured:
-    /// by their source, Linux decides whether a socket call may sleep once,
-    /// as it is made, and Darwin looks at the socket's flag again.
+    /// See `ReadRefusal.Reason.ConnectionBecameNonBlocking`.
     | ConnectionBecameNonBlocking of socket : SocketId
-    /// A read that would copy bytes from a connected socket into a buffer that
-    /// is not mapped. What the kernel does with the bytes it could not copy
-    /// is not measured.
+    /// See `ReadRefusal.Reason.ConnectionFault`.
     | ConnectionFault of socket : SocketId
-    /// A blocking read of a datagram socket with no peer, which sleeps until a
-    /// datagram arrives. Nothing in this kernel sends one, and a sleep only a
-    /// signal could end is not modelled.
+    /// See `ReadRefusal.Reason.DatagramSleep`.
     | DatagramSleep of socket : SocketId * domain : SocketDomain
-    /// A directory this description has read part of the way through, on a
-    /// filesystem whose position there this kernel cannot bound, and a count
-    /// for which the answer depends on that position. On Linux that is EINVAL
-    /// if position + count passes `INT64_MAX`; on Darwin, 0 if the position is
-    /// `INT64_MAX`; EISDIR otherwise.
+    /// See `ReadRefusal.Reason.ScannedDirectoryPosition`.
     | ScannedDirectoryPosition of inode : InodeNumber * fileSystem : EmulatedFileSystemType
-    /// A read asleep on a pipe or a connected socket has an answer, and the
-    /// library will not say whether that or a signal ends it.
+    /// See `ReadRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
-    /// A read of `count` bytes of `/dev/urandom`, more than a page, by a task
-    /// with a signal pending that it would take on its return to user mode.
+    /// See `ReadRefusal.Reason.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module ReadRefusal =
+    /// The reasons this kernel refuses a `read`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the read reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : ReadRefusal) : BufferRefusal option =
+            match refusal with
+            | ReadRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// A socket in a phase that has a datagram peer or a refused
+        /// connection's error: what a read does there is not modelled. Gives
+        /// the socket, then its domain, then its kind, then the phase.
+        let (|UnmodelledSocketPhase|_|)
+            (refusal : ReadRefusal)
+            : (SocketId * SocketDomain * SocketKind * SocketPhase) option
+            =
+            match refusal with
+            | ReadRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) -> Some (socket, domain, kind, phase)
+            | _ -> None
+
+        /// A read asleep on a connected socket, which finds nothing to answer
+        /// when it is finished (something woke it, and another read took what
+        /// there was), through a description that has become non-blocking while
+        /// it slept. Whether it then answers `EAGAIN` or sleeps on is
+        /// unmeasured: by their source, Linux decides whether a socket call may
+        /// sleep once, as it is made, and Darwin looks at the socket's flag
+        /// again. Gives the socket.
+        let (|ConnectionBecameNonBlocking|_|) (refusal : ReadRefusal) : SocketId option =
+            match refusal with
+            | ReadRefusal.ConnectionBecameNonBlocking socket -> Some socket
+            | _ -> None
+
+        /// A read that would copy bytes from a connected socket into a buffer
+        /// that is not mapped. What the kernel does with the bytes it could not
+        /// copy is not measured. Gives the socket.
+        let (|ConnectionFault|_|) (refusal : ReadRefusal) : SocketId option =
+            match refusal with
+            | ReadRefusal.ConnectionFault socket -> Some socket
+            | _ -> None
+
+        /// A blocking read of a datagram socket with no peer, which sleeps
+        /// until a datagram arrives. Nothing in this kernel sends one, and a
+        /// sleep only a signal could end is not modelled. Gives the socket,
+        /// then the domain.
+        let (|DatagramSleep|_|) (refusal : ReadRefusal) : (SocketId * SocketDomain) option =
+            match refusal with
+            | ReadRefusal.DatagramSleep (socket, domain) -> Some (socket, domain)
+            | _ -> None
+
+        /// A directory this description has read part of the way through, on a
+        /// filesystem whose position there this kernel cannot bound, and a
+        /// count for which the answer depends on that position. On Linux that
+        /// is EINVAL if position + count passes `INT64_MAX`; on Darwin, 0 if
+        /// the position is `INT64_MAX`; EISDIR otherwise. Gives the directory's
+        /// inode, then the type of its filesystem.
+        let (|ScannedDirectoryPosition|_|) (refusal : ReadRefusal) : (InodeNumber * EmulatedFileSystemType) option =
+            match refusal with
+            | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) -> Some (inode, fileSystem)
+            | _ -> None
+
+        /// A read asleep on a pipe or a connected socket has an answer, and the
+        /// library will not say whether that or a signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : ReadRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | ReadRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
+        /// A read of more than a page of `/dev/urandom`, by a task with a
+        /// signal pending that it would take on its return to user mode. Gives
+        /// the count of bytes asked for.
+        let (|SignalAtPageBoundary|_|) (refusal : ReadRefusal) : int option =
+            match refusal with
+            | ReadRefusal.SignalAtPageBoundary count -> Some count
+            | _ -> None
+
     /// Shared with `PReadRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -93,15 +161,39 @@ module ReadRefusal =
 /// through a scan, rather than the same type: `pread` answers ESPIPE for the
 /// first two and reads a directory at the offset it is given, so a shared type
 /// would hand every client arms it could not reach.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PReadRefusal.Reason`, and ends its match with a wildcard, where
+/// `PReadRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PReadRefusal =
-    /// The buffer has no answer at the step the read reached.
+    internal
+    /// See `PReadRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// As `ReadRefusal.SignalAtPageBoundary`.
+    /// See `PReadRefusal.Reason.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module PReadRefusal =
+    /// The reasons this kernel refuses a `pread`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the read reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : PReadRefusal) : BufferRefusal option =
+            match refusal with
+            | PReadRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// As `ReadRefusal.Reason.SignalAtPageBoundary`. Gives the count of
+        /// bytes asked for.
+        let (|SignalAtPageBoundary|_|) (refusal : PReadRefusal) : int option =
+            match refusal with
+            | PReadRefusal.SignalAtPageBoundary count -> Some count
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half.
     let describe (refusal : PReadRefusal) : string =
@@ -208,60 +300,165 @@ module BrokenWriteTarget =
         | BrokenWriteTarget.Connection socket -> $"socket %O{socket}, a stream socket whose connection was reset"
 
 /// Why this kernel will not answer a `write`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `WriteRefusal.Reason`, and ends its match with a wildcard, where
+/// `WriteRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type WriteRefusal =
-    /// The buffer has no answer at the step the write reached.
+    internal
+    /// See `WriteRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// A socket in `phase`, which has a datagram peer or a refused
-    /// connection's error: what a write does there is not modelled.
+    /// See `WriteRefusal.Reason.UnmodelledSocketPhase`.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
-    /// A write asleep on a connected socket, which finds no room when it is
-    /// finished, through a description that has become non-blocking while it
-    /// slept: woken to find another write took the room, or having filled the
-    /// room it was woken into with more of it left. Whether it then answers
-    /// (`EAGAIN`, or the count it has written) or sleeps on is unmeasured:
-    /// by their source, Linux decides whether a socket call may sleep once,
-    /// as it is made, and Darwin looks at the socket's flag again.
+    /// See `WriteRefusal.Reason.ConnectionBecameNonBlocking`.
     | ConnectionBecameNonBlocking of socket : SocketId
-    /// A write that would copy bytes into a connected socket from a buffer
-    /// that is not mapped. What the kernel does then is not measured.
+    /// See `WriteRefusal.Reason.ConnectionFault`.
     | ConnectionFault of socket : SocketId
-    /// A Unix-domain datagram socket with no peer, on Linux, where the answer
-    /// depends on the size of the socket's send buffer, which is not modelled:
-    /// `EMSGSIZE` for more bytes than the buffer holds less 32, and `ENOTCONN`
-    /// otherwise.
+    /// See `WriteRefusal.Reason.SendBuffer`.
     | SendBuffer of socket : SocketId
-    /// An IPv6 datagram socket with no peer and no port, on Linux, which a write
-    /// binds to an ephemeral port before it fails: this kernel binds only IPv4
-    /// sockets, so it cannot record the binding.
+    /// See `WriteRefusal.Reason.Inet6Binding`.
     | Inet6Binding of socket : SocketId
-    /// A datagram socket with no peer and no port, on Linux, which a write
-    /// binds to an ephemeral port before it fails, when every port in the
-    /// ephemeral range is taken. What the kernel answers then is not measured.
+    /// See `WriteRefusal.Reason.EphemeralPortsExhausted`.
     | EphemeralPortsExhausted of socket : SocketId * low : uint16 * high : uint16
-    /// The write would leave the file longer than this kernel can represent.
+    /// See `WriteRefusal.Reason.ExceedsRepresentableLength`.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
-    /// What writing to the file at `inode` would do to its set-ID bits has not
-    /// been measured for this writer.
+    /// See `WriteRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// A write asleep in a pipe or on a connected socket has an answer, and
-    /// the library will not say whether that or a signal ends it.
+    /// See `WriteRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
-    /// A write into a pipe with no reader, or a Linux stream socket with no
-    /// peer, which answers `EPIPE` and raises `SIGPIPE`, when which task would
-    /// receive the signal is not modelled.
+    /// See `WriteRefusal.Reason.SignalReceiver`.
     | SignalReceiver of target : BrokenWriteTarget * refusal : SignalReceiverRefusal
-    /// A write into a pipe with no reader, or a Linux stream socket with no
-    /// peer, which raises `SIGPIPE`, by process ID 1. An init process ignores,
-    /// from inside its own PID namespace, every signal it has not installed a
-    /// handler for, and this library does not model that.
+    /// See `WriteRefusal.Reason.InitProcess`.
     | InitProcess of target : BrokenWriteTarget
-    /// A write of `count` bytes to `/dev/urandom`, more than a page, by a task
-    /// with a signal pending that it would take on its return to user mode.
+    /// See `WriteRefusal.Reason.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
+    /// The reasons this kernel refuses a `write`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the write reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : WriteRefusal) : BufferRefusal option =
+            match refusal with
+            | WriteRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// A socket in a phase that has a datagram peer or a refused
+        /// connection's error: what a write does there is not modelled. Gives
+        /// the socket, then its domain, then its kind, then the phase.
+        let (|UnmodelledSocketPhase|_|)
+            (refusal : WriteRefusal)
+            : (SocketId * SocketDomain * SocketKind * SocketPhase) option
+            =
+            match refusal with
+            | WriteRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) -> Some (socket, domain, kind, phase)
+            | _ -> None
+
+        /// A write asleep on a connected socket, which finds no room when it is
+        /// finished, through a description that has become non-blocking while
+        /// it slept: woken to find another write took the room, or having
+        /// filled the room it was woken into with more of it left. Whether it
+        /// then answers (`EAGAIN`, or the count it has written) or sleeps on is
+        /// unmeasured: by their source, Linux decides whether a socket call may
+        /// sleep once, as it is made, and Darwin looks at the socket's flag
+        /// again. Gives the socket.
+        let (|ConnectionBecameNonBlocking|_|) (refusal : WriteRefusal) : SocketId option =
+            match refusal with
+            | WriteRefusal.ConnectionBecameNonBlocking socket -> Some socket
+            | _ -> None
+
+        /// A write that would copy bytes into a connected socket from a buffer
+        /// that is not mapped. What the kernel does then is not measured. Gives
+        /// the socket.
+        let (|ConnectionFault|_|) (refusal : WriteRefusal) : SocketId option =
+            match refusal with
+            | WriteRefusal.ConnectionFault socket -> Some socket
+            | _ -> None
+
+        /// A Unix-domain datagram socket with no peer, on Linux, where the
+        /// answer depends on the size of the socket's send buffer, which is not
+        /// modelled: `EMSGSIZE` for more bytes than the buffer holds less 32,
+        /// and `ENOTCONN` otherwise. Gives the socket.
+        let (|SendBuffer|_|) (refusal : WriteRefusal) : SocketId option =
+            match refusal with
+            | WriteRefusal.SendBuffer socket -> Some socket
+            | _ -> None
+
+        /// An IPv6 datagram socket with no peer and no port, on Linux, which a
+        /// write binds to an ephemeral port before it fails: this kernel binds
+        /// only IPv4 sockets, so it cannot record the binding. Gives the
+        /// socket.
+        let (|Inet6Binding|_|) (refusal : WriteRefusal) : SocketId option =
+            match refusal with
+            | WriteRefusal.Inet6Binding socket -> Some socket
+            | _ -> None
+
+        /// A datagram socket with no peer and no port, on Linux, which a write
+        /// binds to an ephemeral port before it fails, when every port in the
+        /// ephemeral range is taken. What the kernel answers then is not
+        /// measured. Gives the socket, then the range's lowest port, then its
+        /// highest.
+        let (|EphemeralPortsExhausted|_|) (refusal : WriteRefusal) : (SocketId * uint16 * uint16) option =
+            match refusal with
+            | WriteRefusal.EphemeralPortsExhausted (socket, low, high) -> Some (socket, low, high)
+            | _ -> None
+
+        /// The write would leave the file longer than this kernel can
+        /// represent. Gives the file's inode, then the offset the write starts
+        /// at, then its count of bytes.
+        let (|ExceedsRepresentableLength|_|) (refusal : WriteRefusal) : (InodeNumber * int64 * int) option =
+            match refusal with
+            | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) -> Some (inode, offset, count)
+            | _ -> None
+
+        /// What writing to the file would do to its set-ID bits has not been
+        /// measured for this writer. Gives the file's inode, then the
+        /// `SetIdChangeRefusal`.
+        let (|UnmeasuredSetIdChange|_|) (refusal : WriteRefusal) : (InodeNumber * SetIdChangeRefusal) option =
+            match refusal with
+            | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// A write asleep in a pipe or on a connected socket has an answer, and
+        /// the library will not say whether that or a signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : WriteRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | WriteRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
+        /// A write into a pipe with no reader, or a Linux stream socket with no
+        /// peer, which answers `EPIPE` and raises `SIGPIPE`, when which task
+        /// would receive the signal is not modelled. Gives what the write was
+        /// writing to, then the `SignalReceiverRefusal`.
+        let (|SignalReceiver|_|) (refusal : WriteRefusal) : (BrokenWriteTarget * SignalReceiverRefusal) option =
+            match refusal with
+            | WriteRefusal.SignalReceiver (target, refusal) -> Some (target, refusal)
+            | _ -> None
+
+        /// A write into a pipe with no reader, or a Linux stream socket with no
+        /// peer, which raises `SIGPIPE`, by process ID 1. An init process
+        /// ignores, from inside its own PID namespace, every signal it has not
+        /// installed a handler for, and this library does not model that. Gives
+        /// what the write was writing to.
+        let (|InitProcess|_|) (refusal : WriteRefusal) : BrokenWriteTarget option =
+            match refusal with
+            | WriteRefusal.InitProcess target -> Some target
+            | _ -> None
+
+        /// A write of more than a page to `/dev/urandom`, by a task with a
+        /// signal pending that it would take on its return to user mode. Gives
+        /// the count of bytes asked for.
+        let (|SignalAtPageBoundary|_|) (refusal : WriteRefusal) : int option =
+            match refusal with
+            | WriteRefusal.SignalAtPageBoundary count -> Some count
+            | _ -> None
+
     /// Shared with `PWriteRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -310,23 +507,70 @@ module WriteRefusal =
 /// reaches only sockets, so a shared type would hand `read`'s clients arms they
 /// could not reach. A `recv` that sleeps is finished by
 /// `UnixReadWrite.finishRead`, whose refusals are `ReadRefusal`'s.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ReceiveRefusal.Reason`, and ends its match with a wildcard, where
+/// `ReceiveRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ReceiveRefusal =
-    /// The buffer has no answer at the step the call reached.
+    internal
+    /// See `ReceiveRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The flag word holds `flags`, which this kernel does not model for
-    /// `recv(2)`: it models `MSG_PEEK`, `MSG_DONTWAIT` and `MSG_NOSIGNAL`.
+    /// See `ReceiveRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : MessageFlag list
-    /// A count above `INT_MAX`, which no measurement has passed to `recv(2)`.
+    /// See `ReceiveRefusal.Reason.UnmeasuredCount`.
     | UnmeasuredCount of count : uint64
-    /// A socket that is not an end of a connection: what `recv(2)` answers
-    /// there is not measured.
+    /// See `ReceiveRefusal.Reason.UnmodelledSocketPhase`.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
-    /// As `ReadRefusal.ConnectionFault`.
+    /// See `ReceiveRefusal.Reason.ConnectionFault`.
     | ConnectionFault of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module ReceiveRefusal =
+    /// The reasons this kernel refuses a `recv(2)`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the call reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : ReceiveRefusal) : BufferRefusal option =
+            match refusal with
+            | ReceiveRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The flag word holds flags that this kernel does not model for
+        /// `recv(2)`: it models `MSG_PEEK`, `MSG_DONTWAIT` and `MSG_NOSIGNAL`.
+        /// Gives the flags it does not model.
+        let (|UnmodelledFlags|_|) (refusal : ReceiveRefusal) : MessageFlag list option =
+            match refusal with
+            | ReceiveRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// A count above `INT_MAX`, which no measurement has passed to
+        /// `recv(2)`. Gives the count.
+        let (|UnmeasuredCount|_|) (refusal : ReceiveRefusal) : uint64 option =
+            match refusal with
+            | ReceiveRefusal.UnmeasuredCount count -> Some count
+            | _ -> None
+
+        /// A socket that is not an end of a connection: what `recv(2)` answers
+        /// there is not measured. Gives the socket, then the domain, then the
+        /// kind, then the phase.
+        let (|UnmodelledSocketPhase|_|)
+            (refusal : ReceiveRefusal)
+            : (SocketId * SocketDomain * SocketKind * SocketPhase) option
+            =
+            match refusal with
+            | ReceiveRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) -> Some (socket, domain, kind, phase)
+            | _ -> None
+
+        /// As `ReadRefusal.Reason.ConnectionFault`. Gives the socket.
+        let (|ConnectionFault|_|) (refusal : ReceiveRefusal) : SocketId option =
+            match refusal with
+            | ReceiveRefusal.ConnectionFault socket -> Some socket
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -347,27 +591,89 @@ module ReceiveRefusal =
 /// Its own type rather than `WriteRefusal`, as `ReceiveRefusal` is. A `send`
 /// that sleeps is finished by `UnixReadWrite.admitFinishWrite` and
 /// `UnixReadWrite.finishWrite`, whose refusals are `WriteRefusal`'s.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SendRefusal.Reason`, and ends its match with a wildcard, where
+/// `SendRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SendRefusal =
-    /// The buffer has no answer at the step the call reached.
+    internal
+    /// See `SendRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The flag word holds `flags`, which this kernel does not model for
-    /// `send(2)`: it models `MSG_DONTWAIT` and `MSG_NOSIGNAL`.
+    /// See `SendRefusal.Reason.UnmodelledFlags`.
     | UnmodelledFlags of flags : MessageFlag list
-    /// A count above `INT_MAX`, which no measurement has passed to `send(2)`.
+    /// See `SendRefusal.Reason.UnmeasuredCount`.
     | UnmeasuredCount of count : uint64
-    /// A socket that is not an end of a connection: what `send(2)` answers
-    /// there is not measured.
+    /// See `SendRefusal.Reason.UnmodelledSocketPhase`.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
-    /// As `WriteRefusal.ConnectionFault`.
+    /// See `SendRefusal.Reason.ConnectionFault`.
     | ConnectionFault of socket : SocketId
-    /// As `WriteRefusal.SignalReceiver`, for a `send` without `MSG_NOSIGNAL`.
+    /// See `SendRefusal.Reason.SignalReceiver`.
     | SignalReceiver of target : BrokenWriteTarget * refusal : SignalReceiverRefusal
-    /// As `WriteRefusal.InitProcess`, for a `send` without `MSG_NOSIGNAL`.
+    /// See `SendRefusal.Reason.InitProcess`.
     | InitProcess of target : BrokenWriteTarget
 
 [<RequireQualifiedAccess>]
 module SendRefusal =
+    /// The reasons this kernel refuses a `send(2)`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step the call reached. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : SendRefusal) : BufferRefusal option =
+            match refusal with
+            | SendRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The flag word holds flags that this kernel does not model for
+        /// `send(2)`: it models `MSG_DONTWAIT` and `MSG_NOSIGNAL`. Gives the
+        /// flags it does not model.
+        let (|UnmodelledFlags|_|) (refusal : SendRefusal) : MessageFlag list option =
+            match refusal with
+            | SendRefusal.UnmodelledFlags flags -> Some flags
+            | _ -> None
+
+        /// A count above `INT_MAX`, which no measurement has passed to
+        /// `send(2)`. Gives the count.
+        let (|UnmeasuredCount|_|) (refusal : SendRefusal) : uint64 option =
+            match refusal with
+            | SendRefusal.UnmeasuredCount count -> Some count
+            | _ -> None
+
+        /// A socket that is not an end of a connection: what `send(2)` answers
+        /// there is not measured. Gives the socket, then the domain, then the
+        /// kind, then the phase.
+        let (|UnmodelledSocketPhase|_|)
+            (refusal : SendRefusal)
+            : (SocketId * SocketDomain * SocketKind * SocketPhase) option
+            =
+            match refusal with
+            | SendRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) -> Some (socket, domain, kind, phase)
+            | _ -> None
+
+        /// As `WriteRefusal.Reason.ConnectionFault`. Gives the socket.
+        let (|ConnectionFault|_|) (refusal : SendRefusal) : SocketId option =
+            match refusal with
+            | SendRefusal.ConnectionFault socket -> Some socket
+            | _ -> None
+
+        /// As `WriteRefusal.Reason.SignalReceiver`, for a `send` without
+        /// `MSG_NOSIGNAL`. Gives what the call was writing to, then the
+        /// `SignalReceiverRefusal`.
+        let (|SignalReceiver|_|) (refusal : SendRefusal) : (BrokenWriteTarget * SignalReceiverRefusal) option =
+            match refusal with
+            | SendRefusal.SignalReceiver (target, refusal) -> Some (target, refusal)
+            | _ -> None
+
+        /// As `WriteRefusal.Reason.InitProcess`, for a `send` without
+        /// `MSG_NOSIGNAL`. Gives what the call was writing to.
+        let (|InitProcess|_|) (refusal : SendRefusal) : BrokenWriteTarget option =
+            match refusal with
+            | SendRefusal.InitProcess target -> Some target
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -445,23 +751,61 @@ type PWriteAdmission =
 /// a socket or a pipe is unseekable, so `pwrite` answers ESPIPE and never
 /// reaches its own write operation, and a shared type would hand every client
 /// arms it could not reach and would have to invent messages for.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PWriteRefusal.Reason`, and ends its match with a wildcard, where
+/// `PWriteRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PWriteRefusal =
-    /// The buffer has no answer at the step this `pwrite` reached: its screen, or
-    /// the copy it never got to make.
+    internal
+    /// See `PWriteRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The write would place its last byte past the longest file this kernel can
-    /// represent. Easier to reach than `write`'s: the offset is an argument
-    /// rather than a position the description was walked to.
+    /// See `PWriteRefusal.Reason.ExceedsRepresentableLength`.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
-    /// What writing to the file at `inode` would do to its set-ID bits has not
-    /// been measured for this writer.
+    /// See `PWriteRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// As `WriteRefusal.SignalAtPageBoundary`.
+    /// See `PWriteRefusal.Reason.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module PWriteRefusal =
+    /// The reasons this kernel refuses a `pwrite`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The buffer has no answer at the step this `pwrite` reached: its
+        /// screen, or the copy it never got to make. Gives the `BufferRefusal`.
+        let (|Buffer|_|) (refusal : PWriteRefusal) : BufferRefusal option =
+            match refusal with
+            | PWriteRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The write would place its last byte past the longest file this
+        /// kernel can represent. Easier to reach than `write`'s: the offset is
+        /// an argument rather than a position the description was walked to.
+        /// Gives the file's inode, then the offset the write starts at, then
+        /// its count of bytes.
+        let (|ExceedsRepresentableLength|_|) (refusal : PWriteRefusal) : (InodeNumber * int64 * int) option =
+            match refusal with
+            | PWriteRefusal.ExceedsRepresentableLength (inode, offset, count) -> Some (inode, offset, count)
+            | _ -> None
+
+        /// What writing to the file would do to its set-ID bits has not been
+        /// measured for this writer. Gives the file's inode, then the
+        /// `SetIdChangeRefusal`.
+        let (|UnmeasuredSetIdChange|_|) (refusal : PWriteRefusal) : (InodeNumber * SetIdChangeRefusal) option =
+            match refusal with
+            | PWriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
+        /// As `WriteRefusal.Reason.SignalAtPageBoundary`. Gives the count of
+        /// bytes asked for.
+        let (|SignalAtPageBoundary|_|) (refusal : PWriteRefusal) : int option =
+            match refusal with
+            | PWriteRefusal.SignalAtPageBoundary count -> Some count
+            | _ -> None
+
     /// What this kernel knows about why it cannot complete a `pwrite`. The client
     /// supplies its own half -- which entry point, which descriptor, and what it
     /// would have to build or configure to lift the refusal.
@@ -477,22 +821,60 @@ module PWriteRefusal =
         | PWriteRefusal.SignalAtPageBoundary count -> WriteRefusal.describeSignalAtPageBoundary count
 
 /// Why this kernel will not answer a `copy_file_range(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CopyFileRangeRefusal.Reason`, and ends its match with a wildcard, where
+/// `CopyFileRangeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type CopyFileRangeRefusal =
-    /// This kernel is not Linux-flavoured, and only Linux has `copy_file_range`.
+    internal
+    /// See `CopyFileRangeRefusal.Reason.UnmodelledFlavour`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// Both descriptors name regular files on a mount of this type, whose
-    /// answer to a copy is unmeasured.
+    /// See `CopyFileRangeRefusal.Reason.UnmeasuredFileSystem`.
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
-    /// The copy would leave the destination longer than this kernel can
-    /// represent.
+    /// See `CopyFileRangeRefusal.Reason.ExceedsRepresentableLength`.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
-    /// What writing to the destination at `inode` would do to its set-ID bits
-    /// has not been measured for this writer.
+    /// See `CopyFileRangeRefusal.Reason.UnmeasuredSetIdChange`.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
 module CopyFileRangeRefusal =
+    /// The reasons this kernel refuses a `copy_file_range(2)`, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// This kernel is not Linux-flavoured, and only Linux has
+        /// `copy_file_range`. Gives the flavour.
+        let (|UnmodelledFlavour|_|) (refusal : CopyFileRangeRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | CopyFileRangeRefusal.UnmodelledFlavour flavour -> Some flavour
+            | _ -> None
+
+        /// Both descriptors name regular files on a mount of a type whose
+        /// answer to a copy is unmeasured. Gives that type.
+        let (|UnmeasuredFileSystem|_|) (refusal : CopyFileRangeRefusal) : EmulatedFileSystemType option =
+            match refusal with
+            | CopyFileRangeRefusal.UnmeasuredFileSystem fileSystem -> Some fileSystem
+            | _ -> None
+
+        /// The copy would leave the destination longer than this kernel can
+        /// represent. Gives the destination's inode, then the offset the write
+        /// to it starts at, then its count of bytes.
+        let (|ExceedsRepresentableLength|_|) (refusal : CopyFileRangeRefusal) : (InodeNumber * int64 * int) option =
+            match refusal with
+            | CopyFileRangeRefusal.ExceedsRepresentableLength (inode, offset, count) -> Some (inode, offset, count)
+            | _ -> None
+
+        /// What writing to the destination would do to its set-ID bits has not
+        /// been measured for this writer. Gives the destination's inode, then
+        /// the `SetIdChangeRefusal`.
+        let (|UnmeasuredSetIdChange|_|) (refusal : CopyFileRangeRefusal) : (InodeNumber * SetIdChangeRefusal) option =
+            match refusal with
+            | CopyFileRangeRefusal.UnmeasuredSetIdChange (inode, refusal) -> Some (inode, refusal)
+            | _ -> None
+
     /// What this kernel knows about why it cannot complete a copy. The client
     /// supplies its own half: which entry point, and which descriptors.
     let describe (refusal : CopyFileRangeRefusal) : string =
@@ -1615,7 +1997,7 @@ module UnixReadWrite =
     /// or `EAGAIN`; a blocking read with nothing to answer sleeps
     /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
     /// copy bytes into an unmapped buffer is refused
-    /// (`ReadRefusal.ConnectionFault`). A socket
+    /// (`ReadRefusal.Reason.ConnectionFault`). A socket
     /// with a datagram peer, or with a refused connection's error, is refused,
     /// except for Linux's zero-length read, which is 0 in every phase.
     ///
@@ -1625,7 +2007,7 @@ module UnixReadWrite =
     /// `O_NONBLOCK` on the description while it sleeps does not wake it.
     ///
     /// A read of `/dev/urandom` longer than a page, by a task with a signal
-    /// pending, is refused (`ReadRefusal.SignalAtPageBoundary`).
+    /// pending, is refused (`ReadRefusal.Reason.SignalAtPageBoundary`).
     ///
     /// A read of an inotify instance takes as many whole queued records as fit
     /// in `count`, oldest first, and answers `EINVAL` if the oldest does not
@@ -2253,11 +2635,11 @@ module UnixReadWrite =
     /// waiting, up to its count (left queued by `MSG_PEEK`), end of file, or
     /// a reset's error, which it takes unless it is a Darwin peek; a buffer
     /// naming no storage, with bytes to copy, is refused
-    /// (`ReadRefusal.ConnectionFault`). A signal is as for a pipe: under Linux
+    /// (`ReadRefusal.Reason.ConnectionFault`). A signal is as for a pipe: under Linux
     /// the answer beats it, and under Darwin both at once are refused; with
     /// nothing to answer, it ends the read, `Restarts` or `Failed EINTR`. With
     /// neither, the read sleeps again, refused instead if its description has
-    /// become non-blocking (`ReadRefusal.ConnectionBecameNonBlocking`). One a
+    /// become non-blocking (`ReadRefusal.Reason.ConnectionBecameNonBlocking`). One a
     /// close has ended, under Darwin, answers `EBADF`.
     ///
     /// A read of an inotify instance answers, once the instance holds a
@@ -2346,7 +2728,7 @@ module UnixReadWrite =
     ///   description says.
     /// - **`MSG_NOSIGNAL`** changes nothing.
     ///
-    /// Every other flag is refused (`ReceiveRefusal.UnmodelledFlags`), as is a
+    /// Every other flag is refused (`ReceiveRefusal.Reason.UnmodelledFlags`), as is a
     /// count above `INT_MAX` and a socket that is not an end of a connection.
     /// A call that sleeps is finished by `finishRead`, as a `read` is.
     ///
@@ -2432,7 +2814,7 @@ module UnixReadWrite =
     ///
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a read of `/dev/urandom` asks whether it has
-    /// a signal pending (`PReadRefusal.SignalAtPageBoundary`).
+    /// a signal pending (`PReadRefusal.Reason.SignalAtPageBoundary`).
     let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
@@ -2933,7 +3315,7 @@ module UnixReadWrite =
     /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
     /// no room for the whole of takes what fits and sleeps for the rest, as
     /// one into a pipe does. One that would copy from an unmapped buffer is
-    /// refused (`WriteRefusal.ConnectionFault`). A socket with a datagram
+    /// refused (`WriteRefusal.Reason.ConnectionFault`). A socket with a datagram
     /// peer, or with a refused connection's error, is refused.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
@@ -3754,10 +4136,10 @@ module UnixReadWrite =
     ///   beats room; under Darwin, room beside it is refused.
     /// - **There is room**, as a write made now would take:
     ///   `WriteResumption.Transfer` names the bytes to pass to `finishWrite`.
-    ///   A buffer naming no storage is refused (`WriteRefusal.ConnectionFault`).
+    ///   A buffer naming no storage is refused (`WriteRefusal.Reason.ConnectionFault`).
     /// - **Neither**: the task sleeps again, refused instead if its
     ///   description has become non-blocking
-    ///   (`WriteRefusal.ConnectionBecameNonBlocking`).
+    ///   (`WriteRefusal.Reason.ConnectionBecameNonBlocking`).
     /// - **A close has ended it**, under Darwin: `EBADF`, whatever it had
     ///   taken.
     ///
@@ -3859,7 +4241,7 @@ module UnixReadWrite =
     /// has put in by now, and with neither, it sleeps again for the rest. A
     /// write to a connected socket sleeps again for the rest, or is refused if
     /// its description has become non-blocking
-    /// (`WriteRefusal.ConnectionBecameNonBlocking`); a signal never reaches
+    /// (`WriteRefusal.Reason.ConnectionBecameNonBlocking`); a signal never reaches
     /// it here, `admitFinishWrite` having answered one first.
     ///
     /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
@@ -4014,7 +4396,7 @@ module UnixReadWrite =
     /// - **No description is marked written** (Darwin's `FWASWRITTEN`, which
     ///   a `write` that moves bytes sets).
     ///
-    /// Every other flag is refused (`SendRefusal.UnmodelledFlags`), as is a
+    /// Every other flag is refused (`SendRefusal.Reason.UnmodelledFlags`), as is a
     /// count above `INT_MAX` and a socket that is not an end of a connection.
     /// A call that sleeps is finished by `admitFinishWrite` and `finishWrite`,
     /// as a `write` is.
@@ -4287,7 +4669,7 @@ module UnixReadWrite =
     ///
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a write to `/dev/urandom` asks whether it
-    /// has a signal pending (`PWriteRefusal.SignalAtPageBoundary`).
+    /// has a signal pending (`PWriteRefusal.Reason.SignalAtPageBoundary`).
     let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)

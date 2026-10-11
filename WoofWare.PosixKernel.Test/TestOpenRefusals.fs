@@ -19,7 +19,17 @@ module TestOpenRefusals =
 
     /// The refusals whose cases are hidden. A union converted to an open one
     /// joins this list and leaves `unconverted`.
-    let private openRefusals : Type list = [ typeof<BindRefusal> ]
+    let private openRefusals : Type list =
+        [
+            typeof<BindRefusal>
+            typeof<CopyFileRangeRefusal>
+            typeof<PReadRefusal>
+            typeof<PWriteRefusal>
+            typeof<ReadRefusal>
+            typeof<ReceiveRefusal>
+            typeof<SendRefusal>
+            typeof<WriteRefusal>
+        ]
 
     /// Public unions named `*Refusal` that are closed by what they are: a
     /// client's own buffer, the error of a parser, or a flavour's rule. They
@@ -49,7 +59,6 @@ module TestOpenRefusals =
                 "CloneFileRefusal"
                 "CloseRefusal"
                 "ConnectRefusal"
-                "CopyFileRangeRefusal"
                 "CredentialsRefusal"
                 "DescriptionReleaseRefusal"
                 "Dup2Refusal"
@@ -97,8 +106,6 @@ module TestOpenRefusals =
                 "MountRefusal"
                 "OpenRefusal"
                 "OwnerChangeRefusal"
-                "PReadRefusal"
-                "PWriteRefusal"
                 "PathRefusal"
                 "Pipe2Refusal"
                 "PipeDeviceRefusal"
@@ -111,11 +118,8 @@ module TestOpenRefusals =
                 "ProtectedFilesRefusal"
                 "ReadDirectoryRefusal"
                 "ReadLinkRefusal"
-                "ReadRefusal"
-                "ReceiveRefusal"
                 "RemovalRefusal"
                 "RenameRefusal"
-                "SendRefusal"
                 "SetGroupsRefusal"
                 "SetIdChangeRefusal"
                 "SetIdsRefusal"
@@ -144,7 +148,6 @@ module TestOpenRefusals =
                 "UnlinkAtRefusal"
                 "UserAddressLimitRefusal"
                 "WaitStatusRefusal"
-                "WriteRefusal"
             ]
 
     let private library : Assembly = typeof<UnixError>.Assembly
