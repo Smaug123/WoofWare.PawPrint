@@ -98,6 +98,7 @@ module ObjectLifetime =
                 // something to climb from.
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Socket _)
+                | Some (InodeContent.Fifo _)
                 | Some (InodeContent.CharacterDevice _)
                 | Some (InodeContent.Symlink _)
                 | None -> climb rest seen
@@ -147,6 +148,7 @@ module ObjectLifetime =
             | Some (InodeContent.Directory directory) -> Some directory.Parent
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> None

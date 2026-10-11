@@ -820,6 +820,9 @@ module UnixDescriptor =
                 | InodeContent.Socket _ ->
                     failwith
                         $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+                | InodeContent.Fifo _ ->
+                    failwith
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an

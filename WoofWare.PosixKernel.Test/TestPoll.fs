@@ -223,10 +223,10 @@ module TestPoll =
                 "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304s
                 "IPv6 UDP, idle", withSocket SocketDomain.Inet6 SocketKind.Datagram SocketPhase.Idle, 0x0304s
                 "IPv4 UDP, peer set",
-                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer (SocketAddress.Inet peer)),
                 0x0304s
                 "IPv6 UDP, peer set",
-                withSocket SocketDomain.Inet6 SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet6 SocketKind.Datagram (SocketPhase.DatagramPeer (SocketAddress.Inet peer)),
                 0x0304s
                 // AF_UNIX: WRBAND alongside OUT for a stream socket too, which is
                 // where it parts from TCP.

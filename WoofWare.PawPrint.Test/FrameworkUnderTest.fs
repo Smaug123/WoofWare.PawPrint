@@ -190,6 +190,53 @@ module FrameworkUnderTest =
     /// The shared framework directory the `RealRuntime` oracle runs guests on.
     let sharedFrameworkDirectory () : string = (selected ()).SharedFrameworkDirectory
 
+    /// The `Microsoft.AspNetCore.App` shared framework that a guest binds ASP.NET Core from: the
+    /// first directory along `runtimeDirs` holding `Microsoft.AspNetCore.dll`. The `RealRuntime`
+    /// oracle runs an ASP.NET Core guest on the same directory, so this fails unless it sits
+    /// under the same `dotnet` root as `sharedFrameworkDirectory`, where the oracle's muxer
+    /// looks; and it fails if no directory along `runtimeDirs` holds ASP.NET Core at all.
+    let aspNetCoreFrameworkDirectory () : string =
+        let selected = selected ()
+
+        let found =
+            selected.RuntimeDirs
+            |> Seq.tryFind (fun dir -> File.Exists (Path.Combine (dir, "Microsoft.AspNetCore.dll")))
+
+        match found with
+        | None ->
+            let dirs = selected.RuntimeDirs |> String.concat ", "
+
+            failwith
+                $"No directory on %s{name selected.Runtime}'s runtime-dir list holds Microsoft.AspNetCore.dll: [%s{dirs}]."
+        | Some dir ->
+            // <root>/shared/<framework name>/<version>
+            let rootOf (frameworkDir : string) : string =
+                frameworkDir
+                |> Path.GetFullPath
+                |> Path.TrimEndingDirectorySeparator
+                |> Path.GetDirectoryName
+                |> Path.GetDirectoryName
+                |> Path.GetDirectoryName
+
+            let frameworkName =
+                dir
+                |> Path.GetFullPath
+                |> Path.TrimEndingDirectorySeparator
+                |> Path.GetDirectoryName
+                |> Path.GetFileName
+
+            if frameworkName <> "Microsoft.AspNetCore.App" then
+                failwith
+                    $"The ASP.NET Core assemblies on %s{name selected.Runtime}'s runtime-dir list are in %s{dir}, which is not a Microsoft.AspNetCore.App shared framework directory."
+
+            let expectedRoot = rootOf selected.SharedFrameworkDirectory
+
+            if rootOf dir <> expectedRoot then
+                failwith
+                    $"The ASP.NET Core shared framework %s{dir} is not under the dotnet root %s{expectedRoot} that holds the framework under test, so the real-runtime oracle could not run a guest on it."
+
+            dir
+
     /// The `System.Private.CoreLib` that `state`'s run has loaded. Fails unless there is exactly
     /// one.
     let loadedCoreLib (state : IlMachineState) : DumpedAssembly =

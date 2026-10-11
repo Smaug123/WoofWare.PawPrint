@@ -90,8 +90,8 @@ module TestEphemeralPorts =
         : Result<uint16, BindRefusal> * UnixSystem<int, string>
         =
         match bindTo fd (wildcard 0us) system with
-        | Ok (BindAnswer.Bound endpoint), system -> Ok endpoint.Port, system
-        | Ok (BindAnswer.Failed error), _ -> failwith $"bind(0.0.0.0:0) failed with %A{error}"
+        | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), system -> Ok endpoint.Port, system
+        | Ok answer, _ -> failwith $"bind(0.0.0.0:0) answered %A{answer}"
         | Error refusal, system -> Error refusal, system
 
     let private listenOn (fd : int) (system : UnixSystem<int, string>) : ListenAnswer * UnixSystem<int, string> =
@@ -231,10 +231,10 @@ module TestEphemeralPorts =
         let fd, system = newStream system
 
         match listenOn fd system with
-        | ListenAnswer.Listening endpoint, system ->
+        | ListenAnswer.Listening (SocketAddress.Inet endpoint), system ->
             endpoint.Port |> shouldEqual 40001us
             noDefects system
-        | ListenAnswer.Failed error, _ -> failwith $"listen failed with %A{error}"
+        | answer, _ -> failwith $"listen answered %A{answer}"
 
     /// The client's port is the one the cursor has come back round to, so
     /// the connect-time choice is between reusing it and skipping it.
@@ -303,7 +303,7 @@ module TestEphemeralPorts =
 
         let system =
             match bindWithReuse true listenerFd (wildcard 0us) system with
-            | Ok (BindAnswer.Bound endpoint), system ->
+            | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), system ->
                 endpoint.Port |> shouldEqual 40000us
                 system
             | other, _ -> failwith $"binding the wildcard listener: %A{other}"
@@ -335,7 +335,7 @@ module TestEphemeralPorts =
             let fd, system = newStream system
 
             match bindWithReuse true fd (loopback 0us) system with
-            | Ok (BindAnswer.Bound endpoint), _ -> endpoint.Port
+            | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), _ -> endpoint.Port
             | other, _ -> failwith $"binding beside the listener: %A{other}"
 
         // Not yet accepted: the connection sits in the listener's queue.

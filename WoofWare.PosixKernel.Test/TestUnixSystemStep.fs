@@ -722,7 +722,7 @@ module TestUnixSystemStep =
             [
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
-                SocketPhase.DatagramPeer (Ipv4Endpoint.ofParts Ipv4Address.loopback 9us)
+                SocketPhase.DatagramPeer (SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 9us))
             ]
 
         for platform in [ linux ; darwin ] do
@@ -1576,6 +1576,59 @@ module TestUnixSystemStep =
         // is reading the link's own bits rather than a constant.
         (SymlinkModes.at022 SimulatedUnixPlatform.linuxX64 |> PermissionBits.toInt)
         |> shouldNotEqual (SymlinkModes.at022 SimulatedUnixPlatform.macOsArm64 |> PermissionBits.toInt)
+
+    [<Test>]
+    let ``a FIFO reports S_IFIFO, a size of 0 and no special-file device, on both flavours`` () : unit =
+        // Nothing in this version makes a FIFO inode, so the filesystem is
+        // forged. `stat` of a FIFO was measured on both flavours: `st_size` 0
+        // whatever the FIFO holds, `st_rdev` 0, `st_nlink` 1.
+        for system in [ linux ; darwin ] do
+            let owner = InodeOwner.ofProcess system.Process.Credentials
+            let fifo = InodeNumber 2L
+
+            let filesystem =
+                VirtualFileSystem.Unchecked.ofParts
+                    (Map.ofList
+                        [
+                            rootInode,
+                            {
+                                Content =
+                                    InodeContent.Directory
+                                        {
+                                            Entries = Map.ofList [ DirectoryEntryName.parseOrFail context "p", fifo ]
+                                            Parent = rootInode
+                                            Permissions = PermissionBits.parseOrFail context 0o755
+                                        }
+                                Times = InodeTimes.createdAt epoch
+                                Owner = owner
+                            }
+                            fifo,
+                            {
+                                Content = InodeContent.Fifo (PermissionBits.parseOrFail context 0o640)
+                                Times = InodeTimes.createdAt epoch
+                                Owner = owner
+                            }
+                        ])
+                    rootInode
+                    (InodeNumber 3L)
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+
+            let status =
+                match UnixPathResolution.statOf fifo system with
+                | Some (Ok status) -> status
+                | other -> failwith $"expected a status, got %A{other}"
+
+            status.Mode |> shouldEqual 0o010640
+            status.Size |> shouldEqual 0L
+            status.SpecialFileDevice |> shouldEqual 0L
+            status.LinkCount |> shouldEqual 1L
 
     [<Test>]
     let ``a birth time is withheld on the flavour whose stat has no such field`` () : unit =

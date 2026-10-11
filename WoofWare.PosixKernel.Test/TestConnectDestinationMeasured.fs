@@ -161,7 +161,7 @@ module TestConnectDestinationMeasured =
             Some (UnixMachineState.connection connection system.Machine).ServerAddress
         | SocketPhase.Established (connection, ConnectionEnd.Server) ->
             Some (UnixMachineState.connection connection system.Machine).ClientAddress
-        | SocketPhase.DatagramPeer endpoint when endpoint.Port <> 0us -> Some endpoint
+        | SocketPhase.DatagramPeer (SocketAddress.Inet endpoint) when endpoint.Port <> 0us -> Some endpoint
         | _ -> None
 
     /// What this kernel answers for `call`, in the probe's words.
@@ -332,7 +332,7 @@ module TestConnectDestinationMeasured =
 
             let bindTo fd (endpoint : Ipv4Endpoint) system =
                 match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
-                | Ok (BindAnswer.Bound bound, system) -> bound, system
+                | Ok (BindAnswer.Bound (SocketAddress.Inet bound), system) -> bound, system
                 | other -> failwith $"%s{line}: bind answered %A{other}"
 
             let connectTo fd (endpoint : Ipv4Endpoint) system =
@@ -385,7 +385,7 @@ module TestConnectDestinationMeasured =
                     match socket.Phase with
                     | SocketPhase.Established (connection, ConnectionEnd.Client) ->
                         name (UnixMachineState.connection connection after.Machine).ServerAddress.Address
-                    | SocketPhase.DatagramPeer endpoint -> name endpoint.Address
+                    | SocketPhase.DatagramPeer (SocketAddress.Inet endpoint) -> name endpoint.Address
                     | _ -> "none"
 
                 (name now.Address, (if now.Port = bound.Port then "same" else "other"), peerName)

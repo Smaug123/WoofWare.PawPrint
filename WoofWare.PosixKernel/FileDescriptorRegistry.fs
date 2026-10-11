@@ -314,7 +314,10 @@ type SocketPhase =
     /// nothing yet — no receive path exists — but re-connect re-targets it
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
     /// visible to the process through the return codes.
-    | DatagramPeer of peer : Ipv4Endpoint
+    ///
+    /// This kernel connects only an IPv4 datagram socket, so the peer is
+    /// always a `SocketAddress.Inet`.
+    | DatagramPeer of peer : SocketAddress
 
 [<RequireQualifiedAccess>]
 module SocketPhase =
