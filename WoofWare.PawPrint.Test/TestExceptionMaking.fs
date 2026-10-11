@@ -66,6 +66,10 @@ static class Program
         return System.Runtime.Intrinsics.X86.Sse2.LoadVector128((byte*)0);
     }
 
+    // `String.Ctor(char, int)` passes the count to `FastAllocateString`, which refuses it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Repeat(int count) => new string('a', count);
+
     static void Run(string fault)
     {
         switch (fault)
@@ -78,6 +82,7 @@ static class Program
             case "Quotient": Quotient(1, 0); break;
             case "Exchange": Exchange(); break;
             case "Load": Load(); break;
+            case "Repeat": Repeat(int.MaxValue); break;
             default: throw new ArgumentException(fault);
         }
     }
@@ -179,6 +184,36 @@ static class Program
             ]
 
     let faults : string list = cases |> Map.keys |> List.ofSeq
+
+    /// The contract table's row for `String.FastAllocateString`.
+    let private fastAllocateString : NativeContractRow =
+        NativeContractTable.rows.Force ()
+        |> List.find (fun row -> row.Native = TabulatedNative.FCall ("System.String", "FastAllocateString"))
+
+    [<Test>]
+    let ``a native raises an exception its row names, made by running its parameterless constructor`` () : unit =
+        // Which of the row's exceptions the native raises for a string too long to allocate depends
+        // on the target's allocator.
+        let raised =
+            fastAllocateString.Contract.Raises
+            |> List.filter (fun name ->
+                RealRuntime.executeWithRealRuntime [| "Repeat" ; "named" ; name.FullName |] image.Value = RealRuntimeResult.NormalExit
+                    1
+            )
+
+        match raised with
+        | [ name ] ->
+            let nameless =
+                RealRuntime.executeWithRealRuntime [| "Repeat" ; "nameless" ; name.FullName |] image.Value
+
+            match name.FullName with
+            // Its constructor reads its message from the runtime's native resources, not the
+            // culture's.
+            | "System.OutOfMemoryException" -> nameless |> shouldEqual (RealRuntimeResult.NormalExit 1)
+            | _ -> nameless |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        | raised ->
+            failwith
+                $"FastAllocateString of a string too long to allocate: expected exactly one of %A{fastAllocateString.Contract.Raises} to escape, got %A{raised}"
 
     [<TestCaseSource(nameof faults)>]
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
