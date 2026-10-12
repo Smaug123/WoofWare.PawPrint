@@ -380,7 +380,8 @@ module TestProcessTermination =
 
                     match flavour, coreDumped with
                     | _, false ->
-                        ProcessTermination.tryWaitpidStatus platform termination |> shouldEqual (Ok signo)
+                        ProcessTermination.tryWaitpidStatus platform termination
+                        |> shouldEqual (Ok signo)
 
                         ProcessTermination.tryWaitidStatus platform termination
                         |> shouldEqual (Ok (WaitIdCode.Killed, signo))

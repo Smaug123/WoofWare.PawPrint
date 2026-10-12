@@ -281,7 +281,12 @@ module TestStartingDirectory =
                             | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
                             | Some (dirfd, system) ->
                                 let actual =
-                                    UnixPathResolution.tryFaccessat dirfd (pathArgument path envelope.Platform) 0 0 system
+                                    UnixPathResolution.tryFaccessat
+                                        dirfd
+                                        (pathArgument path envelope.Platform)
+                                        0
+                                        0
+                                        system
                                     |> rendered
 
                                 if actual <> expected then
@@ -1392,7 +1397,8 @@ module TestStartingDirectory =
                     | other -> failwith $"%s{context}: the probe has no FLAGORDER cell %s{other}"
 
                 let actual =
-                    UnixNamespace.tryUnlinkat dirfd path 0x40000000 (boot envelope) |> renderedUnlinkAt
+                    UnixNamespace.tryUnlinkat dirfd path 0x40000000 (boot envelope)
+                    |> renderedUnlinkAt
 
                 if actual <> expected then
                     yield $"FLAGORDER %s{label}: the probe answered %s{expected}, this library %s{actual}"
@@ -1628,7 +1634,8 @@ module TestStartingDirectory =
                     let fd, system = opened "d" (unlinkAtCell envelope "/c/w")
 
                     let actual =
-                        UnixNamespace.tryUnlinkat fd path (flagsOf call) system |> renderedRemoval system
+                        UnixNamespace.tryUnlinkat fd path (flagsOf call) system
+                        |> renderedRemoval system
 
                     if actual <> at then
                         yield $"unlinkat %s{call} %s{label}: the probe answered %s{at}, this library %s{actual}"

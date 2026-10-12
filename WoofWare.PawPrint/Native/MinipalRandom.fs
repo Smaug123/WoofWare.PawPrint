@@ -97,7 +97,9 @@ module MinipalRandom =
                 try
                     UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system
                 with :? UnmodelledException as e ->
-                    KernelRefusal.fail $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread} was refused" e
+                    KernelRefusal.fail
+                        $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread} was refused"
+                        e
 
             match answer with
             | GetRandomAnswer.Completed draw, system ->
@@ -137,7 +139,12 @@ module MinipalRandom =
         // an open of a device never answers here.
         let opened =
             try
-                UnixNamespace.openPath thread (OpenFlagsPal.minipalUrandom kernel.UnixPlatform) urandomPath 0 kernel.System
+                UnixNamespace.openPath
+                    thread
+                    (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
+                    urandomPath
+                    0
+                    kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"%s{operation}: open(/dev/urandom) was refused" e
 

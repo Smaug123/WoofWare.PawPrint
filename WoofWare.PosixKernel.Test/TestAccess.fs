@@ -726,7 +726,9 @@ module TestAccess =
 
         // Search is not execution: root searching a directory is the same
         // question every path walk asks.
-        UnixPathResolution.tryAccess (bytes "d") 1 system |> answered |> shouldEqual "ok"
+        UnixPathResolution.tryAccess (bytes "d") 1 system
+        |> answered
+        |> shouldEqual "ok"
         // The path is resolved before the question is refused.
         UnixPathResolution.tryAccess (bytes "nx") 1 system
         |> answered

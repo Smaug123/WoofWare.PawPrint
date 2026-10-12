@@ -358,7 +358,11 @@ module TestUnixPathBytes =
                     seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] image
 
                 match
-                    UnixNamespace.tryReadlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
+                    UnixNamespace.tryReadlink
+                        (PathArg.ofPath (pathOf [ slash ; byte 'l' ]))
+                        UserBuffer.Mapped
+                        8192
+                        system
                 with
                 | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
                 | other -> failwith $"expected a target, got %A{other}"

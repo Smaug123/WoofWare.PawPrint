@@ -913,7 +913,9 @@ module TestFcntlMeasured =
                         | "write rdonly (refused)" -> Some (writeOf fd "x"B system)
                         | "write0 rdwr" -> Some (writeOf fd [||] system)
                         | "pwrite rdwr" ->
-                            match UnixReadWrite.tryPwrite system.Leader fd (ImmutableArray.CreateRange "x"B) 3L system with
+                            match
+                                UnixReadWrite.tryPwrite system.Leader fd (ImmutableArray.CreateRange "x"B) 3L system
+                            with
                             | Ok (WriteAnswer.Completed n, system) -> Some ($"ok %d{n}", system)
                             | other -> failwith $"pwrite: %A{other}"
                         | "ftruncate rdwr"
@@ -1335,7 +1337,9 @@ module TestFcntlMeasured =
                 if not (List.isEmpty (UnixWait.wakes (Set.singleton 1) system)) then
                     match UnixReadWrite.tryAdmitFinishWrite 1 system with
                     | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-                        match UnixReadWrite.tryFinishWrite 1 (ImmutableArray.Create (bytes, offset, count)) admitted with
+                        match
+                            UnixReadWrite.tryFinishWrite 1 (ImmutableArray.Create (bytes, offset, count)) admitted
+                        with
                         | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after)) ->
                             answer <- Some $"ok %d{n}"
                             system <- after

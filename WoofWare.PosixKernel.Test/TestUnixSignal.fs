@@ -336,7 +336,9 @@ module TestUnixSignal =
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
                 for signal, coreDumped in fatalSignals coreDumps do
                     let suspended =
-                        match UnixSignal.trySigsuspend 0 SignalMask.empty (pendingBehindMask flavour coreDumps signal) with
+                        match
+                            UnixSignal.trySigsuspend 0 SignalMask.empty (pendingBehindMask flavour coreDumps signal)
+                        with
                         | Ok (SigsuspendOutcome.Failed UnixError.EINTR, system) -> system
                         | other -> failwith $"sigsuspend under %O{flavour}: %O{other}"
 

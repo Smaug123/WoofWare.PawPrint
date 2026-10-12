@@ -2397,8 +2397,8 @@ module ProcessConfig =
                 // a list of supplementary groups longer than the flavour holds.
                 let knob =
                     if
-                        List.length credentials.SupplementaryGroups
-                        > SimulatedUnixPlatform.supplementaryGroupLimit platform
+                        List.length credentials.SupplementaryGroups > SimulatedUnixPlatform.supplementaryGroupLimit
+                            platform
                     then
                         $"%s{knobs}.SupplementaryGroups"
                     else

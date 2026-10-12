@@ -2909,7 +2909,9 @@ module TestUnixSystemStep =
         let oneReleased = UnixDescriptor.tryFlock holderTask first 8 parkedIn |> granted
         holds thirdTask condition oneReleased |> shouldEqual false
 
-        let bothReleased = UnixDescriptor.tryFlock waiterTask second 8 oneReleased |> granted
+        let bothReleased =
+            UnixDescriptor.tryFlock waiterTask second 8 oneReleased |> granted
+
         holds thirdTask condition bothReleased |> shouldEqual true
 
     [<Test>]

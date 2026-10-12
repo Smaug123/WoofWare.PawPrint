@@ -1171,7 +1171,10 @@ module UnixSystem =
                 SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (ProcessId.toInt32 (processId system)))),
                 system
             )
-        | Syscall.Dup fd -> UnixDescriptor.tryDup fd system |> answered |> Result.mapError SyscallRefusal.Dup
+        | Syscall.Dup fd ->
+            UnixDescriptor.tryDup fd system
+            |> answered
+            |> Result.mapError SyscallRefusal.Dup
         | Syscall.Fcntl (fd, command, argument) ->
             UnixDescriptor.tryFcntl fd command argument system
             |> answered

@@ -515,7 +515,9 @@ module TestClock =
         let system =
             systemWith SimulatedUnixFlavour.Darwin (UnixTimestamp.ofSeconds 10L) 1_000_999L
 
-        match UnixClock.tryClockGettime 0 system, UnixClock.tryClockGettime 6 system, UnixClock.tryClockGettime 8 system with
+        match
+            UnixClock.tryClockGettime 0 system, UnixClock.tryClockGettime 6 system, UnixClock.tryClockGettime 8 system
+        with
         | Ok (Ok realtime), Ok (Ok monotonic), Ok (Ok uptime) ->
             realtime |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 10L 1_000_000)
             monotonic |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 0L 1_000_000)

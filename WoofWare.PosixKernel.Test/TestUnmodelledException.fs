@@ -121,7 +121,8 @@ module TestUnmodelledException =
         | RefusalKind.NotOnPlatform -> typeof<PlatformNotSupportedException>
 
     let private kindGen : Gen<RefusalKind> =
-        let parameter = ArbMap.defaults |> ArbMap.generate<NonEmptyString> |> Gen.map (fun s -> s.Get)
+        let parameter =
+            ArbMap.defaults |> ArbMap.generate<NonEmptyString> |> Gen.map (fun s -> s.Get)
 
         Gen.oneof
             [
@@ -148,8 +149,7 @@ module TestUnmodelledException =
             }
 
         let property (operation : string, description : string, kind : RefusalKind, value : int, refused : bool) =
-            let result : Result<int, string> =
-                if refused then Error description else Ok value
+            let result : Result<int, string> = if refused then Error description else Ok value
 
             let raised =
                 try
@@ -203,8 +203,7 @@ module TestUnmodelledException =
             Observed.Answered
         | Ok expected, Error e -> failwith $"the internal call answered %A{expected}, and the public one threw %O{e}"
         | Error refusal, Ok answered ->
-            failwith
-                $"the internal call refused (%s{describe refusal}), and the public one answered %A{answered}"
+            failwith $"the internal call refused (%s{describe refusal}), and the public one answered %A{answered}"
         | Error refusal, Error e ->
             e.GetType () |> shouldEqual (expectedType (kind refusal))
             e.Message |> shouldContainText (describe refusal)
@@ -212,7 +211,12 @@ module TestUnmodelledException =
 
     /// Run `observe` over `count` inputs from `gen`, and check that every kind
     /// in `expected` was observed, so that a family cannot pass vacuously.
-    let private covering<'Input> (count : int) (gen : Gen<'Input>) (observe : 'Input -> Observed) (expected : Observed list) =
+    let private covering<'Input>
+        (count : int)
+        (gen : Gen<'Input>)
+        (observe : 'Input -> Observed)
+        (expected : Observed list)
+        =
         let seen =
             Gen.sample count gen
             |> Array.map observe
@@ -329,7 +333,13 @@ module TestUnmodelledException =
     [<Test>]
     let ``getresuid throws exactly when tryGetresuid refuses`` () : unit =
         let buffer =
-            Gen.elements [ UserBuffer.Mapped ; UserBuffer.Unmapped 8UL ; UserBuffer.Opaque ; UserBuffer.Addressless ]
+            Gen.elements
+                [
+                    UserBuffer.Mapped
+                    UserBuffer.Unmapped 8UL
+                    UserBuffer.Opaque
+                    UserBuffer.Addressless
+                ]
 
         let gen =
             gen {
@@ -474,7 +484,11 @@ module TestUnmodelledException =
     [<Test>]
     let ``a refused statistics field throws when it is read`` () : unit =
         let mounts =
-            [ EmulatedFileSystemType.Tmpfs ; EmulatedFileSystemType.Apfs ; EmulatedFileSystemType.Nfs ]
+            [
+                EmulatedFileSystemType.Tmpfs
+                EmulatedFileSystemType.Apfs
+                EmulatedFileSystemType.Nfs
+            ]
 
         let observed =
             [

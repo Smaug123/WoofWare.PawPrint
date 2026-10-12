@@ -3,17 +3,10 @@ namespace WoofWare.PawPrint.Test
 open WoofWare.PosixKernel
 
 /// Booting a machine whose first process a test describes, for a test that
-/// means every value it passes to be admitted: a refusal fails the test, named
-/// by the refusal's own `describe`.
+/// means every value it passes to be admitted: a refusal throws, which fails
+/// the test.
 [<RequireQualifiedAccess>]
 module internal Launched =
-
-    /// The value a setter returned, for a value the test means it to admit.
-    let expectOk<'Value, 'Refusal> (describe : 'Refusal -> string) (result : Result<'Value, 'Refusal>) : 'Value =
-        match result with
-        | Ok value -> value
-        | Error refusal ->
-            failwith $"test bug: the kernel refused a value the test means it to admit: %s{describe refusal}"
 
     /// A process on `platform` launched with `streams`, its leader `leader`
     /// on `cpu`.
@@ -25,7 +18,6 @@ module internal Launched =
         : ProcessLaunch<'Task>
         =
         ProcessLaunch.create platform streams leader cpu
-        |> expectOk LaunchTableRefusal.describe
 
     /// `image` booted with a first process launched with `streams`, its leader
     /// `leader` on `cpu`, as `configure` configures the launch.
@@ -39,7 +31,7 @@ module internal Launched =
         =
         let launch = launch (UnixBootImage.platform image) streams leader cpu |> configure
 
-        UnixBootImage.boot launch image |> expectOk LaunchRefusal.describe
+        UnixBootImage.boot launch image
 
     /// `bootWith` with the launch as `ProcessLaunch.create` makes it.
     let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -58,4 +50,3 @@ module internal Launched =
         : ProcessLaunch<'Task>
         =
         ProcessLaunch.withCredentials credentials launch
-        |> expectOk CredentialsRefusal.describe

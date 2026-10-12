@@ -1241,7 +1241,7 @@ module TestImpureCases =
                     // The launch made three pipes and the guest two, so the
                     // next one made is the sixth.
                     match UnixPipe.pipe2 0 UserBuffer.Mapped system with
-                    | Ok (Pipe2Answer.Created _, after) ->
+                    | Pipe2Answer.Created _, after ->
                         Set.difference
                             (UnixSystem.pipes after |> Map.keys |> Set.ofSeq)
                             (UnixSystem.pipes system |> Map.keys |> Set.ofSeq)

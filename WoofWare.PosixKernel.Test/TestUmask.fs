@@ -275,7 +275,10 @@ module TestUmask =
 
     let private created (p : string) (system : UnixSystem<int, string>) : int =
         match
-            UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (UnixPath.parseOrFail context p)) system
+            UnixPathResolution.tryStat
+                SymlinkPolicy.NoFollowFinal
+                (PathArg.ofPath (UnixPath.parseOrFail context p))
+                system
         with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o7777
         | other -> failwith $"%s{p}: %A{other}"

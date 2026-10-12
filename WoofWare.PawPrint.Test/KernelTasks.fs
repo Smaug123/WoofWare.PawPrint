@@ -16,6 +16,5 @@ module KernelTasks =
             kernel
         else
             match UnixTaskLifecycle.spawn kernel.Leader thread (CpuId 0) kernel.System with
-            | Ok (SpawnAnswer.Spawned _, system) -> EmulatedKernel.withUnix system kernel
-            | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %O{thread} failed with %O{error}"
-            | Error refusal -> failwith $"spawning %O{thread} was refused: %s{SpawnRefusal.describe refusal}"
+            | SpawnAnswer.Spawned _, system -> EmulatedKernel.withUnix system kernel
+            | SpawnAnswer.Failed error, _ -> failwith $"spawning %O{thread} failed with %O{error}"

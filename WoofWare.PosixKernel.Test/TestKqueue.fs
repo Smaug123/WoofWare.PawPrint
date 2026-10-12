@@ -421,7 +421,15 @@ module TestKqueue =
                 let nchanges, readable = changesOf changes
 
                 match
-                    UnixKqueue.tryKevent 2 d nchanges readable (int nevents) UserBuffer.Mapped (timeoutOf timeout) system
+                    UnixKqueue.tryKevent
+                        2
+                        d
+                        nchanges
+                        readable
+                        (int nevents)
+                        UserBuffer.Mapped
+                        (timeoutOf timeout)
+                        system
                 with
                 | Ok (outcome, after) ->
                     try
@@ -1002,7 +1010,9 @@ module TestKqueue =
 
         exn.Message |> shouldContainText "is parked"
 
-        let exn = Assert.Throws<exn> (fun () -> UnixKqueue.tryFinishKevent 1 system |> ignore)
+        let exn =
+            Assert.Throws<exn> (fun () -> UnixKqueue.tryFinishKevent 1 system |> ignore)
+
         exn.Message |> shouldContainText "is not parked"
 
         let exn =

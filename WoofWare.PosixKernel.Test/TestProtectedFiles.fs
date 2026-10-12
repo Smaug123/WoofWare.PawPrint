@@ -889,7 +889,11 @@ module TestProtectedFiles =
                     UnixSystem.tryStep 0 (Syscall.FChOwnAt (atFdCwd, bytes p, None, None, 0)) system
                     |> ofStep
                 )
-                "access", (fun p -> UnixSystem.tryStep 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system |> ofStep)
+                "access",
+                (fun p ->
+                    UnixSystem.tryStep 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system
+                    |> ofStep
+                )
                 "faccessat(AT_EACCESS)",
                 (fun p ->
                     UnixSystem.tryStep 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, linuxAtEAccess)) system

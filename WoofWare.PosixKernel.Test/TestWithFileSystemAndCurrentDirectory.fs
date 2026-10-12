@@ -436,14 +436,24 @@ module TestWithFileSystemAndCurrentDirectory =
                 | Error (StartFault.Seed fault) ->
                     Some (
                         "Seed."
-                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<FileSystemSeedFault>, System.Reflection.BindingFlags.Public ||| System.Reflection.BindingFlags.NonPublic)
+                        + (Reflection.FSharpValue.GetUnionFields (
+                            fault,
+                            typeof<FileSystemSeedFault>,
+                            System.Reflection.BindingFlags.Public
+                            ||| System.Reflection.BindingFlags.NonPublic
+                           )
                            |> fst)
                             .Name
                     )
                 | Error (StartFault.Directory fault) ->
                     Some (
                         "Directory."
-                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<CurrentDirectoryFault>, System.Reflection.BindingFlags.Public ||| System.Reflection.BindingFlags.NonPublic)
+                        + (Reflection.FSharpValue.GetUnionFields (
+                            fault,
+                            typeof<CurrentDirectoryFault>,
+                            System.Reflection.BindingFlags.Public
+                            ||| System.Reflection.BindingFlags.NonPublic
+                           )
                            |> fst)
                             .Name
                     )
@@ -451,7 +461,11 @@ module TestWithFileSystemAndCurrentDirectory =
             |> Set.ofList
 
         let declared (prefix : string) (union : System.Type) =
-            Reflection.FSharpType.GetUnionCases (union, System.Reflection.BindingFlags.Public ||| System.Reflection.BindingFlags.NonPublic)
+            Reflection.FSharpType.GetUnionCases (
+                union,
+                System.Reflection.BindingFlags.Public
+                ||| System.Reflection.BindingFlags.NonPublic
+            )
             |> Array.map (fun case -> prefix + case.Name)
             |> Set.ofArray
 

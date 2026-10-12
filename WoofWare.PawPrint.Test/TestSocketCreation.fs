@@ -147,9 +147,8 @@ module TestSocketCreation =
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             match UnixSocket.socket domain socketType protocol system with
-            | Ok (Ok _) -> "Ok"
-            | Ok (Error error) -> string<UnixError> error
-            | Error _ -> "Refused"
+            | Ok _ -> "Ok"
+            | Error error -> string<UnixError> error
 
     let private actual (platform : SimulatedUnixPlatform) (row : MeasuredRow) : string =
         composed platform palAddressFamily.[row.Family] palSocketType.[row.Kind] palProtocolType.[row.Protocol]
@@ -323,7 +322,7 @@ module TestSocketCreation =
             | Error screen -> failwith $"expected the screens to pass, got %O{screen}"
 
         match UnixSocket.socket domain socketType protocol system with
-        | Ok (Ok (fd, system)) ->
+        | Ok (fd, system) ->
             let socket =
                 match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors system) with
                 | Some (OpenFileTarget.Socket socketId) ->
@@ -501,8 +500,8 @@ module TestSocketCreation =
                                      |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                                     : UnixSystem<int, string>)
                             with
-                            | Ok (Error error) -> Some (UnixErrorPal.toPal error)
-                            | Ok (Ok _)
+                            | Error error -> Some (UnixErrorPal.toPal error)
+                            | Ok _
                             | Error _ -> None
 
                     match expected with

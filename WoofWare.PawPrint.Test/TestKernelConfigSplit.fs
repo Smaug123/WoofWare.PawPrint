@@ -61,25 +61,20 @@ module TestKernelConfigSplit =
                     )
             )
 
-        let ok (result : Result<'a, 'e>) : 'a =
-            match result with
-            | Ok a -> a
-            | Error e -> failwith $"reference: refused: %A{e}"
-
         let machine = KernelImage.mapMachine
         let launch = KernelImage.mapProcess
 
         EmulatedKernel.image platform config.StandardStreams
         |> launch (ProcessLaunch.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "reference" config.Environment
-        |> machine (UnixBootImage.withProcessorCount config.ProcessorCount >> ok)
+        |> machine (UnixBootImage.withProcessorCount config.ProcessorCount)
         |> machine (fun image ->
             match config.UserAddressLimit with
             | None -> image
-            | Some limit -> UnixBootImage.withUserAddressLimit limit image |> ok
+            | Some limit -> UnixBootImage.withUserAddressLimit limit image
         )
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> machine (UnixBootImage.withMount config.Mount >> ok)
+        |> machine (UnixBootImage.withMount config.Mount)
         |> launch (ProcessLaunch.withProcessPath "reference" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
@@ -87,22 +82,21 @@ module TestKernelConfigSplit =
              |> Option.defaultValue (InodeOwner.ofProcess credentials))
             (stateOwners (InodeOwner.ofProcess credentials) config.FileSystem)
             config.CurrentDirectory
-        |> launch (ProcessLaunch.withCredentials credentials >> ok)
+        |> launch (ProcessLaunch.withCredentials credentials)
         |> machine (
             UnixBootImage.withEphemeralPortRange (
                 config.EphemeralPortRange
                 |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
             )
-            >> ok
         )
-        |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn >> ok)
-        |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace >> ok)
-        |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace >> ok)
-        |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax >> ok)
-        |> machine (UnixBootImage.withProtectedFiles config.ProtectedFiles >> ok)
+        |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn)
+        |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace)
+        |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace)
+        |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax)
+        |> machine (UnixBootImage.withProtectedFiles config.ProtectedFiles)
         |> machine (UnixBootImage.withLocalIpv4Addresses config.LocalIpv4Addresses config.LocalRoutes)
-        |> launch (ProcessLaunch.withUmask config.Umask >> ok)
-        |> machine (UnixBootImage.withProcessId config.ProcessId >> ok)
+        |> launch (ProcessLaunch.withUmask config.Umask)
+        |> machine (UnixBootImage.withProcessId config.ProcessId)
         |> machine (fun image ->
             match flavour with
             | SimulatedUnixFlavour.Linux -> image
@@ -111,7 +105,7 @@ module TestKernelConfigSplit =
                     config.LeaderThreadId
                     |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
 
-                UnixBootImage.withLeaderThreadId id image |> ok
+                UnixBootImage.withLeaderThreadId id image
         )
         |> EmulatedKernel.bootInheritingSignalIgnores "reference" config.InheritedSignalIgnores
         |> EmulatedKernel.mapUnix (fun system ->

@@ -224,11 +224,11 @@ class WaitsOnADuplicatedPort
                         match
                             UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
                         with
-                        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                        | Ok (KillOutcome.ProcessContinues system) -> system
                         | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
                     match UnixPoll.finishEpollWait thread interrupted with
-                    | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) ->
+                    | EpollWaitOutcome.Failed UnixError.EINTR, system ->
                         // The signal has done its work; ignoring it discards it, so the
                         // step below meets the waiter rather than the signal.
                         system

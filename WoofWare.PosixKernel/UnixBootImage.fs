@@ -723,7 +723,10 @@ module UnixBootImage =
         : UnixBootImage<'Task, 'Handler>
         =
         tryWithUserAddressLimit limit image
-        |> Refusal.orRaise "UnixBootImage.withUserAddressLimit" UserAddressLimitRefusal.kind UserAddressLimitRefusal.describe
+        |> Refusal.orRaise
+            "UnixBootImage.withUserAddressLimit"
+            UserAddressLimitRefusal.kind
+            UserAddressLimitRefusal.describe
 
     /// Seed the machine's entropy pool, which every random-bytes syscall draws
     /// from, with `seed` in place of `UnixSystem.defaultEntropySeed`. Every
@@ -808,7 +811,10 @@ module UnixBootImage =
         : UnixBootImage<'Task, 'Handler>
         =
         tryWithEphemeralPortRange (low, high) image
-        |> Refusal.orRaise "UnixBootImage.withEphemeralPortRange" EphemeralPortRangeRefusal.kind EphemeralPortRangeRefusal.describe
+        |> Refusal.orRaise
+            "UnixBootImage.withEphemeralPortRange"
+            EphemeralPortRangeRefusal.kind
+            EphemeralPortRangeRefusal.describe
 
     /// `withBootTime`, with a refusal answered as the `Error` rather than raised.
     let internal tryWithBootTime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1199,7 +1205,10 @@ module UnixBootImage =
         : UnixBootImage<'Task, 'Handler>
         =
         tryWithTcpReceiveSpace value image
-        |> Refusal.orRaise "UnixBootImage.withTcpReceiveSpace" TcpReceiveSpaceRefusal.kind TcpReceiveSpaceRefusal.describe
+        |> Refusal.orRaise
+            "UnixBootImage.withTcpReceiveSpace"
+            TcpReceiveSpaceRefusal.kind
+            TcpReceiveSpaceRefusal.describe
 
     /// `withTcpSendSpaceMax`, with a refusal answered as the `Error` rather than raised.
     let internal tryWithTcpSendSpaceMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1245,4 +1254,7 @@ module UnixBootImage =
         : UnixBootImage<'Task, 'Handler>
         =
         tryWithTcpSendSpaceMax value image
-        |> Refusal.orRaise "UnixBootImage.withTcpSendSpaceMax" TcpSendSpaceMaxRefusal.kind TcpSendSpaceMaxRefusal.describe
+        |> Refusal.orRaise
+            "UnixBootImage.withTcpSendSpaceMax"
+            TcpSendSpaceMaxRefusal.kind
+            TcpSendSpaceMaxRefusal.describe

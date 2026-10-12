@@ -371,7 +371,12 @@ module TestPipe =
                             transferred <- Some n
                             total |> shouldEqual count
 
-                            UnixReadWrite.tryWriteThenSleep system.Leader fd total (payload reference.Offered n) admitted
+                            UnixReadWrite.tryWriteThenSleep
+                                system.Leader
+                                fd
+                                total
+                                (payload reference.Offered n)
+                                admitted
                         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _))
                         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
                             failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"

@@ -322,7 +322,8 @@ module TestLink =
                 let system =
                     boot envelope.Platform envelope.Credentials envelope.Protection (seedOf None symlinkCell)
 
-                let actual = UnixNamespace.tryLink (text pair.[0]) (text pair.[1]) system |> rendered
+                let actual =
+                    UnixNamespace.tryLink (text pair.[0]) (text pair.[1]) system |> rendered
 
                 let refusedHere =
                     match SimulatedUnixPlatform.flavour envelope.Platform with
@@ -851,7 +852,8 @@ module TestLink =
                     | other -> failwith $"%s{context}: the probe has no UNLINKED row %s{other}"
 
                 let actual =
-                    UnixNamespace.tryLinkat fd (text "") destFd dest linuxEmptyPath system |> rendered
+                    UnixNamespace.tryLinkat fd (text "") destFd dest linuxEmptyPath system
+                    |> rendered
 
                 let expected = expectedEmptyPath caller fd "" linuxEmptyPath probe
 

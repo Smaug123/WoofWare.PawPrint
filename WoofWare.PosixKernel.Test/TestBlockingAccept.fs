@@ -1248,7 +1248,9 @@ module TestBlockingAccept =
                         OptionValue.ofLinger (if onOff then 1 else 0) time
 
                 let supplied =
-                    match UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system with
+                    match
+                        UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system
+                    with
                     | Ok (SetSockOptAdmission.Transfer count) ->
                         Some (System.Collections.Immutable.ImmutableArray.Create (value, 0, count))
                     | other -> failwith $"setsockopt of %A{change} through fd %d{fd} was admitted as %A{other}"

@@ -805,7 +805,8 @@ module TestAttributeChangeAt =
                     UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofText ".") system
                     |> Result.mapError StatRefusal.describe
                 else
-                    UnixPathResolution.tryFstat dirfd system |> Result.mapError FStatRefusal.describe
+                    UnixPathResolution.tryFstat dirfd system
+                    |> Result.mapError FStatRefusal.describe
 
             // A descriptor this library will not report the status of (a
             // socket, an epoll instance) is asked for a mode of its own: the
@@ -977,7 +978,13 @@ module TestAttributeChangeAt =
                                 |> Result.map (fst >> errno)
                                 |> Result.mapError (fun r -> r = FChModAtRefusal.UnmodelledFlags flags)
                             | _ ->
-                                UnixPathResolution.tryFchownat (atFdCwd caller) (PathArg.ofText "f") None None flags system
+                                UnixPathResolution.tryFchownat
+                                    (atFdCwd caller)
+                                    (PathArg.ofText "f")
+                                    None
+                                    None
+                                    flags
+                                    system
                                 |> Result.map (fst >> errno)
                                 |> Result.mapError (fun r -> r = FChOwnAtRefusal.UnmodelledFlags flags)
 
@@ -1043,7 +1050,12 @@ module TestAttributeChangeAt =
 
                 let access =
                     match
-                        UnixPathResolution.tryFaccessat (atFdCwd caller) (PathArg.ofText "lf") 4 (noFollow caller) system
+                        UnixPathResolution.tryFaccessat
+                            (atFdCwd caller)
+                            (PathArg.ofText "lf")
+                            4
+                            (noFollow caller)
+                            system
                     with
                     | Ok answer -> errno answer
                     | Error refusal -> $"refused: %s{AccessRefusal.describe refusal}"

@@ -1394,7 +1394,9 @@ module TestPermissionStanding =
                     "/w/k", "/d/e"
                     "/w/k", "/d/f"
                 ] do
-                yield UnixNamespace.tryRename (argument source) (argument destination) system |> refused
+                yield
+                    UnixNamespace.tryRename (argument source) (argument destination) system
+                    |> refused
         ]
         |> List.choose id
 

@@ -216,7 +216,9 @@ module TestListenerTeardown =
                     ||| EpollEvents.EdgeTriggered
 
                 let system =
-                    match UnixPoll.tryEpollCtl epoll 1 fd (EpollEventArgument.Readable (interest, uint64 fd)) system with
+                    match
+                        UnixPoll.tryEpollCtl epoll 1 fd (EpollEventArgument.Readable (interest, uint64 fd)) system
+                    with
                     | Ok (EpollCtlAnswer.Changed, system) -> system
                     | other -> failwith $"epoll_ctl: %A{other}"
 

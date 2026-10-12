@@ -734,9 +734,11 @@ module TestCredentialChange =
         let primitive (call : Syscall) (system : UnixSystem<int, string>) =
             match call with
             | Syscall.SetResUid (r, e, s) ->
-                UnixCredentials.trySetresuid r e s system |> Result.mapError SyscallRefusal.SetIds
+                UnixCredentials.trySetresuid r e s system
+                |> Result.mapError SyscallRefusal.SetIds
             | Syscall.SetResGid (r, e, s) ->
-                UnixCredentials.trySetresgid r e s system |> Result.mapError SyscallRefusal.SetIds
+                UnixCredentials.trySetresgid r e s system
+                |> Result.mapError SyscallRefusal.SetIds
             | Syscall.SetGroups (size, words) ->
                 UnixCredentials.trySetgroups size words system
                 |> Result.mapError SyscallRefusal.SetGroups

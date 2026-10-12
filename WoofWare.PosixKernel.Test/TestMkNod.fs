@@ -432,7 +432,8 @@ module TestMkNod =
 
                 let system = cell envelope "/c/w/d" umask
 
-                let actual = UnixNamespace.tryMknod path mode 0u system |> rendered mknodRefusal system
+                let actual =
+                    UnixNamespace.tryMknod path mode 0u system |> rendered mknodRefusal system
 
                 if actual <> expected envelope mode 0u plain then
                     yield $"%s{row}: the probe's mknod answered %s{plain}, this library %s{actual}"
@@ -684,7 +685,8 @@ module TestMkNod =
                             | text -> PathArg.ofText text
 
                         let actual =
-                            UnixNamespace.tryMknodat dirfd path mode dev system |> rendered mknodRefusal system
+                            UnixNamespace.tryMknodat dirfd path mode dev system
+                            |> rendered mknodRefusal system
 
                         let want = expected envelope mode dev probe
 

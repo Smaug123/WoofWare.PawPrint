@@ -182,7 +182,10 @@ type LinuxFileSystemStatistics =
     /// it.
     member this.FileSystemId : FileSystemId =
         this.FileSystemIdResult
-        |> Refusal.orRaise "LinuxFileSystemStatistics.FileSystemId" FileSystemIdRefusal.kind FileSystemIdRefusal.describe
+        |> Refusal.orRaise
+            "LinuxFileSystemStatistics.FileSystemId"
+            FileSystemIdRefusal.kind
+            FileSystemIdRefusal.describe
 
     /// `f_flags`: the `ST_*` bits, in Linux's numbering. Throws
     /// `UnmodelledException` where this kernel does not state them.
@@ -255,7 +258,10 @@ type DarwinFileSystemStatistics =
     /// it.
     member this.FileSystemId : FileSystemId =
         this.FileSystemIdResult
-        |> Refusal.orRaise "DarwinFileSystemStatistics.FileSystemId" FileSystemIdRefusal.kind FileSystemIdRefusal.describe
+        |> Refusal.orRaise
+            "DarwinFileSystemStatistics.FileSystemId"
+            FileSystemIdRefusal.kind
+            FileSystemIdRefusal.describe
 
     /// `f_owner`, `f_flags`, `f_flags_ext`, `f_fssubtype`, `f_mntonname` and
     /// `f_mntfromname`. Throws `UnmodelledException` where this kernel does

@@ -336,7 +336,11 @@ module TestMultiProcess =
 
             let write (text : string) (view : UnixSystem<int, string>) =
                 match
-                    UnixReadWrite.tryWrite 0 1 (ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes text)) view
+                    UnixReadWrite.tryWrite
+                        0
+                        1
+                        (ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes text))
+                        view
                 with
                 | Ok (WriteOutcome.Returns (_, view)) -> (), view
                 | other -> failwith $"write: %A{other}"

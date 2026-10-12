@@ -117,11 +117,7 @@ module ProcessTermination =
 
     /// The status word a parent's `waitpid(2)` stores for a child that ended so, under
     /// `platform`'s signal numbering.
-    let waitpidStatus
-        (platform : SimulatedUnixPlatform)
-        (termination : ProcessTermination)
-        : int32
-        =
+    let waitpidStatus (platform : SimulatedUnixPlatform) (termination : ProcessTermination) : int32 =
         tryWaitpidStatus platform termination
         |> Refusal.orRaise "ProcessTermination.waitpidStatus" WaitStatusRefusal.kind WaitStatusRefusal.describe
 
@@ -147,11 +143,7 @@ module ProcessTermination =
 
     /// What a parent's `waitid(2)` reports for a child that ended so (`si_code` and
     /// `si_status`), under `platform`'s signal numbering.
-    let waitidStatus
-        (platform : SimulatedUnixPlatform)
-        (termination : ProcessTermination)
-        : WaitIdCode * int32
-        =
+    let waitidStatus (platform : SimulatedUnixPlatform) (termination : ProcessTermination) : WaitIdCode * int32 =
         tryWaitidStatus platform termination
         |> Refusal.orRaise "ProcessTermination.waitidStatus" WaitStatusRefusal.kind WaitStatusRefusal.describe
 

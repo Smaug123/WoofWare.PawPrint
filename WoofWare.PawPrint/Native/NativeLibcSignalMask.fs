@@ -252,7 +252,8 @@ module NativeLibcSignalMask =
             // `int sigprocmask(int how, const sigset_t* set, sigset_t* oldset)`.
             let operation = "libc sigprocmask"
 
-            maskCall ctx operation (fun _ -> ErrorConvention.InErrno) UnixSignal.sigprocmask |> Some
+            maskCall ctx operation (fun _ -> ErrorConvention.InErrno) UnixSignal.sigprocmask
+            |> Some
         | Some "sigpending",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->

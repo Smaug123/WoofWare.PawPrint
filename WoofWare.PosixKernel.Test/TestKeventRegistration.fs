@@ -694,7 +694,15 @@ module TestKeventRegistration =
                         KeventWorld.change fd filter (KeventFlags.Add ||| KeventFlags.Clear) 1UL
 
                     match
-                        UnixKqueue.tryKevent 1 kq 1 [ change ] 8 UserBuffer.Mapped (KeventTimeout.Readable (0L, 0L)) system
+                        UnixKqueue.tryKevent
+                            1
+                            kq
+                            1
+                            [ change ]
+                            8
+                            UserBuffer.Mapped
+                            (KeventTimeout.Readable (0L, 0L))
+                            system
                     with
                     | Ok _
                     | Error _ -> ()

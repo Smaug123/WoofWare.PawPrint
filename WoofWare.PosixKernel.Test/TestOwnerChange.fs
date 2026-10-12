@@ -1558,7 +1558,10 @@ module TestOwnerChange =
         |> answered
         |> shouldEqual (lchownAnswer "/p/lf" None memberGroup system)
 
-        UnixSystem.tryStep 1 (Syscall.FChOwnAt (-100, PathArg.ofPath (path "/p/theirs"), Some (uid 1002u), None, 0)) system
+        UnixSystem.tryStep
+            1
+            (Syscall.FChOwnAt (-100, PathArg.ofPath (path "/p/theirs"), Some (uid 1002u), None, 0))
+            system
         |> answered
         |> shouldEqual (chownAnswer "/p/theirs" (Some (uid 1002u)) None system)
 

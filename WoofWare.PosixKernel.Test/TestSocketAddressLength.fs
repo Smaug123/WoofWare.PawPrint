@@ -350,7 +350,12 @@ module TestSocketAddressLength =
                             system
                         else
                             match
-                                UnixPoll.tryEpollCtl queueFd 1 clientFd (EpollEventArgument.Readable (events, 7UL)) system
+                                UnixPoll.tryEpollCtl
+                                    queueFd
+                                    1
+                                    clientFd
+                                    (EpollEventArgument.Readable (events, 7UL))
+                                    system
                             with
                             | Ok (EpollCtlAnswer.Changed, system) -> system
                             | other -> failwith $"epoll_ctl ADD: %A{other}"

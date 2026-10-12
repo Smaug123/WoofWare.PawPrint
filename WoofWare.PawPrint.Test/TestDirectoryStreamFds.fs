@@ -52,7 +52,7 @@ module TestDirectoryStreamFds =
                     0
                     kernel.System
             with
-            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) -> int fd, system
+            | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system -> int fd, system
             | other -> failwith $"could not open the directory: %O{other}"
 
         let kernel = EmulatedKernel.withUnix system kernel
@@ -112,8 +112,7 @@ module TestDirectoryStreamFds =
             EmulatedKernel.mapUnix
                 (fun system ->
                     match UnixNamespace.readDirectoryEntry firstFd system with
-                    | Ok (_, system) -> system
-                    | Error refusal -> failwith $"%A{refusal}"
+                    | _, system -> system
                 )
                 kernel
 

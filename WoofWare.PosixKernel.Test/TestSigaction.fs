@@ -392,7 +392,10 @@ module TestSigaction =
                                     if threadDirected then
                                         UnixSignal.tryPthreadKill leader signo caught |> Result.mapError string
                                     else
-                                        UnixSignal.tryKill (ProcessId.toInt32 (UnixSystem.processId caught)) signo caught
+                                        UnixSignal.tryKill
+                                            (ProcessId.toInt32 (UnixSystem.processId caught))
+                                            signo
+                                            caught
                                         |> Result.mapError string
 
                                 match answer with

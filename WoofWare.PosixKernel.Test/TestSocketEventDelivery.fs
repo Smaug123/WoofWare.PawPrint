@@ -956,7 +956,9 @@ module TestSocketEventDelivery =
         readyOf queueId kernel |> List.length |> shouldEqual 1
 
         let kernel =
-            match UnixPoll.tryEpollCtl queueFd 3 listenerFd (EpollEventArgument.Readable (writeInterest, 6UL)) kernel with
+            match
+                UnixPoll.tryEpollCtl queueFd 3 listenerFd (EpollEventArgument.Readable (writeInterest, 6UL)) kernel
+            with
             | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
             | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"

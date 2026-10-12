@@ -200,6 +200,5 @@ module TestOpenFlagsPal =
                         0o644
                         system
                 with
-                | Ok (SyscallOutcome.Answered _, _) -> ()
-                | Ok (outcome, _) -> failwith $"%O{platform} 0x%x{word}: expected an open that returns, got %A{outcome}"
-                | Error refusal -> failwith $"%O{platform} 0x%x{word}: %s{OpenRefusal.describe refusal}"
+                | SyscallOutcome.Answered _, _ -> ()
+                | outcome, _ -> failwith $"%O{platform} 0x%x{word}: expected an open that returns, got %A{outcome}"

@@ -204,7 +204,7 @@ module TestSignalDispatch =
             let signo = Signal.toRawSignoUnder (numberingOf state) signal
 
             match UnixSignal.kill pid signo kernel.System with
-            | Ok (Ok (KillOutcome.ProcessContinues system)) -> EmulatedKernel.withUnix system kernel
+            | Ok (KillOutcome.ProcessContinues system) -> EmulatedKernel.withUnix system kernel
             | other ->
                 let masks =
                     UnixSystem.tasks kernel.System
@@ -263,8 +263,8 @@ module TestSignalDispatch =
         let pipe = pipeOf state
 
         match UnixReadWrite.read state.Kernel.Leader pipe.ReadEnd UserBuffer.Mapped 4096UL state.Kernel.System with
-        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
-        | Ok (ReadOutcome.WouldBlock _, _) -> []
+        | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ -> List.ofSeq bytes
+        | ReadOutcome.WouldBlock _, _ -> []
         | other -> failwith $"reading the signal pipe answered %O{other}"
 
     /// The arguments of the frame the dispatcher is running.
@@ -780,11 +780,11 @@ module TestSignalDispatch =
 
             let system =
                 match UnixDescriptor.close fd system with
-                | Ok (SyscallAnswer.Completed _, system) -> system
+                | SyscallAnswer.Completed _, system -> system
                 | other -> failwith $"closing %d{fd} answered %O{other}"
 
             match UnixDescriptor.dup 1 system with
-            | Ok (SyscallAnswer.Completed newFd, system) when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
+            | SyscallAnswer.Completed newFd, system when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"duplicating stdout onto %d{fd} answered %O{other}"
         )
 
@@ -828,7 +828,7 @@ module TestSignalDispatch =
             state.MapKernel (fun kernel ->
                 let system =
                     match UnixDescriptor.close writeEnd kernel.System with
-                    | Ok (SyscallAnswer.Completed _, system) -> system
+                    | SyscallAnswer.Completed _, system -> system
                     | other -> failwith $"closing the write end answered %O{other}"
 
                 match
@@ -839,7 +839,7 @@ module TestSignalDispatch =
                         0o644
                         system
                 with
-                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) when fd = int64 writeEnd ->
+                | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system when fd = int64 writeEnd ->
                     EmulatedKernel.withUnix system kernel
                 | other -> failwith $"opening the sink answered %A{other}"
             )
@@ -857,9 +857,9 @@ module TestSignalDispatch =
             match
                 UnixNamespace.openPath (UnixSystem.leader system) (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system
             with
-            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
+            | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
                 match UnixReadWrite.read (UnixSystem.leader system) (int fd) UserBuffer.Mapped 16UL system with
-                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
+                | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ -> List.ofSeq bytes
                 | other -> failwith $"reading the sink answered %O{other}"
             | other -> failwith $"reopening the sink answered %O{other}"
 
@@ -915,7 +915,7 @@ module TestSignalDispatch =
     let private duplicatedOnto (source : int) (target : int) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
             match UnixDescriptor.dup2 source target kernel.System with
-            | Ok (SyscallAnswer.Completed fd, system) when fd = int64 target -> EmulatedKernel.withUnix system kernel
+            | SyscallAnswer.Completed fd, system when fd = int64 target -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"dup2(%d{source}, %d{target}) answered %A{other}"
         )
 
@@ -935,7 +935,7 @@ module TestSignalDispatch =
         let socket (system : UnixSystem<ThreadId, NativeSignalHandler>) =
             // SOCK_STREAM and IPPROTO_TCP are 1 and 6 under both flavours.
             match UnixSocket.socket SimulatedUnixPlatform.internetAddressFamily 1 6 system with
-            | Ok (Ok created) -> created
+            | Ok created -> created
             | other -> failwith $"socket answered %A{other}"
 
         let system = state.Kernel.System
@@ -943,24 +943,24 @@ module TestSignalDispatch =
 
         let system =
             match UnixSocket.bind listener UserBuffer.Mapped length address system with
-            | Ok (BindAnswer.Bound _, system) -> system
+            | BindAnswer.Bound _, system -> system
             | other -> failwith $"bind answered %A{other}"
 
         let system =
             match UnixSocket.listen listener 1 system with
-            | Ok (ListenAnswer.Listening _, system) -> system
+            | ListenAnswer.Listening _, system -> system
             | other -> failwith $"listen answered %A{other}"
 
         let client, system = socket system
 
         let system =
             match UnixConnection.connect client UserBuffer.Mapped length address system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | ConnectOutcome.Completed, system -> system
             | other -> failwith $"connect answered %A{other}"
 
         let system =
             match UnixConnection.accept state.Kernel.Leader listener UserBuffer.Mapped 16u system with
-            | Ok (AcceptOutcome.Accepted _, system) -> system
+            | AcceptOutcome.Accepted _, system -> system
             | other -> failwith $"accept answered %A{other}"
 
         state.MapKernel (EmulatedKernel.withUnix system), client
@@ -969,7 +969,7 @@ module TestSignalDispatch =
     /// read end's descriptor.
     let private withAnotherPipe (state : IlMachineState) : IlMachineState * int =
         match UnixPipe.pipe2 0 UserBuffer.Mapped state.Kernel.System with
-        | Ok (Pipe2Answer.Created (readFd, _), system) -> state.MapKernel (EmulatedKernel.withUnix system), readFd
+        | Pipe2Answer.Created (readFd, _), system -> state.MapKernel (EmulatedKernel.withUnix system), readFd
         | other -> failwith $"pipe2 answered %A{other}"
 
     /// `state` with an empty regular file open for reading: its descriptor.
@@ -985,7 +985,7 @@ module TestSignalDispatch =
         let system = state.Kernel.System
 
         match UnixNamespace.openPath (UnixSystem.leader system) flags pathBytes 0o644 system with
-        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
+        | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
             state.MapKernel (EmulatedKernel.withUnix system), int fd
         | other -> failwith $"opening the file answered %A{other}"
 
@@ -1038,7 +1038,7 @@ module TestSignalDispatch =
         let closed =
             state.MapKernel (fun kernel ->
                 match UnixDescriptor.close (pipeOf state).ReadEnd kernel.System with
-                | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+                | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"closing the read end answered %O{other}"
             )
 
@@ -1058,7 +1058,7 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 match UnixDescriptor.close readEnd kernel.System with
-                | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+                | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"closing the read end answered %O{other}"
             )
 
@@ -1077,12 +1077,12 @@ module TestSignalDispatch =
             state.MapKernel (fun kernel ->
                 let system =
                     match UnixDescriptor.dup2 readEnd 40 kernel.System with
-                    | Ok (SyscallAnswer.Completed 40L, system) -> system
+                    | SyscallAnswer.Completed 40L, system -> system
                     | other -> failwith $"dup2 away answered %A{other}"
 
                 let system =
                     match UnixDescriptor.close readEnd system with
-                    | Ok (SyscallAnswer.Completed _, system) -> system
+                    | SyscallAnswer.Completed _, system -> system
                     | other -> failwith $"closing the read end answered %O{other}"
 
                 EmulatedKernel.withUnix system kernel
@@ -1229,11 +1229,11 @@ module TestSignalDispatch =
             match
                 SimulatedUnixPlatform.flavour platform, UnixDescriptor.close (pipeOf state).ReadEnd state.Kernel.System
             with
-            | SimulatedUnixFlavour.Linux, Ok (SyscallAnswer.Completed _, system) ->
+            | SimulatedUnixFlavour.Linux, (SyscallAnswer.Completed _, system) ->
                 let state = state.MapKernel (EmulatedKernel.withUnix system)
                 dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
                 defects state |> shouldEqual []
-            | SimulatedUnixFlavour.Darwin, Ok (SyscallAnswer.Completed _, system) ->
+            | SimulatedUnixFlavour.Darwin, (SyscallAnswer.Completed _, system) ->
                 let state = state.MapKernel (EmulatedKernel.withUnix system)
                 defects state |> shouldEqual []
 
@@ -1248,7 +1248,7 @@ module TestSignalDispatch =
         let state, reader = IlMachineState.allocateParkedThread state.Kernel.Leader state
 
         match UnixReadWrite.read reader (pipeOf state).ReadEnd UserBuffer.Mapped 1UL state.Kernel.System with
-        | Ok (ReadOutcome.WouldBlock _, system) ->
+        | ReadOutcome.WouldBlock _, system ->
             state.MapKernel (EmulatedKernel.withUnix system)
             |> withStatus reader ThreadStatus.BlockedInSyscall,
             reader
@@ -1384,7 +1384,7 @@ module TestSignalDispatch =
 
         let closed =
             match UnixDescriptor.close (pipeOf state).WriteEnd state.Kernel.System with
-            | Ok (SyscallAnswer.Completed _, system) -> state.MapKernel (EmulatedKernel.withUnix system)
+            | SyscallAnswer.Completed _, system -> state.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"closing the write end answered %O{other}"
 
         let exn =
@@ -1406,7 +1406,7 @@ module TestSignalDispatch =
         // Fill the pipe to capacity through its write end.
         let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
             match UnixReadWrite.admitWrite (UnixSystem.leader system) pipe.WriteEnd UserBuffer.Mapped 4096UL system with
-            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, system)) ->
+            | WriteOutcome.Returns (WriteAdmission.Transfer count, system) ->
                 match
                     UnixReadWrite.write
                         (UnixSystem.leader system)
@@ -1414,10 +1414,10 @@ module TestSignalDispatch =
                         (ImmutableArray.CreateRange (Array.create count 1uy))
                         system
                 with
-                | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill system
+                | WriteOutcome.Returns (WriteAnswer.Completed _, system) -> fill system
                 | other -> failwith $"filling the pipe answered %O{other}"
             // Full: the write would sleep, and the pipe is kept as it was.
-            | Ok (WriteOutcome.WouldBlock _) -> system
+            | WriteOutcome.WouldBlock _ -> system
             | other -> failwith $"filling the pipe was admitted as %O{other}"
 
         let full =
@@ -1449,7 +1449,7 @@ module TestSignalDispatch =
                 match
                     UnixReadWrite.write (UnixSystem.leader system) pipe.WriteEnd (ImmutableArray.Create 0uy) system
                 with
-                | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> EmulatedKernel.withUnix system kernel
+                | WriteOutcome.Returns (WriteAnswer.Completed 1L, system) -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"writing to the pipe answered %O{other}"
             )
 

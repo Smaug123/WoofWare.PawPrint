@@ -489,7 +489,9 @@ module TestUnconnectedSocketTransfer =
             // hold in one call.
             let written =
                 if count <= uint64 (1 <<< 20) then
-                    Some (UnixReadWrite.tryWrite 1 fd (ImmutableArray.Create<byte> (Array.zeroCreate (int count))) system)
+                    Some (
+                        UnixReadWrite.tryWrite 1 fd (ImmutableArray.Create<byte> (Array.zeroCreate (int count))) system
+                    )
                 else
                     None
 

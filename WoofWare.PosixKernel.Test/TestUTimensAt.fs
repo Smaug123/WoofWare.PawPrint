@@ -1322,7 +1322,9 @@ module TestUTimensAt =
         // Darwin's root on the caller's own file, which it does not own.
         let system = boot user |> dropped rootCaller
 
-        match UnixPathResolution.tryUtimensat (atFdCwd rootCaller) (pathOf rootCaller "f") TimesArgument.Null 0 system with
+        match
+            UnixPathResolution.tryUtimensat (atFdCwd rootCaller) (pathOf rootCaller "f") TimesArgument.Null 0 system
+        with
         | Error (UTimensAtRefusal.UnmeasuredPrivilegedCaller _) -> ()
         | other -> failwith $"%s{context}: Darwin's root: %A{other}"
 

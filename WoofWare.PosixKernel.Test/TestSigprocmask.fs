@@ -464,7 +464,8 @@ module TestSigprocmask =
                 | Ok (_, system) -> system
                 | Error errno -> failwith $"%O{errno}"
 
-            let raised = UnixSignal.tryPthreadKill 0 (signo flavour Signal.SIGUSR1) system |> sent
+            let raised =
+                UnixSignal.tryPthreadKill 0 (signo flavour Signal.SIGUSR1) system |> sent
 
             let frame, inHandler =
                 match UnixSignal.tryOnReturnToUser 0 raised with
@@ -557,7 +558,8 @@ module TestSigprocmask =
                 |> Tasks.spawn 1
                 |> withMask flavour 1 (SignalMask.toWord usr1)
 
-            let system = UnixSignal.tryPthreadKill 1 (signo flavour Signal.SIGUSR1) system |> sent
+            let system =
+                UnixSignal.tryPthreadKill 1 (signo flavour Signal.SIGUSR1) system |> sent
 
             // A poll of nothing, with no deadline, sleeps until a signal ends
             // it.
@@ -791,7 +793,8 @@ module TestSigprocmask =
                 | Error errno -> failwith $"%O{errno}"
                 |> withMask flavour 0 (SignalMask.toWord (ofList before))
 
-            let system = UnixSignal.tryPthreadKill 0 (signo flavour Signal.SIGUSR1) system |> sent
+            let system =
+                UnixSignal.tryPthreadKill 0 (signo flavour Signal.SIGUSR1) system |> sent
 
             let frame, inHandler =
                 match UnixSignal.tryOnReturnToUser 0 system with

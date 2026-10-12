@@ -523,7 +523,9 @@ module TestPthreadKill =
             let system = systemOn flavour
             let sigcont = Signal.toRawSignoUnder (numberingOf flavour) Signal.SIGCONT
 
-            let sent = UnixSignal.tryKill (self system) sigcont system |> continues "kill SIGCONT"
+            let sent =
+                UnixSignal.tryKill (self system) sigcont system |> continues "kill SIGCONT"
+
             SignalState.pending sent.Process.Signals |> shouldEqual []
 
             UnixSignal.tryPthreadKill leader sigcont sent
@@ -540,7 +542,8 @@ module TestPthreadKill =
         let sigcont =
             Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Darwin) Signal.SIGCONT
 
-        let sent = UnixSignal.tryKill (self darwin) sigcont darwin |> continues "kill SIGCONT"
+        let sent =
+            UnixSignal.tryKill (self darwin) sigcont darwin |> continues "kill SIGCONT"
 
         UnixSignal.tryPthreadKill leader sigcont sent
         |> shouldEqual (

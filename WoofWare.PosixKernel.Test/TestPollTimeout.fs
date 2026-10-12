@@ -498,7 +498,8 @@ module TestPollTimeout =
                 UnixSystemDefect.ParkedPollDescriptorRebound (task, listener, watched, Some (idOf listener rebound))
             ]
 
-        let exn = Assert.Throws<exn> (fun () -> UnixPoll.tryFinishPoll task rebound |> ignore)
+        let exn =
+            Assert.Throws<exn> (fun () -> UnixPoll.tryFinishPoll task rebound |> ignore)
 
         exn.Message |> shouldContainText "now names"
 

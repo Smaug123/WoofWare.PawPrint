@@ -43,12 +43,7 @@ module TestTaskState =
         (bare ())
             .MapKernel (fun _ ->
                 EmulatedKernel.initialImage
-                |> KernelImage.mapMachine (fun image ->
-                    UnixBootImage.withProcessorCount 4 image
-                    |> Result.defaultWith (fun refusal ->
-                        failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}"
-                    )
-                )
+                |> KernelImage.mapMachine (fun image -> UnixBootImage.withProcessorCount 4 image)
                 |> EmulatedKernel.boot
             )
 
@@ -271,25 +266,25 @@ module TestTaskState =
 
             let (readEnd, writeEnd), system =
                 match UnixPipe.pipe2 0 UserBuffer.Mapped system with
-                | Ok (Pipe2Answer.Created (readEnd, writeEnd), system) -> (readEnd, writeEnd), system
+                | Pipe2Answer.Created (readEnd, writeEnd), system -> (readEnd, writeEnd), system
                 | other -> failwith $"pipe2 answered %A{other}"
 
             let system =
                 match UnixDescriptor.flock (UnixSystem.leader system) readEnd lockExclusive system with
-                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> system
+                | SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system -> system
                 | other -> failwith $"the leader's flock answered %A{other}"
 
             match UnixDescriptor.flock thread writeEnd lockExclusive system with
-            | Ok (SyscallOutcome.WouldBlock _, system) -> system
+            | SyscallOutcome.WouldBlock _, system -> system
             | other -> failwith $"expected %O{thread}'s flock to park, got %A{other}"
         | ParkingSyscall.EpollWait ->
             let port, system =
                 match UnixPoll.epollCreate1 0 system with
-                | Ok (Ok (port, system)) -> port, system
+                | Ok (port, system) -> port, system
                 | other -> failwith $"epoll_create1 answered %A{other}"
 
             match UnixPoll.epollWait thread port 8 UserBuffer.Mapped -1 system with
-            | Ok (EpollWaitOutcome.WouldBlock _, system) -> system
+            | EpollWaitOutcome.WouldBlock _, system -> system
             | other -> failwith $"expected %O{thread}'s epoll_wait to park, got %A{other}"
 
     /// Every kind of park, so that the rows below say the invariant is about *whether* a thread
@@ -439,7 +434,7 @@ module TestTaskState =
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) state.Kernel.System
-                |> ignore<Result<SpawnAnswer * UnixSystem<ThreadId, NativeSignalHandler>, SpawnRefusal<ThreadId>>>
+                |> ignore<SpawnAnswer * UnixSystem<ThreadId, NativeSignalHandler>>
             )
 
         exn.Message |> shouldContainText "already names a task"
@@ -477,7 +472,7 @@ module TestTaskState =
         // deadline alone ends.
         let port, state =
             match UnixPoll.epollCreate1 0 state.Kernel.System with
-            | Ok (Ok (port, system)) -> port, state.MapKernel (EmulatedKernel.withUnix system)
+            | Ok (port, system) -> port, state.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"epoll_create1 answered %A{other}"
 
         // The status goes with the record, because a park writes both and `checkTaskInvariants`
@@ -485,7 +480,7 @@ module TestTaskState =
         // no wait can have produced.
         let parked =
             match UnixPoll.epollWait thread port 8 UserBuffer.Mapped 10 state.Kernel.System with
-            | Ok (EpollWaitOutcome.WouldBlock _, system) -> state.MapKernel (EmulatedKernel.withUnix system)
+            | EpollWaitOutcome.WouldBlock _, system -> state.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"expected the epoll_wait to park, got %A{other}"
             |> Scheduler.parkInSyscall thread
 
@@ -512,7 +507,7 @@ module TestTaskState =
                 woken.MapKernel (EmulatedKernel.withVirtualClockTicks (woken.Kernel.VirtualClockTicks + 100_000L))
 
             match UnixPoll.finishEpollWait thread expired.Kernel.System with
-            | Ok (EpollWaitOutcome.Answered [], system) -> expired.MapKernel (EmulatedKernel.withUnix system)
+            | EpollWaitOutcome.Answered [], system -> expired.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"expected the wait to time out, got %A{other}"
 
         UnixTaskState.parkedIn (EmulatedKernel.taskOf thread released.Kernel.Tasks)

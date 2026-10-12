@@ -344,7 +344,9 @@ module TestPipeAgainstHost =
 
                             // `None` for a write that sleeps.
                             let model =
-                                match UnixReadWrite.tryAdmitWrite system.Leader modelFd buffer (uint64 count) system with
+                                match
+                                    UnixReadWrite.tryAdmitWrite system.Leader modelFd buffer (uint64 count) system
+                                with
                                 | Error refusal -> Error refusal
                                 | Ok (WriteOutcome.WouldBlock _) -> Ok None
                                 | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
