@@ -36,10 +36,12 @@ module internal CommittedFileSystem =
     /// `committed`'s own graph, and `openFiles` with the records its changes
     /// raise queued on every inotify instance watching what they changed,
     /// each instance's limit being `maxQueuedEvents` records
-    /// (`InotifyDelivery`), and each description's record of the name it was
-    /// opened through moved or marked unlinked by them
+    /// (`InotifyDelivery`), each watch on an inode that went for inotify
+    /// ended, and each description's record of the name it was opened
+    /// through moved or marked unlinked by them
     /// (`OpenFileTable.followChanges`). `notice` says how the syscall reached
-    /// what it changed.
+    /// what it changed, or that a description let go of a name
+    /// (`ChangeNotice.NameReleased`, with `VirtualFileSystem.unchanged`).
     ///
     /// Refused, changing nothing, where Linux would report a change to a
     /// watch through a name this kernel does not keep: the name a removed
@@ -62,8 +64,8 @@ module internal CommittedFileSystem =
             failwith
                 "CommittedFileSystem.commit: the mutation was made from a graph other than the one this machine holds, so committing it would lose every change between the two (this is a bug in the caller)."
 
-        let notifications, unplaced, nextCookie =
-            InotifyDelivery.notifications notice mutation committed.NextCookie
+        let effects, unplaced, nextCookie =
+            InotifyDelivery.notifications notice mutation openFiles committed.NextCookie
 
         match InotifyDelivery.unplacedRefusal unplaced openFiles with
         | Some refusal -> Error refusal
@@ -74,6 +76,6 @@ module internal CommittedFileSystem =
                 Graph = VfsMutation.after mutation
                 NextCookie = nextCookie
             },
-            InotifyDelivery.deliver maxQueuedEvents notifications openFiles
+            InotifyDelivery.deliver maxQueuedEvents effects openFiles
             |> OpenFileTable.followChanges (VfsMutation.changes mutation)
         )

@@ -2093,14 +2093,7 @@ module UnixNamespace =
         // name or any open descriptor still holds it. A real `unlink` of a file
         // something has open leaves it readable through that descriptor until the
         // last one closes.
-        Ok (
-            SyscallAnswer.Completed 0L,
-            ObjectLifetime.forgetIfUnheld
-                target
-                { system with
-                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
-                }
-        )
+        Ok (SyscallAnswer.Completed 0L, ObjectLifetime.commitRemoving target mutation system)
 
     /// `unlink`, with a refusal answered as the `Error` rather than raised.
     let internal tryUnlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2198,14 +2191,7 @@ module UnixNamespace =
         // `rmdir` leaves such an orphan usable through what holds it.
         // `forgetIfUnheld` also collects the ancestors this directory's ".." was
         // keeping alive.
-        Ok (
-            SyscallAnswer.Completed 0L,
-            ObjectLifetime.forgetIfUnheld
-                target
-                { system with
-                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
-                }
-        )
+        Ok (SyscallAnswer.Completed 0L, ObjectLifetime.commitRemoving target mutation system)
 
     /// `rmdir`, with a refusal answered as the `Error` rather than raised.
     let internal tryRmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2612,11 +2598,7 @@ module UnixNamespace =
         // rename has just rewritten — so it reports the new path however many
         // levels up the move was, and reports nothing if this rename displaced
         // the current directory itself.
-        let moved =
-            { system with
-                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
-            }
-
+        //
         // The destination name may have been the displaced inode's last, and
         // whether the inode goes with it depends on the descriptor table, which
         // the filesystem cannot see. When the displaced thing was a directory
@@ -2624,8 +2606,11 @@ module UnixNamespace =
         Ok (
             SyscallAnswer.Completed 0L,
             match outcome.Displaced with
-            | None -> moved
-            | Some displaced -> ObjectLifetime.forgetIfUnheld displaced moved
+            | None ->
+                { system with
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
+                }
+            | Some displaced -> ObjectLifetime.commitRemoving displaced mutation system
         )
 
     /// The rest of `rename(2)` or `renameat(2)`, given the destination
