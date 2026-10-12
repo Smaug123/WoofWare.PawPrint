@@ -59,10 +59,13 @@ module TestSockOptAgainstHost =
         | SimulatedUnixFlavour.Linux -> 0x02 ||| 0x20
         | SimulatedUnixFlavour.Darwin -> 0x02 ||| 0x1000
 
-    /// A descriptor number far above anything this process opens, so that it is
-    /// closed on the host without racing another test's `open` for the number.
+    /// A number no descriptor can have, so that it is closed on the host
+    /// whatever the rest of the process holds. docs/probes/closed-descriptor
+    /// measured that both flavours never allocate it, and that `setsockopt`
+    /// and `getsockopt` answer it as they do a freed slot, on every option,
+    /// buffer and length this fixture picks.
     [<Literal>]
-    let private ClosedFd = 1_000_000
+    let private ClosedFd = Int32.MaxValue
 
     /// One reserved page nothing can be mapped over, whose address faults on
     /// every access. Never unmapped: it is a process-lifetime fixture.
