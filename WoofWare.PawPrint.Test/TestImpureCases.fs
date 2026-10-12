@@ -1600,6 +1600,40 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `FileSystemWatcherLinux.cs` over an empty directory `w`, which exits 0 having seen the
+    /// watcher raise one event of each kind, and the watcher's thread close its inotify descriptor
+    /// once it was disposed. Linux only: the guest names Linux's watcher, so it must run on the
+    /// Linux CoreLib in `linuxFramework`, which the case checks it did; and only a Linux host's
+    /// real runtime is an oracle for it, since a macOS one watches with FSEvents. Its names are
+    /// relative.
+    let private fileSystemWatcherLinuxCase (linuxFramework : string) : EndToEndTestCase =
+        {
+            FileName = "FileSystemWatcherLinux.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.linuxX64
+                    FileSystem =
+                        Map.ofList
+                            [
+                                DirectoryEntryName.parseOrFail "test seed" "w", SeedEntry.directory Map.empty
+                            ]
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    LinuxCoreLibFlavour.loadedCorelibPath state
+                    |> shouldEqual (LinuxCoreLibFlavour.corelibPath linuxFramework)
+
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> Text.Encoding.UTF8.GetString
+                    |> shouldEqual "Created a\nChanged a\nRenamed a b\nDeleted b\n"
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -5035,7 +5069,11 @@ module TestImpureCases =
             }
         ]
 
-    let runTest (case : EndToEndTestCase) : unit =
+    /// Run `case` under PawPrint with its framework assemblies bound from `dotnetRuntimes`, the
+    /// first directory holding an assembly's name winning, and on the real runtime too where the
+    /// case's `Oracle` compares on this host. The real run binds from the host's own framework
+    /// whatever `dotnetRuntimes` says.
+    let private runTestOn (dotnetRuntimes : ImmutableArray<string>) (case : EndToEndTestCase) : unit =
         // This fixture ends by reading an exit code off the terminating thread's
         // evaluation stack, which a guest that died of an escaping exception never
         // reaches -- so `ExpectsUnhandledException` has no meaning here, and a case
@@ -5061,8 +5099,6 @@ module TestImpureCases =
             LoggerFactory.makeTestWithProperties [ "source_file", case.FileName ]
 
         use _loggerFactoryResource = loggerFactory
-
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -5141,6 +5177,9 @@ module TestImpureCases =
                 System.Console.Error.WriteLine $"{message}"
 
             reraise ()
+
+    let runTest (case : EndToEndTestCase) : unit =
+        runTestOn (FrameworkUnderTest.runtimeDirs ()) case
 
     [<Test>]
     let ``a Darwin guest that asks for its groups stops, naming the unmeasured list`` () : unit =
@@ -5378,6 +5417,16 @@ module TestImpureCases =
 
         LinuxCoreLibFlavour.loadedCorelibPath terminalState
         |> shouldEqual (LinuxCoreLibFlavour.corelibPath frameworkDir)
+
+    [<Test>]
+    let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
+        // On a macOS host the framework under test is a Darwin CoreLib, whose
+        // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.
+        let frameworkDir = LinuxCoreLibFlavour.requireLinuxFramework ()
+
+        runTestOn
+            (LinuxCoreLibFlavour.runtimeDirsPreferringLinux frameworkDir)
+            (fileSystemWatcherLinuxCase frameworkDir)
 
     [<Test>]
     let ``a Darwin guest that asks root's X_OK of a regular file stops, naming the unmeasured rule`` () : unit =
