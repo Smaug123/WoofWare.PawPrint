@@ -22,6 +22,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="UnmodelledException.fs" />
         <Compile Include="UnixError.fs" />
         <Compile Include="UnixPathText.fs" />
         <Compile Include="UnixByteString.fs" />
