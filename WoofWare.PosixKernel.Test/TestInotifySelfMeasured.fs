@@ -342,3 +342,53 @@ module TestInotifySelfMeasured =
             produced.Add ($"short-by-%d{shortBy}-rm-after", rcErrno answer)
 
         actual produced |> shouldEqual (expected selfProbe "Q")
+
+    [<Test>]
+    let ``self section X: files another process holds go at its exit in the order its descriptors let go`` () : unit =
+        let produced = ResizeArray<string * string> ()
+
+        for name, order in [ "open-a-b-a", "aba" ; "open-a-b", "ab" ; "open-b-a", "ba" ] do
+            let pids, machine = Machines.withTasks SimulatedUnixPlatform.linuxArm64 2 1
+            let child, parent = pids.[0], pids.[1]
+
+            let machine =
+                machine
+                |> Machines.doIn
+                    child
+                    (fun view -> view |> mkdir "/x" 0o755 |> writeFile "/x/a" "a" |> writeFile "/x/b" "b")
+
+            let (instance, wa, wb), machine =
+                Machines.inProcess
+                    parent
+                    (fun view ->
+                        let instance, view = init1 nonblock view
+                        let wa, view = watch instance "/x/a" selfEvents view
+                        let wb, view = watch instance "/x/b" selfEvents view
+                        (instance, wa, wb), view
+                    )
+                    machine
+
+            let machine =
+                Machines.doIn
+                    child
+                    (fun view ->
+                        let view =
+                            (view, order)
+                            ||> Seq.fold (fun view letter -> openFd readOnly $"/x/%c{letter}" 0 view |> snd)
+
+                        view |> unlink "/x/a" |> unlink "/x/b"
+                    )
+                    machine
+
+            let ended = UnixTaskLifecycle.exitGroup 0 0 (Machines.viewOf child machine)
+
+            let machine =
+                match SimulatedMachine.tryEndProcess ended machine with
+                | Ok (ProcessTermination.Exited _, machine) -> machine
+                | other -> failwith $"the child's exit: %A{other}"
+
+            Machines.assertClean machine
+            let drained, _ = Machines.inProcess parent (drain instance) machine
+            produced.Add (name, $"a=%d{wa} b=%d{wb} status=0: %s{drained}")
+
+        actual produced |> shouldEqual (expected selfProbe "X")
