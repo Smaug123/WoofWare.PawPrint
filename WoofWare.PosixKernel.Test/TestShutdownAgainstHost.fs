@@ -125,6 +125,13 @@ module TestShutdownAgainstHost =
         | SimulatedUnixFlavour.Linux -> 0x2007s
         | SimulatedUnixFlavour.Darwin -> 0x7s
 
+    /// `POLLIN`, the same on Linux and Darwin.
+    let private pollIn : int16 = 0x1s
+
+    /// How long a host drain waits, past the probe's three dry reads, for
+    /// more to read before it takes EAGAIN as its answer.
+    let private drainPatienceMs : int = 5000
+
     let private hostBuffer : byte[] = Array.zeroCreate (1 <<< 20)
 
     /// The size of `struct epoll_event`: packed on x86-64, padded elsewhere.
@@ -263,6 +270,31 @@ module TestShutdownAgainstHost =
                 string result
 
         let settle () : unit = Thread.Sleep 30
+
+        /// Whether `poll` finds something for a read of `fd` to answer
+        /// (bytes, end of file, or an error) within `timeoutMs`.
+        let readableWithin (fd : int) (timeoutMs : int) : bool =
+            let eintr =
+                UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) UnixError.EINTR
+
+            let deadline = Environment.TickCount64 + int64 timeoutMs
+
+            let rec go () =
+                let entry = [| int64 (uint32 fd) ||| (int64 pollIn <<< 32) |]
+                let remaining = max 0L (deadline - Environment.TickCount64)
+                Marshal.SetLastPInvokeError 0
+                let ready = hostPoll (entry, 1un, int remaining)
+
+                if ready > 0 then
+                    true
+                elif ready = 0 then
+                    false
+                elif Marshal.GetLastPInvokeError () = eintr then
+                    go ()
+                else
+                    failwith $"poll failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+            go ()
 
         let call (f : unit -> int64) : int64 * int =
             Marshal.SetLastPInvokeError 0
@@ -535,24 +567,40 @@ module TestShutdownAgainstHost =
 
                 go 0L 0
 
+            // The probe's three dry reads 30 ms apart, and then, before an
+            // EAGAIN is taken as the answer, a wait of up to
+            // `drainPatienceMs` for the end to become readable: a loaded host
+            // can hold back a queue's next bytes for longer than the probe's
+            // pauses. Waiting longer changes only an answer that would
+            // otherwise have depended on how soon the bytes came.
             member this.Drain e =
                 let eagain =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) UnixError.EAGAIN
 
-                let rec go (total : int64) (dry : int) =
+                // `patient` is cleared by one wait that bytes did not follow,
+                // so that a read which goes on answering EAGAIN however its
+                // end polls cannot keep the drain going.
+                let rec go (total : int64) (dry : int) (patient : bool) =
                     let result, errno =
                         call (fun () -> int64 (hostRead (this.Fd e, hostBuffer, 1048576un)))
 
                     if result > 0L then
-                        go (total + result) 0
+                        go (total + result) 0 true
                     elif result < 0L && errno = eagain && dry < 3 then
                         settle ()
-                        go total (dry + 1)
+                        go total (dry + 1) patient
+                    elif
+                        result < 0L
+                        && errno = eagain
+                        && patient
+                        && readableWithin (this.Fd e) drainPatienceMs
+                    then
+                        go total 0 false
                     else
                         settle ()
                         total, ans result errno
 
-                go 0L 0
+                go 0L 0 true
 
             member _.Settle () = settle ()
 
@@ -812,6 +860,33 @@ module TestShutdownAgainstHost =
     let ``this host answers a bind of an endpoint an end still holds as measured (bind-held-endpoint.c)`` () =
         hostDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" false ShutdownProbe.sectionH
         |> shouldEqual []
+
+    // A loaded host can hold back a queue's next bytes for longer than the
+    // probe's three dry reads 30 ms apart; a drain that ended there would
+    // report EAGAIN where the stream has more, and its FIN, still to come.
+    [<Test>]
+    let ``a host drain reads past a pause in what the sender sends, to the end of file`` () =
+        HostPlatform.onUnixHost (fun flavour ->
+            let pair = new HostPair (flavour, ShutdownPairShape.Plain)
+
+            try
+                let ends = pair :> IShutdownPair
+                ends.WriteAnswer c 100 |> shouldEqual (Ok 100)
+
+                let later =
+                    Tasks.Task.Run (fun () ->
+                        Thread.Sleep 500
+                        let written = ends.WriteAnswer c 100
+                        let shut = ends.Shutdown c TcpShutdownHow.Write
+                        written, shut
+                    )
+
+                let drained = ends.Drain p
+                later.Result |> shouldEqual (Ok 100, "0")
+                drained |> shouldEqual (200L, "0")
+            finally
+                pair.Discard ()
+        )
 
     [<Test>]
     let ``a listed socket refuses an IPv4 bind exactly where the addresses overlap`` () =
