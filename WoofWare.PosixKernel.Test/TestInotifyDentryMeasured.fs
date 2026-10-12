@@ -20,11 +20,9 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// watch with `IN_EXCL_UNLINK`, which hears nothing of a write's `IN_MODIFY`
 /// through it.
 ///
-/// Rows are skipped, each named, where they record a watched inode's own
-/// going (`IN_DELETE_SELF`, `IN_MOVE_SELF`, and the `IN_IGNORED` after them),
-/// which the model does not queue. A watch the probe gave `IN_ALL_EVENTS`
-/// asks here for the events the model raises, and the rows lose the records
-/// of the events it does not (`withoutUnmodelled`).
+/// A watch the probe gave `IN_ALL_EVENTS` asks here for the events the model
+/// raises, and the rows lose the records of the events it does not
+/// (`withoutUnmodelled`).
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInotifyDentryMeasured =
@@ -94,6 +92,17 @@ module TestInotifyDentryMeasured =
         match UnixReadWrite.tryPwrite 0 fd bytes offset system with
         | Ok (WriteAnswer.Completed count, system) -> $"%d{count}", system
         | other -> failwith $"pwrite(%d{fd}): %A{other}"
+
+    /// The dentry probe's `rc` of a call that failed: `-1 errnoN` with
+    /// Linux's number.
+    let private rcErrno (answer : SyscallAnswer) : string =
+        match answer with
+        | SyscallAnswer.Completed value -> $"%d{value}"
+        | SyscallAnswer.Failed error ->
+            let numbering =
+                SimulatedUnixPlatform.rawErrnoNumbering SimulatedUnixPlatform.linuxArm64
+
+            $"-1 errno%d{UnixError.toRawErrnoUnder numbering error}"
 
     /// The answer of a call that must not be refused, as the probe's `rc`.
     let private answered
@@ -184,11 +193,10 @@ module TestInotifyDentryMeasured =
         row "unlink-inside"
         system <- rmdir "dd/moved" system
         row "rmdir-watched-dir"
-        // Linux dropped the watch with its inode; the model keeps it, so it
-        // is removed here, and its `IN_IGNORED` drained.
-        let _, s = rmWatch fd sub system
-        let _, s = drain fd s
-        system <- mkdir "dd/sub2" 0o755 s
+        let answer, s = rmWatch fd sub system
+        system <- s
+        produced.Add ("rm-after-ignored", $"rm sub's wd=%s{rc answer}")
+        system <- mkdir "dd/sub2" 0o755 system
         let s2, s = watch fd "dd/sub2" modelledEvents system
         system <- s
         produced.Add ("new-watch-wd", $"sub2=%d{s2}")
@@ -210,16 +218,7 @@ module TestInotifyDentryMeasured =
         produced.Add ("write-unlinked-excl-unlink", $"wd=%d{p2} (parent was %d{p}): %s{drained}")
         system <- close f system
         row "close-unlinked-excl-unlink"
-
-        let skipped =
-            [
-                "rename-watched-dir"
-                "rmdir-watched-dir"
-                "rm-after-ignored"
-                "watched-dir-moved-out"
-            ]
-
-        actual skipped produced |> shouldEqual (expected probe "D" skipped)
+        actual [] produced |> shouldEqual (expected probe "D" [])
 
     // ------------------------------------------------- inotify-dentry-probe.c
 
@@ -328,10 +327,7 @@ module TestInotifyDentryMeasured =
                 yield! throughUnlinked "both-excl" true true true
             ]
 
-        // The file's own going, at its close: `IN_DELETE_SELF` and its
-        // `IN_IGNORED`.
-        let skipped = [ "self-close" ; "self-excl-close" ; "both-excl-close" ]
-        actual skipped produced |> shouldEqual (expected dentryProbe "E" skipped)
+        actual [] produced |> shouldEqual (expected dentryProbe "E" [])
 
     [<Test>]
     let ``dentry section L: a name unlinked and linked again is a new name, and the old stays unlinked`` () : unit =
@@ -485,10 +481,11 @@ module TestInotifyDentryMeasured =
         row "write-in-removed-parent"
         system <- close f system
         row "close"
-        // The directory's own going, at the close, and the watch it took
-        // with it.
-        let skipped = [ "close" ; "rm-sub-watch-after" ; "rm-sub-watch-events" ]
-        actual skipped produced |> shouldEqual (expected dentryProbe "U" skipped)
+        let answer, s = rmWatch instance ws system
+        system <- s
+        produced.Add ("rm-sub-watch-after", rcErrno answer)
+        row "rm-sub-watch-events"
+        actual [] produced |> shouldEqual (expected dentryProbe "U" [])
 
     [<Test>]
     let ``a file unlinked while open keeps the directory it was named in until it is closed`` () : unit =

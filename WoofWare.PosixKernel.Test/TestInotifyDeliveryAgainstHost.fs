@@ -21,11 +21,9 @@ open WoofWare.PosixKernel
 /// Every call must answer alike, and after each, the records each instance
 /// holds must be alike, cookies compared by which records share one.
 ///
-/// The model does not yet raise the records of a watched inode's own going
-/// (`IN_DELETE_SELF`, `IN_MOVE_SELF`, and the `IN_IGNORED` after a deletion),
-/// so watches ask for neither self event, the host's `IN_IGNORED` records are
-/// dropped but those of an `inotify_rm_watch`, and a watch Linux dropped when
-/// its inode went is not removed again. Linux only; elsewhere the test is
+/// Watches ask for the self events too (`IN_DELETE_SELF`, `IN_MOVE_SELF`),
+/// and every `IN_IGNORED` is compared, that of a watched inode's going as
+/// well as that of an `inotify_rm_watch`. Linux only; elsewhere the test is
 /// ignored.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -155,9 +153,9 @@ module TestInotifyDeliveryAgainstHost =
         | Fchmod of slot : int * mode : int
         | Close of slot : int
 
-    /// Every event this kernel raises but the two self events.
+    /// Every event this kernel raises.
     let private eventBits : uint32 list =
-        [ 0x2u ; 0x4u ; 0x40u ; 0x80u ; 0x100u ; 0x200u ]
+        [ 0x2u ; 0x4u ; 0x40u ; 0x80u ; 0x100u ; 0x200u ; 0x400u ; 0x800u ]
 
     let private opGen : Gen<Op> =
         let path = Gen.choose (0, paths.Length - 1)
@@ -232,6 +230,9 @@ module TestInotifyDeliveryAgainstHost =
         | AttribNamed
         | AttribSelf
         | Modified
+        | DeletedSelf
+        | MovedSelf
+        | Ignored
         /// A call through a kept descriptor that answered.
         | ThroughDescriptor
 
@@ -348,8 +349,6 @@ module TestInotifyDeliveryAgainstHost =
                 let modelCookies = Cookies ()
                 // The kept descriptors, oldest first: the host's and the model's.
                 let kept = ResizeArray<int * int> ()
-                // The watches Linux dropped when their inode went, by instance.
-                let gone = [| HashSet<int> () ; HashSet<int> () |]
 
                 let answered
                     (op : Op)
@@ -571,7 +570,6 @@ module TestInotifyDeliveryAgainstHost =
                             kept.RemoveAt index
 
                             answered op (hostAnswer (hostClose hostFd)) (UnixDescriptor.tryClose modelFd system.Value)
-                        | Op.RmWatch (instance, wd) when gone.[instance].Contains wd -> ()
                         | Op.RmWatch (instance, wd) ->
                             answered
                                 op
@@ -590,23 +588,7 @@ module TestInotifyDeliveryAgainstHost =
                                 else
                                     drainHost (acc @ InotifyReplay.parse (ImmutableArray.Create (buffer, 0, int n)))
 
-                            let host =
-                                drainHost []
-                                |> List.filter (fun record ->
-                                    // An `IN_IGNORED` of an inode's going, which
-                                    // the model does not yet queue.
-                                    let removed =
-                                        match op with
-                                        | Op.RmWatch (i, wd) -> i = instance && wd = record.Wd
-                                        | _ -> false
-
-                                    if record.Mask = 0x8000u && not removed then
-                                        gone.[instance].Add record.Wd |> ignore<bool>
-                                        false
-                                    else
-                                        true
-                                )
-                                |> List.map (compared hostCookies)
+                            let host = drainHost [] |> List.map (compared hostCookies)
 
                             let records, after = InotifyReplay.drainRecords modelFds.[instance] system.Value
                             system.Value <- after
@@ -635,6 +617,15 @@ module TestInotifyDeliveryAgainstHost =
                                 if mask &&& 0x2u <> 0u then
                                     cover Label.Modified
 
+                                if mask &&& 0x400u <> 0u then
+                                    cover Label.DeletedSelf
+
+                                if mask &&& 0x800u <> 0u then
+                                    cover Label.MovedSelf
+
+                                if mask &&& 0x8000u <> 0u then
+                                    cover Label.Ignored
+
                         match op with
                         | Op.Write _
                         | Op.Ftruncate _
@@ -660,6 +651,9 @@ module TestInotifyDeliveryAgainstHost =
                     Label.AttribNamed
                     Label.AttribSelf
                     Label.Modified
+                    Label.DeletedSelf
+                    Label.MovedSelf
+                    Label.Ignored
                     Label.ThroughDescriptor
                 ] do
                 if coverage.Count label < 20 then

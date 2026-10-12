@@ -13,12 +13,9 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// Each test makes the probe's calls on the model, renders each row as the
 /// probe printed it, and compares the rows with the recorded ones.
 ///
-/// Rows are skipped, each named, where the model cannot make the call or does
-/// not yet report what it records:
+/// Rows are skipped, each named, where the model cannot make the call or
+/// refuses it:
 /// - `truncate(2)`, which the model does not have;
-/// - the records of the watched inode itself going (`IN_DELETE_SELF`,
-///   `IN_MOVE_SELF`, and the `IN_IGNORED` after them), which the model does not
-///   queue;
 /// - a change through the current directory after `rmdir` removed it, which
 ///   Linux reports to the old parent under the old name, a name the model does
 ///   not keep, and so refuses the change where that parent's watch would hear
@@ -748,9 +745,7 @@ module TestInotifyDeliveryMeasured =
         produced.Add ("over-watched-open-file", $"wd=%d{we}: %s{drained}")
         system <- close opened system
         row "close-displaced"
-        // The displaced inode's own going: `IN_DELETE_SELF` and its `IN_IGNORED`.
-        let skipped = [ "over-watched-file" ; "over-watched-empty-dir" ; "close-displaced" ]
-        actual skipped produced |> shouldEqual (expected deliveryProbe "R" skipped)
+        actual [] produced |> shouldEqual (expected deliveryProbe "R" [])
 
     [<Test>]
     let ``delivery section P: the name a path's change is reported under`` () : unit =

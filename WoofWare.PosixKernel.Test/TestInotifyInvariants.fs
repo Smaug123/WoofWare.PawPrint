@@ -169,6 +169,35 @@ module TestInotifyInvariants =
             (case, registryDefects (forge forged)) |> shouldEqual (case, expected)
 
     [<Test>]
+    let ``a watch on an inode the filesystem no longer holds is a defect`` () : unit =
+        let _, _, state = instance
+        let held = state.Watches.[WatchDescriptor 1]
+
+        let forged =
+            forge
+                { state with
+                    Watches =
+                        Map.add
+                            (WatchDescriptor 2)
+                            { held with
+                                Inode = InodeNumber 999L
+                            }
+                            state.Watches
+                    NextWatchDescriptor = 3
+                }
+
+        // The defect's cases are internal to the library, and named here by
+        // its description, which renders the case.
+        match UnixSystem.checkInvariants forged |> List.map UnixSystemDefect.describe with
+        | [ described ] ->
+            if
+                not (described.Contains "InotifyWatchOfForgottenInode")
+                || not (described.Contains "999")
+            then
+                failwith $"the defect reported is not the watch of a forgotten inode: %s{described}"
+        | other -> failwith $"expected one defect, the watch of a forgotten inode; got %A{other}"
+
+    [<Test>]
     let ``an instance open for writing is a defect`` () : unit =
         let system, id, _ = instance
 
