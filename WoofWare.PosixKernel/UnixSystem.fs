@@ -782,11 +782,11 @@ module internal FileSystemSeedFault =
     let describe (fault : FileSystemSeedFault) : string =
         match fault with
         | FileSystemSeedFault.SeedNameTooLong (name, flavour) ->
-            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which is past the %O{flavour} flavour's NAME_MAX, so no kernel of that flavour could have mounted the filesystem it describes."
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which is past the %O{flavour} flavour's NAME_MAX, so no kernel of that flavour could have mounted the filesystem it describes. Shorten the name, or simulate a flavour whose NAME_MAX admits it."
         | FileSystemSeedFault.SeedNameNotBindable (name, flavour) ->
-            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which a %O{flavour} filesystem will not bind, so no kernel of that flavour could have created it."
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which a %O{flavour} filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no kernel of that flavour could have created it. Rename the entry, or simulate a flavour that binds it."
         | FileSystemSeedFault.SeedCoversDeviceFileSystem name ->
-            $"the seed binds %s{DirectoryEntryName.toEscaped name} at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot, which would hide what the seed put there."
+            $"the seed binds %s{DirectoryEntryName.toEscaped name} at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot, which would hide what the seed put there. Leave it out of the seed: the kernel supplies /dev itself."
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : FileSystemSeedFault) : RefusalKind =

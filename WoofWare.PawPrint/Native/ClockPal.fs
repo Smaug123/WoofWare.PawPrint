@@ -91,14 +91,19 @@ module ClockPal =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTimestamp
         =
-        match UnixClock.clockGettime clockId system with
-        | Ok (Ok reading) -> reading
-        | Ok (Error error) ->
+        let answer =
+            try
+                UnixClock.clockGettime clockId system
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail
+                    $"%s{entryPoint}: the kernel will not answer clock_gettime(%d{clockId}), which the real shim reads, so PawPrint cannot answer without it"
+                    e
+
+        match answer with
+        | Ok reading -> reading
+        | Error error ->
             failwith
                 $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{UnixSystem.platform system}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
-        | Error refusal ->
-            failwith
-                $"%s{entryPoint}: the kernel will not answer clock_gettime(%d{clockId}): %s{ClockGettimeRefusal.describe refusal} The real shim reads this clock, so PawPrint cannot answer without it."
 
     /// What `SystemNative_GetSystemTimeAsTicks` returns: the realtime clock in
     /// 100 ns ticks since the Unix epoch, and hence (once CoreLib has added

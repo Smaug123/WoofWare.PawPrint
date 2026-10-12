@@ -208,16 +208,29 @@ module NativeLibc =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
             |> NativeHandlerResult.completed
 
-        match UnixSignal.kill pid signo system with
-        | Error refusal ->
-            failwith
-                $"%s{operation}: kill(%d{pid}, %d{signo}) from process %O{UnixSystem.processId system} is not modelled (%O{refusal}); only a signal to the calling process itself is."
-        | Ok (Error errno) ->
+        let answer =
+            try
+                UnixSignal.kill pid signo system
+            with :? UnmodelledException as e ->
+                let ownPid = ProcessId.toInt32 (UnixSystem.processId system)
+
+                let remedy =
+                    if pid = ownPid then
+                        ""
+                    else
+                        "; only a signal to the calling process itself is modelled"
+
+                KernelRefusal.fail
+                    $"%s{operation}: kill(%d{pid}, %d{signo}) from process %d{ownPid} is not modelled%s{remedy}"
+                    e
+
+        match answer with
+        | Error errno ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
             state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno))
             |> returning -1
-        | Ok (Ok outcome) ->
+        | Ok outcome ->
 
         let refusal =
             Signal.ofRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signo
@@ -269,16 +282,21 @@ module NativeLibc =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
             |> NativeHandlerResult.completed
 
-        match UnixSignal.pthreadKill ctx.Thread signo system with
-        | Error refusal ->
-            failwith
-                $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{UnixSystem.processId system} is not modelled (%O{refusal})."
-        | Ok (Error errno) ->
+        let answer =
+            try
+                UnixSignal.pthreadKill ctx.Thread signo system
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail
+                    $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{UnixSystem.processId system} is not modelled"
+                    e
+
+        match answer with
+        | Error errno ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
             state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno))
             |> returning -1
-        | Ok (Ok outcome) ->
+        | Ok outcome ->
 
         let refusal =
             match

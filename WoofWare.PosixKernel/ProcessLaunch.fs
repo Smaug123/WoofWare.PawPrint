@@ -108,11 +108,11 @@ module internal LaunchRefusal =
 
             match fault with
             | CurrentDirectoryFault.DoesNotResolve error ->
-                $"the process cannot start in \"%s{described}\", which does not resolve in the machine's filesystem (%O{error})."
+                $"the process cannot start in \"%s{described}\", which does not resolve in the machine's filesystem (%O{error}). A process cannot be started in a directory that does not exist; make the filesystem contain it."
             | CurrentDirectoryFault.TooLong flavour ->
-                $"%O{flavour} refuses \"%s{described}\" as too long: a component is past NAME_MAX, or, on Darwin, a symbolic link it goes through expands past PATH_MAX."
+                $"%O{flavour} refuses \"%s{described}\" as too long: a component is past NAME_MAX, or, on Darwin, a symbolic link it goes through expands past PATH_MAX. Shorten the component, or that link's target."
             | CurrentDirectoryFault.NotADirectory ->
-                $"the process cannot start in \"%s{described}\", which resolves to something that is not a directory."
+                $"the process cannot start in \"%s{described}\", which resolves to something that is not a directory. Start it in a directory the filesystem holds."
             | CurrentDirectoryFault.Path refusal ->
                 $"the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal}"
         | LaunchRefusal.LeaderCpuBeyondMachine (cpu, processorCount) ->

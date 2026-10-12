@@ -103,16 +103,16 @@ module PollEventsPal =
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        : PollOutcome * UnixSystem<'Task, 'Handler>
         =
-        UnixPoll.poll task entries milliseconds system
-        |> Result.map (fun (outcome, system) -> ofKernel outcome, system)
+        let outcome, system = UnixPoll.poll task entries milliseconds system
+        ofKernel outcome, system
 
     /// Finish the `poll` `task` parked in, as `poll` answers one.
     let finish<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        : PollOutcome * UnixSystem<'Task, 'Handler>
         =
-        UnixPoll.finishPoll task system
-        |> Result.map (fun (outcome, system) -> ofKernel outcome, system)
+        let outcome, system = UnixPoll.finishPoll task system
+        ofKernel outcome, system

@@ -411,13 +411,17 @@ module IlMachineThreadState =
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        match UnixTaskLifecycle.spawn parent thread cpu kernel.System with
-        | Ok (SpawnAnswer.Spawned _, system) -> EmulatedKernel.withUnix system kernel
-        | Ok (SpawnAnswer.Failed error, _) ->
+        let answer =
+            try
+                UnixTaskLifecycle.spawn parent thread cpu kernel.System
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail $"%O{parent} creating %O{thread}: the kernel refused clone" e
+
+        match answer with
+        | SpawnAnswer.Spawned _, system -> EmulatedKernel.withUnix system kernel
+        | SpawnAnswer.Failed error, _ ->
             failwith
                 $"%O{parent} creating %O{thread}: the kernel answered clone with %O{error}, because every thread ID below pid_max is in use; PawPrint does not model a failing thread creation"
-        | Error refusal ->
-            failwith $"%O{parent} creating %O{thread}: the kernel refused clone: %s{SpawnRefusal.describe refusal}"
 
     /// Allocate a fresh `ThreadId` for a Thread heap object that the guest has
     /// just constructed (i.e. its `Initialize` ran) but not yet started. The
