@@ -86,6 +86,31 @@ module internal InotifyAddWatchRefusal =
         | InotifyAddWatchRefusal.Path inner -> PathRefusal.kind inner
         | InotifyAddWatchRefusal.WatchDescriptorsExhausted -> RefusalKind.Unmodelled
 
+/// An `inotify_add_watch(2)` whose mask and descriptor this kernel has
+/// screened and accepted, paused at the point where it copies its path in.
+/// Obtain one from `UnixInotify.inotifyAddWatchScreenPhase`, and finish it
+/// with `UnixInotify.inotifyAddWatchWithPath`.
+type PausedInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Fd : int
+            Mask : uint32
+        }
+
+/// What screening an `inotify_add_watch(2)`'s mask and descriptor found:
+/// either the call is over without its path having been read at all, or the
+/// kernel has reached the point where it copies the path in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type InotifyAddWatchProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished, and changing nothing. The path was never read, and must not
+    /// be: Linux answers these errors whatever the path pointer is.
+    | Answered of answer : SyscallAnswer
+    /// The kernel is at the path's copy-in. Hand its bytes to
+    /// `UnixInotify.inotifyAddWatchWithPath`.
+    | NeedsPath of paused : PausedInotifyAddWatch<'Task, 'Handler>
+
 /// `inotify_init1(2)`, `inotify_add_watch(2)` and `inotify_rm_watch(2)`: Linux's
 /// interface for watching the filesystem.
 ///
@@ -450,6 +475,59 @@ module UnixInotify =
         =
         tryInotifyAddWatch fd path mask system
         |> Refusal.orRaise "UnixInotify.inotifyAddWatch" InotifyAddWatchRefusal.kind InotifyAddWatchRefusal.describe
+
+    /// `inotifyAddWatchScreenPhase`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (mask : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<InotifyAddWatchProgress<'Task, 'Handler>, InotifyAddWatchRefusal>
+        =
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (InotifyAddWatchRefusal.Flavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        Ok (
+            InotifyAddWatchProgress.NeedsPath
+                {
+                    System = system
+                    Fd = fd
+                    Mask = mask
+                }
+        )
+
+    /// The first half of `inotify_add_watch(2)`.
+    let inotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (mask : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : InotifyAddWatchProgress<'Task, 'Handler>
+        =
+        tryInotifyAddWatchScreenPhase fd mask system
+        |> Refusal.orRaise
+            "UnixInotify.inotifyAddWatchScreenPhase"
+            InotifyAddWatchRefusal.kind
+            InotifyAddWatchRefusal.describe
+
+    /// `inotifyAddWatchWithPath`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
+        =
+        tryInotifyAddWatch paused.Fd path paused.Mask paused.System
+
+    /// The second half of `inotify_add_watch(2)`.
+    let inotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryInotifyAddWatchWithPath path paused
+        |> Refusal.orRaise
+            "UnixInotify.inotifyAddWatchWithPath"
+            InotifyAddWatchRefusal.kind
+            InotifyAddWatchRefusal.describe
 
     /// `inotifyRmWatch`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
