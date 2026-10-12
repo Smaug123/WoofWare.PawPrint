@@ -133,15 +133,7 @@ module UnixScheduling =
         | Some _
         | None -> None
 
-    /// `getcpu(2)`, made by `task`: the processor it is running on, and that
-    /// processor's NUMA node. glibc's `sched_getcpu(3)` reads the same value.
-    ///
-    /// Refuses under Darwin, which has no `getcpu`.
-    ///
-    /// Fails loudly if `task` names no task, is parked in a syscall, or is not
-    /// running (`runningOn`): a task making a syscall is running, so each
-    /// means the client's record of what it runs disagrees with this
-    /// library's, which is a bug in the client.
+    /// `getcpu`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -174,3 +166,23 @@ module UnixScheduling =
 
             failwith
                 $"UnixScheduling.getcpu: task %O{task} is not running on any processor (%s{occupied}), so it cannot be making the getcpu syscall. Report each task the client runs with UnixScheduling.dispatch (this is a bug in the client)."
+
+    /// <summary>
+    /// `getcpu(2)`, made by `task`: the processor it is running on, and that
+    /// processor's NUMA node. glibc's `sched_getcpu(3)` reads the same value.
+    ///
+    /// Refuses under Darwin, which has no `getcpu`.
+    ///
+    /// Fails loudly if `task` names no task, is parked in a syscall, or is not
+    /// running (`runningOn`): a task making a syscall is running, so each
+    /// means the client's record of what it runs disagrees with this
+    /// library's, which is a bug in the client.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Linux-flavoured, and only Linux has `getcpu`.</exception>
+    let getcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetCpuAnswer
+        =
+        tryGetcpu task system
+        |> Refusal.orRaise "UnixScheduling.getcpu" GetCpuRefusal.kind GetCpuRefusal.describe

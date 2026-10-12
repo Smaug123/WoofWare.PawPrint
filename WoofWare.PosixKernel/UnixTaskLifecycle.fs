@@ -200,22 +200,7 @@ module UnixTaskLifecycle =
             EndedIn = system
         }
 
-    /// The thread-exit syscall: `task` ends. This is `SYS_exit` on Linux, which is
-    /// what `pthread_exit` and a thread's return from its start routine end in; it
-    /// is not `exit(3)` or `exit_group(2)` (see `exitGroup`).
-    ///
-    /// Removes `task` from the table, and with it everything the process holds for
-    /// that task alone: its signal mask, and the signals pending on it alone, which
-    /// are discarded rather than passed on to another task. Its thread ID is no
-    /// longer live, so the machine may hand it out again, and the processor it
-    /// was running on, if any, is idle. The process carries on
-    /// unless `task` was its last, in which case the process ends, on Linux, having
-    /// exited with `status`. `status` is otherwise ignored.
-    ///
-    /// Refuses a task that is parked in a syscall, the process's leader while any
-    /// other task lives, and the process's last task on Darwin.
-    ///
-    /// Fails loudly if `task` names no task, which is a bug in the client.
+    /// `exitThread`, with a refusal answered as the `Error` rather than raised.
     let internal tryExitThread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (status : int32)
@@ -265,22 +250,35 @@ module UnixTaskLifecycle =
                 }
         )
 
-    /// `clone(2)` with `CLONE_THREAD`, made by `parent`: a new thread in the process,
-    /// the task `child`, running on the logical processor `cpu`. This is what
-    /// `pthread_create(3)` ends in.
+    /// <summary>
+    /// The thread-exit syscall: `task` ends. This is `SYS_exit` on Linux, which is
+    /// what `pthread_exit` and a thread's return from its start routine end in; it
+    /// is not `exit(3)` or `exit_group(2)` (see `exitGroup`).
     ///
-    /// Answers the thread ID the machine's allocator hands the new task, one no
-    /// live task on the machine holds, which starts with a copy of `parent`'s
-    /// signal mask and with no signal pending on it alone. On Linux, answers
-    /// EAGAIN instead once every thread ID from 300 up to the machine's
-    /// `pid_max` is in use, leaving the system as it was.
+    /// Removes `task` from the table, and with it everything the process holds for
+    /// that task alone: its signal mask, and the signals pending on it alone, which
+    /// are discarded rather than passed on to another task. Its thread ID is no
+    /// longer live, so the machine may hand it out again, and the processor it
+    /// was running on, if any, is idle. The process carries on
+    /// unless `task` was its last, in which case the process ends, on Linux, having
+    /// exited with `status`. `status` is otherwise ignored.
     ///
-    /// Refuses a spawn on Darwin once the machine's thread ID counter has
-    /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
+    /// Refuses a task that is parked in a syscall, the process's leader while any
+    /// other task lives, and the process's last task on Darwin.
     ///
-    /// Fails loudly if `parent` names no task or is parked in a syscall, if
-    /// `child` already names a task, or if `cpu` is not one of the machine's
-    /// processors (`UnixSystem.processorCount`): each is a bug in the client.
+    /// Fails loudly if `task` names no task, which is a bug in the client.
+    /// </summary>
+    /// <exception cref="T:System.InvalidOperationException">The task is blocked in a syscall, so it cannot be making another one.</exception>
+    let exitThread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (status : int32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : TaskOutcome<'Task, 'Handler>
+        =
+        tryExitThread task status system
+        |> Refusal.orRaise "UnixTaskLifecycle.exitThread" ThreadExitRefusal.kind ThreadExitRefusal.describe
+
+    /// `spawn`, with a refusal answered as the `Error` rather than raised.
     let internal trySpawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (parent : 'Task)
         (child : 'Task)
@@ -326,6 +324,32 @@ module UnixTaskLifecycle =
                 Tasks = UnixTaskTable.add child cpu id system.Tasks
             }
         )
+
+    /// `clone(2)` with `CLONE_THREAD`, made by `parent`: a new thread in the process,
+    /// the task `child`, running on the logical processor `cpu`. This is what
+    /// `pthread_create(3)` ends in.
+    ///
+    /// Answers the thread ID the machine's allocator hands the new task, one no
+    /// live task on the machine holds, which starts with a copy of `parent`'s
+    /// signal mask and with no signal pending on it alone. On Linux, answers
+    /// EAGAIN instead once every thread ID from 300 up to the machine's
+    /// `pid_max` is in use, leaving the system as it was.
+    ///
+    /// Refuses a spawn on Darwin once the machine's thread ID counter has
+    /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
+    ///
+    /// Fails loudly if `parent` names no task or is parked in a syscall, if
+    /// `child` already names a task, or if `cpu` is not one of the machine's
+    /// processors (`UnixSystem.processorCount`): each is a bug in the client.
+    let spawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (parent : 'Task)
+        (child : 'Task)
+        (cpu : CpuId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SpawnAnswer * UnixSystem<'Task, 'Handler>
+        =
+        trySpawn parent child cpu system
+        |> Refusal.orRaise "UnixTaskLifecycle.spawn" SpawnRefusal.kind SpawnRefusal.describe
 
     /// `exit_group(2)`, made by `task`: every task ends at once, parked ones
     /// included, and the process exits with `status`. This is what `exit(3)` and

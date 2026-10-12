@@ -160,27 +160,7 @@ type ProcessLaunch<'Task when 'Task : comparison> =
 [<RequireQualifiedAccess>]
 module ProcessLaunch =
 
-    /// A process on `platform` with the descriptors `streams` open, and one
-    /// task, `leader`, on the logical processor `leaderCpu`; otherwise as a
-    /// default process of the platform's flavour starts: in the root, with
-    /// `UnixSystem.defaultCredentials`, `UnixSystem.defaultUmask`, no
-    /// environment, no executable path (`UnixSystem.defaultProcessPath`) and
-    /// `UnixSystem.defaultCoreDumps`.
-    ///
-    /// Each entry of `streams` is a descriptor the launcher set up before the
-    /// process started, at that number: a pipe end of its own, whose other end
-    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
-    /// are made, in descriptor order, when the process is launched.
-    ///
-    /// The leader starts blocking no signal. A real process starts with the
-    /// mask its parent's thread had when it called `execve(2)`, which keeps the
-    /// mask; a client launching a process that inherits one sets it with
-    /// `UnixSignal.pthreadSigmask` and `SIG_SETMASK` before the leader runs its
-    /// first instruction, as inherited ignores are installed with
-    /// `UnixSignal.sigaction`.
-    ///
-    /// Refuses a table naming a negative descriptor, or one at or above the
-    /// bound (`SimulatedUnixPlatform.descriptorBound`).
+    /// `create`, with a refusal answered as the `Error` rather than raised.
     let internal tryCreate<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
         (streams : Map<int, LaunchDescriptor>)
@@ -221,6 +201,40 @@ module ProcessLaunch =
                     CurrentDirectory = UnixSystem.defaultCurrentDirectory
                 }
 
+    /// <summary>
+    /// A process on `platform` with the descriptors `streams` open, and one
+    /// task, `leader`, on the logical processor `leaderCpu`; otherwise as a
+    /// default process of the platform's flavour starts: in the root, with
+    /// `UnixSystem.defaultCredentials`, `UnixSystem.defaultUmask`, no
+    /// environment, no executable path (`UnixSystem.defaultProcessPath`) and
+    /// `UnixSystem.defaultCoreDumps`.
+    ///
+    /// Each entry of `streams` is a descriptor the launcher set up before the
+    /// process started, at that number: a pipe end of its own, whose other end
+    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
+    /// are made, in descriptor order, when the process is launched.
+    ///
+    /// The leader starts blocking no signal. A real process starts with the
+    /// mask its parent's thread had when it called `execve(2)`, which keeps the
+    /// mask; a client launching a process that inherits one sets it with
+    /// `UnixSignal.pthreadSigmask` and `SIG_SETMASK` before the leader runs its
+    /// first instruction, as inherited ignores are installed with
+    /// `UnixSignal.sigaction`.
+    ///
+    /// Refuses a table naming a negative descriptor, or one at or above the
+    /// bound (`SimulatedUnixPlatform.descriptorBound`).
+    /// </summary>
+    /// <exception cref="T:System.ArgumentOutOfRangeException">The table names a negative descriptor, which no process has. Contradictory.</exception>
+    let create<'Task when 'Task : comparison>
+        (platform : SimulatedUnixPlatform)
+        (streams : Map<int, LaunchDescriptor>)
+        (leader : 'Task)
+        (leaderCpu : CpuId)
+        : ProcessLaunch<'Task>
+        =
+        tryCreate platform streams leader leaderCpu
+        |> Refusal.orRaise "ProcessLaunch.create" LaunchTableRefusal.kind LaunchTableRefusal.describe
+
     /// The platform the launch was described for, whose rules its setters
     /// check against.
     let platform<'Task when 'Task : comparison> (launch : ProcessLaunch<'Task>) : SimulatedUnixPlatform =
@@ -229,14 +243,7 @@ module ProcessLaunch =
     /// The process's first task.
     let leader<'Task when 'Task : comparison> (launch : ProcessLaunch<'Task>) : 'Task = launch.Leader
 
-    /// Set who the process is.
-    ///
-    /// Refuses more supplementary groups than the platform's
-    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
-    /// could hold. On Darwin it also refuses credentials whose real, effective
-    /// and saved IDs are not all the same: which of them a Darwin kernel
-    /// consults has not been measured, so this library does not model such a
-    /// process there.
+    /// `withCredentials`, with a refusal answered as the `Error` rather than raised.
     let internal tryWithCredentials<'Task when 'Task : comparison>
         (credentials : Credentials)
         (launch : ProcessLaunch<'Task>)
@@ -266,13 +273,26 @@ module ProcessLaunch =
                     Credentials = credentials
                 }
 
-    /// Set the file-mode creation mask the process starts with: the one its
-    /// parent left it, which it can read and replace with `umask`.
+    /// <summary>
+    /// Set who the process is.
     ///
-    /// Refuses a mask with a bit the platform's `umask(2)` never stores
-    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
-    /// parent could have left such a mask, so it names a process that cannot
-    /// exist.
+    /// Refuses more supplementary groups than the platform's
+    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
+    /// could hold. On Darwin it also refuses credentials whose real, effective
+    /// and saved IDs are not all the same: which of them a Darwin kernel
+    /// consults has not been measured, so this library does not model such a
+    /// process there.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentException">More supplementary groups than the `limit` a process can hold on `flavour` (`SimulatedUnixPlatform.supplementaryGroupLimit`): `setgroups(2)` answers EINVAL above `NGROUPS_MAX`. Contradictory.</exception>
+    let withCredentials<'Task when 'Task : comparison>
+        (credentials : Credentials)
+        (launch : ProcessLaunch<'Task>)
+        : ProcessLaunch<'Task>
+        =
+        tryWithCredentials credentials launch
+        |> Refusal.orRaise "ProcessLaunch.withCredentials" CredentialsRefusal.kind CredentialsRefusal.describe
+
+    /// `withUmask`, with a refusal answered as the `Error` rather than raised.
     let internal tryWithUmask<'Task when 'Task : comparison>
         (umask : PermissionBits)
         (launch : ProcessLaunch<'Task>)
@@ -288,6 +308,24 @@ module ProcessLaunch =
                 { launch with
                     Umask = umask
                 }
+
+    /// <summary>
+    /// Set the file-mode creation mask the process starts with: the one its
+    /// parent left it, which it can read and replace with `umask`.
+    ///
+    /// Refuses a mask with a bit the platform's `umask(2)` never stores
+    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
+    /// parent could have left such a mask, so it names a process that cannot
+    /// exist.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentException">The mask holds a bit `flavour`'s `umask(2)` never stores: it keeps only `stored` (`SimulatedUnixPlatform.umaskStoredBits`). No parent could have left such a mask. Contradictory.</exception>
+    let withUmask<'Task when 'Task : comparison>
+        (umask : PermissionBits)
+        (launch : ProcessLaunch<'Task>)
+        : ProcessLaunch<'Task>
+        =
+        tryWithUmask umask launch
+        |> Refusal.orRaise "ProcessLaunch.withUmask" UmaskRefusal.kind UmaskRefusal.describe
 
     /// Set the environment the process was started with, replacing whatever
     /// it held. The entries are kept in the order given, duplicates and all,

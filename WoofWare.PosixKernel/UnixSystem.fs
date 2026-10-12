@@ -1132,25 +1132,7 @@ module UnixSystem =
                 }
         }
 
-    /// Answer one syscall, made by `task`.
-    ///
-    /// The task is what a blocking answer is recorded against: `FLock` that
-    /// would block parks it, and the returned system carries that park.
-    ///
-    /// Sugar over the per-syscall functions above, for a client that wants one
-    /// surface — to log every syscall, to replay a recorded sequence, or to
-    /// generate them. Where a syscall's own function has a narrower type (the
-    /// answer to `GetEffectiveUserId` cannot be a failure, `Dup` cannot be
-    /// refused, and only `FLock` can block), that type is the one to prefer.
-    ///
-    /// **Not every syscall this module answers is reachable through here.** A
-    /// syscall whose answer carries more than an integer — `read`, whose answer
-    /// carries bytes — has no case in `Syscall`, because `SyscallAnswer` would
-    /// have to grow a shape for it and nothing yet consumes that shape. Adding
-    /// one for its own sake would be inventing an encoding before there is a
-    /// client to be wrong about; the first thing that genuinely logs or replays
-    /// a buffer-carrying syscall gets to choose it. Until then those syscalls
-    /// are reached through their own functions, which lose nothing.
+    /// `step`, with a refusal answered as the `Error` rather than raised.
     let internal tryStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (call : Syscall)
@@ -1298,6 +1280,37 @@ module UnixSystem =
             UnixInotify.tryInotifyRmWatch fd wd system
             |> answered
             |> Result.mapError SyscallRefusal.Inotify
+
+    /// <summary>
+    /// Answer one syscall, made by `task`.
+    ///
+    /// The task is what a blocking answer is recorded against: `FLock` that
+    /// would block parks it, and the returned system carries that park.
+    ///
+    /// Sugar over the per-syscall functions above, for a client that wants one
+    /// surface — to log every syscall, to replay a recorded sequence, or to
+    /// generate them. Where a syscall's own function has a narrower type (the
+    /// answer to `GetEffectiveUserId` cannot be a failure, `Dup` cannot be
+    /// refused, and only `FLock` can block), that type is the one to prefer.
+    ///
+    /// **Not every syscall this module answers is reachable through here.** A
+    /// syscall whose answer carries more than an integer — `read`, whose answer
+    /// carries bytes — has no case in `Syscall`, because `SyscallAnswer` would
+    /// have to grow a shape for it and nothing yet consumes that shape. Adding
+    /// one for its own sake would be inventing an encoding before there is a
+    /// client to be wrong about; the first thing that genuinely logs or replays
+    /// a buffer-carrying syscall gets to choose it. Until then those syscalls
+    /// are reached through their own functions, which lose nothing.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The flavour has no `dup3`. This kernel is not Linux-flavoured, and only Linux has `copy_file_range`. This kernel is not Linux-flavoured, and `FICLONE` is a Linux request. This kernel is not Darwin-flavoured, and only Darwin has `clonefile`. This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`. This kernel is of `flavour` (Darwin), which has no inotify: no Darwin kernel has the call, so there is no answer to measure.</exception>
+    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (call : Syscall)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryStep task call system
+        |> Refusal.orRaise "UnixSystem.step" SyscallRefusal.kind SyscallRefusal.describe
 
     /// Every way the machine's tables disagree with each other or with the
     /// processes on it: the clauses of `checkInvariants` that concern the

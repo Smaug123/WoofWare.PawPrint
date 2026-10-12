@@ -140,26 +140,7 @@ module UnixPipe =
                     }
                 )
 
-    /// `pipe2(2)`: make a pipe, with a descriptor onto each end, and store the
-    /// two in the caller's array at `destination`.
-    ///
-    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering.
-    /// `pipe(2)` is `pipe2` with flags 0. `O_NONBLOCK` makes both descriptions
-    /// non-blocking, and `O_CLOEXEC` (and Darwin's `O_CLOFORK`) gives both
-    /// descriptors `FD_CLOEXEC` (`FD_CLOFORK`).
-    ///
-    /// The flags are screened first, on both flavours: a flag word the flavour
-    /// rejects is EINVAL whatever the destination. Then Linux copies the two
-    /// descriptors out, answering EFAULT for an unmapped destination and
-    /// leaving no pipe and no descriptor behind (measured: the next descriptor
-    /// allocated is the one the pipe would have taken). Darwin's C library
-    /// stores them itself, so an unmapped destination there is refused (see
-    /// `Pipe2Refusal.FatalToTheProcess`).
-    ///
-    /// The read end takes the lowest descriptor not in use and the write end
-    /// the next. Both are owned by
-    /// the process's effective user and group, and stamped with the machine's
-    /// realtime clock.
+    /// `pipe2`, with a refusal answered as the `Error` rather than raised.
     let internal tryPipe2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (destination : UserBuffer)
@@ -256,3 +237,32 @@ module UnixPipe =
             }
             |> UnixSystemState.withFileDescriptors registry
         )
+
+    /// `pipe2(2)`: make a pipe, with a descriptor onto each end, and store the
+    /// two in the caller's array at `destination`.
+    ///
+    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering.
+    /// `pipe(2)` is `pipe2` with flags 0. `O_NONBLOCK` makes both descriptions
+    /// non-blocking, and `O_CLOEXEC` (and Darwin's `O_CLOFORK`) gives both
+    /// descriptors `FD_CLOEXEC` (`FD_CLOFORK`).
+    ///
+    /// The flags are screened first, on both flavours: a flag word the flavour
+    /// rejects is EINVAL whatever the destination. Then Linux copies the two
+    /// descriptors out, answering EFAULT for an unmapped destination and
+    /// leaving no pipe and no descriptor behind (measured: the next descriptor
+    /// allocated is the one the pipe would have taken). Darwin's C library
+    /// stores them itself, so an unmapped destination there is refused (see
+    /// `Pipe2Refusal.FatalToTheProcess`).
+    ///
+    /// The read end takes the lowest descriptor not in use and the write end
+    /// the next. Both are owned by
+    /// the process's effective user and group, and stamped with the machine's
+    /// realtime clock.
+    let pipe2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : int)
+        (destination : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Pipe2Answer * UnixSystem<'Task, 'Handler>
+        =
+        tryPipe2 flags destination system
+        |> Refusal.orRaise "UnixPipe.pipe2" Pipe2Refusal.kind Pipe2Refusal.describe

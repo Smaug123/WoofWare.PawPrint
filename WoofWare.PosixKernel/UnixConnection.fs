@@ -1590,14 +1590,7 @@ module UnixConnection =
 
         connectDecoded socketId nonBlocking declaredLength (connectAddress platform socket declaredLength copied) system
 
-    /// `connect(2)`: point `fd` at the address in its sockaddr, or ask what
-    /// pointing it there would answer.
-    ///
-    /// `copied` is the bytes the kernel copies in: exactly as many as
-    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
-    /// caller's buffer, or none where it answered `Answered`. Passing any other
-    /// number is refused, as a bug in the caller. The kernel reads the family,
-    /// port and address out of them itself.
+    /// `connect`, with a refusal answered as the `Error` rather than raised.
     let internal tryConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -1644,6 +1637,25 @@ module UnixConnection =
                 declaredLength
                 copied)
             system
+
+    /// `connect(2)`: point `fd` at the address in its sockaddr, or ask what
+    /// pointing it there would answer.
+    ///
+    /// `copied` is the bytes the kernel copies in: exactly as many as
+    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
+    /// caller's buffer, or none where it answered `Answered`. Passing any other
+    /// number is refused, as a bug in the caller. The kernel reads the family,
+    /// port and address out of them itself.
+    let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ConnectOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryConnect fd destination declaredLength copied system
+        |> Refusal.orRaise "UnixConnection.connect" ConnectRefusal.kind ConnectRefusal.describe
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at
@@ -1960,50 +1972,7 @@ module UnixConnection =
 
         Ok (AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), system)
 
-    /// `accept(2)`, made by `task`: take the oldest completed connection off
-    /// `fd`'s accept queue and hand back a descriptor onto the server side of
-    /// it; or, for a blocking listener with nothing queued, sleep until a
-    /// connection arrives.
-    ///
-    /// `destination` is where the peer address would be copied out, and
-    /// `declaredLength` how much of it may be written. As for `getsockname`, the
-    /// declared length **does not bound what is reported**: a call declaring 8
-    /// writes eight bytes and still reports 16.
-    ///
-    /// `declaredLength` is the 32-bit word the caller read out of its length
-    /// cell. Linux reads it as an `int`, and only once it holds a connection:
-    /// a negative one fails with `EINVAL` after the connection has been taken
-    /// off the queue, which loses it (`AcceptOutcome.DroppedConnection`).
-    /// Darwin reads it as the `socklen_t` it is, so no length is an error there.
-    ///
-    /// A call that writes nothing never looks at `destination`: at a declared
-    /// length of zero every buffer succeeds, including one naming no storage.
-    ///
-    /// Every `AcceptOutcome.Failed` leaves the listener exactly as it was, the
-    /// queue included.
-    ///
-    /// A listener whose description is blocking and whose queue is empty parks
-    /// `task` until a connection is queued, and the call is finished with
-    /// `finishAccept`. It waits for ever: `SO_RCVTIMEO`, which bounds such a
-    /// wait on Linux (and not on Darwin), is an option `setsockopt` refuses to
-    /// set. Of several tasks parked on one listener, a connection wakes the one
-    /// that parked first (see `UnixWait.wakes`). The destination is not looked
-    /// at before the call sleeps.
-    ///
-    /// Under Darwin, a close of the descriptor a sleeping accept was made
-    /// through ends every accept asleep on the listener, through that
-    /// descriptor or another, and leaves the listener drained
-    /// (`ListenState.Drained`); see `UnixDescriptor.close`. A later accept on
-    /// it that finds a connection queued takes it, and a non-blocking one that
-    /// finds none answers `EAGAIN`; one that would sleep is refused
-    /// (`AcceptRefusal.Reason.DarwinDrainedListener`).
-    ///
-    /// The accepted descriptor inherits `O_NONBLOCK` from the description this
-    /// call was made through, on the flavours whose kernels do that: see
-    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
-    /// own sockets want one answer on every platform clears it itself.
-    ///
-    /// `task` must not already be parked.
+    /// `accept`, with a refusal answered as the `Error` rather than raised.
     let internal tryAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
@@ -2111,6 +2080,61 @@ module UnixConnection =
                 Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
         | _ :: _ -> handOver socketId description.NonBlocking destination declaredLength system
 
+    /// `accept(2)`, made by `task`: take the oldest completed connection off
+    /// `fd`'s accept queue and hand back a descriptor onto the server side of
+    /// it; or, for a blocking listener with nothing queued, sleep until a
+    /// connection arrives.
+    ///
+    /// `destination` is where the peer address would be copied out, and
+    /// `declaredLength` how much of it may be written. As for `getsockname`, the
+    /// declared length **does not bound what is reported**: a call declaring 8
+    /// writes eight bytes and still reports 16.
+    ///
+    /// `declaredLength` is the 32-bit word the caller read out of its length
+    /// cell. Linux reads it as an `int`, and only once it holds a connection:
+    /// a negative one fails with `EINVAL` after the connection has been taken
+    /// off the queue, which loses it (`AcceptOutcome.DroppedConnection`).
+    /// Darwin reads it as the `socklen_t` it is, so no length is an error there.
+    ///
+    /// A call that writes nothing never looks at `destination`: at a declared
+    /// length of zero every buffer succeeds, including one naming no storage.
+    ///
+    /// Every `AcceptOutcome.Failed` leaves the listener exactly as it was, the
+    /// queue included.
+    ///
+    /// A listener whose description is blocking and whose queue is empty parks
+    /// `task` until a connection is queued, and the call is finished with
+    /// `finishAccept`. It waits for ever: `SO_RCVTIMEO`, which bounds such a
+    /// wait on Linux (and not on Darwin), is an option `setsockopt` refuses to
+    /// set. Of several tasks parked on one listener, a connection wakes the one
+    /// that parked first (see `UnixWait.wakes`). The destination is not looked
+    /// at before the call sleeps.
+    ///
+    /// Under Darwin, a close of the descriptor a sleeping accept was made
+    /// through ends every accept asleep on the listener, through that
+    /// descriptor or another, and leaves the listener drained
+    /// (`ListenState.Drained`); see `UnixDescriptor.close`. A later accept on
+    /// it that finds a connection queued takes it, and a non-blocking one that
+    /// finds none answers `EAGAIN`; one that would sleep is refused
+    /// (`AcceptRefusal.Reason.DarwinDrainedListener`).
+    ///
+    /// The accepted descriptor inherits `O_NONBLOCK` from the description this
+    /// call was made through, on the flavours whose kernels do that: see
+    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
+    /// own sockets want one answer on every platform clears it itself.
+    ///
+    /// `task` must not already be parked.
+    let accept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : AcceptOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryAccept task fd destination declaredLength system
+        |> Refusal.orRaise "UnixConnection.accept" AcceptRefusal.kind AcceptRefusal.describe
+
     let private finishAcceptHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2191,6 +2215,25 @@ module UnixConnection =
             failwith
                 $"UnixConnection.finishAccept: task %O{task}'s accept waits on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
 
+    /// `finishAccept`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFinishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // The call's reference to the listener goes as it returns, and with it
+        // the listener, if no descriptor names it any more
+        // (`open-file-references.c` section A1).
+        match finishAcceptHolding task system with
+        | Error refusal -> Error refusal
+        | Ok (outcome, after) ->
+            Ok (outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixConnection.finishAccept" held after)
+
     /// Finish the `accept` `task` is parked in: look at the listener's queue
     /// again, as a woken real accept does, and answer.
     ///
@@ -2222,50 +2265,15 @@ module UnixConnection =
     /// pending, and leaves the queue as it is.
     ///
     /// `task` must be parked in an accept.
-    let internal tryFinishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        : AcceptOutcome * UnixSystem<'Task, 'Handler>
         =
-        let held =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some parked -> ParkedSyscall.descriptions parked
-            | None -> []
+        tryFinishAccept task system
+        |> Refusal.orRaise "UnixConnection.finishAccept" AcceptRefusal.kind AcceptRefusal.describe
 
-        // The call's reference to the listener goes as it returns, and with it
-        // the listener, if no descriptor names it any more
-        // (`open-file-references.c` section A1).
-        match finishAcceptHolding task system with
-        | Error refusal -> Error refusal
-        | Ok (outcome, after) ->
-            Ok (outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixConnection.finishAccept" held after)
-
-    /// `shutdown(2)` of `fd`, with `how` raw: `SHUT_RD` (0), `SHUT_WR` (1) or
-    /// `SHUT_RDWR` (2) on both flavours.
-    ///
-    /// Screened in the measured order (`tcp-shutdown.c` in
-    /// docs/plans/2026-10-08-tcp-shutdown-linger, section U): EBADF, then
-    /// ENOTSOCK, then EINVAL for any other `how`, then the socket's state.
-    /// An IPv4 or IPv6 socket with no connection answers ENOTCONN under
-    /// Darwin, and is refused under Linux
-    /// (`ShutdownRefusal.Reason.LinuxUnconnected`).
-    ///
-    /// On a connected stream socket the call shuts the sides `how` names, by
-    /// each flavour's rules: shutting the send side
-    /// sends a FIN behind what is still unsent; shutting the receive side makes
-    /// reads answer end of file once what was queued is read, which Darwin
-    /// discards. Linux answers ENOTCONN once the connection was reset or both
-    /// FINs have arrived; Darwin answers ENOTCONN to a side already shut, and
-    /// of `SHUT_RDWR` applies the receive side alone if the send side was
-    /// already shut, and nothing if the receive side was. Every registration
-    /// the call's wakes reach is signalled: on Linux every one on the socket,
-    /// for every call; on Darwin the filter of each side it shut; and the
-    /// peer's, when the FIN reaches it. A Linux socket whose completed connect
-    /// had not been reported is reported by the call: a later `connect`
-    /// answers EISCONN (measured, section U, `connect-unreported`).
-    ///
-    /// A parked read or write on either end may have an answer afterwards;
-    /// `UnixWait.wakes` finds it.
+    /// `shutdown`, with a refusal answered as the `Error` rather than raised.
     let internal tryShutdown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (how : int)
@@ -2365,3 +2373,38 @@ module UnixConnection =
             | TcpShutdownAnswer.NotConnected -> ShutdownAnswer.Failed UnixError.ENOTCONN
 
         Ok (answer, SocketWake.signalTransfer connectionId wakes system)
+
+    /// `shutdown(2)` of `fd`, with `how` raw: `SHUT_RD` (0), `SHUT_WR` (1) or
+    /// `SHUT_RDWR` (2) on both flavours.
+    ///
+    /// Screened in the measured order (`tcp-shutdown.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger, section U): EBADF, then
+    /// ENOTSOCK, then EINVAL for any other `how`, then the socket's state.
+    /// An IPv4 or IPv6 socket with no connection answers ENOTCONN under
+    /// Darwin, and is refused under Linux
+    /// (`ShutdownRefusal.Reason.LinuxUnconnected`).
+    ///
+    /// On a connected stream socket the call shuts the sides `how` names, by
+    /// each flavour's rules: shutting the send side
+    /// sends a FIN behind what is still unsent; shutting the receive side makes
+    /// reads answer end of file once what was queued is read, which Darwin
+    /// discards. Linux answers ENOTCONN once the connection was reset or both
+    /// FINs have arrived; Darwin answers ENOTCONN to a side already shut, and
+    /// of `SHUT_RDWR` applies the receive side alone if the send side was
+    /// already shut, and nothing if the receive side was. Every registration
+    /// the call's wakes reach is signalled: on Linux every one on the socket,
+    /// for every call; on Darwin the filter of each side it shut; and the
+    /// peer's, when the FIN reaches it. A Linux socket whose completed connect
+    /// had not been reported is reported by the call: a later `connect`
+    /// answers EISCONN (measured, section U, `connect-unreported`).
+    ///
+    /// A parked read or write on either end may have an answer afterwards;
+    /// `UnixWait.wakes` finds it.
+    let shutdown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (how : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ShutdownAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryShutdown fd how system
+        |> Refusal.orRaise "UnixConnection.shutdown" ShutdownRefusal.kind ShutdownRefusal.describe

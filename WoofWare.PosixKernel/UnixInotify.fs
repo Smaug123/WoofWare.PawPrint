@@ -160,18 +160,7 @@ module UnixInotify =
             | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _ -> Error UnixError.EINVAL
 
-    /// `inotify_init1(2)`: create an inotify instance with no watches, owned by
-    /// the process's effective user, and a descriptor onto it, the lowest one
-    /// not in use.
-    ///
-    /// `flags` is Linux's: 0, or any of `InotifyInitFlags.CloseOnExec` (the
-    /// descriptor's `FD_CLOEXEC`) and `InotifyInitFlags.NonBlock` (the
-    /// description's `O_NONBLOCK`). Any other bit is `EINVAL`, and changes
-    /// nothing (measured, `inotify-instance-probe.c` section F). A user who
-    /// already holds `InotifyLimits.MaxUserInstances` instances, in any process
-    /// on the machine, is answered `EMFILE` (section U).
-    ///
-    /// Under the Darwin flavour every call is refused: Darwin has no inotify.
+    /// `inotifyInit1`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyInit1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -222,38 +211,30 @@ module UnixInotify =
 
         Ok (Ok (fd, UnixSystemState.withFileDescriptors registry system))
 
-    /// `inotify_add_watch(2)`: watch the inode `path` names, through the
-    /// inotify instance `fd` names, for what `mask` asks; or change what an
-    /// existing watch of that inode asks. Answers the watch's descriptor.
+    /// <summary>
+    /// `inotify_init1(2)`: create an inotify instance with no watches, owned by
+    /// the process's effective user, and a descriptor onto it, the lowest one
+    /// not in use.
     ///
-    /// `mask` is raw, in Linux's `<sys/inotify.h>` numbering. Linux's checks,
-    /// in its order (measured, `inotify-probe.c` section W and
-    /// `inotify-instance-probe.c` sections G, M and U):
-    /// - a bit `<sys/inotify.h>` does not define, or no bit at all, is
-    ///   `EINVAL`, ahead of the descriptor;
-    /// - a descriptor not open is `EBADF`;
-    /// - `IN_MASK_ADD` with `IN_MASK_CREATE` is `EINVAL`, and so is a
-    ///   descriptor that names anything but an inotify instance;
-    /// - the path is copied in and walked from the current directory, the
-    ///   final symbolic link followed unless `IN_DONT_FOLLOW`; with
-    ///   `IN_ONLYDIR`, an inode that is not a directory is `ENOTDIR`;
-    /// - a caller who may not read the inode is `EACCES`;
-    /// - a watch of the inode already held answers its descriptor, `EEXIST`
-    ///   under `IN_MASK_CREATE`. Its events and `IN_EXCL_UNLINK` are replaced,
-    ///   or added to under `IN_MASK_ADD`;
-    /// - otherwise a new watch takes the next descriptor, which is never
-    ///   reused. If the instance's owner already holds
-    ///   `InotifyLimits.MaxUserWatches` watches, in any of its instances, the
-    ///   call is `ENOSPC`, and the descriptor it took is spent all the same.
+    /// `flags` is Linux's: 0, or any of `InotifyInitFlags.CloseOnExec` (the
+    /// descriptor's `FD_CLOEXEC`) and `InotifyInitFlags.NonBlock` (the
+    /// description's `O_NONBLOCK`). Any other bit is `EINVAL`, and changes
+    /// nothing (measured, `inotify-instance-probe.c` section F). A user who
+    /// already holds `InotifyLimits.MaxUserInstances` instances, in any process
+    /// on the machine, is answered `EMFILE` (section U).
     ///
-    /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
-    /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
-    /// succeed asking for an event this kernel does not raise, or with
-    /// `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal.UnmodelledEvents`,
-    /// `InotifyAddWatchRefusal.OneShot`); one that fails answers its errno.
-    ///
-    /// Adding a watch queues nothing. Under the Darwin flavour every call is
-    /// refused.
+    /// Under the Darwin flavour every call is refused: Darwin has no inotify.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify: no Darwin kernel has the call, so there is no answer to measure.</exception>
+    let inotifyInit1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<int * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        tryInotifyInit1 flags system
+        |> Refusal.orRaise "UnixInotify.inotifyInit1" InotifyRefusal.kind InotifyRefusal.describe
+
+    /// `inotifyAddWatch`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (path : PathArgumentBytes)
@@ -424,18 +405,52 @@ module UnixInotify =
 
         Ok (SyscallAnswer.Completed (int64 (WatchDescriptor.toInt watch)), commit state)
 
-    /// `inotify_rm_watch(2)`: remove the watch `wd` names from the inotify
-    /// instance `fd` names, and queue an `IN_IGNORED` record for it, which
-    /// wakes a reader asleep on the instance.
+    /// <summary>
+    /// `inotify_add_watch(2)`: watch the inode `path` names, through the
+    /// inotify instance `fd` names, for what `mask` asks; or change what an
+    /// existing watch of that inode asks. Answers the watch's descriptor.
     ///
-    /// `EBADF` for a descriptor not open, `EINVAL` for one naming anything but
-    /// an inotify instance, and `EINVAL` for a `wd` the instance does not hold
-    /// (measured, `inotify-probe.c` row W rm and `inotify-instance-probe.c`
-    /// section G). A queue already holding `InotifyLimits.MaxQueuedEvents`
-    /// records drops the record, and takes an `IN_Q_OVERFLOW` record in its
-    /// place unless it holds one.
+    /// `mask` is raw, in Linux's `&lt;sys/inotify.h&gt;` numbering. Linux's checks,
+    /// in its order (measured, `inotify-probe.c` section W and
+    /// `inotify-instance-probe.c` sections G, M and U):
+    /// - a bit `&lt;sys/inotify.h&gt;` does not define, or no bit at all, is
+    ///   `EINVAL`, ahead of the descriptor;
+    /// - a descriptor not open is `EBADF`;
+    /// - `IN_MASK_ADD` with `IN_MASK_CREATE` is `EINVAL`, and so is a
+    ///   descriptor that names anything but an inotify instance;
+    /// - the path is copied in and walked from the current directory, the
+    ///   final symbolic link followed unless `IN_DONT_FOLLOW`; with
+    ///   `IN_ONLYDIR`, an inode that is not a directory is `ENOTDIR`;
+    /// - a caller who may not read the inode is `EACCES`;
+    /// - a watch of the inode already held answers its descriptor, `EEXIST`
+    ///   under `IN_MASK_CREATE`. Its events and `IN_EXCL_UNLINK` are replaced,
+    ///   or added to under `IN_MASK_ADD`;
+    /// - otherwise a new watch takes the next descriptor, which is never
+    ///   reused. If the instance's owner already holds
+    ///   `InotifyLimits.MaxUserWatches` watches, in any of its instances, the
+    ///   call is `ENOSPC`, and the descriptor it took is spent all the same.
     ///
-    /// Under the Darwin flavour every call is refused.
+    /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
+    /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
+    /// succeed asking for an event this kernel does not raise, or with
+    /// `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal.UnmodelledEvents`,
+    /// `InotifyAddWatchRefusal.OneShot`); one that fails answers its errno.
+    ///
+    /// Adding a watch queues nothing. Under the Darwin flavour every call is
+    /// refused.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify.</exception>
+    let inotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (path : PathArgumentBytes)
+        (mask : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryInotifyAddWatch fd path mask system
+        |> Refusal.orRaise "UnixInotify.inotifyAddWatch" InotifyAddWatchRefusal.kind InotifyAddWatchRefusal.describe
+
+    /// `inotifyRmWatch`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (wd : int)
@@ -471,3 +486,27 @@ module UnixInotify =
                 system
 
         Ok (SyscallAnswer.Completed 0L, removed)
+
+    /// <summary>
+    /// `inotify_rm_watch(2)`: remove the watch `wd` names from the inotify
+    /// instance `fd` names, and queue an `IN_IGNORED` record for it, which
+    /// wakes a reader asleep on the instance.
+    ///
+    /// `EBADF` for a descriptor not open, `EINVAL` for one naming anything but
+    /// an inotify instance, and `EINVAL` for a `wd` the instance does not hold
+    /// (measured, `inotify-probe.c` row W rm and `inotify-instance-probe.c`
+    /// section G). A queue already holding `InotifyLimits.MaxQueuedEvents`
+    /// records drops the record, and takes an `IN_Q_OVERFLOW` record in its
+    /// place unless it holds one.
+    ///
+    /// Under the Darwin flavour every call is refused.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify: no Darwin kernel has the call, so there is no answer to measure.</exception>
+    let inotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (wd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryInotifyRmWatch fd wd system
+        |> Refusal.orRaise "UnixInotify.inotifyRmWatch" InotifyRefusal.kind InotifyRefusal.describe

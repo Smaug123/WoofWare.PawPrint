@@ -1051,12 +1051,8 @@ module PathWalk =
         resolve limits credentials symlinkProtection startDirectory policy path vfs
         |> Result.bind (existingOf >> Result.mapError PathFailure.Errno)
 
-    /// The inode `path` names in `vfs`, walked from its root as a process with
-    /// `credentials` would walk it: the inode `stat` would describe, or why
-    /// the walk fails. A relative `path` is taken relative to the root.
-    ///
-    /// Answers for every input: the root is a directory of `vfs`, which is
-    /// where every walk starts.
+    /// `resolveExistingFromRoot`, with a refusal answered as the `Error`
+    /// rather than raised.
     let internal tryResolveExistingFromRoot
         (limits : PathLimits)
         (credentials : Credentials)
@@ -1067,5 +1063,29 @@ module PathWalk =
         : Result<InodeNumber, PathFailure>
         =
         resolveExisting limits credentials symlinkProtection (VirtualFileSystem.root vfs) policy path vfs
+
+    /// The inode `path` names in `vfs`, walked from its root as a process with
+    /// `credentials` would walk it: the inode `stat` would describe, or the
+    /// errno the walk fails with. A relative `path` is taken relative to the
+    /// root.
+    let resolveExistingFromRoot
+        (limits : PathLimits)
+        (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (vfs : VirtualFileSystem)
+        : Result<InodeNumber, UnixError>
+        =
+        match tryResolveExistingFromRoot limits credentials symlinkProtection policy path vfs with
+        | Ok inode -> Ok inode
+        | Error (PathFailure.Errno error) -> Error error
+        | Error (PathFailure.Refused refusal) ->
+            raise (
+                Refusal.exceptionOf
+                    "PathWalk.resolveExistingFromRoot"
+                    (PathRefusal.kind refusal)
+                    (PathRefusal.describe refusal)
+            )
 
 // ------------------------------------------------------------ inspection

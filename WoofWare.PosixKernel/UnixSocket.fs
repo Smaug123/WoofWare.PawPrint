@@ -559,16 +559,7 @@ module UnixSocket =
             Error (SockaddrCopyRefusal.DarwinShortInet6Sockaddr (socketId, declaredLength))
         | _ -> Ok ()
 
-    /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
-    /// caller's sockaddr in, which is where a client that cannot always produce
-    /// those bytes needs to be let off. See `SockaddrCopyAdmission`.
-    ///
-    /// `declaredLength` is the caller's 32-bit length exactly as passed: Linux
-    /// reads it as an `int` and Darwin as a `socklen_t`, so the platforms
-    /// disagree about whether one at or above 2^31 is negative.
-    ///
-    /// Changes nothing: everything a bind or connect does before the copy is a
-    /// question.
+    /// `admitSockaddrCopy`, with a refusal answered as the `Error` rather than raised.
     let internal tryAdmitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : SockaddrCopySyscall)
         (fd : int)
@@ -634,6 +625,27 @@ module UnixSocket =
         | SockaddrCopyStep.Copies (length, false) when length > 0 ->
             Error (SockaddrCopyRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | SockaddrCopyStep.Copies (length, _) -> Ok (SockaddrCopyAdmission.Transfer length)
+
+    /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
+    /// caller's sockaddr in, which is where a client that cannot always produce
+    /// those bytes needs to be let off. See `SockaddrCopyAdmission`.
+    ///
+    /// `declaredLength` is the caller's 32-bit length exactly as passed: Linux
+    /// reads it as an `int` and Darwin as a `socklen_t`, so the platforms
+    /// disagree about whether one at or above 2^31 is negative.
+    ///
+    /// Changes nothing: everything a bind or connect does before the copy is a
+    /// question.
+    let admitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : SockaddrCopySyscall)
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SockaddrCopyAdmission
+        =
+        tryAdmitSockaddrCopy syscall fd destination declaredLength system
+        |> Refusal.orRaise "UnixSocket.admitSockaddrCopy" SockaddrCopyRefusal.kind SockaddrCopyRefusal.describe
 
     /// How many bytes the copy-in of a `struct sockaddr` declared `declaredLength`
     /// long takes from real storage on `platform`: what `admitSockaddrCopy`
@@ -1022,22 +1034,7 @@ module UnixSocket =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    /// `socket(2)`: create a socket in `domain`, of `socketType`, speaking
-    /// `protocol`, and a descriptor onto it: the lowest one not in use.
-    ///
-    /// All three numbers are the simulated flavour's own, as a caller of its
-    /// libc would pass them: `AF_INET6` is 10 on Linux and 30 on Darwin.
-    /// `socketType` may carry Linux's `SOCK_NONBLOCK`, which makes the new open
-    /// file description non-blocking, and `SOCK_CLOEXEC`, which gives the new
-    /// descriptor `FD_CLOEXEC`. Darwin has neither flag, and a type carrying
-    /// either bit names no type.
-    ///
-    /// The sockets created are stream and datagram sockets in `AF_INET` and
-    /// `AF_INET6` (TCP and UDP), and in `AF_UNIX` stream and datagram sockets,
-    /// and on Linux seqpacket ones. Linux makes an `AF_UNIX` `SOCK_RAW` request
-    /// a datagram socket. Anything else is the errno the flavour answers, or a
-    /// `SocketRefusal` where that answer depends on what this kernel does not
-    /// model. A failure changes nothing.
+    /// `socket`, with a refusal answered as the `Error` rather than raised.
     let internal trySocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (domain : int)
         (socketType : int)
@@ -1094,6 +1091,32 @@ module UnixSocket =
                 Ok (Ok (fd, UnixSystemState.withFileDescriptors registry system))
             else
                 Ok (Ok (fd, system))
+
+    /// `socket(2)`: create a socket in `domain`, of `socketType`, speaking
+    /// `protocol`, and a descriptor onto it: the lowest one not in use.
+    ///
+    /// All three numbers are the simulated flavour's own, as a caller of its
+    /// libc would pass them: `AF_INET6` is 10 on Linux and 30 on Darwin.
+    /// `socketType` may carry Linux's `SOCK_NONBLOCK`, which makes the new open
+    /// file description non-blocking, and `SOCK_CLOEXEC`, which gives the new
+    /// descriptor `FD_CLOEXEC`. Darwin has neither flag, and a type carrying
+    /// either bit names no type.
+    ///
+    /// The sockets created are stream and datagram sockets in `AF_INET` and
+    /// `AF_INET6` (TCP and UDP), and in `AF_UNIX` stream and datagram sockets,
+    /// and on Linux seqpacket ones. Linux makes an `AF_UNIX` `SOCK_RAW` request
+    /// a datagram socket. Anything else is the errno the flavour answers, or a
+    /// `SocketRefusal` where that answer depends on what this kernel does not
+    /// model. A failure changes nothing.
+    let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (domain : int)
+        (socketType : int)
+        (protocol : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<int * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        trySocket domain socketType protocol system
+        |> Refusal.orRaise "UnixSocket.socket" SocketRefusal.kind SocketRefusal.describe
 
     /// The errno `bind(2)` answers for `fault` on `platform`.
     let private bindFaultError (platform : SimulatedUnixPlatform) (fault : BindFault) : UnixError =
@@ -1550,28 +1573,7 @@ module UnixSocket =
             Error (BindRefusal.UnmodelledMulticast (socketId, binding.Endpoint.Address))
         | Some binding -> bindAt socketId socket binding system
 
-    /// `bind(2)`: give `fd` a local address.
-    ///
-    /// `copied` is the bytes the kernel copies in: exactly as many as
-    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
-    /// caller's buffer, or none where it answered `Answered`. Passing any other
-    /// number is refused, as a bug in the caller. The kernel reads the family,
-    /// port and address out of them itself.
-    ///
-    /// Which existing bindings the new one conflicts with depends on
-    /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
-    /// others. Both flavours answer `EADDRINUSE` for two sockets on one port
-    /// with overlapping addresses (the wildcard overlaps every address), and
-    /// relax that under `SO_REUSEADDR` in different ways. Linux relaxes it when
-    /// both sockets set the flag and the bound one is not listening. Darwin
-    /// relaxes it when the new socket sets the flag, whatever the bound one
-    /// does, for an address that differs from the bound one's (the wildcard
-    /// beside a specific address, listening or not) and for the exact endpoint
-    /// of an established connection. Linux's `listen` is judged by the same
-    /// rule.
-    ///
-    /// Answers where the socket ended up, which for a request of port 0 is a
-    /// port this kernel chose.
+    /// `bind`, with a refusal answered as the `Error` rather than raised.
     let internal tryBind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -1612,17 +1614,40 @@ module UnixSocket =
                     (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
                     system
 
-    /// `listen(2)`: make `fd` a passive socket, and give it an address if it has
-    /// none.
+    /// `bind(2)`: give `fd` a local address.
     ///
-    /// `backlog` is recorded verbatim rather than clamped: every value is
-    /// accepted -- measured, 0, -1 and `INT_MAX` all succeed on both -- and the
-    /// accept-queue capacity a later `connect` enforces is derived from it per
-    /// flavour, so storing the input keeps one flavour's arithmetic out of the
-    /// stored value.
+    /// `copied` is the bytes the kernel copies in: exactly as many as
+    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
+    /// caller's buffer, or none where it answered `Answered`. Passing any other
+    /// number is refused, as a bug in the caller. The kernel reads the family,
+    /// port and address out of them itself.
     ///
-    /// A re-listen keeps the queue and updates the backlog, which is Linux's
-    /// documented behaviour (`sk_max_ack_backlog` is simply re-assigned).
+    /// Which existing bindings the new one conflicts with depends on
+    /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
+    /// others. Both flavours answer `EADDRINUSE` for two sockets on one port
+    /// with overlapping addresses (the wildcard overlaps every address), and
+    /// relax that under `SO_REUSEADDR` in different ways. Linux relaxes it when
+    /// both sockets set the flag and the bound one is not listening. Darwin
+    /// relaxes it when the new socket sets the flag, whatever the bound one
+    /// does, for an address that differs from the bound one's (the wildcard
+    /// beside a specific address, listening or not) and for the exact endpoint
+    /// of an established connection. Linux's `listen` is judged by the same
+    /// rule.
+    ///
+    /// Answers where the socket ended up, which for a request of port 0 is a
+    /// port this kernel chose.
+    let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : BindAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryBind fd destination declaredLength copied system
+        |> Refusal.orRaise "UnixSocket.bind" BindRefusal.kind BindRefusal.describe
+
+    /// `listen`, with a refusal answered as the `Error` rather than raised.
     let internal tryListen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (backlog : int)
@@ -1744,6 +1769,26 @@ module UnixSocket =
 
         Ok (ListenAnswer.Listening (answeredAddress "listen" system.Machine socketId bound.Endpoint), system)
 
+    /// `listen(2)`: make `fd` a passive socket, and give it an address if it has
+    /// none.
+    ///
+    /// `backlog` is recorded verbatim rather than clamped: every value is
+    /// accepted -- measured, 0, -1 and `INT_MAX` all succeed on both -- and the
+    /// accept-queue capacity a later `connect` enforces is derived from it per
+    /// flavour, so storing the input keeps one flavour's arithmetic out of the
+    /// stored value.
+    ///
+    /// A re-listen keeps the queue and updates the backlog, which is Linux's
+    /// documented behaviour (`sk_max_ack_backlog` is simply re-assigned).
+    let listen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (backlog : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ListenAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryListen fd backlog system
+        |> Refusal.orRaise "UnixSocket.listen" ListenRefusal.kind ListenRefusal.describe
+
     /// The tail `getsockname(2)` and `getpeername(2)` share, once the call has
     /// an address to report, `whole` being its whole `struct sockaddr_in` or
     /// `struct sockaddr_in6`: the declared length's screen, then the copy out
@@ -1817,22 +1862,7 @@ module UnixSocket =
         | Ok (PresentedName.Ipv6 endpoint) ->
             Ok (SimulatedUnixPlatform.encodeInternetV6Sockaddr machine.UnixPlatform endpoint)
 
-    /// `getsockname(2)`: report the local address the socket `fd` names.
-    ///
-    /// Answers the bytes the kernel copies out, laid out for the platform, and
-    /// the length it writes back.
-    ///
-    /// `declaredLength` is how much of the caller's buffer may be written, and
-    /// **does not bound what is reported**. Measured on both flavours: a call
-    /// declaring 8 writes eight bytes and reports 16, and one declaring 128
-    /// writes 16 and still reports 16.
-    ///
-    /// `declaredLength` is the 32-bit word the caller read out of its length
-    /// cell. Linux reads it as an `int` and answers `EINVAL` for a negative one,
-    /// before it touches the destination or the cell; Darwin reads it as the
-    /// `socklen_t` it is, so no length is an error there.
-    ///
-    /// Changes nothing and returns no system: a `getsockname` reads.
+    /// `getsockname`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -1877,28 +1907,33 @@ module UnixSocket =
         | Error refusal -> Error refusal
         | Ok whole -> reportAddress whole destination declaredLength system
 
-    /// `getpeername(2)`: report the address of the peer the socket `fd` is
-    /// connected to.
+    /// `getsockname(2)`: report the local address the socket `fd` names.
     ///
-    /// A connected stream socket reports the other end of its connection, and
-    /// keeps reporting it after that end closes with a FIN; a connected
-    /// datagram socket reports its default peer. The answer and its length
-    /// rules are exactly `getsockname`'s, including that `declaredLength` does
-    /// not bound what is reported.
+    /// Answers the bytes the kernel copies out, laid out for the platform, and
+    /// the length it writes back.
     ///
-    /// A socket with no peer answers `ENOTCONN` -- one never connected, a
-    /// listener, and a datagram socket connected to port 0, which Linux allows
-    /// -- in every address family, and before the declared length is judged.
-    /// A refused connect leaves no peer either, nor does a reset that reached
-    /// a connected socket, whether or not its error has been taken: `ENOTCONN`
-    /// on Linux, and `EINVAL` on Darwin, which answers that for any socket
-    /// that can neither send nor receive.
+    /// `declaredLength` is how much of the caller's buffer may be written, and
+    /// **does not bound what is reported**. Measured on both flavours: a call
+    /// declaring 8 writes eight bytes and reports 16, and one declaring 128
+    /// writes 16 and still reports 16.
     ///
-    /// A connect this kernel answered `EINPROGRESS` has already completed, so
-    /// the peer is reported at once. Darwin answers `ENOTCONN` there until the
-    /// loopback handshake lands, which a deterministic kernel need not wait for.
+    /// `declaredLength` is the 32-bit word the caller read out of its length
+    /// cell. Linux reads it as an `int` and answers `EINVAL` for a negative one,
+    /// before it touches the destination or the cell; Darwin reads it as the
+    /// `socklen_t` it is, so no length is an error there.
     ///
-    /// Changes nothing and returns no system: a `getpeername` reads.
+    /// Changes nothing and returns no system: a `getsockname` reads.
+    let getsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetSockNameAnswer
+        =
+        tryGetsockname fd destination declaredLength system
+        |> Refusal.orRaise "UnixSocket.getsockname" GetSockNameRefusal.kind GetSockNameRefusal.describe
+
+    /// `getpeername`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetpeername<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -1991,6 +2026,38 @@ module UnixSocket =
             | TcpEndState.Closed _ ->
                 failwith
                     $"UnixSocket.getpeername: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
+
+    /// `getpeername(2)`: report the address of the peer the socket `fd` is
+    /// connected to.
+    ///
+    /// A connected stream socket reports the other end of its connection, and
+    /// keeps reporting it after that end closes with a FIN; a connected
+    /// datagram socket reports its default peer. The answer and its length
+    /// rules are exactly `getsockname`'s, including that `declaredLength` does
+    /// not bound what is reported.
+    ///
+    /// A socket with no peer answers `ENOTCONN` -- one never connected, a
+    /// listener, and a datagram socket connected to port 0, which Linux allows
+    /// -- in every address family, and before the declared length is judged.
+    /// A refused connect leaves no peer either, nor does a reset that reached
+    /// a connected socket, whether or not its error has been taken: `ENOTCONN`
+    /// on Linux, and `EINVAL` on Darwin, which answers that for any socket
+    /// that can neither send nor receive.
+    ///
+    /// A connect this kernel answered `EINPROGRESS` has already completed, so
+    /// the peer is reported at once. Darwin answers `ENOTCONN` there until the
+    /// loopback handshake lands, which a deterministic kernel need not wait for.
+    ///
+    /// Changes nothing and returns no system: a `getpeername` reads.
+    let getpeername<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetSockNameAnswer
+        =
+        tryGetpeername fd destination declaredLength system
+        |> Refusal.orRaise "UnixSocket.getpeername" GetSockNameRefusal.kind GetSockNameRefusal.describe
 
     /// `sizeof(int)`: the size of every option's value here but `SO_LINGER`'s.
     let private optionIntSize : int = 4
@@ -2130,19 +2197,7 @@ module UnixSocket =
         | Some (OpenFileTarget.Epoll _) -> Error UnixError.ENOTSOCK
         | Some (OpenFileTarget.Socket socketId) -> Ok socketId
 
-    /// Everything `setsockopt(2)` decides before the kernel copies the option's
-    /// value in. See `SetSockOptAdmission`.
-    ///
-    /// `level` and `optionName` are in the simulated platform's own numbering;
-    /// `SimulatedUnixPlatform`'s `socketOptionLevel`, `tcpOptionLevel` and
-    /// `ipv6OptionLevel`, with the option names beside them, name the pairs
-    /// modelled. Setting `SO_ERROR` is refused as an unmodelled option: both
-    /// kernels answer ENOPROTOOPT, but where among the other screens is
-    /// unmeasured. `optionLength` is the caller's `socklen_t` exactly as passed:
-    /// the platforms disagree about whether one at or above 2^31 is negative.
-    ///
-    /// Changes nothing: everything a `setsockopt` does before the copy is a
-    /// question.
+    /// `admitSetSockOpt`, with a refusal answered as the `Error` rather than raised.
     let internal tryAdmitSetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2272,49 +2327,32 @@ module UnixSocket =
             else
                 answered UnixError.EINVAL
 
-    /// `setsockopt(2)`: set a socket option.
+    /// Everything `setsockopt(2)` decides before the kernel copies the option's
+    /// value in. See `SetSockOptAdmission`.
     ///
-    /// `supplied` is the bytes the copy took from the caller's value buffer,
-    /// exactly as many as `admitSetSockOpt` answered `Transfer` with, and must
-    /// be present exactly then: the kernel's answer for a value it could not
-    /// read is different from its answer for a value nobody read.
+    /// `level` and `optionName` are in the simulated platform's own numbering;
+    /// `SimulatedUnixPlatform`'s `socketOptionLevel`, `tcpOptionLevel` and
+    /// `ipv6OptionLevel`, with the option names beside them, name the pairs
+    /// modelled. Setting `SO_ERROR` is refused as an unmodelled option: both
+    /// kernels answer ENOPROTOOPT, but where among the other screens is
+    /// unmeasured. `optionLength` is the caller's `socklen_t` exactly as passed:
+    /// the platforms disagree about whether one at or above 2^31 is negative.
     ///
-    /// What each option takes, measured on both (`docs/probes/sockopt-options/`):
-    ///
-    /// - `SO_REUSEADDR`, `TCP_NODELAY` and `IPV6_V6ONLY`: any non-zero `int`
-    ///   sets the option and zero clears it. `IPV6_V6ONLY` changes only on a
-    ///   socket with no address: once it is bound, listening or connected, the
-    ///   set answers EINVAL on both, after the copy.
-    /// - `SO_LINGER` takes a `struct linger`. On Linux an `l_onoff` of zero
-    ///   turns lingering off and keeps the linger time, and a non-zero one
-    ///   turns it on with `l_linger` seconds; a negative time is refused (see
-    ///   `SocketOptionRefusal.Reason.NegativeLingerTime`). On Darwin,
-    ///   `l_linger` is hundredths of a second (`SO_LINGER_SEC` takes seconds);
-    ///   a set turning lingering on answers EDOM, changing nothing, unless the
-    ///   time is between 0 and 32767 hundredths, and every other set stores
-    ///   the time cut to sixteen bits, whatever `l_onoff` is.
-    ///
-    /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
-    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
-    /// belongs with `close`, which does not model it yet. A close
-    /// of a connected socket that it changes is refused: with a time of zero,
-    /// a reset rather than an orderly shutdown
-    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
-    /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
-    /// is and on Darwin through a blocking description
-    /// (`DescriptionReleaseRefusal.LingeringClose`). So is any close of its
-    /// last descriptor while a call in flight that the close does not end
-    /// holds it, whatever the time (`CloseRefusal.LingeringCloseDeferredToCall`).
-    /// Every other close is the one it would be anyway: a FIN, or a reset if
-    /// bytes were left unread.
-    ///
-    /// An option persists until the next `setsockopt` of it, and no later
-    /// failure of another call undoes it. A change on a listener does not reach
-    /// a connection already waiting to be accepted: the socket `accept(2)`
-    /// makes for one holds the options the listener had when it completed (see
-    /// `QueuedConnection`). A Linux change of `SO_REUSEADDR` on a connected
-    /// socket in `TIME_WAIT` is refused; see
-    /// `SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait`.
+    /// Changes nothing: everything a `setsockopt` does before the copy is a
+    /// question.
+    let admitSetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (optionLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SetSockOptAdmission
+        =
+        tryAdmitSetSockOpt fd level optionName value optionLength system
+        |> Refusal.orRaise "UnixSocket.admitSetSockOpt" SocketOptionRefusal.kind SocketOptionRefusal.describe
+
+    /// `setsockopt`, with a refusal answered as the `Error` rather than raised.
     let internal trySetsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2510,12 +2548,63 @@ module UnixSocket =
                     $"UnixSocket.setsockopt: the kernel copies %d{length} bytes of the option's value, but the caller supplied %d{(if bytes.IsDefault then 0 else bytes.Length)} (this is a bug in the caller)."
             | Some _ -> proceed supplied
 
-    /// Everything `getsockopt(2)` decides before the kernel reads the caller's
-    /// length cell. See `GetSockOptAdmission`.
+    /// `setsockopt(2)`: set a socket option.
     ///
-    /// `level` and `optionName` are numbered as for `admitSetSockOpt`.
+    /// `supplied` is the bytes the copy took from the caller's value buffer,
+    /// exactly as many as `admitSetSockOpt` answered `Transfer` with, and must
+    /// be present exactly then: the kernel's answer for a value it could not
+    /// read is different from its answer for a value nobody read.
     ///
-    /// Changes nothing.
+    /// What each option takes, measured on both (`docs/probes/sockopt-options/`):
+    ///
+    /// - `SO_REUSEADDR`, `TCP_NODELAY` and `IPV6_V6ONLY`: any non-zero `int`
+    ///   sets the option and zero clears it. `IPV6_V6ONLY` changes only on a
+    ///   socket with no address: once it is bound, listening or connected, the
+    ///   set answers EINVAL on both, after the copy.
+    /// - `SO_LINGER` takes a `struct linger`. On Linux an `l_onoff` of zero
+    ///   turns lingering off and keeps the linger time, and a non-zero one
+    ///   turns it on with `l_linger` seconds; a negative time is refused (see
+    ///   `SocketOptionRefusal.Reason.NegativeLingerTime`). On Darwin,
+    ///   `l_linger` is hundredths of a second (`SO_LINGER_SEC` takes seconds);
+    ///   a set turning lingering on answers EDOM, changing nothing, unless the
+    ///   time is between 0 and 32767 hundredths, and every other set stores
+    ///   the time cut to sixteen bits, whatever `l_onoff` is.
+    ///
+    /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
+    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
+    /// belongs with `close`, which does not model it yet. A close
+    /// of a connected socket that it changes is refused: with a time of zero,
+    /// a reset rather than an orderly shutdown
+    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
+    /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
+    /// is and on Darwin through a blocking description
+    /// (`DescriptionReleaseRefusal.LingeringClose`). So is any close of its
+    /// last descriptor while a call in flight that the close does not end
+    /// holds it, whatever the time (`CloseRefusal.LingeringCloseDeferredToCall`).
+    /// Every other close is the one it would be anyway: a FIN, or a reset if
+    /// bytes were left unread.
+    ///
+    /// An option persists until the next `setsockopt` of it, and no later
+    /// failure of another call undoes it. A change on a listener does not reach
+    /// a connection already waiting to be accepted: the socket `accept(2)`
+    /// makes for one holds the options the listener had when it completed (see
+    /// `QueuedConnection`). A Linux change of `SO_REUSEADDR` on a connected
+    /// socket in `TIME_WAIT` is refused; see
+    /// `SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait`.
+    let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (optionLength : uint32)
+        (supplied : ImmutableArray<byte> option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SetSockOptAnswer * UnixSystem<'Task, 'Handler>
+        =
+        trySetsockopt fd level optionName value optionLength supplied system
+        |> Refusal.orRaise "UnixSocket.setsockopt" SocketOptionRefusal.kind SocketOptionRefusal.describe
+
+    /// `admitGetSockOpt`, with a refusal answered as the `Error` rather than raised.
     let internal tryAdmitGetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2566,36 +2655,25 @@ module UnixSocket =
         | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok GetSockOptAdmission.ReadLength
 
-    /// `getsockopt(2)`: read a socket option.
+    /// Everything `getsockopt(2)` decides before the kernel reads the caller's
+    /// length cell. See `GetSockOptAdmission`.
     ///
-    /// `declaredLength` is the `socklen_t` the caller read out of its length
-    /// cell, and must be present exactly when `admitGetSockOpt` answers
-    /// `ReadLength`. What is copied out is the first `declaredLength` bytes of
-    /// the option's value, at most its size, and that count is what is written
-    /// back to the cell.
+    /// `level` and `optionName` are numbered as for `admitSetSockOpt`.
     ///
-    /// What each option reads, measured on both (`docs/probes/sockopt-options/`):
-    ///
-    /// - `SO_REUSEADDR` is 0 when the option is clear; when it is set, Linux
-    ///   reports 1 and Darwin reports the option's own number, 4.
-    /// - `TCP_NODELAY` is 0 when clear; when set, Linux reports 1 and Darwin 4,
-    ///   its flag's bit.
-    /// - `IPV6_V6ONLY` is 0 or 1.
-    /// - `SO_LINGER` is a `struct linger` whose `l_onoff` is 0 or 1 and whose
-    ///   `l_linger` is the time in seconds on Linux, in hundredths of a second
-    ///   on Darwin, and in seconds through Darwin's `SO_LINGER_SEC` (the
-    ///   hundredths over 100, rounded toward zero).
-    /// - `SO_ERROR` is the raw ECONNREFUSED of a refusal still pending
-    ///   (`SocketPhase.Refused RefusalError.Pending`), the raw error a reset
-    ///   left pending on a connected socket, and 0
-    ///   otherwise. Reading a pending error takes it: a refused socket is left
-    ///   `Refused RefusalError.Reported`, and a connected one with nothing
-    ///   pending, whether the copy-out then succeeds
-    ///   or not. Only a call that fails before reading the option leaves the
-    ///   error pending: one answered at the admission, or a Linux one
-    ///   declaring a negative length.
-    ///
-    /// Reading any option but `SO_ERROR` changes nothing.
+    /// Changes nothing.
+    let admitGetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (length : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetSockOptAdmission
+        =
+        tryAdmitGetSockOpt fd level optionName value length system
+        |> Refusal.orRaise "UnixSocket.admitGetSockOpt" SocketOptionRefusal.kind SocketOptionRefusal.describe
+
+    /// `getsockopt`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2818,3 +2896,46 @@ module UnixSocket =
             | None ->
                 failwith
                     "UnixSocket.getsockopt: the kernel reads the caller's length cell, but the caller supplied no length (this is a bug in the caller)."
+
+    /// `getsockopt(2)`: read a socket option.
+    ///
+    /// `declaredLength` is the `socklen_t` the caller read out of its length
+    /// cell, and must be present exactly when `admitGetSockOpt` answers
+    /// `ReadLength`. What is copied out is the first `declaredLength` bytes of
+    /// the option's value, at most its size, and that count is what is written
+    /// back to the cell.
+    ///
+    /// What each option reads, measured on both (`docs/probes/sockopt-options/`):
+    ///
+    /// - `SO_REUSEADDR` is 0 when the option is clear; when it is set, Linux
+    ///   reports 1 and Darwin reports the option's own number, 4.
+    /// - `TCP_NODELAY` is 0 when clear; when set, Linux reports 1 and Darwin 4,
+    ///   its flag's bit.
+    /// - `IPV6_V6ONLY` is 0 or 1.
+    /// - `SO_LINGER` is a `struct linger` whose `l_onoff` is 0 or 1 and whose
+    ///   `l_linger` is the time in seconds on Linux, in hundredths of a second
+    ///   on Darwin, and in seconds through Darwin's `SO_LINGER_SEC` (the
+    ///   hundredths over 100, rounded toward zero).
+    /// - `SO_ERROR` is the raw ECONNREFUSED of a refusal still pending
+    ///   (`SocketPhase.Refused RefusalError.Pending`), the raw error a reset
+    ///   left pending on a connected socket, and 0
+    ///   otherwise. Reading a pending error takes it: a refused socket is left
+    ///   `Refused RefusalError.Reported`, and a connected one with nothing
+    ///   pending, whether the copy-out then succeeds
+    ///   or not. Only a call that fails before reading the option leaves the
+    ///   error pending: one answered at the admission, or a Linux one
+    ///   declaring a negative length.
+    ///
+    /// Reading any option but `SO_ERROR` changes nothing.
+    let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (length : UserBuffer)
+        (declaredLength : uint32 option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetSockOptAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryGetsockopt fd level optionName value length declaredLength system
+        |> Refusal.orRaise "UnixSocket.getsockopt" SocketOptionRefusal.kind SocketOptionRefusal.describe

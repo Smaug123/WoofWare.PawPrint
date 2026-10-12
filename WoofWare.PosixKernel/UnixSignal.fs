@@ -197,53 +197,7 @@ module UnixSignal =
         =
         system.Tasks |> Map.keys |> Set.ofSeq
 
-    /// `kill(2)`, sent by the calling process to `pid`, with `signo` read under
-    /// the process's own signal numbering.
-    ///
-    /// The signal is pending on the process as a whole, so its leader receives
-    /// it unless it blocks the signal. A signal that kills the process ends it,
-    /// and the answer is then the ended process rather than a system to make
-    /// another call in.
-    ///
-    /// What a signal does as it is generated, here and wherever else this
-    /// library generates one (`pthreadKill`, and the `SIGPIPE` a write raises):
-    ///   * at its default disposition, where some task could receive it, it
-    ///     takes that default at once: it terminates the process
-    ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
-    ///     dumps core and the process's `CoreDumps` allows a dump), stops it
-    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it
-    ///     or to continue the process (SIGCONT, which has no stopped process to
-    ///     continue), is discarded;
-    ///   * ignored, where some task could receive it, it is discarded;
-    ///   * otherwise it is pending, including when every task that could
-    ///     receive it blocks it, and a task takes it as it returns to user mode
-    ///     (`onReturnToUser`) once it can. A standard signal already pending in
-    ///     the same pending set is not added again; a real-time one is.
-    ///
-    /// Before any of that, under Darwin's numbering an ignored signal other
-    /// than SIGCONT is discarded, whatever any mask says; under Linux's, an
-    /// ignored signal that every receiver blocks stays pending until one can
-    /// take it (`Signal.blockedIgnoredSignalStaysPendingUnder`, and see
-    /// `onReturnToUser`). A stop signal that is not discarded discards any
-    /// pending SIGCONT, and SIGCONT discards every pending stop signal, on
-    /// every task and on the process.
-    ///
-    /// For an ignored signal, whether some task "could receive" it is decided
-    /// by a mask: for one sent to a task, that task's; for one sent to the
-    /// process, any task's under Darwin's numbering, and the leader's alone
-    /// under Linux's, which leaves one the leader blocks pending on the
-    /// process until another task takes it and discards it.
-    ///
-    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
-    /// a task other than the leader could receive, where it is caught, or,
-    /// under Linux's numbering, ignored; and, under
-    /// Darwin's numbering, a standard signal it would leave pending on the
-    /// process while an instance is pending on the leader alone, or the other
-    /// way round, which Darwin holds as one instance where this library holds
-    /// two.
-    ///
-    /// Only a signal to the calling process itself is answered. Signal number 0
-    /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
+    /// `kill`, with a refusal answered as the `Error` rather than raised.
     let internal tryKill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pid : int32)
         (signo : int32)
@@ -302,6 +256,62 @@ module UnixSignal =
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
 
+    /// `kill(2)`, sent by the calling process to `pid`, with `signo` read under
+    /// the process's own signal numbering.
+    ///
+    /// The signal is pending on the process as a whole, so its leader receives
+    /// it unless it blocks the signal. A signal that kills the process ends it,
+    /// and the answer is then the ended process rather than a system to make
+    /// another call in.
+    ///
+    /// What a signal does as it is generated, here and wherever else this
+    /// library generates one (`pthreadKill`, and the `SIGPIPE` a write raises):
+    ///   * at its default disposition, where some task could receive it, it
+    ///     takes that default at once: it terminates the process
+    ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
+    ///     dumps core and the process's `CoreDumps` allows a dump), stops it
+    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it
+    ///     or to continue the process (SIGCONT, which has no stopped process to
+    ///     continue), is discarded;
+    ///   * ignored, where some task could receive it, it is discarded;
+    ///   * otherwise it is pending, including when every task that could
+    ///     receive it blocks it, and a task takes it as it returns to user mode
+    ///     (`onReturnToUser`) once it can. A standard signal already pending in
+    ///     the same pending set is not added again; a real-time one is.
+    ///
+    /// Before any of that, under Darwin's numbering an ignored signal other
+    /// than SIGCONT is discarded, whatever any mask says; under Linux's, an
+    /// ignored signal that every receiver blocks stays pending until one can
+    /// take it (`Signal.blockedIgnoredSignalStaysPendingUnder`, and see
+    /// `onReturnToUser`). A stop signal that is not discarded discards any
+    /// pending SIGCONT, and SIGCONT discards every pending stop signal, on
+    /// every task and on the process.
+    ///
+    /// For an ignored signal, whether some task "could receive" it is decided
+    /// by a mask: for one sent to a task, that task's; for one sent to the
+    /// process, any task's under Darwin's numbering, and the leader's alone
+    /// under Linux's, which leaves one the leader blocks pending on the
+    /// process until another task takes it and discards it.
+    ///
+    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
+    /// a task other than the leader could receive, where it is caught, or,
+    /// under Linux's numbering, ignored; and, under
+    /// Darwin's numbering, a standard signal it would leave pending on the
+    /// process while an instance is pending on the leader alone, or the other
+    /// way round, which Darwin holds as one instance where this library holds
+    /// two.
+    ///
+    /// Only a signal to the calling process itself is answered. Signal number 0
+    /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
+    let kill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pid : int32)
+        (signo : int32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<KillOutcome<'Task, 'Handler>, UnixError>
+        =
+        tryKill pid signo system
+        |> Refusal.orRaise "UnixSignal.kill" KillRefusal.kind KillRefusal.describe
+
     /// The signals the C library keeps for its own threads and screens out of
     /// the signal calls it wraps, before the kernel sees them: Linux's 32 and
     /// 33, the first two real-time signals, which glibc uses as SIGCANCEL and
@@ -323,6 +333,41 @@ module UnixSignal =
                     Signals = signals
                 }
         }
+
+    /// `onReturnToUser`, with a refusal answered as the `Error` rather than raised.
+    let internal tryOnReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReturnToUserOutcome<'Task, 'Handler>, SignalReceiverRefusal>
+        =
+        // Looked up rather than asked of `UnixTaskTable.parkedFor`, so that a
+        // name that is no task is left to `SignalState.onReturnToUser`'s own
+        // check.
+        match Map.tryFind task system.Tasks |> Option.bind (fun state -> state.Parked) with
+        | Some {
+                   Syscall = parked
+               } ->
+            failwith
+                $"UnixSignal.onReturnToUser: task %O{task} is asleep in %A{parked}, so it is not returning to user mode. A signal ends that sleep through the syscall's finishing call (this is a bug in the client)."
+        | None ->
+
+        SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
+        |> Result.map (fun (delivery, signals) ->
+            let after = withSignals signals system
+
+            match delivery with
+            | None -> ReturnToUserOutcome.Resumes after
+            | Some (SignalDelivery.RunHandlers frames) -> ReturnToUserOutcome.RunHandlers (frames, after)
+            | Some (SignalDelivery.DefaultStop signal) -> ReturnToUserOutcome.ProcessStopped (signal, after)
+            | Some (SignalDelivery.DefaultContinue signal) -> ReturnToUserOutcome.ContinueDiscarded (signal, after)
+            | Some (SignalDelivery.DefaultTerminate (signal, coreDumped)) ->
+                // Ended as the walk left it: the signal that kills it is taken,
+                // so it is not pending in the process's final state, as one
+                // `kill` applies at once never is.
+                ReturnToUserOutcome.ProcessEnded (
+                    UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) after
+                )
+        )
 
     /// What `task` takes as it returns to user mode: its own signals, and if it
     /// is the process's leader, the process's too. A client asks this before
@@ -396,39 +441,13 @@ module UnixSignal =
     ///
     /// Fails loudly if `task` names no task, or is asleep in a syscall, each of
     /// which is a bug in the client.
-    let internal tryOnReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let onReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReturnToUserOutcome<'Task, 'Handler>, SignalReceiverRefusal>
+        : ReturnToUserOutcome<'Task, 'Handler>
         =
-        // Looked up rather than asked of `UnixTaskTable.parkedFor`, so that a
-        // name that is no task is left to `SignalState.onReturnToUser`'s own
-        // check.
-        match Map.tryFind task system.Tasks |> Option.bind (fun state -> state.Parked) with
-        | Some {
-                   Syscall = parked
-               } ->
-            failwith
-                $"UnixSignal.onReturnToUser: task %O{task} is asleep in %A{parked}, so it is not returning to user mode. A signal ends that sleep through the syscall's finishing call (this is a bug in the client)."
-        | None ->
-
-        SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
-        |> Result.map (fun (delivery, signals) ->
-            let after = withSignals signals system
-
-            match delivery with
-            | None -> ReturnToUserOutcome.Resumes after
-            | Some (SignalDelivery.RunHandlers frames) -> ReturnToUserOutcome.RunHandlers (frames, after)
-            | Some (SignalDelivery.DefaultStop signal) -> ReturnToUserOutcome.ProcessStopped (signal, after)
-            | Some (SignalDelivery.DefaultContinue signal) -> ReturnToUserOutcome.ContinueDiscarded (signal, after)
-            | Some (SignalDelivery.DefaultTerminate (signal, coreDumped)) ->
-                // Ended as the walk left it: the signal that kills it is taken,
-                // so it is not pending in the process's final state, as one
-                // `kill` applies at once never is.
-                ReturnToUserOutcome.ProcessEnded (
-                    UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) after
-                )
-        )
+        tryOnReturnToUser task system
+        |> Refusal.orRaise "UnixSignal.onReturnToUser" SignalReceiverRefusal.kind SignalReceiverRefusal.describe
 
     /// `sigreturn(2)`: `task`'s handler for the frame `frame` has returned, and
     /// the frame is popped, restoring the mask that was in force before it was
@@ -446,25 +465,7 @@ module UnixSignal =
         =
         withSignals (SignalState.sigreturn task frame system.Process.Signals) system
 
-    /// `pthread_kill(3)`, sent by the calling process to `target`, one of its
-    /// own tasks, with `signo` read under the process's own signal numbering.
-    /// `raise(3)` is this, aimed at the calling task.
-    ///
-    /// The signal is pending on `target` alone: no other task takes it, even
-    /// while `target` blocks it and another task does not. See `kill` for what
-    /// the signal then does: a caught one that `target` does not block is
-    /// delivered as `target` next returns to user mode, which for `raise(3)` is
-    /// before the call returns. A signal that
-    /// kills the process ends it, and the answer is then the ended process
-    /// rather than a system to make another call in.
-    ///
-    /// Signal number 0 sends nothing, and a number that is neither 0 nor a
-    /// signal is `EINVAL`. So, under Linux's numbering, are 32 and 33, which
-    /// the C library keeps for its own threads and will not send this way,
-    /// though `kill(2)` sends them.
-    ///
-    /// Fails loudly if `target` is not one of the process's tasks, which is a
-    /// bug in the client.
+    /// `pthreadKill`, with a refusal answered as the `Error` rather than raised.
     let internal tryPthreadKill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (target : 'Task)
         (signo : int32)
@@ -516,6 +517,34 @@ module UnixSignal =
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
+
+    /// `pthread_kill(3)`, sent by the calling process to `target`, one of its
+    /// own tasks, with `signo` read under the process's own signal numbering.
+    /// `raise(3)` is this, aimed at the calling task.
+    ///
+    /// The signal is pending on `target` alone: no other task takes it, even
+    /// while `target` blocks it and another task does not. See `kill` for what
+    /// the signal then does: a caught one that `target` does not block is
+    /// delivered as `target` next returns to user mode, which for `raise(3)` is
+    /// before the call returns. A signal that
+    /// kills the process ends it, and the answer is then the ended process
+    /// rather than a system to make another call in.
+    ///
+    /// Signal number 0 sends nothing, and a number that is neither 0 nor a
+    /// signal is `EINVAL`. So, under Linux's numbering, are 32 and 33, which
+    /// the C library keeps for its own threads and will not send this way,
+    /// though `kill(2)` sends them.
+    ///
+    /// Fails loudly if `target` is not one of the process's tasks, which is a
+    /// bug in the client.
+    let pthreadKill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : 'Task)
+        (signo : int32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<KillOutcome<'Task, 'Handler>, UnixError>
+        =
+        tryPthreadKill target signo system
+        |> Refusal.orRaise "UnixSignal.pthreadKill" ThreadKillRefusal.kind ThreadKillRefusal.describe
 
     /// `sigaction(2)` as the kernel answers it, with `signo` read under the
     /// process's own signal numbering. `newAction` is `None` to ask for the
@@ -741,26 +770,7 @@ module UnixSignal =
             |> Option.map (fun entry -> other, entry.Signal)
         )
 
-    /// `sigprocmask(2)`, called by `task`: on Linux exactly `pthreadSigmask`.
-    ///
-    /// On Darwin it changes **every** task's mask, each as `how` says, and
-    /// answers the calling task's mask before the call: measured by
-    /// `docs/plans/2026-08-23-posix-kernel-extraction/sigprocmask-ops.c` on
-    /// Darwin 27.0.0, with the main thread blocking SIGHUP and a second thread
-    /// SIGINT, the main thread's `SIG_BLOCK` of SIGTERM left the second
-    /// blocking SIGINT and SIGTERM, its `SIG_UNBLOCK` of both left both
-    /// threads blocking nothing, and its `SIG_SETMASK` of SIGTERM left both
-    /// blocking SIGTERM alone; Darwin's raw `sigprocmask` system call did the
-    /// same. Linux's changed the caller's alone, as `pthread_sigmask` did on
-    /// both.
-    ///
-    /// Refuses, on Darwin, a call that would unblock a pending signal for a
-    /// task other than the caller (see
-    /// `SigprocmaskRefusal.DarwinUnblockedForAnotherTask`), changing nothing.
-    /// The caller's own pending signals it unblocks are deliverable to it as it
-    /// returns from the call, as `pthreadSigmask` describes.
-    ///
-    /// Everything else is as `pthreadSigmask` answers.
+    /// `sigprocmask`, with a refusal answered as the `Error` rather than raised.
     let internal trySigprocmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (how : int32)
@@ -794,6 +804,36 @@ module UnixSignal =
             match unblockedForAnother task system after with
             | Some (other, signal) -> Error (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (other, signal))
             | None -> Ok (Ok (old, after))
+
+    /// `sigprocmask(2)`, called by `task`: on Linux exactly `pthreadSigmask`.
+    ///
+    /// On Darwin it changes **every** task's mask, each as `how` says, and
+    /// answers the calling task's mask before the call: measured by
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/sigprocmask-ops.c` on
+    /// Darwin 27.0.0, with the main thread blocking SIGHUP and a second thread
+    /// SIGINT, the main thread's `SIG_BLOCK` of SIGTERM left the second
+    /// blocking SIGINT and SIGTERM, its `SIG_UNBLOCK` of both left both
+    /// threads blocking nothing, and its `SIG_SETMASK` of SIGTERM left both
+    /// blocking SIGTERM alone; Darwin's raw `sigprocmask` system call did the
+    /// same. Linux's changed the caller's alone, as `pthread_sigmask` did on
+    /// both.
+    ///
+    /// Refuses, on Darwin, a call that would unblock a pending signal for a
+    /// task other than the caller (see
+    /// `SigprocmaskRefusal.DarwinUnblockedForAnotherTask`), changing nothing.
+    /// The caller's own pending signals it unblocks are deliverable to it as it
+    /// returns from the call, as `pthreadSigmask` describes.
+    ///
+    /// Everything else is as `pthreadSigmask` answers.
+    let sigprocmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (how : int32)
+        (set : SignalMask option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        trySigprocmask task how set system
+        |> Refusal.orRaise "UnixSignal.sigprocmask" SigprocmaskRefusal.kind SigprocmaskRefusal.describe
 
     /// Linux's `rt_sigprocmask(2)`, made as a system call rather than through
     /// the C library, by `task`: as `pthreadSigmask`, except that it takes
@@ -880,6 +920,15 @@ module UnixSignal =
                 UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)
             )
 
+    /// `sigsuspend`, with a refusal answered as the `Error` rather than raised.
+    let internal trySigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (mask : SignalMask)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        suspendWith "sigsuspend" task (fun _ -> mask) system
+
     /// `sigsuspend(2)`, called by `task`: replace its mask with `mask` until a
     /// signal it takes under that mask ends the call, and give it back the mask
     /// it had as it returns.
@@ -918,13 +967,22 @@ module UnixSignal =
     /// mask to restore from an earlier call (it has not returned to user mode
     /// since), each of which is a bug in the client; and on a mask made under
     /// another numbering.
-    let internal trySigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let sigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (mask : SignalMask)
         (system : UnixSystem<'Task, 'Handler>)
+        : SigsuspendOutcome * UnixSystem<'Task, 'Handler>
+        =
+        trySigsuspend task mask system
+        |> Refusal.orRaise "UnixSignal.sigsuspend" SigsuspendRefusal.kind SigsuspendRefusal.describe
+
+    /// `pause`, with a refusal answered as the `Error` rather than raised.
+    let internal tryPause<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
         =
-        suspendWith "sigsuspend" task (fun _ -> mask) system
+        suspendWith "pause" task (SignalState.maskOf task) system
 
     /// `pause(2)`, called by `task`: `sigsuspend` with the mask it already has,
     /// which is how Darwin's C library makes it.
@@ -934,22 +992,15 @@ module UnixSignal =
     /// Linux. Darwin's restores the mask it was called with, undoing what a
     /// `sigprocmask` from another thread changed meanwhile, as `sigsuspend`
     /// does: measured by `sigsuspend-mask.c`'s "pause-spread" rows.
-    let internal tryPause<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let pause<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        : SigsuspendOutcome * UnixSystem<'Task, 'Handler>
         =
-        suspendWith "pause" task (SignalState.maskOf task) system
+        tryPause task system
+        |> Refusal.orRaise "UnixSignal.pause" SigsuspendRefusal.kind SigsuspendRefusal.describe
 
-    /// Linux's `rt_sigsuspend(2)`, made as a system call rather than through
-    /// the C library, by `task`: as `sigsuspend`, except that it takes
-    /// `sigsetSize`, the size the caller says its set is.
-    ///
-    /// A `sigsetSize` other than 8 is `EINVAL`, before anything else is looked
-    /// at, and changes nothing: measured by `sigsuspend-mask.c` with every size
-    /// from 0 to 16 but 8, and 128.
-    ///
-    /// Fails loudly on a Darwin process, which has no such system call.
+    /// `rtSigsuspend`, with a refusal answered as the `Error` rather than raised.
     let internal tryRtSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (mask : SignalMask)
@@ -968,19 +1019,26 @@ module UnixSignal =
         else
             trySigsuspend task mask system
 
-    /// Finish the `sigsuspend(2)` or `pause(2)` `task` is parked in, once
-    /// `UnixWait.wakes` has woken it: `Failed EINTR` if a signal it takes under
-    /// the temporary mask ends the call, as `sigsuspend` describes; and
-    /// otherwise it parks again, as the call it was woken from, since what
-    /// woke it has gone. Under Linux a SIGCONT at its default that woke it is
-    /// discarded first.
+    /// Linux's `rt_sigsuspend(2)`, made as a system call rather than through
+    /// the C library, by `task`: as `sigsuspend`, except that it takes
+    /// `sigsetSize`, the size the caller says its set is.
     ///
-    /// Until the task returns to user mode its mask is the temporary one, with
-    /// the mask to restore beside it: the client asks
-    /// `UnixSignal.onReturnToUser` before anything else runs on the task.
+    /// A `sigsetSize` other than 8 is `EINVAL`, before anything else is looked
+    /// at, and changes nothing: measured by `sigsuspend-mask.c` with every size
+    /// from 0 to 16 but 8, and 128.
     ///
-    /// Refuses as `sigsuspend` does, changing nothing. Fails loudly if `task` is
-    /// not parked in one of these calls.
+    /// Fails loudly on a Darwin process, which has no such system call.
+    let rtSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (mask : SignalMask)
+        (sigsetSize : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SigsuspendOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryRtSigsuspend task mask sigsetSize system
+        |> Refusal.orRaise "UnixSignal.rtSigsuspend" SigsuspendRefusal.kind SigsuspendRefusal.describe
+
+    /// `finishSigsuspend`, with a refusal answered as the `Error` rather than raised.
     let internal tryFinishSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1004,3 +1062,24 @@ module UnixSignal =
                 SigsuspendOutcome.WouldBlock (WakeCondition.ofPark ParkedSyscall.SigSuspend),
                 UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)
             )
+
+    /// Finish the `sigsuspend(2)` or `pause(2)` `task` is parked in, once
+    /// `UnixWait.wakes` has woken it: `Failed EINTR` if a signal it takes under
+    /// the temporary mask ends the call, as `sigsuspend` describes; and
+    /// otherwise it parks again, as the call it was woken from, since what
+    /// woke it has gone. Under Linux a SIGCONT at its default that woke it is
+    /// discarded first.
+    ///
+    /// Until the task returns to user mode its mask is the temporary one, with
+    /// the mask to restore beside it: the client asks
+    /// `UnixSignal.onReturnToUser` before anything else runs on the task.
+    ///
+    /// Refuses as `sigsuspend` does, changing nothing. Fails loudly if `task` is
+    /// not parked in one of these calls.
+    let finishSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SigsuspendOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryFinishSigsuspend task system
+        |> Refusal.orRaise "UnixSignal.finishSigsuspend" SigsuspendRefusal.kind SigsuspendRefusal.describe

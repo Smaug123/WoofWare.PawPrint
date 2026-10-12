@@ -194,19 +194,7 @@ module UnixEntropy =
             )
         )
 
-    /// `getrandom(2)`: fill the caller's buffer with up to `count` bytes from
-    /// the entropy pool, and return how many.
-    ///
-    /// `flags` is the raw argument, any combination of `GetRandomFlags`. It is
-    /// EINVAL if it has any other bit set, or both `GetRandomFlags.Random` and
-    /// `GetRandomFlags.Insecure`, whatever the buffer and the count.
-    ///
-    /// Never blocks. Linux-only: under any other flavour the call is refused.
-    ///
-    /// `task` is the task making the call, which must be one of the process's.
-    /// A request that moves more than a page, by a task with a signal pending,
-    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
-    /// short at the first page boundary.
+    /// `getRandom`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (buffer : UserBuffer)
@@ -249,12 +237,34 @@ module UnixEntropy =
         | Ok (Error error) -> Ok (GetRandomAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetRandomAnswer.Completed draw, system)
 
-    /// `getentropy(2)`: fill all `length` bytes of the caller's buffer from the
-    /// entropy pool.
+    /// <summary>
+    /// `getrandom(2)`: fill the caller's buffer with up to `count` bytes from
+    /// the entropy pool, and return how many.
     ///
-    /// A `length` above `getEntropyMaxLength` is EINVAL, whatever the buffer.
+    /// `flags` is the raw argument, any combination of `GetRandomFlags`. It is
+    /// EINVAL if it has any other bit set, or both `GetRandomFlags.Random` and
+    /// `GetRandomFlags.Insecure`, whatever the buffer and the count.
     ///
-    /// Darwin-only: under any other flavour the call is refused.
+    /// Never blocks. Linux-only: under any other flavour the call is refused.
+    ///
+    /// `task` is the task making the call, which must be one of the process's.
+    /// A request that moves more than a page, by a task with a signal pending,
+    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
+    /// short at the first page boundary.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The simulated kernel has no `getrandom` system call.</exception>
+    let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (flags : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetRandomAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryGetRandom task buffer count flags system
+        |> Refusal.orRaise "UnixEntropy.getRandom" GetRandomRefusal.kind GetRandomRefusal.describe
+
+    /// `getEntropy`, with a refusal answered as the `Error` rather than raised.
     let internal tryGetEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (buffer : UserBuffer)
         (length : uint64)
@@ -280,3 +290,21 @@ module UnixEntropy =
                 $"UnixEntropy.getEntropy: a request of %d{count} bytes was cut short for a signal, which getentropy's limit of %d{getEntropyMaxLength} rules out (this is a bug in this library)."
         | Ok (Error error) -> Ok (GetEntropyAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetEntropyAnswer.Completed draw, system)
+
+    /// <summary>
+    /// `getentropy(2)`: fill all `length` bytes of the caller's buffer from the
+    /// entropy pool.
+    ///
+    /// A `length` above `getEntropyMaxLength` is EINVAL, whatever the buffer.
+    ///
+    /// Darwin-only: under any other flavour the call is refused.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The simulated kernel has no `getentropy` system call.</exception>
+    let getEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (buffer : UserBuffer)
+        (length : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetEntropyAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryGetEntropy buffer length system
+        |> Refusal.orRaise "UnixEntropy.getEntropy" GetEntropyRefusal.kind GetEntropyRefusal.describe

@@ -182,28 +182,7 @@ module UnixClock =
         =
         truncate 1000 (UnixMachineState.realtime system.Scheduling system.Machine)
 
-    /// `clock_gettime(2)`: read the clock `clockId` names on this machine's flavour.
-    ///
-    /// The numbering is the flavour's own: `CLOCK_MONOTONIC` is 1 on Linux and 6
-    /// on Darwin. An id that names no clock on the flavour is `EINVAL`, and an id
-    /// that names a clock this kernel does not model is a `ClockGettimeRefusal`.
-    ///
-    /// Every answered id reads one of two clocks. `CLOCK_REALTIME`, and Linux's
-    /// `CLOCK_REALTIME_COARSE`, read the realtime clock (`UnixSystem.realtime`),
-    /// since the Unix epoch; every other clock reads the time since boot
-    /// (`UnixSystem.nanosecondsSinceBoot`). This machine never suspends and has no
-    /// NTP correction, so two clocks that differ only by time spent suspended
-    /// (Linux's `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`, Darwin's
-    /// `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW`) or only by frequency
-    /// correction (each `_RAW` clock and its corrected counterpart) read the same.
-    /// Linux's `CLOCK_REALTIME_COARSE` and `CLOCK_MONOTONIC_COARSE` read the same
-    /// as `CLOCK_REALTIME` and `CLOCK_MONOTONIC`: a coarse clock is its fine
-    /// clock as of the last update, and this machine's clock is only ever updated
-    /// by being advanced.
-    ///
-    /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
-    /// dropping the finer digits. Every other answered clock reports to the
-    /// nanosecond.
+    /// `clockGettime`, with a refusal answered as the `Error` rather than raised.
     let internal tryClockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (clockId : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -232,3 +211,33 @@ module UnixClock =
                     (int (sinceBoot % nanosecondsPerSecond))
 
             Ok (Ok (truncate granularity reading))
+
+    /// `clock_gettime(2)`: read the clock `clockId` names on this machine's flavour.
+    ///
+    /// The numbering is the flavour's own: `CLOCK_MONOTONIC` is 1 on Linux and 6
+    /// on Darwin. An id that names no clock on the flavour is `EINVAL`, and an id
+    /// that names a clock this kernel does not model is a `ClockGettimeRefusal`.
+    ///
+    /// Every answered id reads one of two clocks. `CLOCK_REALTIME`, and Linux's
+    /// `CLOCK_REALTIME_COARSE`, read the realtime clock (`UnixSystem.realtime`),
+    /// since the Unix epoch; every other clock reads the time since boot
+    /// (`UnixSystem.nanosecondsSinceBoot`). This machine never suspends and has no
+    /// NTP correction, so two clocks that differ only by time spent suspended
+    /// (Linux's `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`, Darwin's
+    /// `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW`) or only by frequency
+    /// correction (each `_RAW` clock and its corrected counterpart) read the same.
+    /// Linux's `CLOCK_REALTIME_COARSE` and `CLOCK_MONOTONIC_COARSE` read the same
+    /// as `CLOCK_REALTIME` and `CLOCK_MONOTONIC`: a coarse clock is its fine
+    /// clock as of the last update, and this machine's clock is only ever updated
+    /// by being advanced.
+    ///
+    /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
+    /// dropping the finer digits. Every other answered clock reports to the
+    /// nanosecond.
+    let clockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (clockId : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixTimestamp, UnixError>
+        =
+        tryClockGettime clockId system
+        |> Refusal.orRaise "UnixClock.clockGettime" ClockGettimeRefusal.kind ClockGettimeRefusal.describe

@@ -95,8 +95,7 @@ module ProcessTermination =
     // written on the Darwin machine (a non-root user cannot write `/cores`), so a
     // Darwin death with one is refused.
 
-    /// The status word a parent's `waitpid(2)` stores for a child that ended so, under
-    /// `platform`'s signal numbering.
+    /// `waitpidStatus`, with a refusal answered as the `Error` rather than raised.
     let internal tryWaitpidStatus
         (platform : SimulatedUnixPlatform)
         (termination : ProcessTermination)
@@ -116,8 +115,17 @@ module ProcessTermination =
             | SimulatedUnixFlavour.Linux -> Ok (signo ||| 0x80)
             | SimulatedUnixFlavour.Darwin -> Error (WaitStatusRefusal.CoreDumpOnDarwin signal)
 
-    /// What a parent's `waitid(2)` reports for a child that ended so (`si_code` and
-    /// `si_status`), under `platform`'s signal numbering.
+    /// The status word a parent's `waitpid(2)` stores for a child that ended so, under
+    /// `platform`'s signal numbering.
+    let waitpidStatus
+        (platform : SimulatedUnixPlatform)
+        (termination : ProcessTermination)
+        : int32
+        =
+        tryWaitpidStatus platform termination
+        |> Refusal.orRaise "ProcessTermination.waitpidStatus" WaitStatusRefusal.kind WaitStatusRefusal.describe
+
+    /// `waitidStatus`, with a refusal answered as the `Error` rather than raised.
     let internal tryWaitidStatus
         (platform : SimulatedUnixPlatform)
         (termination : ProcessTermination)
@@ -136,6 +144,16 @@ module ProcessTermination =
             match SimulatedUnixPlatform.flavour platform with
             | SimulatedUnixFlavour.Linux -> Ok (WaitIdCode.Dumped, signo)
             | SimulatedUnixFlavour.Darwin -> Error (WaitStatusRefusal.CoreDumpOnDarwin signal)
+
+    /// What a parent's `waitid(2)` reports for a child that ended so (`si_code` and
+    /// `si_status`), under `platform`'s signal numbering.
+    let waitidStatus
+        (platform : SimulatedUnixPlatform)
+        (termination : ProcessTermination)
+        : WaitIdCode * int32
+        =
+        tryWaitidStatus platform termination
+        |> Refusal.orRaise "ProcessTermination.waitidStatus" WaitStatusRefusal.kind WaitStatusRefusal.describe
 
     /// The status a POSIX shell reports in `$?` for a child that ended so, under
     /// `numbering`: the exit code `waitpid(2)` reports, or 128 plus the number of the
