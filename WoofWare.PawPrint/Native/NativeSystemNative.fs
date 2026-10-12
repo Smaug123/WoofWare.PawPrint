@@ -4672,8 +4672,8 @@ module NativeSystemNative =
             let pipeFds = bufferPointerArgument operation "pipeFds" instruction.Arguments.[0]
 
             match UnixPipe.pipe2 kernelFlags (BufferPointer.toUserBuffer pipeFds) state.Kernel.System with
-            | Error (Pipe2Refusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage pipeFds refusal)
-            | Error (Pipe2Refusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
+            | Error (Pipe2Refusal.Reason.Buffer refusal) -> failwith (BufferPointer.refusalMessage pipeFds refusal)
+            | Error (Pipe2Refusal.Reason.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: %s{Pipe2Refusal.describe refusal} CoreLib passes only 0 or PAL_O_CLOEXEC and a two-int array of its own, so this is a hand-rolled P/Invoke."

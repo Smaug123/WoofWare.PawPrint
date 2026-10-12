@@ -11,30 +11,74 @@ type Pipe2Answer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `pipe2(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `Pipe2Refusal.Reason`, and ends its match with a wildcard, where
+/// `Pipe2Refusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type Pipe2Refusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `Pipe2Refusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// Linux's `O_DIRECT`, which makes the pipe a packet pipe: each write is a
-    /// packet that a read takes whole or truncates. This kernel's pipes carry
-    /// a byte stream only.
+    /// See `Pipe2Refusal.Reason.PacketMode`.
     | PacketMode of flags : int
-    /// Linux's `O_NOTIFICATION_PIPE`. Whether a kernel accepts it depends on
-    /// how it was built (`CONFIG_WATCH_QUEUE`): measured, the Linux 6.18.5
-    /// build probed answers ENOPKG, and one built with watch queues would make a
-    /// pipe that carries kernel notifications, which this kernel does not model.
+    /// See `Pipe2Refusal.Reason.NotificationPipe`.
     | NotificationPipe of flags : int
-    /// The destination has no answer at the copy.
+    /// See `Pipe2Refusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The destination names no storage, on a platform whose C library stores
-    /// the two descriptors itself rather than having the kernel copy them out:
-    /// measured on Darwin 27.0.0, `pipe2(NULL, 0)` and `pipe2((int *)8, 0)` kill
-    /// the process with SIGSEGV. A dead process is not an errno.
+    /// See `Pipe2Refusal.Reason.FatalToTheProcess`.
     | FatalToTheProcess
 
 [<RequireQualifiedAccess>]
 module Pipe2Refusal =
+    /// The reasons this kernel refuses a `pipe2(2)`, one partial pattern each.
+    /// A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : Pipe2Refusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | Pipe2Refusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// Linux's `O_DIRECT`, which makes the pipe a packet pipe: each write
+        /// is a packet that a read takes whole or truncates. This kernel's
+        /// pipes carry a byte stream only. Gives the flags.
+        let (|PacketMode|_|) (refusal : Pipe2Refusal) : int option =
+            match refusal with
+            | Pipe2Refusal.PacketMode flags -> Some flags
+            | _ -> None
+
+        /// Linux's `O_NOTIFICATION_PIPE`. Whether a kernel accepts it depends
+        /// on how it was built (`CONFIG_WATCH_QUEUE`): measured, the Linux
+        /// 6.18.5 build probed answers ENOPKG, and one built with watch queues
+        /// would make a pipe that carries kernel notifications, which this
+        /// kernel does not model. Gives the flags.
+        let (|NotificationPipe|_|) (refusal : Pipe2Refusal) : int option =
+            match refusal with
+            | Pipe2Refusal.NotificationPipe flags -> Some flags
+            | _ -> None
+
+        /// The destination has no answer at the copy. Gives the
+        /// `BufferRefusal`.
+        let (|Buffer|_|) (refusal : Pipe2Refusal) : BufferRefusal option =
+            match refusal with
+            | Pipe2Refusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The destination names no storage, on a platform whose C library
+        /// stores the two descriptors itself rather than having the kernel copy
+        /// them out: measured on Darwin 27.0.0, `pipe2(NULL, 0)` and
+        /// `pipe2((int *)8, 0)` kill the process with SIGSEGV. A dead process
+        /// is not an errno.
+        let (|FatalToTheProcess|_|) (refusal : Pipe2Refusal) : unit option =
+            match refusal with
+            | Pipe2Refusal.FatalToTheProcess -> Some ()
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what the destination was.
     let describe (refusal : Pipe2Refusal) : string =
@@ -145,7 +189,7 @@ module UnixPipe =
     /// leaving no pipe and no descriptor behind (measured: the next descriptor
     /// allocated is the one the pipe would have taken). Darwin's C library
     /// stores them itself, so an unmapped destination there is refused (see
-    /// `Pipe2Refusal.FatalToTheProcess`).
+    /// `Pipe2Refusal.Reason.FatalToTheProcess`).
     ///
     /// The read end takes the lowest descriptor not in use and the write end
     /// the next. Both are owned by

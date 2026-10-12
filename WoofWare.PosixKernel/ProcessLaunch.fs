@@ -1,18 +1,42 @@
 namespace WoofWare.PosixKernel
 
 /// Why `ProcessLaunch.create` refuses a launch table.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LaunchTableRefusal.Reason`, and ends its match with a wildcard, where
+/// `LaunchTableRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LaunchTableRefusal =
-    /// The table names a negative descriptor, which no process has.
-    /// Contradictory.
+    internal
+    /// See `LaunchTableRefusal.Reason.NegativeDescriptor`.
     | NegativeDescriptor of fd : int
-    /// The table names a descriptor at or above `bound`
-    /// (`SimulatedUnixPlatform.descriptorBound`), which this kernel assumes the
-    /// process's `RLIMIT_NOFILE` reaches and models no higher. Unmodelled.
+    /// See `LaunchTableRefusal.Reason.AtOrAboveBound`.
     | AtOrAboveBound of fd : int * bound : int
 
 [<RequireQualifiedAccess>]
 module LaunchTableRefusal =
+    /// The reasons `ProcessLaunch.create` refuses a launch table, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The table names a negative descriptor, which no process has.
+        /// Contradictory. Gives the descriptor.
+        let (|NegativeDescriptor|_|) (refusal : LaunchTableRefusal) : int option =
+            match refusal with
+            | LaunchTableRefusal.NegativeDescriptor fd -> Some fd
+            | _ -> None
+
+        /// The table names a descriptor at or above the bound
+        /// (`SimulatedUnixPlatform.descriptorBound`) which this kernel assumes
+        /// the process's `RLIMIT_NOFILE` reaches and models no higher.
+        /// Unmodelled. Gives the descriptor, then the bound.
+        let (|AtOrAboveBound|_|) (refusal : LaunchTableRefusal) : (int * int) option =
+            match refusal with
+            | LaunchTableRefusal.AtOrAboveBound (fd, bound) -> Some (fd, bound)
+            | _ -> None
+
     /// What this library knows about why it refused the table, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : LaunchTableRefusal) : string =
@@ -23,20 +47,48 @@ module LaunchTableRefusal =
             $"the launch table names descriptor %d{fd}, at or above the bound %d{bound} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
 
 /// Why `ProcessLaunch.withCredentials` refuses credentials.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CredentialsRefusal.Reason`, and ends its match with a wildcard, where
+/// `CredentialsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type CredentialsRefusal =
-    /// More supplementary groups than the `limit` a process can hold on
-    /// `flavour` (`SimulatedUnixPlatform.supplementaryGroupLimit`): `setgroups(2)`
-    /// answers EINVAL above `NGROUPS_MAX`. Contradictory.
+    internal
+    /// See `CredentialsRefusal.Reason.TooManySupplementaryGroups`.
     | TooManySupplementaryGroups of count : int * limit : int * flavour : SimulatedUnixFlavour
-    /// On Darwin, real, effective and saved IDs that are not all the same.
-    /// Which of them a Darwin kernel consults has not been measured, since that
-    /// needs a process that can change its user ID, which is root, and none has
-    /// been available on Darwin. Unmeasured.
+    /// See `CredentialsRefusal.Reason.IdsDifferOnDarwin`.
     | IdsDifferOnDarwin of credentials : Credentials
 
 [<RequireQualifiedAccess>]
 module CredentialsRefusal =
+    /// The reasons `ProcessLaunch.withCredentials` refuses credentials, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// More supplementary groups than a process can hold on the flavour
+        /// (`SimulatedUnixPlatform.supplementaryGroupLimit`): `setgroups(2)`
+        /// answers EINVAL above `NGROUPS_MAX`. Contradictory. Gives how many
+        /// groups there are, then the limit, then the flavour.
+        let (|TooManySupplementaryGroups|_|)
+            (refusal : CredentialsRefusal)
+            : (int * int * SimulatedUnixFlavour) option
+            =
+            match refusal with
+            | CredentialsRefusal.TooManySupplementaryGroups (count, limit, flavour) -> Some (count, limit, flavour)
+            | _ -> None
+
+        /// On Darwin, real, effective and saved IDs that are not all the same.
+        /// Which of them a Darwin kernel consults has not been measured, since
+        /// that needs a process that can change its user ID, which is root, and
+        /// none has been available on Darwin. Unmeasured. Gives the
+        /// credentials.
+        let (|IdsDifferOnDarwin|_|) (refusal : CredentialsRefusal) : Credentials option =
+            match refusal with
+            | CredentialsRefusal.IdsDifferOnDarwin credentials -> Some credentials
+            | _ -> None
+
     /// What this library knows about why it refused the credentials, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : CredentialsRefusal) : string =
@@ -47,15 +99,35 @@ module CredentialsRefusal =
             $"the credentials %O{credentials} have real, effective and saved IDs that differ, which this library does not model on Darwin: which of them a Darwin kernel consults has not been measured. Give all three the same user ID and the same group ID."
 
 /// Why `ProcessLaunch.withUmask` refuses a mask.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `UmaskRefusal.Reason`, and ends its match with a wildcard, where
+/// `UmaskRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type UmaskRefusal =
-    /// The mask holds a bit `flavour`'s `umask(2)` never stores: it keeps only
-    /// `stored` (`SimulatedUnixPlatform.umaskStoredBits`). No parent could
-    /// have left such a mask. Contradictory.
+    internal
+    /// See `UmaskRefusal.Reason.BitsNotStored`.
     | BitsNotStored of umask : PermissionBits * stored : PermissionBits * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module UmaskRefusal =
+    /// The reasons `ProcessLaunch.withUmask` refuses a mask, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The mask holds a bit the flavour's `umask(2)` never stores
+        /// (`SimulatedUnixPlatform.umaskStoredBits`). No parent could have left
+        /// such a mask. Contradictory. Gives the mask, then the bits the
+        /// flavour stores, then the flavour.
+        let (|BitsNotStored|_|)
+            (refusal : UmaskRefusal)
+            : (PermissionBits * PermissionBits * SimulatedUnixFlavour) option
+            =
+            match refusal with
+            | UmaskRefusal.BitsNotStored (umask, stored, flavour) -> Some (umask, stored, flavour)
+
     /// What this library knows about why it refused the mask, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : UmaskRefusal) : string =
@@ -65,21 +137,55 @@ module UmaskRefusal =
 
 /// Why a process cannot be launched onto a machine as its `ProcessLaunch`
 /// describes it.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LaunchRefusal.Reason`, and ends its match with a wildcard, where
+/// `LaunchRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LaunchRefusal =
-    /// The launch was described for the platform `launch`, and the machine is
-    /// `machine`: the description was checked against the wrong platform's
-    /// rules.
+    internal
+    /// See `LaunchRefusal.Reason.NotOfPlatform`.
     | NotOfPlatform of launch : SimulatedUnixPlatform * machine : SimulatedUnixPlatform
-    /// The process cannot start in `directory` on this machine's filesystem.
+    /// See `LaunchRefusal.Reason.CurrentDirectory`.
     | CurrentDirectory of directory : AbsoluteUnixPath * fault : CurrentDirectoryFault
-    /// The launch puts its leader on the logical processor `cpu`, and the
-    /// machine has `processorCount`, numbered from 0, which do not include it.
-    /// Contradictory: no kernel runs a task on a processor it does not have.
+    /// See `LaunchRefusal.Reason.LeaderCpuBeyondMachine`.
     | LeaderCpuBeyondMachine of cpu : CpuId * processorCount : int
 
 [<RequireQualifiedAccess>]
 module LaunchRefusal =
+    /// The reasons a process cannot be launched onto a machine as its
+    /// `ProcessLaunch` describes it, one partial pattern each. A match over
+    /// them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The launch was described for one platform, and the machine is of
+        /// another: the description was checked against the wrong platform's
+        /// rules. Gives the platform the launch was described for, then the
+        /// machine's.
+        let (|NotOfPlatform|_|) (refusal : LaunchRefusal) : (SimulatedUnixPlatform * SimulatedUnixPlatform) option =
+            match refusal with
+            | LaunchRefusal.NotOfPlatform (launch, machine) -> Some (launch, machine)
+            | _ -> None
+
+        /// The process cannot start in the directory on this machine's
+        /// filesystem. Gives the directory, then why not, whose reasons are
+        /// `CurrentDirectoryFault.Reason`.
+        let (|CurrentDirectory|_|) (refusal : LaunchRefusal) : (AbsoluteUnixPath * CurrentDirectoryFault) option =
+            match refusal with
+            | LaunchRefusal.CurrentDirectory (directory, fault) -> Some (directory, fault)
+            | _ -> None
+
+        /// The launch puts its leader on a logical processor the machine does
+        /// not have: its processors are numbered from 0, and the leader's is
+        /// not below their count. Contradictory: no kernel runs a task on a
+        /// processor it does not have. Gives the leader's processor, then how
+        /// many the machine has.
+        let (|LeaderCpuBeyondMachine|_|) (refusal : LaunchRefusal) : (CpuId * int) option =
+            match refusal with
+            | LaunchRefusal.LeaderCpuBeyondMachine (cpu, processorCount) -> Some (cpu, processorCount)
+            | _ -> None
+
     /// What this library knows about why it refused the launch, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : LaunchRefusal) : string =

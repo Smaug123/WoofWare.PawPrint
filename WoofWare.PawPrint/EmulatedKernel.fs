@@ -1080,14 +1080,14 @@ module EmulatedKernel =
         =
         match UnixBootImage.boot launch machine with
         | Ok system -> system
-        | Error (LaunchRefusal.CurrentDirectory (directory, fault)) ->
+        | Error (LaunchRefusal.Reason.CurrentDirectory (directory, fault) as refusal) ->
             let described = AbsoluteUnixPath.toEscaped directory
 
             match fault with
-            | CurrentDirectoryFault.DoesNotResolve error ->
+            | CurrentDirectoryFault.Reason.DoesNotResolve error ->
                 failwith
                     $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" does not resolve in %s{machineKnobs}.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make %s{machineKnobs}.FileSystem contain %s{processKnobs}.CurrentDirectory."
-            | CurrentDirectoryFault.TooLong flavour ->
+            | CurrentDirectoryFault.Reason.TooLong flavour ->
                 // Distinguished because the remedy is different, and the
                 // message above would send the reader looking for a missing
                 // directory that is in fact present.
@@ -1097,20 +1097,22 @@ module EmulatedKernel =
                 // path that was never the problem.
                 failwith
                     $"%s{processKnobs}.CurrentDirectory: %O{flavour} refuses \"%s{described}\" as too long, so no process could have been started in it. Either a component is past NAME_MAX -- shorten %s{processKnobs}.CurrentDirectory -- or, on Darwin, a symbolic link it goes through expands past PATH_MAX, in which case shorten that link's target in %s{machineKnobs}.FileSystem."
-            | CurrentDirectoryFault.NotADirectory ->
+            | CurrentDirectoryFault.Reason.NotADirectory ->
                 failwith
                     $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" resolves in %s{machineKnobs}.FileSystem, but not to a directory. No process can be started anywhere else; point %s{processKnobs}.CurrentDirectory at a directory the seed contains."
-            | CurrentDirectoryFault.Path refusal ->
+            | CurrentDirectoryFault.Reason.Path pathRefusal ->
                 failwith
-                    $"%s{processKnobs}.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal} Start the process somewhere outside /dev."
-        | Error (LaunchRefusal.NotOfPlatform _ as refusal) ->
+                    $"%s{processKnobs}.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe pathRefusal} Start the process somewhere outside /dev."
+            | _ -> failwith $"%s{processKnobs}.CurrentDirectory: %s{LaunchRefusal.describe refusal}"
+        | Error (LaunchRefusal.Reason.NotOfPlatform _ as refusal) ->
             failwith
                 $"%s{processKnobs}: the process was described for another platform than its machine's: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
-        | Error (LaunchRefusal.LeaderCpuBeyondMachine _ as refusal) ->
+        | Error (LaunchRefusal.Reason.LeaderCpuBeyondMachine _ as refusal) ->
             // PawPrint puts the leader on processor 0, and every machine has at
             // least one.
             failwith
                 $"%s{processKnobs}: the process's leader is on a processor its machine does not have: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
+        | Error refusal -> failwith $"%s{processKnobs}: %s{LaunchRefusal.describe refusal}"
 
     /// The kernel of the PawPrint process `system` is the POSIX half of, newly
     /// launched, as though its launcher had left `inheritedIgnores` ignored
@@ -1266,15 +1268,17 @@ module EmulatedKernel =
         =
         match UnixBootImage.withFileSystem createdAt owner seed machine with
         | Ok machine -> machine
-        | Error (FileSystemSeedFault.SeedNameTooLong (name, flavour)) ->
+        | Error (FileSystemSeedFault.Reason.SeedNameTooLong (name, flavour)) ->
             failwith
                 $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in %s{knobs}.FileSystem, or configure the flavour whose limit admits it."
-        | Error (FileSystemSeedFault.SeedNameNotBindable (name, flavour)) ->
+        | Error (FileSystemSeedFault.Reason.SeedNameNotBindable (name, flavour)) ->
             failwith
                 $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in %s{knobs}.FileSystem, or configure the flavour that binds it."
-        | Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name) ->
+        | Error (FileSystemSeedFault.Reason.SeedCoversDeviceFileSystem name) ->
             failwith
                 $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem binds \"%s{DirectoryEntryName.toEscaped name}\" at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot. Remove that entry from %s{knobs}.FileSystem: the kernel supplies /dev itself."
+        | Error fault ->
+            failwith $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem: %s{FileSystemSeedFault.describe fault}"
 
     /// Set the filesystem the guest sees (`machineWithFileSystem`, naming
     /// `KernelConfig`'s knob), and the directory the simulated process starts
@@ -1341,9 +1345,7 @@ module EmulatedKernel =
         // number of milliseconds is never finer than a microsecond.
         match UnixBootImage.withBootTime bootTime machine with
         | Ok machine -> machine
-        | Error (BootTimeRefusal.BeforeEpoch _ as refusal)
-        | Error (BootTimeRefusal.PastMaxBootTime _ as refusal)
-        | Error (BootTimeRefusal.FinerThanMicrosecond _ as refusal) ->
+        | Error refusal ->
             failwith
                 $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time: %s{BootTimeRefusal.describe refusal} This is a bug in PawPrint."
 
@@ -2394,13 +2396,15 @@ module ProcessConfig =
         let credentialsOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
             match ProcessLaunch.withCredentials credentials launch with
             | Ok launch -> launch
-            | Error (CredentialsRefusal.TooManySupplementaryGroups _ as refusal) ->
+            | Error (CredentialsRefusal.Reason.TooManySupplementaryGroups _ as refusal) ->
                 failwith $"%s{knobs}.SupplementaryGroups: %s{CredentialsRefusal.describe refusal}"
-            | Error (CredentialsRefusal.IdsDifferOnDarwin _ as refusal) ->
+            | Error (CredentialsRefusal.Reason.IdsDifferOnDarwin _ as refusal) ->
                 // `Credentials.ofIds` gives the real, effective and saved IDs
                 // one value each, so the configuration cannot reach this.
                 failwith
                     $"%s{knobs}.UserId and %s{knobs}.GroupId: %s{CredentialsRefusal.describe refusal} (this is a bug in PawPrint)."
+            | Error refusal ->
+                failwith $"%s{knobs}: the credentials were refused: %s{CredentialsRefusal.describe refusal}"
 
         let umaskOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
             match ProcessLaunch.withUmask config.Umask launch with
@@ -2473,8 +2477,9 @@ module MachineConfig =
         =
         match UnixBootImage.withProcessorCount count image with
         | Ok image -> image
-        | Error (ProcessorCountRefusal.NotPositive _ as refusal) ->
+        | Error (ProcessorCountRefusal.Reason.NotPositive _ as refusal) ->
             failwith $"%s{knobs}.ProcessorCount: %s{ProcessorCountRefusal.describe refusal} Configure at least 1."
+        | Error refusal -> failwith $"%s{knobs}.ProcessorCount: %s{ProcessorCountRefusal.describe refusal}"
 
     let private withUserAddressLimit
         (knobs : string)
@@ -2484,11 +2489,12 @@ module MachineConfig =
         =
         match UnixBootImage.withUserAddressLimit limit image with
         | Ok image -> image
-        | Error (UserAddressLimitRefusal.NoUpFrontScreen _ as refusal) ->
+        | Error (UserAddressLimitRefusal.Reason.NoUpFrontScreen _ as refusal) ->
             failwith $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Leave it None."
-        | Error (UserAddressLimitRefusal.NotObservedOn _ as refusal) ->
+        | Error (UserAddressLimitRefusal.Reason.NotObservedOn _ as refusal) ->
             failwith
                 $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Pick one of those, or None for the platform's own."
+        | Error refusal -> failwith $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal}"
 
     let private withMount
         (knobs : string)
@@ -2498,9 +2504,10 @@ module MachineConfig =
         =
         match UnixBootImage.withMount mount image with
         | Ok image -> image
-        | Error (MountRefusal.NotReportableUnder (_, flavour) as refusal) ->
+        | Error (MountRefusal.Reason.NotReportableUnder (_, flavour) as refusal) ->
             failwith
                 $"%s{knobs}.Mount: %s{MountRefusal.describe refusal} Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+        | Error refusal -> failwith $"%s{knobs}.Mount: %s{MountRefusal.describe refusal}"
 
     let private withEphemeralPortRange
         (knobs : string)
@@ -2510,9 +2517,7 @@ module MachineConfig =
         =
         match UnixBootImage.withEphemeralPortRange range image with
         | Ok image -> image
-        | Error (EphemeralPortRangeRefusal.LowIsZero _ as refusal)
-        | Error (EphemeralPortRangeRefusal.Empty _ as refusal) ->
-            failwith $"%s{knobs}.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
+        | Error refusal -> failwith $"%s{knobs}.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
 
     let private withSoMaxConn
         (knobs : string)
@@ -2522,9 +2527,10 @@ module MachineConfig =
         =
         match UnixBootImage.withSoMaxConn value image with
         | Ok image -> image
-        | Error (SoMaxConnRefusal.NotPositive _ as refusal) ->
+        | Error (SoMaxConnRefusal.Reason.NotPositive _ as refusal) ->
             failwith
                 $"%s{knobs}.SoMaxConn: %s{SoMaxConnRefusal.describe refusal} Configure a positive value, or None for the flavour's default."
+        | Error refusal -> failwith $"%s{knobs}.SoMaxConn: %s{SoMaxConnRefusal.describe refusal}"
 
     let private withTcpSendSpace
         (knobs : string)
@@ -2534,14 +2540,15 @@ module MachineConfig =
         =
         match UnixBootImage.withTcpSendSpace value image with
         | Ok image -> image
-        | Error (TcpSendSpaceRefusal.NotReadOn _ as refusal) ->
+        | Error (TcpSendSpaceRefusal.Reason.NotReadOn _ as refusal) ->
             failwith $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceRefusal.AboveSocketBufferMax (_, max) as refusal) ->
+        | Error (TcpSendSpaceRefusal.Reason.AboveSocketBufferMax (_, max) as refusal) ->
             failwith
                 $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at most %d{max}, or None for the default."
-        | Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
+        | Error (TcpSendSpaceRefusal.Reason.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
             failwith
                 $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
+        | Error refusal -> failwith $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal}"
 
     let private withTcpReceiveSpace
         (knobs : string)
@@ -2563,11 +2570,12 @@ module MachineConfig =
         =
         match UnixBootImage.withTcpSendSpaceMax value image with
         | Ok image -> image
-        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
+        | Error (TcpSendSpaceMaxRefusal.Reason.NotReadOn _ as refusal) ->
             failwith $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
+        | Error (TcpSendSpaceMaxRefusal.Reason.NotPositive _ as refusal) ->
             failwith
                 $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+        | Error refusal -> failwith $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal}"
 
     let private withProtectedFiles
         (knobs : string)
@@ -2577,8 +2585,7 @@ module MachineConfig =
         =
         match UnixBootImage.withProtectedFiles protection image with
         | Ok image -> image
-        | Error (ProtectedFilesRefusal.NoSuchSysctls _ as refusal) ->
-            failwith $"%s{knobs}.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
+        | Error refusal -> failwith $"%s{knobs}.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
 
     /// The boot image of the machine `config` describes. Each setter's refusal
     /// fails loudly, naming the knob `knobs.X`, where `knobs` names the

@@ -676,55 +676,129 @@ type UnixSystemDefect<'Task> =
 /// reaches — but not for a filesystem whose invariants hold, walked from its
 /// root, so those are bugs in this library and crash rather than being handed
 /// to a caller who could do nothing about them.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `CurrentDirectoryFault.Reason`, and ends its match with a wildcard, where
+/// `LaunchRefusal.describe` of the `LaunchRefusal.Reason.CurrentDirectory` that
+/// carried the fault says what was refused.
 [<RequireQualifiedAccess>]
 type CurrentDirectoryFault =
-    /// The path does not resolve in the seeded filesystem at all. Carries what
-    /// the walk answered.
+    internal
+    /// See `CurrentDirectoryFault.Reason.DoesNotResolve`.
     | DoesNotResolve of UnixError
-    /// The walk refused the path as too long. Distinguished from
-    /// `DoesNotResolve` because the directory may well be present: it is a
-    /// *length* that is unusable, and the remedy is to shorten something rather
-    /// than to go looking for a missing directory.
-    ///
-    /// Which length is deliberately not said, because the walk does not say:
-    /// `ENAMETOOLONG` is one errno covering a component past this flavour's
-    /// `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a
-    /// symbolic link whose expansion would carry the whole path past
-    /// `PATH_MAX`. A real kernel conflates them too. Splitting the case would
-    /// need the path walk to report which limit it hit, which every other
-    /// caller of the walk would pay for.
-    ///
-    /// Carries the flavour so that a fault which outlives the call still says
-    /// whose limits were in force -- 255 CJK characters name a directory a
-    /// Darwin process can start in and a Linux one cannot, and only Darwin
-    /// re-checks a splice at all.
+    /// See `CurrentDirectoryFault.Reason.TooLong`.
     | TooLong of SimulatedUnixFlavour
-    /// The path resolves, to something that is not a directory.
+    /// See `CurrentDirectoryFault.Reason.NotADirectory`.
     | NotADirectory
-    /// This kernel will not resolve the path.
+    /// See `CurrentDirectoryFault.Reason.Path`.
     | Path of PathRefusal
+
+[<RequireQualifiedAccess>]
+module CurrentDirectoryFault =
+    /// The reasons the directory a host named cannot be the one a simulated
+    /// process starts in, one partial pattern each. A match over them is never
+    /// complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The path does not resolve in the seeded filesystem at all. Gives
+        /// what the walk answered.
+        let (|DoesNotResolve|_|) (fault : CurrentDirectoryFault) : UnixError option =
+            match fault with
+            | CurrentDirectoryFault.DoesNotResolve error -> Some error
+            | _ -> None
+
+        /// The walk refused the path as too long. Distinguished from
+        /// `DoesNotResolve` because the directory may well be present: it is a
+        /// *length* that is unusable, and the remedy is to shorten something
+        /// rather than to go looking for a missing directory. Gives the
+        /// flavour.
+        ///
+        /// Which length is deliberately not said, because the walk does not
+        /// say: `ENAMETOOLONG` is one errno covering a component past this
+        /// flavour's `NAME_MAX` and — on a flavour that re-checks, which is
+        /// Darwin — a symbolic link whose expansion would carry the whole path
+        /// past `PATH_MAX`. A real kernel conflates them too. Splitting the
+        /// case would need the path walk to report which limit it hit, which
+        /// every other caller of the walk would pay for.
+        ///
+        /// Carries the flavour so that a fault which outlives the call still
+        /// says whose limits were in force -- 255 CJK characters name a
+        /// directory a Darwin process can start in and a Linux one cannot, and
+        /// only Darwin re-checks a splice at all.
+        let (|TooLong|_|) (fault : CurrentDirectoryFault) : SimulatedUnixFlavour option =
+            match fault with
+            | CurrentDirectoryFault.TooLong flavour -> Some flavour
+            | _ -> None
+
+        /// The path resolves, to something that is not a directory.
+        let (|NotADirectory|_|) (fault : CurrentDirectoryFault) : unit option =
+            match fault with
+            | CurrentDirectoryFault.NotADirectory -> Some ()
+            | _ -> None
+
+        /// This kernel will not resolve the path. Gives the `PathRefusal`.
+        let (|Path|_|) (fault : CurrentDirectoryFault) : PathRefusal option =
+            match fault with
+            | CurrentDirectoryFault.Path refusal -> Some refusal
+            | _ -> None
 
 /// Why `UnixBootImage.withFileSystem` refuses a seed: it describes a filesystem
 /// no kernel of the machine's flavour could have mounted.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `FileSystemSeedFault.Reason`, and ends its match with a wildcard, where
+/// `FileSystemSeedFault.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type FileSystemSeedFault =
-    /// The seed holds a directory entry whose name is past this flavour's
-    /// `NAME_MAX`, so it describes a filesystem no kernel of that flavour could
-    /// have mounted: `stat` of the name would answer ENAMETOOLONG while
-    /// `readdir` listed it.
+    internal
+    /// See `FileSystemSeedFault.Reason.SeedNameTooLong`.
     | SeedNameTooLong of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
-    /// The seed holds a directory entry whose name this flavour's filesystem
-    /// will not bind (see `SimulatedUnixPlatform.bindableEntryNames`): on
-    /// Darwin, a name that is not valid UTF-8. No kernel of that flavour could
-    /// have created it, and a process there could not create it either.
+    /// See `FileSystemSeedFault.Reason.SeedNameNotBindable`.
     | SeedNameNotBindable of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
-    /// The seed binds `dev` at its root to something other than an empty
-    /// directory. The kernel mounts its device filesystem there at boot, and a
-    /// mount over a populated directory would hide what it holds.
+    /// See `FileSystemSeedFault.Reason.SeedCoversDeviceFileSystem`.
     | SeedCoversDeviceFileSystem of name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
 module FileSystemSeedFault =
+    /// The reasons `UnixBootImage.withFileSystem` refuses a seed, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The seed holds a directory entry whose name is past this flavour's
+        /// `NAME_MAX`, so it describes a filesystem no kernel of that flavour
+        /// could have mounted: `stat` of the name would answer ENAMETOOLONG
+        /// while `readdir` listed it. Gives the name, then the flavour.
+        let (|SeedNameTooLong|_|) (fault : FileSystemSeedFault) : (DirectoryEntryName * SimulatedUnixFlavour) option =
+            match fault with
+            | FileSystemSeedFault.SeedNameTooLong (name, flavour) -> Some (name, flavour)
+            | _ -> None
+
+        /// The seed holds a directory entry whose name this flavour's
+        /// filesystem will not bind (see
+        /// `SimulatedUnixPlatform.bindableEntryNames`): on Darwin, a name that
+        /// is not valid UTF-8. No kernel of that flavour could have created it,
+        /// and a process there could not create it either. Gives the name, then
+        /// the flavour.
+        let (|SeedNameNotBindable|_|)
+            (fault : FileSystemSeedFault)
+            : (DirectoryEntryName * SimulatedUnixFlavour) option
+            =
+            match fault with
+            | FileSystemSeedFault.SeedNameNotBindable (name, flavour) -> Some (name, flavour)
+            | _ -> None
+
+        /// The seed binds `dev` at its root to something other than an empty
+        /// directory. The kernel mounts its device filesystem there at boot,
+        /// and a mount over a populated directory would hide what it holds.
+        /// Gives the name.
+        let (|SeedCoversDeviceFileSystem|_|) (fault : FileSystemSeedFault) : DirectoryEntryName option =
+            match fault with
+            | FileSystemSeedFault.SeedCoversDeviceFileSystem name -> Some name
+            | _ -> None
+
     /// What this library knows about why it refused the seed, for a client
     /// composing a diagnostic that names its own knob.
     let describe (fault : FileSystemSeedFault) : string =

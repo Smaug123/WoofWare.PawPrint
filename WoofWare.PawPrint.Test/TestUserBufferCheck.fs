@@ -172,9 +172,11 @@ module TestUserBufferCheck =
         |> shouldEqual UserBufferCheck.AtCopyTime
 
         for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
-            configuredOn SimulatedUnixPlatform.macOsArm64 limit
-            |> Result.map ignore<EmulatedKernel>
-            |> shouldEqual (Error (UserAddressLimitRefusal.NoUpFrontScreen SimulatedUnixFlavour.Darwin))
+            match configuredOn SimulatedUnixPlatform.macOsArm64 limit with
+            | Error (UserAddressLimitRefusal.Reason.NoUpFrontScreen flavour) ->
+                flavour |> shouldEqual SimulatedUnixFlavour.Darwin
+            | Error refusal -> failwith $"expected NoUpFrontScreen, got: %s{UserAddressLimitRefusal.describe refusal}"
+            | Ok _ -> failwith $"expected the limit 0x%x{limit} to be refused on Darwin"
 
     /// The limit is the *machine's*, not the flavour's: the same Linux platform
     /// screens at whichever address space its host was configured with, among
@@ -213,17 +215,12 @@ module TestUserBufferCheck =
                 ObservedUserAddressLimit.X64FourLevelPaging,
                 Some SimulatedUnixArchitecture.X64
             ] do
-            configuredOn platform limit
-            |> Result.map ignore<EmulatedKernel>
-            |> shouldEqual (
-                Error (
-                    UserAddressLimitRefusal.NotObservedOn (
-                        limit,
-                        SimulatedUnixPlatform.architecture platform,
-                        observedOn
-                    )
-                )
-            )
+            match configuredOn platform limit with
+            | Error (UserAddressLimitRefusal.Reason.NotObservedOn answered) ->
+                answered
+                |> shouldEqual (limit, SimulatedUnixPlatform.architecture platform, observedOn)
+            | Error refusal -> failwith $"expected NotObservedOn, got: %s{UserAddressLimitRefusal.describe refusal}"
+            | Ok _ -> failwith $"expected the limit 0x%x{limit} to be refused on %O{platform}"
 
     /// A host configuration that says nothing about the limit gets its
     /// platform's own, so changing only the platform never pairs one

@@ -1,16 +1,17 @@
 namespace WoofWare.PosixKernel
 
 /// Why `UnixBootImage.withUserAddressLimit` refuses a limit.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `UserAddressLimitRefusal.Reason`, and ends its match with a wildcard, where
+/// `UserAddressLimitRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type UserAddressLimitRefusal =
-    /// The machine's flavour screens no buffer before performing an
-    /// operation (Darwin), so it has no `TASK_SIZE_MAX` for a limit to set.
-    /// Contradictory: no machine of the flavour has the setting.
+    internal
+    /// See `UserAddressLimitRefusal.Reason.NoUpFrontScreen`.
     | NoUpFrontScreen of flavour : SimulatedUnixFlavour
-    /// No machine of `architecture` has been observed with `limit` as its
-    /// `TASK_SIZE_MAX` (see `ObservedUserAddressLimit`). `observedOn` is the
-    /// architecture whose machines have been, if any. Unmeasured: a machine
-    /// may have such a limit, but this library has not seen one.
+    /// See `UserAddressLimitRefusal.Reason.NotObservedOn`.
     | NotObservedOn of
         limit : uint64 *
         architecture : SimulatedUnixArchitecture *
@@ -18,6 +19,35 @@ type UserAddressLimitRefusal =
 
 [<RequireQualifiedAccess>]
 module UserAddressLimitRefusal =
+    /// The reasons `UnixBootImage.withUserAddressLimit` refuses a limit, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The machine's flavour screens no buffer before performing an
+        /// operation (Darwin), so it has no `TASK_SIZE_MAX` for a limit to set.
+        /// Contradictory: no machine of the flavour has the setting. Gives the
+        /// flavour.
+        let (|NoUpFrontScreen|_|) (refusal : UserAddressLimitRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | UserAddressLimitRefusal.NoUpFrontScreen flavour -> Some flavour
+            | _ -> None
+
+        /// No machine of the platform's architecture has been observed with the
+        /// limit as its `TASK_SIZE_MAX` (see `ObservedUserAddressLimit`).
+        /// Unmeasured: a machine may have such a limit, but this library has
+        /// not seen one. Gives the limit, then the platform's architecture,
+        /// then the architecture whose machines have been observed with the
+        /// limit, if any.
+        let (|NotObservedOn|_|)
+            (refusal : UserAddressLimitRefusal)
+            : (uint64 * SimulatedUnixArchitecture * SimulatedUnixArchitecture option) option
+            =
+            match refusal with
+            | UserAddressLimitRefusal.NotObservedOn (limit, architecture, observedOn) ->
+                Some (limit, architecture, observedOn)
+            | _ -> None
+
     /// What this library knows about why it refused the limit, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : UserAddressLimitRefusal) : string =
@@ -30,15 +60,31 @@ module UserAddressLimitRefusal =
             $"no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
 
 /// Why `UnixBootImage.withProcessorCount` refuses a count.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ProcessorCountRefusal.Reason`, and ends its match with a wildcard, where
+/// `ProcessorCountRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ProcessorCountRefusal =
-    /// The count is below 1. Contradictory: a machine running the process
-    /// has at least the processor it runs on, and programs divide by the
-    /// count.
+    internal
+    /// See `ProcessorCountRefusal.Reason.NotPositive`.
     | NotPositive of count : int
 
 [<RequireQualifiedAccess>]
 module ProcessorCountRefusal =
+    /// The reasons `UnixBootImage.withProcessorCount` refuses a count, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The count is below 1. Contradictory: a machine running the process
+        /// has at least the processor it runs on, and programs divide by the
+        /// count. Gives the count.
+        let (|NotPositive|_|) (refusal : ProcessorCountRefusal) : int option =
+            match refusal with
+            | ProcessorCountRefusal.NotPositive count -> Some count
+
     /// What this library knows about why it refused the count, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : ProcessorCountRefusal) : string =
@@ -47,17 +93,42 @@ module ProcessorCountRefusal =
             $"%d{count} logical processors is not a machine: a process runs on at least one, and programs divide by the count."
 
 /// Why `UnixBootImage.withEphemeralPortRange` refuses a range.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `EphemeralPortRangeRefusal.Reason`, and ends its match with a wildcard,
+/// where `EphemeralPortRangeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type EphemeralPortRangeRefusal =
-    /// The range starts at port 0, which is how a process *asks* for an
-    /// ephemeral port, so it cannot also be one handed out. Contradictory.
+    internal
+    /// See `EphemeralPortRangeRefusal.Reason.LowIsZero`.
     | LowIsZero of high : uint16
-    /// The low end is above the high end, so the range holds no port and no
-    /// bind of port 0 could be answered. Contradictory.
+    /// See `EphemeralPortRangeRefusal.Reason.Empty`.
     | Empty of low : uint16 * high : uint16
 
 [<RequireQualifiedAccess>]
 module EphemeralPortRangeRefusal =
+    /// The reasons `UnixBootImage.withEphemeralPortRange` refuses a range, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The range starts at port 0, which is how a process *asks* for an
+        /// ephemeral port, so it cannot also be one handed out. Contradictory.
+        /// Gives the range's high end.
+        let (|LowIsZero|_|) (refusal : EphemeralPortRangeRefusal) : uint16 option =
+            match refusal with
+            | EphemeralPortRangeRefusal.LowIsZero high -> Some high
+            | _ -> None
+
+        /// The low end is above the high end, so the range holds no port and no
+        /// bind of port 0 could be answered. Contradictory. Gives the low end,
+        /// then the high end.
+        let (|Empty|_|) (refusal : EphemeralPortRangeRefusal) : (uint16 * uint16) option =
+            match refusal with
+            | EphemeralPortRangeRefusal.Empty (low, high) -> Some (low, high)
+            | _ -> None
+
     /// What this library knows about why it refused the range, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : EphemeralPortRangeRefusal) : string =
@@ -68,23 +139,54 @@ module EphemeralPortRangeRefusal =
             $"the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
 
 /// Why `UnixBootImage.withBootTime` refuses an instant.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `BootTimeRefusal.Reason`, and ends its match with a wildcard, where
+/// `BootTimeRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type BootTimeRefusal =
-    /// The instant is before the Unix epoch. Unmodelled: this library models
-    /// no realtime clock reading before it.
+    internal
+    /// See `BootTimeRefusal.Reason.BeforeEpoch`.
     | BeforeEpoch of bootTime : UnixTimestamp
-    /// The instant is after `maxSeconds` (`UnixMachineState.maxBootTimeSeconds`)
-    /// seconds since the epoch, from which the realtime clock could pass the
-    /// largest `time_t` within the longest uptime this library represents.
-    /// Unmodelled.
+    /// See `BootTimeRefusal.Reason.PastMaxBootTime`.
     | PastMaxBootTime of bootTime : UnixTimestamp * maxSeconds : int64
-    /// On Darwin, the instant has a nonzero sub-microsecond part. Darwin
-    /// keeps the time it booted as a `struct timeval` (`sysctl
-    /// kern.boottime`), so no Darwin machine booted at it. Contradictory.
+    /// See `BootTimeRefusal.Reason.FinerThanMicrosecond`.
     | FinerThanMicrosecond of bootTime : UnixTimestamp
 
 [<RequireQualifiedAccess>]
 module BootTimeRefusal =
+    /// The reasons `UnixBootImage.withBootTime` refuses an instant, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The instant is before the Unix epoch. Unmodelled: this library
+        /// models no realtime clock reading before it. Gives the instant.
+        let (|BeforeEpoch|_|) (refusal : BootTimeRefusal) : UnixTimestamp option =
+            match refusal with
+            | BootTimeRefusal.BeforeEpoch bootTime -> Some bootTime
+            | _ -> None
+
+        /// The instant is after the latest boot time this library admits, in
+        /// seconds since the epoch (`UnixMachineState.maxBootTimeSeconds`),
+        /// from which the realtime clock could pass the largest `time_t` within
+        /// the longest uptime this library represents. Unmodelled. Gives the
+        /// instant, then that number of seconds.
+        let (|PastMaxBootTime|_|) (refusal : BootTimeRefusal) : (UnixTimestamp * int64) option =
+            match refusal with
+            | BootTimeRefusal.PastMaxBootTime (bootTime, maxSeconds) -> Some (bootTime, maxSeconds)
+            | _ -> None
+
+        /// On Darwin, the instant has a nonzero sub-microsecond part. Darwin
+        /// keeps the time it booted as a `struct timeval` (`sysctl
+        /// kern.boottime`), so no Darwin machine booted at it. Contradictory.
+        /// Gives the instant.
+        let (|FinerThanMicrosecond|_|) (refusal : BootTimeRefusal) : UnixTimestamp option =
+            match refusal with
+            | BootTimeRefusal.FinerThanMicrosecond bootTime -> Some bootTime
+            | _ -> None
+
     /// What this library knows about why it refused the instant, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : BootTimeRefusal) : string =
@@ -97,18 +199,35 @@ module BootTimeRefusal =
             $"%O{bootTime} is finer than a microsecond, and Darwin keeps its boot instant as a struct timeval (sysctl kern.boottime), so no Darwin machine booted at it."
 
 /// Why `UnixBootImage.withMount` refuses a mount.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `MountRefusal.Reason`, and ends its match with a wildcard, where
+/// `MountRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type MountRefusal =
-    /// A kernel of `flavour` cannot report `fileSystemType`
-    /// (`EmulatedFileSystemType.isReportableUnder`), so a process asking
-    /// `fstatfs(2)` would learn a fact no such system could tell it: APFS on
-    /// Linux is contradictory, since no mainline Linux filesystem reports its
-    /// type; tmpfs on Darwin is unmeasured, since a Darwin machine can mount
-    /// one but none has been measured.
+    internal
+    /// See `MountRefusal.Reason.NotReportableUnder`.
     | NotReportableUnder of fileSystemType : EmulatedFileSystemType * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module MountRefusal =
+    /// The reasons `UnixBootImage.withMount` refuses a mount, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A kernel of the flavour cannot report the filesystem type
+        /// (`EmulatedFileSystemType.isReportableUnder`), so a process asking
+        /// `fstatfs(2)` would learn a fact no such system could tell it: APFS
+        /// on Linux is contradictory, since no mainline Linux filesystem
+        /// reports its type; tmpfs on Darwin is unmeasured, since a Darwin
+        /// machine can mount one but none has been measured. Gives the
+        /// filesystem type, then the flavour.
+        let (|NotReportableUnder|_|) (refusal : MountRefusal) : (EmulatedFileSystemType * SimulatedUnixFlavour) option =
+            match refusal with
+            | MountRefusal.NotReportableUnder (fileSystemType, flavour) -> Some (fileSystemType, flavour)
+
     /// What this library knows about why it refused the mount, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : MountRefusal) : string =
@@ -117,15 +236,31 @@ module MountRefusal =
             $"a %O{flavour} kernel cannot report %O{fileSystemType}, so a process asking fstatfs would learn a fact no such system could tell it."
 
 /// Why `UnixBootImage.withProtectedFiles` refuses a setting.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ProtectedFilesRefusal.Reason`, and ends its match with a wildcard, where
+/// `ProtectedFilesRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ProtectedFilesRefusal =
-    /// `protection` sets an `fs.protected_*` sysctl, and a kernel of
-    /// `flavour` (Darwin) has none: measured on Darwin 27.0, it applies none
-    /// of their rules. Contradictory.
+    internal
+    /// See `ProtectedFilesRefusal.Reason.NoSuchSysctls`.
     | NoSuchSysctls of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module ProtectedFilesRefusal =
+    /// The reasons `UnixBootImage.withProtectedFiles` refuses a setting, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The setting sets an `fs.protected_*` sysctl, and a kernel of the
+        /// flavour (Darwin) has none: measured on Darwin 27.0, it applies none
+        /// of their rules. Contradictory. Gives the setting, then the flavour.
+        let (|NoSuchSysctls|_|) (refusal : ProtectedFilesRefusal) : (ProtectedFiles * SimulatedUnixFlavour) option =
+            match refusal with
+            | ProtectedFilesRefusal.NoSuchSysctls (protection, flavour) -> Some (protection, flavour)
+
     /// What this library knows about why it refused the setting, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : ProtectedFilesRefusal) : string =
@@ -134,16 +269,41 @@ module ProtectedFilesRefusal =
             $"%A{protection} sets an fs.protected_* sysctl, which a %O{flavour} kernel does not have; it applies none of their rules (measured on Darwin 27.0, protected-sysctls.c). Leave every one of them Off."
 
 /// Why `UnixBootImage.withPipeDevice` refuses a device.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `PipeDeviceRefusal.Reason`, and ends its match with a wildcard, where
+/// `PipeDeviceRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type PipeDeviceRefusal =
-    /// The machine is Darwin's, whose pipes all report `st_dev` 0 (measured
-    /// on 27.0.0), and the device is not 0. Contradictory.
+    internal
+    /// See `PipeDeviceRefusal.Reason.DarwinReportsZero`.
     | DarwinReportsZero of device : int64
-    /// The device is negative, which no `dev_t` is. Contradictory.
+    /// See `PipeDeviceRefusal.Reason.Negative`.
     | Negative of device : int64
 
 [<RequireQualifiedAccess>]
 module PipeDeviceRefusal =
+    /// The reasons `UnixBootImage.withPipeDevice` refuses a device, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The machine is Darwin's, whose pipes all report `st_dev` 0 (measured
+        /// on 27.0.0), and the device is not 0. Contradictory. Gives the
+        /// device.
+        let (|DarwinReportsZero|_|) (refusal : PipeDeviceRefusal) : int64 option =
+            match refusal with
+            | PipeDeviceRefusal.DarwinReportsZero device -> Some device
+            | _ -> None
+
+        /// The device is negative, which no `dev_t` is. Contradictory. Gives
+        /// the device.
+        let (|Negative|_|) (refusal : PipeDeviceRefusal) : int64 option =
+            match refusal with
+            | PipeDeviceRefusal.Negative device -> Some device
+            | _ -> None
+
     /// What this library knows about why it refused the device, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : PipeDeviceRefusal) : string =
@@ -153,15 +313,31 @@ module PipeDeviceRefusal =
         | PipeDeviceRefusal.Negative device -> $"%d{device} is negative, which no dev_t is."
 
 /// Why `UnixBootImage.withSoMaxConn` refuses a value.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `SoMaxConnRefusal.Reason`, and ends its match with a wildcard, where
+/// `SoMaxConnRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type SoMaxConnRefusal =
-    /// The value is below 1. Unmeasured: no kernel was measured with a
-    /// non-positive `somaxconn`, so the accept-queue capacity it would imply
-    /// is a guess.
+    internal
+    /// See `SoMaxConnRefusal.Reason.NotPositive`.
     | NotPositive of value : int
 
 [<RequireQualifiedAccess>]
 module SoMaxConnRefusal =
+    /// The reasons `UnixBootImage.withSoMaxConn` refuses a value, one partial
+    /// pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The value is below 1. Unmeasured: no kernel was measured with a
+        /// non-positive `somaxconn`, so the accept-queue capacity it would
+        /// imply is a guess. Gives the value.
+        let (|NotPositive|_|) (refusal : SoMaxConnRefusal) : int option =
+            match refusal with
+            | SoMaxConnRefusal.NotPositive value -> Some value
+
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : SoMaxConnRefusal) : string =
@@ -170,27 +346,71 @@ module SoMaxConnRefusal =
             $"%d{value} is not positive, and no kernel was measured with a non-positive somaxconn, so the accept-queue capacity it would imply is a guess."
 
 /// Why `UnixBootImage.withInotifyLimits` refuses a value.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `InotifyLimitsRefusal.Reason`, and ends its match with a wildcard, where
+/// `InotifyLimitsRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type InotifyLimitsRefusal =
-    /// The machine is of `flavour` (Darwin), which has no inotify, so nothing
-    /// would read the limits.
+    internal
+    /// See `InotifyLimitsRefusal.Reason.NotReadOn`.
     | NotReadOn of flavour : SimulatedUnixFlavour
-    /// `MaxUserInstances` is below 1. Unmeasured: Linux accepts 0, under which
-    /// every `inotify_init1` would be `EMFILE`, but no machine was measured
-    /// with it.
+    /// See `InotifyLimitsRefusal.Reason.MaxUserInstancesNotPositive`.
     | MaxUserInstancesNotPositive of value : int
-    /// `MaxUserWatches` is below 1. Unmeasured, as for `MaxUserInstances`.
+    /// See `InotifyLimitsRefusal.Reason.MaxUserWatchesNotPositive`.
     | MaxUserWatchesNotPositive of value : int
-    /// `MaxQueuedEvents` is below 1. Unmeasured: what an instance that may
-    /// queue nothing does with its first record is a guess.
+    /// See `InotifyLimitsRefusal.Reason.MaxQueuedEventsNotPositive`.
     | MaxQueuedEventsNotPositive of value : int
-    /// `MaxQueuedEvents` is above `largest` (`InotifyLimits.largestQueuedEvents`):
-    /// a full queue's bytes would pass what `ioctl(FIONREAD)`'s `int` holds,
-    /// where Linux's count wraps. Unmodelled.
+    /// See `InotifyLimitsRefusal.Reason.MaxQueuedEventsTooLarge`.
     | MaxQueuedEventsTooLarge of value : int * largest : int
 
 [<RequireQualifiedAccess>]
 module InotifyLimitsRefusal =
+    /// The reasons `UnixBootImage.withInotifyLimits` refuses a value, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The machine is of a flavour (Darwin) that has no inotify, so nothing
+        /// would read the limits. Gives the flavour.
+        let (|NotReadOn|_|) (refusal : InotifyLimitsRefusal) : SimulatedUnixFlavour option =
+            match refusal with
+            | InotifyLimitsRefusal.NotReadOn flavour -> Some flavour
+            | _ -> None
+
+        /// `MaxUserInstances` is below 1. Unmeasured: Linux accepts 0, under
+        /// which every `inotify_init1` would be `EMFILE`, but no machine was
+        /// measured with it. Gives the value.
+        let (|MaxUserInstancesNotPositive|_|) (refusal : InotifyLimitsRefusal) : int option =
+            match refusal with
+            | InotifyLimitsRefusal.MaxUserInstancesNotPositive value -> Some value
+            | _ -> None
+
+        /// `MaxUserWatches` is below 1. Unmeasured, as for `MaxUserInstances`.
+        /// Gives the value.
+        let (|MaxUserWatchesNotPositive|_|) (refusal : InotifyLimitsRefusal) : int option =
+            match refusal with
+            | InotifyLimitsRefusal.MaxUserWatchesNotPositive value -> Some value
+            | _ -> None
+
+        /// `MaxQueuedEvents` is below 1. Unmeasured: what an instance that may
+        /// queue nothing does with its first record is a guess. Gives the
+        /// value.
+        let (|MaxQueuedEventsNotPositive|_|) (refusal : InotifyLimitsRefusal) : int option =
+            match refusal with
+            | InotifyLimitsRefusal.MaxQueuedEventsNotPositive value -> Some value
+            | _ -> None
+
+        /// `MaxQueuedEvents` is above the largest this library admits
+        /// (`InotifyLimits.largestQueuedEvents`): a full queue's bytes would
+        /// pass what `ioctl(FIONREAD)`'s `int` holds, where Linux's count
+        /// wraps. Unmodelled. Gives the value, then that largest.
+        let (|MaxQueuedEventsTooLarge|_|) (refusal : InotifyLimitsRefusal) : (int * int) option =
+            match refusal with
+            | InotifyLimitsRefusal.MaxQueuedEventsTooLarge (value, largest) -> Some (value, largest)
+            | _ -> None
+
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : InotifyLimitsRefusal) : string =
@@ -207,24 +427,55 @@ module InotifyLimitsRefusal =
             $"max_queued_events %d{value} is above %d{largest}: a full queue's bytes would pass what ioctl(FIONREAD) reports in an int, where Linux's count wraps, which this kernel does not model."
 
 /// Why `UnixBootImage.withTcpSendSpace` refuses a value.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `TcpSendSpaceRefusal.Reason`, and ends its match with a wildcard, where
+/// `TcpSendSpaceRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type TcpSendSpaceRefusal =
-    /// A value was configured on a machine of `flavour` (Linux), where this
-    /// library models no TCP send buffer, so nothing would read it.
-    /// Unmodelled.
+    internal
+    /// See `TcpSendSpaceRefusal.Reason.NotReadOn`.
     | NotReadOn of flavour : SimulatedUnixFlavour * value : int
-    /// The value is above `max` (`UnixMachineState.darwinSocketBufferMax`,
-    /// `kern.ipc.maxsockbuf`), and Darwin refuses such a
-    /// `net.inet.tcp.sendspace` with ERANGE. Contradictory.
+    /// See `TcpSendSpaceRefusal.Reason.AboveSocketBufferMax`.
     | AboveSocketBufferMax of value : int * max : int
-    /// The value is below `sendPipe` (`UnixMachineState.darwinLoopbackSendPipe`),
-    /// the send pipe of Darwin's route to 127.0.0.1. A connection's handshake
-    /// grows a send buffer that small to the send pipe of the route it takes,
-    /// and this library does not model routes. Unmodelled.
+    /// See `TcpSendSpaceRefusal.Reason.BelowLoopbackSendPipe`.
     | BelowLoopbackSendPipe of value : int * sendPipe : int
 
 [<RequireQualifiedAccess>]
 module TcpSendSpaceRefusal =
+    /// The reasons `UnixBootImage.withTcpSendSpace` refuses a value, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A value was configured on a machine of a flavour (Linux) where this
+        /// library models no TCP send buffer, so nothing would read it.
+        /// Unmodelled. Gives the flavour, then the value.
+        let (|NotReadOn|_|) (refusal : TcpSendSpaceRefusal) : (SimulatedUnixFlavour * int) option =
+            match refusal with
+            | TcpSendSpaceRefusal.NotReadOn (flavour, value) -> Some (flavour, value)
+            | _ -> None
+
+        /// The value is above the largest socket buffer
+        /// (`UnixMachineState.darwinSocketBufferMax`, `kern.ipc.maxsockbuf`),
+        /// and Darwin refuses such a `net.inet.tcp.sendspace` with ERANGE.
+        /// Contradictory. Gives the value, then that largest.
+        let (|AboveSocketBufferMax|_|) (refusal : TcpSendSpaceRefusal) : (int * int) option =
+            match refusal with
+            | TcpSendSpaceRefusal.AboveSocketBufferMax (value, max) -> Some (value, max)
+            | _ -> None
+
+        /// The value is below the send pipe of Darwin's route to 127.0.0.1
+        /// (`UnixMachineState.darwinLoopbackSendPipe`). A connection's
+        /// handshake grows a send buffer that small to the send pipe of the
+        /// route it takes, and this library does not model routes. Unmodelled.
+        /// Gives the value, then the send pipe.
+        let (|BelowLoopbackSendPipe|_|) (refusal : TcpSendSpaceRefusal) : (int * int) option =
+            match refusal with
+            | TcpSendSpaceRefusal.BelowLoopbackSendPipe (value, sendPipe) -> Some (value, sendPipe)
+            | _ -> None
+
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpSendSpaceRefusal) : string =
@@ -237,18 +488,43 @@ module TcpSendSpaceRefusal =
             $"%d{value} is below %d{sendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes."
 
 /// Why `UnixBootImage.withProcessId` refuses a process ID.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ProcessIdRefusal.Reason`, and ends its match with a wildcard, where
+/// `ProcessIdRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ProcessIdRefusal =
-    /// On Linux, the ID is not below the machine's `pid_max`, so a Linux kernel
-    /// could not have handed it out. Contradictory.
+    internal
+    /// See `ProcessIdRefusal.Reason.NotBelowPidMax`.
     | NotBelowPidMax of pid : ProcessId * pidMax : int32
-    /// On Darwin, the ID is not below `PID_MAX` (`ProcessIdTable.darwinPidMax`,
-    /// read from xnu's source and not measured), so a Darwin kernel could not
-    /// have handed it out. Contradictory.
+    /// See `ProcessIdRefusal.Reason.NotBelowDarwinPidMax`.
     | NotBelowDarwinPidMax of pid : ProcessId * pidMax : int32
 
 [<RequireQualifiedAccess>]
 module ProcessIdRefusal =
+    /// The reasons `UnixBootImage.withProcessId` refuses a process ID, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// On Linux, the ID is not below the machine's `pid_max`, so a Linux
+        /// kernel could not have handed it out. Contradictory. Gives the ID,
+        /// then `pid_max`.
+        let (|NotBelowPidMax|_|) (refusal : ProcessIdRefusal) : (ProcessId * int32) option =
+            match refusal with
+            | ProcessIdRefusal.NotBelowPidMax (pid, pidMax) -> Some (pid, pidMax)
+            | _ -> None
+
+        /// On Darwin, the ID is not below `PID_MAX`
+        /// (`ProcessIdTable.darwinPidMax`, read from xnu's source and not
+        /// measured), so a Darwin kernel could not have handed it out.
+        /// Contradictory. Gives the ID, then `PID_MAX`.
+        let (|NotBelowDarwinPidMax|_|) (refusal : ProcessIdRefusal) : (ProcessId * int32) option =
+            match refusal with
+            | ProcessIdRefusal.NotBelowDarwinPidMax (pid, pidMax) -> Some (pid, pidMax)
+            | _ -> None
+
     /// What this library knows about why it refused the process ID, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessIdRefusal) : string =
@@ -259,18 +535,41 @@ module ProcessIdRefusal =
             $"process ID %O{pid} is not below Darwin's PID_MAX %d{pidMax}, so a Darwin kernel could not have handed it out."
 
 /// Why `UnixBootImage.withLeaderThreadId` refuses a thread ID.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `LeaderThreadIdRefusal.Reason`, and ends its match with a wildcard, where
+/// `LeaderThreadIdRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type LeaderThreadIdRefusal =
-    /// The machine is Linux's, where the leader's thread ID is the process ID,
-    /// so it cannot be set apart from it. Contradictory.
+    internal
+    /// See `LeaderThreadIdRefusal.Reason.IsTheProcessIdOnLinux`.
     | IsTheProcessIdOnLinux
-    /// The ID is 0, which nothing says a Darwin kernel reports, or the largest
-    /// 64-bit ID, which leaves the counter no ID for a second thread.
-    /// Unmeasured.
+    /// See `LeaderThreadIdRefusal.Reason.OutsideCounter`.
     | OutsideCounter of id : uint64
 
 [<RequireQualifiedAccess>]
 module LeaderThreadIdRefusal =
+    /// The reasons `UnixBootImage.withLeaderThreadId` refuses a thread ID, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The machine is Linux's, where the leader's thread ID is the process
+        /// ID, so it cannot be set apart from it. Contradictory.
+        let (|IsTheProcessIdOnLinux|_|) (refusal : LeaderThreadIdRefusal) : unit option =
+            match refusal with
+            | LeaderThreadIdRefusal.IsTheProcessIdOnLinux -> Some ()
+            | _ -> None
+
+        /// The ID is 0, which nothing says a Darwin kernel reports, or the
+        /// largest 64-bit ID, which leaves the counter no ID for a second
+        /// thread. Unmeasured. Gives the ID.
+        let (|OutsideCounter|_|) (refusal : LeaderThreadIdRefusal) : uint64 option =
+            match refusal with
+            | LeaderThreadIdRefusal.OutsideCounter id -> Some id
+            | _ -> None
+
     /// What this library knows about why it refused the thread ID, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : LeaderThreadIdRefusal) : string =
@@ -281,19 +580,41 @@ module LeaderThreadIdRefusal =
             $"%d{id} is not a thread ID this library will start a Darwin counter at; it must be between 1 and %d{System.UInt64.MaxValue - 1UL}."
 
 /// Why `UnixBootImage.withTcpReceiveSpace` refuses a value.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `TcpReceiveSpaceRefusal.Reason`, and ends its match with a wildcard, where
+/// `TcpReceiveSpaceRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type TcpReceiveSpaceRefusal =
-    /// The value is not positive, and Linux refuses such a
-    /// `net.ipv4.tcp_rmem` default. Contradictory.
+    internal
+    /// See `TcpReceiveSpaceRefusal.Reason.NotPositive`.
     | NotPositive of value : int
-    /// Darwin would grow a receive buffer of this `net.inet.tcp.recvspace`
-    /// again as data arrives, which this library does not model; `reason`
-    /// says why.
-    /// Unmodelled.
+    /// See `TcpReceiveSpaceRefusal.Reason.GrowsAfterHandshake`.
     | GrowsAfterHandshake of value : int * reason : string
 
 [<RequireQualifiedAccess>]
 module TcpReceiveSpaceRefusal =
+    /// The reasons `UnixBootImage.withTcpReceiveSpace` refuses a value, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The value is not positive, and Linux refuses such a
+        /// `net.ipv4.tcp_rmem` default. Contradictory. Gives the value.
+        let (|NotPositive|_|) (refusal : TcpReceiveSpaceRefusal) : int option =
+            match refusal with
+            | TcpReceiveSpaceRefusal.NotPositive value -> Some value
+            | _ -> None
+
+        /// Darwin would grow a receive buffer of this `net.inet.tcp.recvspace`
+        /// again as data arrives, which this library does not model.
+        /// Unmodelled. Gives the value, then a sentence saying why.
+        let (|GrowsAfterHandshake|_|) (refusal : TcpReceiveSpaceRefusal) : (int * string) option =
+            match refusal with
+            | TcpReceiveSpaceRefusal.GrowsAfterHandshake (value, reason) -> Some (value, reason)
+            | _ -> None
+
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpReceiveSpaceRefusal) : string =
@@ -303,18 +624,41 @@ module TcpReceiveSpaceRefusal =
         | TcpReceiveSpaceRefusal.GrowsAfterHandshake (_, reason) -> reason
 
 /// Why `UnixBootImage.withTcpSendSpaceMax` refuses a value.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `TcpSendSpaceMaxRefusal.Reason`, and ends its match with a wildcard, where
+/// `TcpSendSpaceMaxRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type TcpSendSpaceMaxRefusal =
-    /// A value was configured on a machine of `flavour` (Darwin), where this
-    /// library sizes a send buffer from `TcpSendSpace` alone, so nothing would
-    /// read it. Unmodelled.
+    internal
+    /// See `TcpSendSpaceMaxRefusal.Reason.NotReadOn`.
     | NotReadOn of flavour : SimulatedUnixFlavour * value : int
-    /// The value is not positive, and Linux refuses such a `net.ipv4.tcp_wmem`
-    /// maximum. Contradictory.
+    /// See `TcpSendSpaceMaxRefusal.Reason.NotPositive`.
     | NotPositive of value : int
 
 [<RequireQualifiedAccess>]
 module TcpSendSpaceMaxRefusal =
+    /// The reasons `UnixBootImage.withTcpSendSpaceMax` refuses a value, one
+    /// partial pattern each. A match over them is never complete: end it with a
+    /// wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A value was configured on a machine of a flavour (Darwin) where this
+        /// library sizes a send buffer from `TcpSendSpace` alone, so nothing
+        /// would read it. Unmodelled. Gives the flavour, then the value.
+        let (|NotReadOn|_|) (refusal : TcpSendSpaceMaxRefusal) : (SimulatedUnixFlavour * int) option =
+            match refusal with
+            | TcpSendSpaceMaxRefusal.NotReadOn (flavour, value) -> Some (flavour, value)
+            | _ -> None
+
+        /// The value is not positive, and Linux refuses such a
+        /// `net.ipv4.tcp_wmem` maximum. Contradictory. Gives the value.
+        let (|NotPositive|_|) (refusal : TcpSendSpaceMaxRefusal) : int option =
+            match refusal with
+            | TcpSendSpaceMaxRefusal.NotPositive value -> Some value
+            | _ -> None
+
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpSendSpaceMaxRefusal) : string =

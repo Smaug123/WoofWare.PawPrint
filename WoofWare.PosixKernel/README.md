@@ -252,7 +252,8 @@ The library cannot answer, either because its model of the domain is not complet
 Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
 Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
 A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
-`BindRefusal` is open in this way; each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+`BindRefusal` is open in this way, and so are `Pipe2Refusal` and the refusals of the boot and launch setters (see below).
+Each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
 
 ```fsharp
 open System.Collections.Immutable
@@ -296,7 +297,9 @@ match UnixSocket.bind fd UserBuffer.Mapped 16u multicast socketSystem with
 A few types whose names end in "Refusal" are not refusals in this sense, and keep public cases: `BufferRefusal`, which classifies the client's own buffer; `Ipv4PrefixRefusal` and `SignalMaskRefusal`, the errors of parsers; and `DirectorySourceRefusal`, a flavour's rule.
 
 A setter of the machine's boot configuration or of a process's launch refuses the same way.
-Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal`, `FileSystemSeedFault` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal`, `FileSystemSeedFault` and so on) whose reasons state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+Each of these is open, as is `LaunchRefusal`, which `UnixBootImage.boot` answers when a process cannot be launched as described, and the `CurrentDirectoryFault` that one can carry, which a client matches nested, as `LaunchRefusal.Reason.CurrentDirectory (directory, CurrentDirectoryFault.Reason.NotADirectory)`.
+A `CurrentDirectoryFault` has no `describe` of its own: `LaunchRefusal.describe` of the refusal that carries it names the directory too.
 
 A call that a real kernel would not let happen at all is a bug in the client, and throws: a task making a syscall while it is asleep in another, a name that is no task, or `UnixScheduling.getcpu` of a task that is not running.
 A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is a bug in the client too, and throws.
