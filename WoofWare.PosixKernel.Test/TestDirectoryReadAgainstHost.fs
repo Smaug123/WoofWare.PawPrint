@@ -633,13 +633,17 @@ module TestDirectoryReadAgainstHost =
                     | Error refusal -> failwith $"%A{refusal}"
 
                 // The model's standard input and output are the ends of a pipe.
+                // Any thread of the test host may hold any number a descriptor
+                // can be given, so the closed row asks about INT_MAX, which none
+                // can; docs/probes/closed-descriptor measured that both flavours
+                // answer it as they do a freed slot.
                 [
                     "a readable regular file", hostReadable, int readable
                     "a write-only regular file", hostWriteOnly, int writeOnly
                     "a pipe's read end", hostPipe.[0], 0
                     "a pipe's write end", hostPipe.[1], 1
                     "a socket", hostSocket, socket
-                    "a closed descriptor", 987, 987
+                    "a closed descriptor", Int32.MaxValue, Int32.MaxValue
                 ]
                 |> List.iter (fun (what, hostFd, modelFd) ->
                     let host = hostAnswer hostFd

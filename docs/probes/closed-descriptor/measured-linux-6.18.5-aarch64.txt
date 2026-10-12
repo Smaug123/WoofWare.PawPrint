@@ -1,0 +1,876 @@
+#	Linux 6.18.5 aarch64
+D	buf=real basep=real count=0	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=1	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=8	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=24	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=4096	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=2147483647	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=2147483648	-1 EBADF	-1 EBADF
+D	buf=real basep=real count=4294967295	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=0	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=1	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=8	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=24	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=4096	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=2147483647	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=2147483648	-1 EBADF	-1 EBADF
+D	buf=null basep=real count=4294967295	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=0	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=1	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=8	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=24	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=4096	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=2147483647	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=2147483648	-1 EBADF	-1 EBADF
+D	buf=faulting basep=real count=4294967295	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=0	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=1	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=2	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=3	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=4	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=5	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=7	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=8	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=9	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=16	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=2147483647	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=2147483648	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=4294967294	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=real length=4294967295	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=0	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=1	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=2	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=3	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=4	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=5	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=7	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=8	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=9	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=16	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=2147483647	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=2147483648	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=4294967294	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=null length=4294967295	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=0	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=1	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=2	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=3	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=4	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=5	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=7	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=8	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=9	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=16	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=2147483647	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=2147483648	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=4294967294	-1 EBADF	-1 EBADF
+S	SO_REUSEADDR value=faulting length=4294967295	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=0	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=1	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=2	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=3	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=4	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=5	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=7	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=8	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=9	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=16	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=2147483647	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=2147483648	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=4294967294	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=real length=4294967295	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=0	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=1	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=2	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=3	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=4	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=5	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=7	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=8	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=9	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=16	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=2147483647	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=2147483648	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=4294967294	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=null length=4294967295	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=0	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=1	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=2	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=3	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=4	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=5	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=7	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=8	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=9	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=16	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=2147483647	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=2147483648	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=4294967294	-1 EBADF	-1 EBADF
+S	TCP_NODELAY value=faulting length=4294967295	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=0	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=1	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=2	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=3	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=4	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=5	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=7	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=8	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=9	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=16	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=2147483647	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=2147483648	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=4294967294	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=real length=4294967295	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=0	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=1	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=2	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=3	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=4	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=5	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=7	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=8	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=9	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=16	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=2147483647	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=2147483648	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=4294967294	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=null length=4294967295	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=0	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=1	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=2	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=3	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=4	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=5	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=7	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=8	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=9	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=16	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=2147483647	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=2147483648	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=4294967294	-1 EBADF	-1 EBADF
+S	IPV6_V6ONLY value=faulting length=4294967295	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=0	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=1	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=2	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=3	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=4	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=5	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=7	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=8	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=9	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=16	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=2147483647	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=2147483648	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=4294967294	-1 EBADF	-1 EBADF
+S	SO_LINGER value=real length=4294967295	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=0	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=1	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=2	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=3	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=4	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=5	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=7	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=8	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=9	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=16	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=2147483647	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=2147483648	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=4294967294	-1 EBADF	-1 EBADF
+S	SO_LINGER value=null length=4294967295	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=0	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=1	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=2	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=3	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=4	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=5	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=7	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=8	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=9	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=16	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=2147483647	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=2147483648	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=4294967294	-1 EBADF	-1 EBADF
+S	SO_LINGER value=faulting length=4294967295	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=0	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=1	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=2	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=3	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=4	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=5	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=7	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=8	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=9	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=16	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=2147483647	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=2147483648	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=4294967294	-1 EBADF	-1 EBADF
+S	level=12345 value=real length=4294967295	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=0	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=1	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=2	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=3	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=4	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=5	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=7	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=8	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=9	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=16	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=2147483647	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=2147483648	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=4294967294	-1 EBADF	-1 EBADF
+S	level=12345 value=null length=4294967295	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=0	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=1	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=2	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=3	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=4	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=5	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=7	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=8	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=9	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=16	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=2147483647	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=2147483648	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=4294967294	-1 EBADF	-1 EBADF
+S	level=12345 value=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=real lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=null lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_REUSEADDR value=faulting lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=real lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=null lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	TCP_NODELAY value=faulting lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=real lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=null lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	IPV6_V6ONLY value=faulting lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=real lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=null lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	SO_LINGER value=faulting lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=real lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=null lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=real length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=null length=4294967295	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=0	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=1	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=2	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=3	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=4	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=5	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=7	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=8	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=9	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=16	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=2147483647	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=2147483648	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=4294967294	-1 EBADF	-1 EBADF
+G	level=12345 value=faulting lengthbuf=faulting length=4294967295	-1 EBADF	-1 EBADF
+#	864 rows, 0 differ
+A	start(soft=1048576)	dup2	-1 EBADF
+A	start(soft=1048576)	F_DUPFD	-1 EINVAL
+L	soft=hard	0
+A	hard(soft=1048576)	dup2	-1 EBADF
+A	hard(soft=1048576)	F_DUPFD	-1 EINVAL
+L	infinity	-1 EPERM
+L	highest	2147483584
+A	highest(soft=2147483584)	dup2	-1 EBADF
+A	highest(soft=2147483584)	F_DUPFD	-1 EINVAL
+#	864 rows under the highest limit, 0 differ
