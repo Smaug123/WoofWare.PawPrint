@@ -462,7 +462,11 @@ A change made through a descriptor (`write`, `pwrite`, `copy_file_range`, `ftrun
 a rename of that name moves it, and an unlink of it, a `rmdir` of it or a rename over it leaves it in place, unlinked, and the change is still reported there, except that a watch with `IN_EXCL_UNLINK`, on the directory or on the inode, hears nothing of a write through an unlinked name (it does hear its `ftruncate`, `fchmod` and the rest, and the `IN_ATTRIB` of the set-ID bits a write clears).
 A file unlinked while open holds the directory it was named in, as Linux's does, so that directory outlives its own `rmdir` until the file is closed.
 A record repeating the newest queued is dropped, and a full queue takes one `IN_Q_OVERFLOW` record; `inotify_rm_watch` queues `IN_IGNORED`.
-In this version a watched inode's own deletion or rename (`IN_DELETE_SELF`, `IN_MOVE_SELF`) is reported to no watch.
+A rename is `IN_MOVE_SELF` at the moved inode's own watch, after the other records of the rename.
+A watched inode goes, for inotify, when a name of it goes while it has no link left, as Linux's dentry does, rather than when the inode itself does:
+an unlink, `rmdir` or rename over a name no description was opened through, or the close of the last description opened through a name since unlinked (a name linked again is another name).
+Its watches then queue `IN_DELETE_SELF` if they ask for it, and `IN_IGNORED`, and end, before the `IN_DELETE` of the name at its directory; afterwards `inotify_rm_watch` of one answers `EINVAL`.
+So a file opened through one name and unlinked through another goes at that unlink, though the descriptor still reads it; a directory, having one name, goes when nothing holds it, a process standing in it included.
 One change is reported by Linux through a name this kernel does not keep, and throws `UnmodelledException`, naming that name, wherever a watch could hear of it; where none could, it goes through:
 a change to a directory `rmdir` removed, reached by "." (as the current directory), or through a descriptor opened that way, which Linux reports at its old parent under its old name, is refused under a watch on that parent asking for an event it raises.
 A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused.

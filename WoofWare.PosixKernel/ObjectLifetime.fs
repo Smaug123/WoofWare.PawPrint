@@ -67,6 +67,37 @@ module internal DescriptionReleaseRefusal =
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
 
+    /// `pinnedInodes`, with `graph` as the filesystem the closure climbs.
+    let private pinnedIn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (graph : VirtualFileSystem)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Set<InodeNumber>
+        =
+        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
+            match frontier with
+            | [] -> seen
+            | inode :: rest ->
+                if Set.contains inode seen then
+                    climb rest seen
+                else
+
+                let seen = Set.add inode seen
+
+                match VirtualFileSystem.tryGetContent inode graph with
+                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
+                // A file or a link records no parent, and a held inode the graph
+                // has already forgotten records nothing at all — which is a
+                // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
+                // something to climb from.
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Socket _)
+                | Some (InodeContent.Fifo _)
+                | Some (InodeContent.CharacterDevice _)
+                | Some (InodeContent.Symlink _)
+                | None -> climb rest seen
+
+        climb (Set.toList (UnixMachineState.heldInodes system.Machine)) Set.empty
+
     /// Every inode that must not be freed: every process's current directory
     /// and every open file description's inode, closed under
     /// `DirectoryContent.Parent`.
@@ -87,30 +118,39 @@ module ObjectLifetime =
         (system : UnixSystem<'Task, 'Handler>)
         : Set<InodeNumber>
         =
-        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
-            match frontier with
-            | [] -> seen
-            | inode :: rest ->
-                if Set.contains inode seen then
-                    climb rest seen
-                else
+        pinnedIn system.Machine.FileSystem system
 
-                let seen = Set.add inode seen
+    /// Whether `graph` has `inode` and names it nowhere, it is not the root,
+    /// and this system holds no reference to it: whether a real kernel would
+    /// free it, `graph` being the filesystem.
+    let private freeIn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (graph : VirtualFileSystem)
+        (inode : InodeNumber)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        // The root is excluded explicitly rather than by the binding count,
+        // which is zero for it by construction: nothing holds an entry naming
+        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
+        // so the count alone would free the filesystem out from under every
+        // path. A process can reach here with it — `close(open("/"))` is an
+        // ordinary thing to do.
+        inode <> VirtualFileSystem.root graph
+        && (VirtualFileSystem.tryGet inode graph).IsSome
+        && VirtualFileSystem.bindingCount inode graph = 0
+        && not (Set.contains inode (pinnedIn graph system))
 
-                match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
-                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
-                // A file or a link records no parent, and a held inode the graph
-                // has already forgotten records nothing at all — which is a
-                // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
-                // something to climb from.
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.Socket _)
-                | Some (InodeContent.Fifo _)
-                | Some (InodeContent.CharacterDevice _)
-                | Some (InodeContent.Symlink _)
-                | None -> climb rest seen
-
-        climb (Set.toList (UnixMachineState.heldInodes system.Machine)) Set.empty
+    /// The directory `inode` records as its parent in `graph`, whose ".."
+    /// reference it holds; `None` for anything else.
+    let private recordedParentIn (graph : VirtualFileSystem) (inode : InodeNumber) : InodeNumber option =
+        match VirtualFileSystem.tryGetContent inode graph with
+        | Some (InodeContent.Directory directory) -> Some directory.Parent
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
+        | Some (InodeContent.CharacterDevice _)
+        | Some (InodeContent.Symlink _)
+        | None -> None
 
     /// Free `inode` if the filesystem no longer names it and this system holds
     /// no reference to it — what a real kernel does once the last link and the
@@ -121,7 +161,8 @@ module ObjectLifetime =
     /// after anything that can drop a reference of either kind — removing a
     /// name, and closing a descriptor — because either may be the one that
     /// finishes the job, and which one that is cannot be known from the call
-    /// site.
+    /// site. A syscall that removes a name commits through `commitRemoving`
+    /// instead, which makes the forgetting part of the removal.
     ///
     /// Freeing a *directory* cascades onto its recorded parent, which the
     /// directory's ".." was the last reference to. So one call collects a whole
@@ -132,40 +173,22 @@ module ObjectLifetime =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        // The root is excluded explicitly rather than by the binding count,
-        // which is zero for it by construction: nothing holds an entry naming
-        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
-        // so the count alone would free the filesystem out from under every
-        // path. A process can reach here with it — `close(open("/"))` is an
-        // ordinary thing to do.
-        if inode = VirtualFileSystem.root system.Machine.FileSystem then
-            system
-        elif (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
-            system
-        elif VirtualFileSystem.bindingCount inode system.Machine.FileSystem <> 0 then
-            system
-        elif Set.contains inode (pinnedInodes system) then
+        let graph = system.Machine.FileSystem
+
+        if not (freeIn graph inode system) then
             system
         else
 
         // Read before the removal, because it is the removal that makes the
         // parent's own reference count drop.
-        let parent =
-            match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
-            | Some (InodeContent.Directory directory) -> Some directory.Parent
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Socket _)
-            | Some (InodeContent.Fifo _)
-            | Some (InodeContent.CharacterDevice _)
-            | Some (InodeContent.Symlink _)
-            | None -> None
+        let parent = recordedParentIn graph inode
 
         let freed =
             { system with
                 Machine =
                     UnixMachineState.commitFileSystem
                         ChangeNotice.Names
-                        (VirtualFileSystem.forget inode system.Machine.FileSystem)
+                        (VirtualFileSystem.forget inode graph)
                         system.Machine
             }
 
@@ -177,6 +200,42 @@ module ObjectLifetime =
         match parent with
         | None -> freed
         | Some parent -> forgetIfUnheld parent freed
+
+    /// `system` with `mutation`, a change of names that removed a name of
+    /// `removed` (an unlink, a `rmdir`, or a rename displacing it), committed,
+    /// and `removed` forgotten with it, as one change, if nothing names or
+    /// holds it once the name has gone; then, for a directory forgotten so,
+    /// its parent if that was the last reference to it (`forgetIfUnheld`).
+    ///
+    /// One change, so that an inotify watch hears of the inode's going in
+    /// Linux's order, before the `IN_DELETE` of the name (measured,
+    /// `inotify-probe.c` row D rmdir-watched-dir).
+    let internal commitRemoving<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (removed : InodeNumber)
+        (mutation : VfsMutation)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let after = VfsMutation.after mutation
+
+        if not (freeIn after removed system) then
+            { system with
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
+            }
+        else
+
+        let committed =
+            { system with
+                Machine =
+                    UnixMachineState.commitFileSystem
+                        ChangeNotice.Names
+                        (mutation |> VfsMutation.andThen (VirtualFileSystem.forget removed after))
+                        system.Machine
+            }
+
+        match recordedParentIn after removed with
+        | None -> committed
+        | Some parent -> forgetIfUnheld parent committed
 
     /// Whether `SO_LINGER` could make this kernel refuse to release the last
     /// reference to `socket` (`DescriptionReleaseRefusal.AbortiveClose`,
@@ -191,10 +250,11 @@ module ObjectLifetime =
 
     /// Release what the open file description `destroyedDescription` was the
     /// last reference to — its socket and the connections nothing else
-    /// references, its pipe once neither end is open, its inode once nothing
-    /// names or holds it, and the directory of the name it was opened through
-    /// likewise — in `system`, whose open file table no longer holds the
-    /// description.
+    /// references, its pipe once neither end is open, the name of a file it
+    /// was opened through, since unlinked (`ChangeNotice.NameReleased`), its
+    /// inode once nothing names or holds it, and the directory of the name it
+    /// was opened through likewise — in `system`, whose open file table no
+    /// longer holds the description.
     ///
     /// Destroying a connected stream socket's description closes its end of
     /// the connection (`TcpTransfer.close`): the peer gets a FIN, behind
@@ -230,6 +290,26 @@ module ObjectLifetime =
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)
         | OpenFileTarget.CharacterDevice (inode, _) ->
+            // The description may have been the last holding a name of a file
+            // since unlinked, which goes as it does (Linux's dentry): an
+            // inotify watch on the file, if it has no link left, hears of its
+            // going now, whatever else still holds it (measured,
+            // `inotify-self-probe.c` section N). A directory goes, for
+            // inotify, when the graph forgets it.
+            let system =
+                match destroyed.Target, destroyedDescription.OpenedThrough with
+                | (OpenFileTarget.File _ | OpenFileTarget.CharacterDevice _), Some (ReachedThrough.Name (_, true)) when
+                    not (OpenFileTable.nameHeldElsewhere destroyedDescription system.Machine.OpenFiles)
+                    ->
+                    { system with
+                        Machine =
+                            UnixMachineState.commitFileSystem
+                                (ChangeNotice.NameReleased inode)
+                                (VirtualFileSystem.unchanged system.Machine.FileSystem)
+                                system.Machine
+                    }
+                | _ -> system
+
             // The description may have been the last reference to an inode whose
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes;

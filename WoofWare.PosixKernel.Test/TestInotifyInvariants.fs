@@ -169,6 +169,35 @@ module TestInotifyInvariants =
             (case, registryDefects (forge forged)) |> shouldEqual (case, expected)
 
     [<Test>]
+    let ``a watch on an inode the filesystem no longer holds is a defect`` () : unit =
+        let _, _, state = instance
+        let held = state.Watches.[WatchDescriptor 1]
+
+        let forged =
+            forge
+                { state with
+                    Watches =
+                        Map.add
+                            (WatchDescriptor 2)
+                            { held with
+                                Inode = InodeNumber 999L
+                            }
+                            state.Watches
+                    NextWatchDescriptor = 3
+                }
+
+        // The defect's cases are internal to the library, and named here by
+        // its description, which renders the case.
+        match UnixSystem.checkInvariants forged |> List.map UnixSystemDefect.describe with
+        | [ described ] ->
+            if
+                not (described.Contains "InotifyWatchOfForgottenInode")
+                || not (described.Contains "999")
+            then
+                failwith $"the defect reported is not the watch of a forgotten inode: %s{described}"
+        | other -> failwith $"expected one defect, the watch of a forgotten inode; got %A{other}"
+
+    [<Test>]
     let ``an instance open for writing is a defect`` () : unit =
         let system, id, _ = instance
 
@@ -846,6 +875,47 @@ module TestInotifyInvariants =
         openedThroughForged id (named "f" true) system
         |> UnixSystem.checkInvariants
         |> shouldEqual []
+
+    [<Test>]
+    let ``descriptions holding one name record it alike, and two recording one linked name hold one name`` () : unit =
+        let system, first, d, f = openedThroughName ()
+        let system = InotifyReplay.link "d/f" "d/h" system
+
+        let open' (path : string) (system : UnixSystem<int, string>) =
+            let fd, system =
+                InotifyReplay.openFd (InotifyReplay.openFlags FileAccessMode.ReadOnly false false false) path 0 system
+
+            idOf fd system, system
+
+        let named (entry : string) : ReachedThrough option =
+            Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = d
+                        Name = name entry
+                    },
+                    false
+                )
+            )
+
+        // Opened through `d/f` again: one name with the first.
+        let again, shared = open' "d/f" system
+        registryDefects shared |> shouldEqual []
+
+        openedThroughForged again (named "h") shared
+        |> registryDefects
+        |> shouldEqual [ FileDescriptorRegistryDefect.OpenedThroughNameNotShared (first, again) ]
+
+        // Opened through `d/h`, another name of the file.
+        let other, distinct = open' "d/h" system
+        registryDefects distinct |> shouldEqual []
+        UnixSystem.checkInvariants distinct |> shouldEqual []
+
+        openedThroughForged other (named "f") distinct
+        |> registryDefects
+        |> shouldEqual [ FileDescriptorRegistryDefect.OpenedThroughNameNotShared (first, other) ]
+
+        ignore f
 
     [<Test>]
     let ``a description onto an inode without the name it was opened through, or another with one, is a defect``

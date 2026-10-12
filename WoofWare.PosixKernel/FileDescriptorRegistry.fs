@@ -1192,6 +1192,11 @@ type private OpenFileEntry =
         /// not the description's to show a client, which is why it is here
         /// rather than in the `OpenFileDescription`.
         OpenedThrough : ReachedThrough option
+        /// Which name that is, as Linux's dentry: descriptions opened through
+        /// one name while it stayed linked hold one name, and say so by
+        /// carrying the identity of the first of them; a name linked again
+        /// after an unlink is another (`OpenFileTable.nameHeldElsewhere`).
+        NameIdentity : OpenFileDescriptionId
     }
 
 /// The machine's open file descriptions, POSIX's "open file description" and
@@ -1233,6 +1238,8 @@ type internal DestroyedDescription =
         Description : OpenFileDescription
         /// The name it was opened through, whose directory it held.
         OpenedThrough : ReachedThrough option
+        /// Which name that is (`OpenFileTable.nameHeldElsewhere`).
+        NameIdentity : OpenFileDescriptionId
     }
 
 /// Which of the machine's descriptors a `FileDescriptorRegistry`'s table
@@ -1469,6 +1476,12 @@ type FileDescriptorRegistryDefect =
     /// one onto anything else records one: only a path's walk makes a
     /// description onto an inode, and it always does.
     | OpenedThroughMismatch of description : OpenFileDescriptionId * target : OpenFileTarget
+    /// The descriptions `description` and `other` are onto one inode, and
+    /// either hold one name (one name identity) and record it differently,
+    /// or record one name still linked and hold two: descriptions opened
+    /// through a name hold one name until it is unlinked, and a rename moves
+    /// every record of it.
+    | OpenedThroughNameNotShared of description : OpenFileDescriptionId * other : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistryDefect =
@@ -1553,6 +1566,43 @@ module OpenFileTable =
             failwith
                 $"OpenFileTable.openedThrough: open file description %O{id} is not present in the table (this is a bug in the caller, which resolved it moments ago)."
 
+    /// Whether a live description holds the name that the destroyed
+    /// description `destroyed` was opened through: one opened through it while
+    /// it was linked, the same name as Linux's dentry. A name linked again
+    /// after an unlink is another, though it has the same directory and the
+    /// same text (measured, `inotify-self-probe.c` row N relinked).
+    let internal nameHeldElsewhere (destroyed : DestroyedDescription) (table : OpenFileTable) : bool =
+        table.Entries
+        |> Map.exists (fun _ entry ->
+            entry.NameIdentity = destroyed.NameIdentity
+            && entry.OpenedThrough = destroyed.OpenedThrough
+        )
+
+    /// Whether a live description onto `inode` was opened through the name
+    /// `name` in `directory`, still linked: Linux's dentry, which that
+    /// description holds.
+    let internal holdsLinkedName
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (inode : InodeNumber)
+        (table : OpenFileTable)
+        : bool
+        =
+        let through =
+            ReachedThrough.Name (
+                {
+                    Parent = directory
+                    Name = name
+                },
+                false
+            )
+
+        table.Entries
+        |> Map.exists (fun _ entry ->
+            entry.OpenedThrough = Some through
+            && inodeOf entry.Description.Target = Some inode
+        )
+
     /// Every live description onto an inode, with its identity and the name it
     /// was opened through, in identity order.
     let internal toSeqOpenedThrough
@@ -1583,6 +1633,25 @@ module OpenFileTable =
         let id = table.NextId
         let (OpenFileDescriptionId raw) = id
 
+        // A name still linked that a live description was opened through is
+        // the name this one is opened through: Linux's dentry, which that
+        // description holds, so the walk found it again.
+        let nameIdentity =
+            match openedThrough, inodeOf description.Target with
+            | Some (ReachedThrough.Name (_, false) as through), Some inode ->
+                table.Entries
+                |> Map.tryPick (fun _ entry ->
+                    if
+                        entry.OpenedThrough = Some through
+                        && inodeOf entry.Description.Target = Some inode
+                    then
+                        Some entry.NameIdentity
+                    else
+                        None
+                )
+                |> Option.defaultValue id
+            | _ -> id
+
         id,
         {
             Entries =
@@ -1593,6 +1662,7 @@ module OpenFileTable =
                         Descriptors = 1
                         Holds = 0
                         OpenedThrough = openedThrough
+                        NameIdentity = nameIdentity
                     }
                     table.Entries
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1827,6 +1897,7 @@ module OpenFileTable =
                     {
                         Description = entry.Description
                         OpenedThrough = entry.OpenedThrough
+                        NameIdentity = entry.NameIdentity
                     }
 
     /// May two *different* open file descriptions on one file hold these two
@@ -2688,6 +2759,30 @@ module OpenFileTable =
                     Some (FileDescriptorRegistryDefect.OpenedThroughMismatch (id, entry.Description.Target))
             )
 
+        let namesShared =
+            let named =
+                table.Entries
+                |> Map.toList
+                |> List.choose (fun (id, entry) ->
+                    match entry.OpenedThrough, inodeOf entry.Description.Target with
+                    | Some (ReachedThrough.Name (_, unlinked) as through), Some inode ->
+                        Some (id, inode, through, unlinked, entry.NameIdentity)
+                    | _ -> None
+                )
+
+            [
+                for id, inode, through, unlinked, identity in named do
+                    for other, otherInode, otherThrough, _, otherIdentity in named do
+                        if id < other && inode = otherInode then
+                            let sameName = identity = otherIdentity
+
+                            if
+                                sameName && through <> otherThrough
+                                || not sameName && not unlinked && through = otherThrough
+                            then
+                                FileDescriptorRegistryDefect.OpenedThroughNameNotShared (id, other)
+            ]
+
         let inotifyInstances =
             descriptions
             |> Map.toList
@@ -2715,6 +2810,7 @@ module OpenFileTable =
         @ kqueueEntries
         @ reservedTargets
         @ openedThrough
+        @ namesShared
         @ inotifyInstances
 
     /// Every way in which `table` fails to be the open file descriptions of a
@@ -3826,6 +3922,7 @@ module FileDescriptorRegistry =
                                             Some ReachedThrough.Unnamed
                                         else
                                             None
+                                    NameIdentity = id
                                 }
                             )
                         NextId = nextId

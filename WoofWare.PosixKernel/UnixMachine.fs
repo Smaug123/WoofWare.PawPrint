@@ -349,7 +349,8 @@ module UnixMachineState =
         )
 
     /// `tryCommitFileSystem`, for a change no watch can make this kernel
-    /// refuse: a change of names (`ChangeNotice.Names`), or one that reached
+    /// refuse: a change of names (`ChangeNotice.Names`), the release of a
+    /// name (`ChangeNotice.NameReleased`), or one that reached
     /// what it changed through a name or none, rather than through a removed
     /// directory (`ReachedThrough.RemovedDirectory`). A write and a
     /// truncation are such changes, being of a regular file, which only a
@@ -362,6 +363,7 @@ module UnixMachineState =
         =
         match notice with
         | ChangeNotice.Names
+        | ChangeNotice.NameReleased _
         | ChangeNotice.SetAttributes (ReachedThrough.Name _, _)
         | ChangeNotice.SetAttributes (ReachedThrough.Unnamed, _)
         | ChangeNotice.Written (ReachedThrough.Name _)

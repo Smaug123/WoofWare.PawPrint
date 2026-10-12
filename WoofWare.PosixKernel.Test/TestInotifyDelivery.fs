@@ -27,11 +27,21 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// - a name created (a file, a directory, a symbolic link): `IN_CREATE` at its
 ///   directory; a hard link: `IN_ATTRIB` at the inode's own watch, then
 ///   `IN_CREATE`;
-/// - a name removed: `IN_ATTRIB` at a non-directory's own watch, then
+/// - a name removed: `IN_ATTRIB` at a non-directory's own watch, then the
+///   inode's going if the name was its last and nothing holds it, then
 ///   `IN_DELETE` at its directory;
 /// - a rename: `IN_MOVED_FROM` and `IN_MOVED_TO` with one fresh cookie, then
-///   `IN_ATTRIB` at the displaced inode's own watch; nothing for a rename of a
-///   name onto the inode it already names;
+///   `IN_ATTRIB` at the displaced inode's own watch, `IN_MOVE_SELF` at the
+///   moved inode's, and the displaced inode's going if the name was its last
+///   and nothing holds it; nothing for a rename of a name onto the inode it
+///   already names;
+/// - an inode's going, at its own watch: `IN_DELETE_SELF`, then `IN_IGNORED`,
+///   and the watch is gone. A file goes when a name of it dies with no link
+///   left: a name nothing holds, removed, or the last descriptor opened
+///   through a name since unlinked, closed; a name linked again is another
+///   name. A directory goes when nothing holds it: no descriptor onto it,
+///   none opened through a name in it, and no removed directory in it that
+///   something holds;
 /// - a mode, owner or times change, or an `O_TRUNC`, through a path: one event
 ///   at the watch on the directory of the name the path resolved to, with that
 ///   name, then at the inode's own watch, `IN_ATTRIB` for a mode, an owner or
@@ -46,8 +56,8 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///   itself, and hears its `ftruncate` and `fchmod`;
 /// - a record carries every event of its change, whichever the watch asked
 ///   for;
-/// - `IN_ISDIR` when the inode is a directory; and a record repeating the
-///   newest queued is dropped.
+/// - `IN_ISDIR` when the inode is a directory, but on `IN_MOVE_SELF` and
+///   `IN_DELETE_SELF`; and a record repeating the newest queued is dropped.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInotifyDelivery =
@@ -112,6 +122,7 @@ module TestInotifyDelivery =
         [ modify ; attrib ; movedFrom ; movedTo ; create ; delete ; 0x400u ; 0x800u ]
 
     let private exclUnlink : uint32 = 0x04000000u
+    let private moveSelf : uint32 = 0x800u
 
     let private opGen : Gen<Op> =
         let path = Gen.choose (0, paths.Length - 1)
@@ -195,6 +206,63 @@ module TestInotifyDelivery =
             return [ Op.Create (p, false) ; Op.Open (p, readOnly) ] @ meanwhile @ [ change ]
         }
 
+    /// A file with two names, watched itself, opened through one or both or
+    /// one twice, then its names unlinked or renamed over in some order and
+    /// its descriptors closed: when it goes for inotify depends on which
+    /// names the descriptors hold. Or a directory, watched, opened, removed
+    /// and closed.
+    let private selfEpisodeGen : Gen<Op list> =
+        gen {
+            let path = Gen.choose (0, paths.Length - 1)
+            let! p = path
+            let! q = path
+            let! other = path
+            let! instance = Gen.choose (0, 1)
+            let! events = Gen.elements [ 0xC00u ; 0x400u ; 0x4u ; List.fold (|||) 0u eventBits ]
+
+            let! opens =
+                Gen.elements [ [] ; [ p ] ; [ q ] ; [ p ; q ] ; [ p ; p ] ; [ q ; p ; q ] ]
+                |> Gen.map (List.map (fun opened -> Op.Open (opened, false)))
+
+            let! removals =
+                Gen.elements
+                    [
+                        [ Op.Unlink p ; Op.Unlink q ]
+                        [ Op.Unlink q ; Op.Unlink p ]
+                        [ Op.Unlink p ; Op.Rename (other, q) ]
+                        [
+                            Op.Unlink q
+                            Op.Link (p, q)
+                            Op.Open (q, false)
+                            Op.Unlink p
+                            Op.Unlink q
+                        ]
+                    ]
+
+            let! closes = Gen.listOfLength 4 (Gen.map Op.Close (Gen.choose (0, 3)))
+            let! directory = Gen.frequency [ 3, Gen.constant false ; 1, Gen.constant true ]
+
+            if directory then
+                return
+                    [
+                        Op.MkDir p
+                        Op.AddWatch (instance, p, events, false)
+                        Op.Open (p, true)
+                        Op.RmDir p
+                        Op.Close 0
+                    ]
+            else
+                return
+                    [
+                        Op.Create (p, false)
+                        Op.Link (p, q)
+                        Op.AddWatch (instance, p, events, false)
+                    ]
+                    @ opens
+                    @ removals
+                    @ closes
+        }
+
     /// Half the sequences open by watching every directory of the pool, on
     /// both instances, for every event, half of those with `IN_EXCL_UNLINK`,
     /// so that most changes reach a watch.
@@ -205,7 +273,9 @@ module TestInotifyDelivery =
             let! length = Gen.choose (10, 40)
 
             let! ops =
-                Gen.listOfLength length (Gen.frequency [ 3, Gen.map List.singleton opGen ; 1, episodeGen ])
+                Gen.listOfLength
+                    length
+                    (Gen.frequency [ 6, Gen.map List.singleton opGen ; 2, episodeGen ; 1, selfEpisodeGen ])
                 |> Gen.map List.concat
 
             let watchAll =
@@ -224,6 +294,37 @@ module TestInotifyDelivery =
         }
 
     // ------------------------------------------------------------ the reference
+
+    [<RequireQualifiedAccess>]
+    type private Label =
+        | Create
+        | Delete
+        | Moved
+        | AttribNamed
+        | AttribSelf
+        | Modify
+        | Directory
+        | Ignored
+        | Call
+        /// A record of a change through a kept descriptor.
+        | ThroughDescriptor
+        /// A record of a change through a kept descriptor whose name has been
+        /// unlinked.
+        | ThroughUnlinked
+        /// A write through an unlinked name, under a watch with
+        /// `IN_EXCL_UNLINK` that the reference expects to hear nothing of it.
+        | ExcludedUnlinked
+        /// A record of a change through a kept descriptor whose name a rename
+        /// moved.
+        | ThroughMoved
+        | DeleteSelf
+        | MoveSelf
+        /// A watched inode's going.
+        | Gone
+        /// A watched file's going while a descriptor still holds it, through
+        /// another name.
+        | GoneWhileOpen
+
 
     [<RequireQualifiedAccess>]
     type private Node =
@@ -265,6 +366,10 @@ module TestInotifyDelivery =
             Unlinked : bool
             /// A rename has moved the name since the descriptor was opened.
             Moved : bool
+            /// Which name this is: two descriptors opened through one name
+            /// while it stays linked share one, and a name linked again is
+            /// another.
+            Dentry : int
         }
 
     /// A kept descriptor: what it names, how it was opened, and through which
@@ -291,6 +396,10 @@ module TestInotifyDelivery =
             Queued : Map<int, Expected list>
             /// The kept descriptors, oldest first, as the model keeps them.
             Kept : Kept list
+            NextDentry : int
+            /// Each directory removed while something held it, by its node's
+            /// identity: the directory it was last named in.
+            Orphans : Map<int, int>
         }
 
     let private initialReference : Reference =
@@ -313,6 +422,8 @@ module TestInotifyDelivery =
             NextWd = Map.ofList [ 0, 1 ; 1, 1 ]
             Queued = Map.ofList [ 0, [] ; 1, [] ]
             Kept = []
+            NextDentry = 0
+            Orphans = Map.empty
         }
 
     /// The model's starting tree, matching `initialReference`.
@@ -444,6 +555,104 @@ module TestInotifyDelivery =
 
         notifyUnless excluded (idOf kept.Node) events (isDirectory kept.Node) 0u "" reference
 
+    /// `inode`'s going: at each instance's watch on it, `IN_DELETE_SELF` if
+    /// asked for, then `IN_IGNORED`, and the watch gone.
+    let private gone (cover : Label -> unit) (inode : int) (reference : Reference) : Reference =
+        (reference, [ 0 ; 1 ])
+        ||> List.fold (fun reference instance ->
+            match Map.tryFind inode reference.Watches.[instance] with
+            | None -> reference
+            | Some (wd, mask) ->
+                cover Label.Gone
+
+                if reference.Kept |> List.exists (fun kept -> idOf kept.Node = inode) then
+                    cover Label.GoneWhileOpen
+
+                let deleted = if mask &&& 0x400u <> 0u then [ wd, 0x400u, 0u, "" ] else []
+
+                { reference with
+                    Watches = Map.add instance (Map.remove inode reference.Watches.[instance]) reference.Watches
+                    Queued =
+                        Map.add
+                            instance
+                            (reference.Queued.[instance] @ deleted @ [ wd, 0x8000u, 0u, "" ])
+                            reference.Queued
+                }
+        )
+
+    /// How many names the tree binds to `inode`.
+    let private links (inode : int) (reference : Reference) : int =
+        reference.Tree |> Map.filter (fun _ node -> idOf node = inode) |> Map.count
+
+    /// Whether some kept descriptor was opened through the name `entry` in
+    /// `parent`, still linked, onto `inode`.
+    let private nameHeld (parent : int) (entry : string) (inode : int) (reference : Reference) : bool =
+        reference.Kept
+        |> List.exists (fun kept ->
+            idOf kept.Node = inode
+            && (
+                match kept.Through with
+                | Some through -> through.Parent = parent && through.Entry = entry && not through.Unlinked
+                | None -> false
+            )
+        )
+
+    /// Whether anything holds the directory `inode`: a kept descriptor onto
+    /// it, or opened through a name in it, or a removed directory in it that
+    /// is held.
+    let private directoryHeld (inode : int) (reference : Reference) : bool =
+        reference.Kept
+        |> List.exists (fun kept ->
+            idOf kept.Node = inode
+            || (
+                match kept.Through with
+                | Some through -> through.Parent = inode
+                | None -> false
+            )
+        )
+        || reference.Orphans |> Map.exists (fun _ parent -> parent = inode)
+
+    /// Each removed directory nothing holds any more goes, from `inode` up
+    /// the directories it was last named in.
+    let rec private collectOrphan (cover : Label -> unit) (inode : int) (reference : Reference) : Reference =
+        match Map.tryFind inode reference.Orphans with
+        | Some parent when not (directoryHeld inode reference) ->
+            { reference with
+                Orphans = Map.remove inode reference.Orphans
+            }
+            |> gone cover inode
+            |> collectOrphan cover parent
+        | Some _
+        | None -> reference
+
+    /// The name `entry` in the directory `parent`, bound to `node`, has just
+    /// been removed: `node` goes if that was its last name and nothing holds
+    /// the name (a file), or nothing holds it (a directory, which is
+    /// otherwise kept as removed). `held` is whether a kept descriptor held
+    /// the name before it was removed.
+    let private nameRemoved
+        (cover : Label -> unit)
+        (parent : int)
+        (node : Node)
+        (held : bool)
+        (reference : Reference)
+        : Reference
+        =
+        match node with
+        | Node.Directory id ->
+            if directoryHeld id reference then
+                { reference with
+                    Orphans = Map.add id parent reference.Orphans
+                }
+            else
+                gone cover id reference
+        | Node.File id
+        | Node.Symlink (_, id) ->
+            if links id reference = 0 && not held then
+                gone cover id reference
+            else
+                reference
+
     /// `reference` with the kept descriptors opened through the name `entry`
     /// in the directory `parent`, onto `node`, and not yet unlinked, rewritten
     /// by `f`.
@@ -514,7 +723,7 @@ module TestInotifyDelivery =
 
     /// What `op` did to the reference, given that the model's call succeeded,
     /// and the watch descriptor the reference expects an `AddWatch` to answer.
-    let private apply (op : Op) (reference : Reference) : Reference * int option =
+    let private apply (cover : Label -> unit) (op : Op) (reference : Reference) : Reference * int option =
         let tree = reference.Tree
 
         let lookup (path : string) (followFinal : bool) =
@@ -547,23 +756,30 @@ module TestInotifyDelivery =
         | Op.RmDir path ->
             match lookup paths.[path] false with
             | removed, Some node ->
+                let parent = idOf (Map.find (parentOf removed) tree)
+
                 { reference with
                     Tree = Map.remove removed tree
                 }
-                |> notifyParent removed delete node 0u
-                |> unlinkKept removed node,
+                |> unlinkKept removed node
+                |> nameRemoved cover parent node false
+                |> notifyParent removed delete node 0u,
                 None
             | other -> failwith $"rmdir of %s{paths.[path]} succeeded on %A{other}"
         | Op.Unlink path ->
             match lookup paths.[path] false with
             | removed, Some node ->
+                let parent = idOf (Map.find (parentOf removed) tree)
+                let held = nameHeld parent (entryOf removed) (idOf node) reference
+
                 notifySelf attrib node reference
                 |> fun reference ->
                     { reference with
                         Tree = Map.remove removed reference.Tree
                     }
-                |> notifyParent removed delete node 0u
-                |> unlinkKept removed node,
+                |> unlinkKept removed node
+                |> nameRemoved cover parent node held
+                |> notifyParent removed delete node 0u,
                 None
             | other -> failwith $"unlink of %s{paths.[path]} succeeded on %A{other}"
         | Op.Link (existing, path) ->
@@ -603,6 +819,11 @@ module TestInotifyDelivery =
                 let fromParent = idOf (Map.find (parentOf from) tree)
                 let towardsParent = idOf (Map.find (parentOf towards) tree)
 
+                let displacedHeld =
+                    match displaced with
+                    | Some displaced -> nameHeld towardsParent (entryOf towards) (idOf displaced) reference
+                    | None -> false
+
                 let reference =
                     match displaced with
                     | Some displaced -> unlinkKept towards displaced reference
@@ -637,6 +858,14 @@ module TestInotifyDelivery =
                 let reference =
                     match displaced with
                     | Some displaced -> notifySelf attrib displaced reference
+                    | None -> reference
+
+                // The moved inode's own, which carries no `IN_ISDIR`.
+                let reference = notify (idOf moved) moveSelf false 0u "" reference
+
+                let reference =
+                    match displaced with
+                    | Some displaced -> nameRemoved cover towardsParent displaced displacedHeld reference
                     | None -> reference
 
                 reference, None
@@ -684,16 +913,43 @@ module TestInotifyDelivery =
         | Op.Open (path, readOnly) ->
             match lookup paths.[path] true with
             | opened, Some node ->
+                let parent = idOf (Map.find (parentOf opened) tree)
+
+                // The name, as a descriptor already opened through it holds it.
+                let shared =
+                    reference.Kept
+                    |> List.tryPick (fun kept ->
+                        match kept.Through with
+                        | Some through when
+                            through.Parent = parent
+                            && through.Entry = entryOf opened
+                            && not through.Unlinked
+                            && idOf kept.Node = idOf node
+                            ->
+                            Some through.Dentry
+                        | _ -> None
+                    )
+
+                let dentry, reference =
+                    match shared with
+                    | Some dentry -> dentry, reference
+                    | None ->
+                        reference.NextDentry,
+                        { reference with
+                            NextDentry = reference.NextDentry + 1
+                        }
+
                 let through =
                     if opened = "/" then
                         None
                     else
                         Some
                             {
-                                Parent = idOf (Map.find (parentOf opened) tree)
+                                Parent = parent
                                 Entry = entryOf opened
                                 Unlinked = false
                                 Moved = false
+                                Dentry = dentry
                             }
 
                 { reference with
@@ -724,11 +980,40 @@ module TestInotifyDelivery =
             | None -> failwith $"fchmod through slot %d{slot} succeeded, but the reference keeps no descriptor"
         | Op.Close slot ->
             match keptAt slot reference with
-            | Some (index, _) ->
-                { reference with
-                    Kept = reference.Kept |> List.removeAt index
-                },
-                None
+            | Some (index, closed) ->
+                let reference =
+                    { reference with
+                        Kept = reference.Kept |> List.removeAt index
+                    }
+
+                // The last descriptor holding a name since unlinked lets go of
+                // it: a file with no link left goes. A removed directory
+                // onto it or holding that name goes once nothing holds it.
+                let reference =
+                    match closed.Node, closed.Through with
+                    | (Node.File id | Node.Symlink (_, id)), Some through when
+                        through.Unlinked
+                        && links id reference = 0
+                        && not (
+                            reference.Kept
+                            |> List.exists (fun kept ->
+                                match kept.Through with
+                                | Some other -> other.Unlinked && other.Dentry = through.Dentry
+                                | None -> false
+                            )
+                        )
+                        ->
+                        gone cover id reference
+                    | _ -> reference
+
+                let reference = collectOrphan cover (idOf closed.Node) reference
+
+                let reference =
+                    match closed.Through with
+                    | Some through -> collectOrphan cover through.Parent reference
+                    | None -> reference
+
+                reference, None
             | None -> failwith $"close of slot %d{slot} succeeded, but the reference keeps no descriptor"
         | Op.RmWatch (instance, wd) ->
             let watches = reference.Watches.[instance]
@@ -858,29 +1143,6 @@ module TestInotifyDelivery =
         | Op.Close slot -> UnixDescriptor.tryClose (slotOf slot) system |> mustAnswer
         | other -> failwith $"%A{other} is not a call through a kept descriptor"
 
-    [<RequireQualifiedAccess>]
-    type private Label =
-        | Create
-        | Delete
-        | Moved
-        | AttribNamed
-        | AttribSelf
-        | Modify
-        | Directory
-        | Ignored
-        | Call
-        /// A record of a change through a kept descriptor.
-        | ThroughDescriptor
-        /// A record of a change through a kept descriptor whose name has been
-        /// unlinked.
-        | ThroughUnlinked
-        /// A write through an unlinked name, under a watch with
-        /// `IN_EXCL_UNLINK` that the reference expects to hear nothing of it.
-        | ExcludedUnlinked
-        /// A record of a change through a kept descriptor whose name a rename
-        /// moved.
-        | ThroughMoved
-
     /// Numbers each cookie by the order it first appears in.
     type private Cookies () =
         let seen = Dictionary<uint32, uint32> ()
@@ -927,7 +1189,7 @@ module TestInotifyDelivery =
                 | Some (SyscallAnswer.Failed _, after) -> after, reference, kept
                 | Some (SyscallAnswer.Completed answer, after) ->
                     let queuedBefore = reference.Queued
-                    let reference, wd = apply op reference
+                    let reference, wd = apply cover op reference
 
                     match wd with
                     | Some wd -> answer |> shouldEqual (int64 wd)
@@ -1011,6 +1273,12 @@ module TestInotifyDelivery =
                         if mask &&& 0x8000u <> 0u then
                             cover Label.Ignored
 
+                        if mask &&& 0x400u <> 0u then
+                            cover Label.DeleteSelf
+
+                        if mask &&& moveSelf <> 0u then
+                            cover Label.MoveSelf
+
                     system
                 )
 
@@ -1039,3 +1307,7 @@ module TestInotifyDelivery =
         coverage.Count Label.ThroughUnlinked |> shouldBeGreaterThan 100
         coverage.Count Label.ThroughMoved |> shouldBeGreaterThan 30
         coverage.Count Label.ExcludedUnlinked |> shouldBeGreaterThan 20
+        coverage.Count Label.DeleteSelf |> shouldBeGreaterThan 20
+        coverage.Count Label.MoveSelf |> shouldBeGreaterThan 20
+        coverage.Count Label.Gone |> shouldBeGreaterThan 50
+        coverage.Count Label.GoneWhileOpen |> shouldBeGreaterThan 5
