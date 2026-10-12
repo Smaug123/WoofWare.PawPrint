@@ -180,7 +180,10 @@ class Program
         public BackgroundRead(IntPtr fd)
         {
             _fd = fd;
-            _thread = new Thread(Run);
+            // Background, so that a check failing while the read sleeps ends
+            // the process with that check's code rather than leaving it
+            // waiting for this thread.
+            _thread = new Thread(Run) { IsBackground = true };
             _thread.Start();
         }
 

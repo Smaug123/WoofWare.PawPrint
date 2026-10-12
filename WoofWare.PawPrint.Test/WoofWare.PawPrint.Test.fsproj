@@ -260,6 +260,7 @@
     <Compile Include="ThreadFixtures.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
+    <Compile Include="TestNotifyEventsPal.fs" />
     <Compile Include="TestOpenFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestFileStatusPal.fs" />
