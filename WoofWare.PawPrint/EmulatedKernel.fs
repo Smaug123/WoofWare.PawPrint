@@ -1128,7 +1128,15 @@ module EmulatedKernel =
             match SimulatedUnixPlatform.flavour platform with
             | SimulatedUnixFlavour.Linux -> ProcessRandom.Minipal (MinipalUrandom.Unopened, None), system
             | SimulatedUnixFlavour.Darwin ->
-                match UnixEntropy.getEntropy UserBuffer.Mapped 32UL system with
+                let drawn =
+                    try
+                        UnixEntropy.getEntropy UserBuffer.Mapped 32UL system
+                    with :? UnmodelledException as e ->
+                        KernelRefusal.fail
+                            $"%s{context}: libSystem's getentropy(32) into storage it owns was refused (this is a bug in the kernel library)"
+                            e
+
+                match drawn with
                 | GetEntropyAnswer.Completed draw, system ->
                     ProcessRandom.LibSystem (LibSystemRandom.ofSeed (EntropyDraw.bytes draw)), system
                 | other ->
@@ -1713,7 +1721,13 @@ module EmulatedKernel =
             | Ok (_, system) -> system
             | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
 
-        match UnixSignal.pthreadKill thread signo system with
+        let raised =
+            try
+                UnixSignal.pthreadKill thread signo system
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
+
+        match raised with
         | Ok (KillOutcome.ProcessEnded ended) ->
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
