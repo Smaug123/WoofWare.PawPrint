@@ -895,12 +895,14 @@ module UnixNamespace =
         // the two would leave it with nothing to be right or wrong about.
         let exclusive = flags.Create && flags.Exclusive
 
-        /// Hand out a descriptor onto `inode` for the access that was asked for,
-        /// with the descriptor flag and the status flags the word asked for.
-        /// `truncatedExisting` is whether this open's `O_TRUNC` truncated a file
-        /// that was there before it.
+        /// Hand out a descriptor onto `inode`, which the walk reached
+        /// `through`, for the access that was asked for, with the descriptor
+        /// flag and the status flags the word asked for. `truncatedExisting` is
+        /// whether this open's `O_TRUNC` truncated a file that was there before
+        /// it.
         let opened
             (truncatedExisting : bool)
+            (through : ReachedThrough)
             (inode : InodeNumber)
             (system : UnixSystem<'Task, 'Handler>)
             : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
@@ -911,9 +913,10 @@ module UnixNamespace =
             let fd, registry =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
-                    FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors system)
+                    FileDescriptorRegistry.openDirectory through inode (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.CharacterDevice (device, _)) ->
                     FileDescriptorRegistry.openCharacterDevice
+                        through
                         inode
                         device
                         flags.Access
@@ -926,7 +929,8 @@ module UnixNamespace =
                         $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
-                | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
+                | None ->
+                    FileDescriptorRegistry.openFile through inode flags.Access (UnixSystemState.fileDescriptors system)
 
             let registry =
                 FileDescriptorRegistry.setFlags
@@ -998,7 +1002,8 @@ module UnixNamespace =
 
             match OpenDirRules.verdict credentials resolution system.Machine.FileSystem with
             | OpenDirVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
-            | OpenDirVerdict.Open inode -> opened false inode system
+            | OpenDirVerdict.Open inode ->
+                opened false (ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem) inode system
         else
 
         // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
@@ -1080,7 +1085,7 @@ module UnixNamespace =
                 // A file this open created is not one it truncated, whatever
                 // `O_TRUNC` asked: measured on Darwin (`fcntl-dup.c`, WRITTEN
                 // rows), its description is not marked written.
-                |> opened false inode
+                |> opened false (ReachedThrough.ofEntry directory name) inode
         | CreatingOpenVerdict.OpenExisting inode ->
 
         let entry =
@@ -1180,20 +1185,17 @@ module UnixNamespace =
         // what the descriptor may still name rather than a filter. A device's
         // node is left alone: measured, `O_TRUNC` opens one without moving
         // anything `stat` reports (`devices.c`, OPEN rows).
+        let through = ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem
+
         let truncated =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
-                let through = ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem
-
                 match UnixDescriptor.truncateAt through inode 0L system with
                 | Ok system -> Ok (true, system)
                 | Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal)) ->
                     Error (OpenRefusal.UnmeasuredSetIdChange (inode, refusal))
-                // Truncating to zero cannot exceed a length limit, and a
-                // truncation through a path reaches the file by a name this
-                // kernel keeps.
-                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal)
-                | Error (TruncationRefusal.UnplacedChange _ as refusal) ->
+                // Truncating to zero cannot exceed a length limit.
+                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal) ->
                     failwith
                         $"UnixNamespace.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
             | InodeContent.RegularFile _
@@ -1208,7 +1210,7 @@ module UnixNamespace =
                     $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
 
         truncated
-        |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
+        |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting through inode system)
 
     let private openFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (operation : string)

@@ -273,22 +273,29 @@ module TestDeviceDescriptors =
         for registry in
             [
                 FileDescriptorRegistry.openCharacterDevice
+                    (ForgedName.ofInode booted urandom)
                     urandom
                     CharacterDevice.Null
                     FileAccessMode.ReadOnly
                     (UnixSystemState.fileDescriptors booted)
                 FileDescriptorRegistry.openCharacterDevice
+                    (ForgedName.ofInode booted file)
                     file
                     CharacterDevice.Null
                     FileAccessMode.ReadOnly
                     (UnixSystemState.fileDescriptors booted)
-                FileDescriptorRegistry.openFile urandom FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors booted)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode booted urandom)
+                    urandom
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors booted)
             ] do
             match UnixSystem.checkInvariants (withRegistry (snd registry)) with
             | [ UnixSystemDefect.DescriptionKindMismatch _ ] -> ()
             | other -> failwith $"expected one kind mismatch, got %A{other}"
 
         FileDescriptorRegistry.openCharacterDevice
+            (ForgedName.ofInode booted urandom)
             urandom
             CharacterDevice.URandom
             FileAccessMode.ReadOnly
@@ -310,6 +317,7 @@ module TestDeviceDescriptors =
         for device in [ CharacterDevice.Zero ; CharacterDevice.Random ] do
             let fd, registry =
                 FileDescriptorRegistry.openCharacterDevice
+                    (ForgedName.ofInode booted urandom)
                     urandom
                     device
                     FileAccessMode.ReadOnly

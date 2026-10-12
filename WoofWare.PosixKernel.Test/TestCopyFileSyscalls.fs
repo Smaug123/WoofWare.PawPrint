@@ -147,7 +147,11 @@ module TestCopyFileSyscalls =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeAt system fileName) access (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (inodeAt system fileName))
+                (inodeAt system fileName)
+                access
+                (UnixSystemState.fileDescriptors system)
 
         fd, withRegistry registry system
 
@@ -197,6 +201,7 @@ module TestCopyFileSyscalls =
         | "dir" ->
             let fd, registry =
                 FileDescriptorRegistry.openDirectory
+                    (ForgedName.ofInode system (VirtualFileSystem.root system.Machine.FileSystem))
                     (VirtualFileSystem.root system.Machine.FileSystem)
                     (UnixSystemState.fileDescriptors system)
 
@@ -895,7 +900,11 @@ module TestCopyFileRangeLarge =
                 | Error error -> failwith $"could not seed the destination: %O{error}"
 
             let fd, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.WriteOnly (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system inode)
+                    inode
+                    FileAccessMode.WriteOnly
+                    (UnixSystemState.fileDescriptors system)
 
             fd,
             { system with

@@ -348,8 +348,12 @@ module UnixMachineState =
             }
         )
 
-    /// `tryCommitFileSystem`, for a change of names (`ChangeNotice.Names`),
-    /// which is never refused.
+    /// `tryCommitFileSystem`, for a change no watch can make this kernel
+    /// refuse: a change of names (`ChangeNotice.Names`), or one that reached
+    /// what it changed through a name or none, rather than through a removed
+    /// directory (`ReachedThrough.RemovedDirectory`). A write and a
+    /// truncation are such changes, being of a regular file, which only a
+    /// name reaches. Loudly partial on a notice of a removed directory.
     let internal commitFileSystem
         (notice : ChangeNotice)
         (mutation : VfsMutation)
@@ -357,9 +361,13 @@ module UnixMachineState =
         : UnixMachineState
         =
         match notice with
-        | ChangeNotice.Names -> ()
-        | ChangeNotice.SetAttributes _
-        | ChangeNotice.Written ->
+        | ChangeNotice.Names
+        | ChangeNotice.SetAttributes (ReachedThrough.Name _, _)
+        | ChangeNotice.SetAttributes (ReachedThrough.Unnamed, _)
+        | ChangeNotice.Written (ReachedThrough.Name _)
+        | ChangeNotice.Written ReachedThrough.Unnamed -> ()
+        | ChangeNotice.SetAttributes (ReachedThrough.RemovedDirectory _, _)
+        | ChangeNotice.Written (ReachedThrough.RemovedDirectory _) ->
             failwith
                 $"UnixMachineState.commitFileSystem: committed %A{notice}, which may be refused; commit it through tryCommitFileSystem (this is a bug in this library)."
 
@@ -367,7 +375,7 @@ module UnixMachineState =
         | Ok machine -> machine
         | Error refusal ->
             failwith
-                $"UnixMachineState.commitFileSystem: a change of names was refused, which none is: %s{UnplacedChangeRefusal.describe refusal} (this is a bug in this library)."
+                $"UnixMachineState.commitFileSystem: %A{notice} was refused, which reached no removed directory: %s{UnplacedChangeRefusal.describe refusal} (this is a bug in this library)."
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
     /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs
@@ -522,8 +530,15 @@ module UnixMachineState =
 
     /// Every inode something on the machine holds a reference to *directly*,
     /// independently of any name the filesystem binds to it: each open file
-    /// description onto a file, a directory or a device's node, and each
-    /// directory some process stands in (`CurrentDirectories`).
+    /// description onto a file, a directory or a device's node, the directory
+    /// of the name each was opened through, and each directory some process
+    /// stands in (`CurrentDirectories`).
+    ///
+    /// The directory of the name a description was opened through is held
+    /// because Linux's dentry holds its parent's: measured
+    /// (`inotify-dentry-probe.c` section U), a file unlinked while open keeps
+    /// the directory it was named in through that directory's `rmdir`, its
+    /// watch hearing the file's writes, until the file is closed.
     ///
     /// A real kernel keeps an inode alive while any reference survives. Every
     /// kind of reference a process can *create* must appear here: an omission
@@ -548,6 +563,16 @@ module UnixMachineState =
             | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq
+        |> Set.union (
+            OpenFileTable.toSeqOpenedThrough machine.OpenFiles
+            |> Seq.choose (fun (_, _, through) ->
+                match through with
+                | ReachedThrough.Name (dentry, _) -> Some dentry.Parent
+                | ReachedThrough.Unnamed
+                | ReachedThrough.RemovedDirectory _ -> None
+            )
+            |> Set.ofSeq
+        )
         |> Set.union (machine.CurrentDirectories |> Map.keys |> Set.ofSeq)
 
     /// `machine` with one more process standing in `inode`.

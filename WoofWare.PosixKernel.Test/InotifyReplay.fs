@@ -257,6 +257,39 @@ module internal InotifyReplay =
     let ftruncate (fd : int) (length : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         UnixDescriptor.tryFtruncate fd length system |> completed $"ftruncate(%d{fd})"
 
+    let fchmod (fd : int) (mode : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        UnixPathResolution.tryFchmod fd mode system |> completed $"fchmod(%d{fd})"
+
+    let fchown
+        (fd : int)
+        (uid : uint32 option)
+        (gid : uint32 option)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        UnixPathResolution.tryFchown fd (Option.map user uid) (Option.map group gid) system
+        |> completed $"fchown(%d{fd})"
+
+    /// `futimens(fd, times)`: `utimensat` of a null path.
+    let futimens (fd : int) (times : TimesArgument) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        UnixPathResolution.tryUtimensat fd NullablePathArgument.Null times 0 system
+        |> completed $"futimens(%d{fd})"
+
+    /// Linux's `AT_EMPTY_PATH`.
+    let atEmptyPath : int = 0x1000
+
+    /// `copy_file_range(source, NULL, destination, NULL, count, 0)`.
+    let copyFileRange
+        (source : int)
+        (destination : int)
+        (count : int)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        match UnixReadWrite.tryCopyFileRange source destination (uint64 count) 0 system with
+        | Ok (SyscallAnswer.Completed _, system) -> system
+        | other -> failwith $"copy_file_range(%d{source}, %d{destination}): %A{other}"
+
     let readFile (fd : int) (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixReadWrite.tryRead 0 fd UserBuffer.Mapped (uint64 count) system with
         | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> system
@@ -279,60 +312,11 @@ module internal InotifyReplay =
             | Some unplaced -> unplaced
             | None -> failwith $"%s{call} was refused, but for another reason: %A{refusal}"
 
-    /// That `refusal` is of a change through a descriptor, whose missing input
-    /// is the name the descriptor was opened through.
-    let throughDescriptor (refusal : UnplacedChangeRefusal) : unit =
-        match refusal with
-        | UnplacedChangeRefusal.DescriptorName _ -> ()
-        | UnplacedChangeRefusal.RemovedDirectoryName _ -> failwith $"refused as %A{refusal}, not through a descriptor"
-
     /// That `refusal` is of a change through a removed directory, whose
     /// missing input is the name it had in its old parent.
     let throughRemovedDirectory (refusal : UnplacedChangeRefusal) : unit =
         match refusal with
         | UnplacedChangeRefusal.RemovedDirectoryName _ -> ()
-        | UnplacedChangeRefusal.DescriptorName _ -> failwith $"refused as %A{refusal}, not through a removed directory"
-
-    /// That a write of `text` through `fd` is refused as a change through a
-    /// descriptor that a watch could hear of.
-    let writeRefused (fd : int) (text : string) (system : UnixSystem<int, string>) : unit =
-        let bytes = ImmutableArray.CreateRange (Encoding.ASCII.GetBytes text)
-
-        WriteOutcomes.admitThenWrite 0 fd UserBuffer.Mapped bytes system
-        |> unplaced
-            $"write(%d{fd})"
-            (fun refusal ->
-                match refusal with
-                | WriteRefusal.UnplacedChange refusal -> Some refusal
-                | _ -> None
-            )
-        |> throughDescriptor
-
-    /// `writeRefused`, for `pwrite` at `offset`.
-    let pwriteRefused (fd : int) (text : string) (offset : int64) (system : UnixSystem<int, string>) : unit =
-        let bytes = ImmutableArray.CreateRange (Encoding.ASCII.GetBytes text)
-
-        UnixReadWrite.tryPwrite 0 fd bytes offset system
-        |> unplaced
-            $"pwrite(%d{fd})"
-            (fun refusal ->
-                match refusal with
-                | PWriteRefusal.UnplacedChange refusal -> Some refusal
-                | _ -> None
-            )
-        |> throughDescriptor
-
-    /// `writeRefused`, for `ftruncate` to `length`.
-    let ftruncateRefused (fd : int) (length : int64) (system : UnixSystem<int, string>) : unit =
-        UnixDescriptor.tryFtruncate fd length system
-        |> unplaced
-            $"ftruncate(%d{fd})"
-            (fun refusal ->
-                match refusal with
-                | TruncationRefusal.UnplacedChange refusal -> Some refusal
-                | _ -> None
-            )
-        |> throughDescriptor
 
     /// The refusal of `chmod(path, mode)`, which must be of a change an
     /// inotify watch could hear of through a name this kernel does not keep.
@@ -345,15 +329,6 @@ module internal InotifyReplay =
                 | ChModRefusal.UnplacedChange refusal -> Some refusal
                 | _ -> None
             )
-
-    /// The probe's `writeFile`, under a watch that would hear of its write,
-    /// which this kernel refuses: the open, the write refused, and the close.
-    let writeFileRefused (path : string) (text : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        let fd, system =
-            openFd (openFlags FileAccessMode.WriteOnly true false true) path 0o644 system
-
-        writeRefused fd text system
-        close fd system
 
     /// The probe's `writeFile`: `open(O_WRONLY|O_CREAT|O_TRUNC, 0644)`, a
     /// write of `text`, and a close.
@@ -426,8 +401,8 @@ module internal InotifyReplay =
         UnixPathResolution.tryChdir (PathArg.ofText path) system
         |> completed $"chdir(%s{path})"
 
-    /// The inode `path` names, following a final symbolic link.
-    let inodeOf (path : string) (system : UnixSystem<int, string>) : Inode =
+    /// The number of the inode `path` names, following a final symbolic link.
+    let numberOf (path : string) (system : UnixSystem<int, string>) : InodeNumber =
         match
             UnixPathResolution.resolvePath
                 AtDirectory.CurrentDirectory
@@ -435,11 +410,14 @@ module internal InotifyReplay =
                 (UnixPath.parseOrFail context path)
                 system
         with
-        | Ok inode ->
-            match VirtualFileSystem.tryGet inode (UnixSystem.fileSystem system) with
-            | Some inode -> inode
-            | None -> failwith $"%s{path} resolved to an inode the filesystem does not hold"
+        | Ok inode -> inode
         | Error failure -> failwith $"%s{path}: %A{failure}"
+
+    /// The inode `path` names, following a final symbolic link.
+    let inodeOf (path : string) (system : UnixSystem<int, string>) : Inode =
+        match VirtualFileSystem.tryGet (numberOf path system) (UnixSystem.fileSystem system) with
+        | Some inode -> inode
+        | None -> failwith $"%s{path} resolved to an inode the filesystem does not hold"
 
     /// The permission bits of what `path` names, as `stat` reports them.
     let modeOf (path : string) (system : UnixSystem<int, string>) : int =

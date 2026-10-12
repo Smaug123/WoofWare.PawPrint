@@ -108,7 +108,11 @@ module TestTransferCounts =
             | Error error -> failwith $"could not seed the file: %O{error}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                FileAccessMode.ReadWrite
+                (UnixSystemState.fileDescriptors system)
 
         fd,
         (UnixSystemState.withFileDescriptors
@@ -641,7 +645,8 @@ module TestTransferCounts =
         let registry = UnixSystemState.fileDescriptors system
 
         let reopen (inode : InodeNumber) (mode : FileAccessMode) =
-            let fd, registry = FileDescriptorRegistry.openFile inode mode registry
+            let fd, registry =
+                FileDescriptorRegistry.openFile (ForgedName.ofInode system inode) inode mode registry
 
             fd, UnixSystemState.withFileDescriptors registry system
 
@@ -650,7 +655,8 @@ module TestTransferCounts =
         | "stdin" -> 0, system
         | "stdout" -> 1, system
         | "dir" ->
-            let fd, registry = FileDescriptorRegistry.openDirectory rootInode registry
+            let fd, registry =
+                FileDescriptorRegistry.openDirectory (ForgedName.ofInode system rootInode) rootInode registry
 
             fd, UnixSystemState.withFileDescriptors registry system
         | "event queue" ->
@@ -695,7 +701,11 @@ module TestTransferCounts =
                 | other -> failwith $"expected a file, got %O{other}"
 
             let fd, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system inode)
+                    inode
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors system)
 
             fd, UnixSystemState.withFileDescriptors registry system
         | "writeonly" ->
@@ -707,7 +717,11 @@ module TestTransferCounts =
                 | other -> failwith $"expected a file, got %O{other}"
 
             let fd, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.WriteOnly (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system inode)
+                    inode
+                    FileAccessMode.WriteOnly
+                    (UnixSystemState.fileDescriptors system)
 
             fd, UnixSystemState.withFileDescriptors registry system
         | other -> failwith $"no descriptor kind %s{other}"
@@ -888,7 +902,10 @@ module TestTransferCounts =
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let fd, registry =
-                FileDescriptorRegistry.openDirectory rootInode (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openDirectory
+                    (ForgedName.ofInode system rootInode)
+                    rootInode
+                    (UnixSystemState.fileDescriptors system)
 
             let system =
                 UnixSystemState.withFileDescriptors
@@ -961,7 +978,10 @@ module TestTransferCounts =
             let system = systemOn (platform, None)
 
             let fd, registry =
-                FileDescriptorRegistry.openDirectory rootInode (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openDirectory
+                    (ForgedName.ofInode system rootInode)
+                    rootInode
+                    (UnixSystemState.fileDescriptors system)
 
             let system = UnixSystemState.withFileDescriptors registry system
 

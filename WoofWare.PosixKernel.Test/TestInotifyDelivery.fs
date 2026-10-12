@@ -14,11 +14,13 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///
 /// Random sequences of path syscalls (creating, truncating, linking,
 /// unlinking, renaming, changing modes, owners and times, through plain paths,
-/// "/." and "/", symbolic links and hard links) and of watches added and
-/// removed, on two instances, run against the model; after each, both
-/// instances are drained, and their records must be those the reference
-/// expects, cookies compared by which records share one. The reference keeps
-/// its own tree of paths, and asks the model only whether a call succeeded.
+/// "/." and "/", symbolic links and hard links), of descriptors opened, written
+/// through, truncated, `fchmod`ed and closed, and of watches added and
+/// removed, some with `IN_EXCL_UNLINK`, on two instances, run against the
+/// model; after each, both instances are drained, and their records must be
+/// those the reference expects, cookies compared by which records share one.
+/// The reference keeps its own tree of paths, and the name each descriptor
+/// was opened through, and asks the model only whether a call succeeded.
 ///
 /// What the reference states, per operation, for each instance watching the
 /// inode involved and asking for the event:
@@ -35,6 +37,13 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///   name, then at the inode's own watch, `IN_ATTRIB` for a mode, an owner or
 ///   both times, `IN_MODIFY` for a truncation or the modification time alone,
 ///   and `IN_ACCESS`, which no watch can ask for, for the access time alone;
+/// - a write of some bytes, an `ftruncate` or an `fchmod` through a
+///   descriptor: as through a path, at the watch on the directory of the name
+///   the descriptor was opened through, with that name, which a rename of it
+///   moves, and which an unlink of it, or a rename displacing the inode from
+///   it, leaves in place, unlinked; a watch with `IN_EXCL_UNLINK` hears nothing
+///   of a write through an unlinked name, at the directory or the inode
+///   itself, and hears its `ftruncate` and `fchmod`;
 /// - a record carries every event of its change, whichever the watch asked
 ///   for;
 /// - `IN_ISDIR` when the inode is a directory; and a record repeating the
@@ -90,17 +99,35 @@ module TestInotifyDelivery =
         | Utimes of path : int * times : Times
         | AddWatch of instance : int * path : int * mask : uint32 * dontFollow : bool
         | RmWatch of instance : int * wd : int
+        /// `open(2)` of the path, kept: read-only, or for reading and writing.
+        | Open of path : int * readOnly : bool
+        /// Through the kept descriptor `slot` (0 the newest, and back from
+        /// there, modulo how many are kept): a write of `count` bytes.
+        | Write of slot : int * count : int
+        | Ftruncate of slot : int
+        | Fchmod of slot : int * mode : int
+        | Close of slot : int
 
     let private eventBits : uint32 list =
         [ modify ; attrib ; movedFrom ; movedTo ; create ; delete ; 0x400u ; 0x800u ]
+
+    let private exclUnlink : uint32 = 0x04000000u
 
     let private opGen : Gen<Op> =
         let path = Gen.choose (0, paths.Length - 1)
 
         let mask =
-            Gen.subListOf eventBits
-            |> Gen.map (List.fold (|||) 0u)
-            |> Gen.filter (fun mask -> mask <> 0u)
+            gen {
+                let! events =
+                    Gen.subListOf eventBits
+                    |> Gen.map (List.fold (|||) 0u)
+                    |> Gen.filter (fun mask -> mask <> 0u)
+
+                let! excl = Gen.elements [ false ; true ]
+                return events ||| (if excl then exclUnlink else 0u)
+            }
+
+        let slot = Gen.choose (0, 7)
 
         Gen.frequency
             [
@@ -133,21 +160,64 @@ module TestInotifyDelivery =
                     return Op.AddWatch (instance, p, m, dontFollow)
                 }
                 1, Gen.map2 (fun i w -> Op.RmWatch (i, w)) (Gen.choose (0, 1)) (Gen.choose (1, 6))
+                4, Gen.map2 (fun p r -> Op.Open (p, r)) path (Gen.elements [ false ; false ; true ])
+                5, Gen.map2 (fun s c -> Op.Write (s, c)) slot (Gen.elements [ 0 ; 1 ; 1 ; 3 ])
+                2, Gen.map Op.Ftruncate slot
+                2, Gen.map2 (fun s m -> Op.Fchmod (s, m)) slot (Gen.elements [ 0o755 ; 0o700 ])
+                2, Gen.map Op.Close slot
             ]
 
+    /// A descriptor opened through a name that something then happens to,
+    /// and a change through it: the name unlinked, renamed away, renamed over,
+    /// given again by a link or a fresh file, its directory removed, or left
+    /// alone. A slot of 0 is the newest kept descriptor, which this opened if
+    /// the open succeeded.
+    let private episodeGen : Gen<Op list> =
+        gen {
+            let path = Gen.choose (0, paths.Length - 1)
+            let! p = path
+            let! q = path
+            let! readOnly = Gen.elements [ false ; false ; true ]
+
+            let! meanwhile =
+                Gen.elements
+                    [
+                        [ Op.Unlink p ]
+                        [ Op.Rename (p, q) ]
+                        [ Op.Rename (q, p) ]
+                        [ Op.Unlink p ; Op.Link (q, p) ]
+                        [ Op.Unlink p ; Op.Create (p, false) ]
+                        [ Op.RmDir p ]
+                        []
+                    ]
+
+            let! change = Gen.elements [ Op.Write (0, 1) ; Op.Ftruncate 0 ; Op.Fchmod (0, 0o700) ]
+            return [ Op.Create (p, false) ; Op.Open (p, readOnly) ] @ meanwhile @ [ change ]
+        }
+
     /// Half the sequences open by watching every directory of the pool, on
-    /// both instances, for every event, so that most changes reach a watch.
+    /// both instances, for every event, half of those with `IN_EXCL_UNLINK`,
+    /// so that most changes reach a watch.
     let private caseGen : Gen<Op list> =
         gen {
             let! opening = Gen.elements [ true ; false ]
-            let! length = Gen.choose (10, 60)
-            let! ops = Gen.listOfLength length opGen
+            let! excl = Gen.elements [ 0u ; exclUnlink ]
+            let! length = Gen.choose (10, 40)
+
+            let! ops =
+                Gen.listOfLength length (Gen.frequency [ 3, Gen.map List.singleton opGen ; 1, episodeGen ])
+                |> Gen.map List.concat
 
             let watchAll =
                 [
                     for instance in 0..1 do
                         for dir in dirs do
-                            Op.AddWatch (instance, List.findIndex ((=) dir) paths, List.fold (|||) 0u eventBits, false)
+                            Op.AddWatch (
+                                instance,
+                                List.findIndex ((=) dir) paths,
+                                List.fold (|||) 0u eventBits ||| excl,
+                                false
+                            )
                 ]
 
             return (if opening then watchAll else []) @ ops
@@ -185,6 +255,27 @@ module TestInotifyDelivery =
     /// the name.
     type private Expected = int * uint32 * uint32 * string
 
+    /// The name a kept descriptor was opened through: the directory, by its
+    /// node's identity, and the name in it, and whether that name has since
+    /// been unlinked; or none, for the root.
+    type private OpenedThrough =
+        {
+            Parent : int
+            Entry : string
+            Unlinked : bool
+            /// A rename has moved the name since the descriptor was opened.
+            Moved : bool
+        }
+
+    /// A kept descriptor: what it names, how it was opened, and through which
+    /// name.
+    type private Kept =
+        {
+            Node : Node
+            ReadOnly : bool
+            Through : OpenedThrough option
+        }
+
     type private Reference =
         {
             /// Every name, by its path from the root, which is always a
@@ -198,6 +289,8 @@ module TestInotifyDelivery =
             NextWd : Map<int, int>
             /// Each instance's records since it was drained.
             Queued : Map<int, Expected list>
+            /// The kept descriptors, oldest first, as the model keeps them.
+            Kept : Kept list
         }
 
     let private initialReference : Reference =
@@ -219,6 +312,7 @@ module TestInotifyDelivery =
             Watches = Map.ofList [ 0, Map.empty ; 1, Map.empty ]
             NextWd = Map.ofList [ 0, 1 ; 1, 1 ]
             Queued = Map.ofList [ 0, [] ; 1, [] ]
+            Kept = []
         }
 
     /// The model's starting tree, matching `initialReference`.
@@ -268,8 +362,10 @@ module TestInotifyDelivery =
         walk "/" components
 
     /// `reference` with `events` reported to each instance's watch on `inode`
-    /// that asks for any of them, as one record each carrying all of them.
-    let private notify
+    /// that asks for any of them, as one record each carrying all of them,
+    /// but to none with `IN_EXCL_UNLINK` when `excluded`.
+    let private notifyUnless
+        (excluded : bool)
         (inode : int)
         (events : uint32)
         (isDir : bool)
@@ -286,7 +382,7 @@ module TestInotifyDelivery =
 
             // The watch's mask decides whether the record is queued, not which
             // events it carries.
-            if events &&& mask = 0u then
+            if events &&& mask = 0u || excluded && mask &&& exclUnlink <> 0u then
                 reference
             else
 
@@ -310,6 +406,8 @@ module TestInotifyDelivery =
                 }
         )
 
+    let private notify = notifyUnless false
+
     /// `notify` at the directory holding `path`, naming its last component.
     let private notifyParent (path : string) (events : uint32) (node : Node) (cookie : uint32) (reference : Reference) =
         match Map.tryFind (parentOf path) reference.Tree with
@@ -330,6 +428,78 @@ module TestInotifyDelivery =
                 notifyParent path events node 0u reference
 
         notifySelf events node reference
+
+    /// A change through the kept descriptor `kept`: at the directory of the
+    /// name it was opened through, under that name, then at its own watch,
+    /// each but to a watch with `IN_EXCL_UNLINK` when the name is unlinked and
+    /// `excludable`.
+    let private notifyKept (kept : Kept) (events : uint32) (excludable : bool) (reference : Reference) : Reference =
+        let excluded, reference =
+            match kept.Through with
+            | None -> false, reference
+            | Some through ->
+                let excluded = excludable && through.Unlinked
+
+                excluded, notifyUnless excluded through.Parent events (isDirectory kept.Node) 0u through.Entry reference
+
+        notifyUnless excluded (idOf kept.Node) events (isDirectory kept.Node) 0u "" reference
+
+    /// `reference` with the kept descriptors opened through the name `entry`
+    /// in the directory `parent`, onto `node`, and not yet unlinked, rewritten
+    /// by `f`.
+    let private mapKept
+        (parent : int)
+        (entry : string)
+        (node : Node)
+        (f : OpenedThrough -> OpenedThrough)
+        (reference : Reference)
+        : Reference
+        =
+        { reference with
+            Kept =
+                reference.Kept
+                |> List.map (fun kept ->
+                    match kept.Through with
+                    | Some through when
+                        through.Parent = parent
+                        && through.Entry = entry
+                        && not through.Unlinked
+                        && idOf kept.Node = idOf node
+                        ->
+                        { kept with
+                            Through = Some (f through)
+                        }
+                    | _ -> kept
+                )
+        }
+
+    /// `mapKept`, marking the name `path`, onto `node`, unlinked.
+    let private unlinkKept (path : string) (node : Node) (reference : Reference) : Reference =
+        match Map.tryFind (parentOf path) reference.Tree with
+        | Some parent ->
+            mapKept
+                (idOf parent)
+                (entryOf path)
+                node
+                (fun through ->
+                    { through with
+                        Unlinked = true
+                    }
+                )
+                reference
+        | None -> failwith $"the reference holds %s{path} but not its directory"
+
+    /// The index, oldest first, of the kept descriptor `slot` picks among
+    /// `count`: the newest for 0, and back from there.
+    let private slotIndex (slot : int) (count : int) : int = count - 1 - slot % count
+
+    /// The kept descriptor `slot` picks, if any is kept.
+    let private keptAt (slot : int) (reference : Reference) : (int * Kept) option =
+        match reference.Kept with
+        | [] -> None
+        | kept ->
+            let index = slotIndex slot kept.Length
+            Some (index, kept.[index])
 
     let private bind (path : string) (node : Node) (reference : Reference) : Reference =
         { reference with
@@ -380,7 +550,8 @@ module TestInotifyDelivery =
                 { reference with
                     Tree = Map.remove removed tree
                 }
-                |> notifyParent removed delete node 0u,
+                |> notifyParent removed delete node 0u
+                |> unlinkKept removed node,
                 None
             | other -> failwith $"rmdir of %s{paths.[path]} succeeded on %A{other}"
         | Op.Unlink path ->
@@ -391,7 +562,8 @@ module TestInotifyDelivery =
                     { reference with
                         Tree = Map.remove removed reference.Tree
                     }
-                |> notifyParent removed delete node 0u,
+                |> notifyParent removed delete node 0u
+                |> unlinkKept removed node,
                 None
             | other -> failwith $"unlink of %s{paths.[path]} succeeded on %A{other}"
         | Op.Link (existing, path) ->
@@ -426,6 +598,29 @@ module TestInotifyDelivery =
                         | None -> path, node
                     )
                     |> Map.ofList
+
+                // Read before the rename: the directories the names are in.
+                let fromParent = idOf (Map.find (parentOf from) tree)
+                let towardsParent = idOf (Map.find (parentOf towards) tree)
+
+                let reference =
+                    match displaced with
+                    | Some displaced -> unlinkKept towards displaced reference
+                    | None -> reference
+
+                let reference =
+                    mapKept
+                        fromParent
+                        (entryOf from)
+                        moved
+                        (fun through ->
+                            { through with
+                                Parent = towardsParent
+                                Entry = entryOf towards
+                                Moved = true
+                            }
+                        )
+                        reference
 
                 let reference =
                     { reference with
@@ -486,6 +681,55 @@ module TestInotifyDelivery =
                 },
                 Some wd
             | other -> failwith $"inotify_add_watch succeeded on %A{other}"
+        | Op.Open (path, readOnly) ->
+            match lookup paths.[path] true with
+            | opened, Some node ->
+                let through =
+                    if opened = "/" then
+                        None
+                    else
+                        Some
+                            {
+                                Parent = idOf (Map.find (parentOf opened) tree)
+                                Entry = entryOf opened
+                                Unlinked = false
+                                Moved = false
+                            }
+
+                { reference with
+                    Kept =
+                        reference.Kept
+                        @ [
+                            {
+                                Node = node
+                                ReadOnly = readOnly
+                                Through = through
+                            }
+                        ]
+                },
+                None
+            | other -> failwith $"open of %s{paths.[path]} succeeded on %A{other}"
+        | Op.Write (slot, count) ->
+            match keptAt slot reference with
+            | Some (_, kept) when count > 0 -> notifyKept kept modify true reference, None
+            | Some _ -> reference, None
+            | None -> failwith $"a write through slot %d{slot} succeeded, but the reference keeps no descriptor"
+        | Op.Ftruncate slot ->
+            match keptAt slot reference with
+            | Some (_, kept) -> notifyKept kept modify false reference, None
+            | None -> failwith $"ftruncate through slot %d{slot} succeeded, but the reference keeps no descriptor"
+        | Op.Fchmod (slot, _) ->
+            match keptAt slot reference with
+            | Some (_, kept) -> notifyKept kept attrib false reference, None
+            | None -> failwith $"fchmod through slot %d{slot} succeeded, but the reference keeps no descriptor"
+        | Op.Close slot ->
+            match keptAt slot reference with
+            | Some (index, _) ->
+                { reference with
+                    Kept = reference.Kept |> List.removeAt index
+                },
+                None
+            | None -> failwith $"close of slot %d{slot} succeeded, but the reference keeps no descriptor"
         | Op.RmWatch (instance, wd) ->
             let watches = reference.Watches.[instance]
 
@@ -503,9 +747,13 @@ module TestInotifyDelivery =
     let private linuxAtFdCwd : int = -100
 
     /// What the model's call answered, and the system after it: `None` for a
-    /// refusal, which changes nothing.
+    /// refusal of a path syscall or of a watch, which changes nothing, or for
+    /// a call through a kept descriptor when none is kept, which is not made.
+    /// `kept` is the descriptors the model keeps, oldest first. A call
+    /// through a kept descriptor must not be refused.
     let private call
         (fds : int list)
+        (kept : int list)
         (op : Op)
         (system : UnixSystem<int, string>)
         : (SyscallAnswer * UnixSystem<int, string>) option
@@ -567,6 +815,48 @@ module TestInotifyDelivery =
                 system
             |> unrefused
         | Op.RmWatch (instance, wd) -> UnixInotify.tryInotifyRmWatch fds.[instance] wd system |> unrefused
+        | Op.Open (i, readOnly) ->
+            let access =
+                if readOnly then
+                    FileAccessMode.ReadOnly
+                else
+                    FileAccessMode.ReadWrite
+
+            match OpenFlagWords.openPath (openFlags access false false false) (path i) 0 system with
+            | Ok answered -> Some answered
+            | Error refusal -> failwith $"%A{op}: refused: %s{OpenRefusal.describe refusal}"
+        | Op.Write _
+        | Op.Ftruncate _
+        | Op.Fchmod _
+        | Op.Close _ ->
+
+        match kept with
+        | [] -> None
+        | kept ->
+
+        let slotOf (slot : int) = kept.[slotIndex slot kept.Length]
+
+        let mustAnswer (result : Result<SyscallAnswer * UnixSystem<int, string>, 'r>) =
+            match result with
+            | Ok answered -> Some answered
+            | Error refusal -> failwith $"%A{op}: refused: %A{refusal}"
+
+        match op with
+        | Op.Write (slot, count) ->
+            let bytes =
+                System.Collections.Immutable.ImmutableArray.CreateRange (Array.create count (byte 'w'))
+
+            match
+                WriteOutcomes.admitThenWrite 0 (slotOf slot) UserBuffer.Mapped bytes system
+                |> WriteOutcomes.returned
+            with
+            | Ok (WriteAnswer.Completed written, system) -> Some (SyscallAnswer.Completed written, system)
+            | Ok (WriteAnswer.Failed error, system) -> Some (SyscallAnswer.Failed error, system)
+            | Error refusal -> failwith $"%A{op}: refused: %A{refusal}"
+        | Op.Ftruncate slot -> UnixDescriptor.tryFtruncate (slotOf slot) 0L system |> mustAnswer
+        | Op.Fchmod (slot, mode) -> UnixPathResolution.tryFchmod (slotOf slot) mode system |> mustAnswer
+        | Op.Close slot -> UnixDescriptor.tryClose (slotOf slot) system |> mustAnswer
+        | other -> failwith $"%A{other} is not a call through a kept descriptor"
 
     [<RequireQualifiedAccess>]
     type private Label =
@@ -579,6 +869,17 @@ module TestInotifyDelivery =
         | Directory
         | Ignored
         | Call
+        /// A record of a change through a kept descriptor.
+        | ThroughDescriptor
+        /// A record of a change through a kept descriptor whose name has been
+        /// unlinked.
+        | ThroughUnlinked
+        /// A write through an unlinked name, under a watch with
+        /// `IN_EXCL_UNLINK` that the reference expects to hear nothing of it.
+        | ExcludedUnlinked
+        /// A record of a change through a kept descriptor whose name a rename
+        /// moved.
+        | ThroughMoved
 
     /// Numbers each cookie by the order it first appears in.
     type private Cookies () =
@@ -607,22 +908,65 @@ module TestInotifyDelivery =
             records
             |> List.map (fun (wd, mask, cookie, entry) -> wd, mask, cookies.Ordinal cookie, entry)
 
-        ((system, initialReference), List.indexed ops)
-        ||> List.fold (fun (system, reference) (step, op) ->
+        ((system, initialReference, []), List.indexed ops)
+        ||> List.fold (fun (system, reference, kept) (step, op) ->
             cover Label.Call
 
-            let system, reference =
-                match call fds op system with
-                | None -> system, reference
-                | Some (SyscallAnswer.Failed _, after) -> after, reference
+            // What the reference keeps of the descriptor a call through one
+            // reaches, and whether it is a write of some bytes.
+            let through, writes =
+                match op with
+                | Op.Write (slot, count) -> keptAt slot reference |> Option.map snd, count > 0
+                | Op.Ftruncate slot
+                | Op.Fchmod (slot, _) -> keptAt slot reference |> Option.map snd, false
+                | _ -> None, false
+
+            let system, reference, kept =
+                match call fds kept op system with
+                | None -> system, reference, kept
+                | Some (SyscallAnswer.Failed _, after) -> after, reference, kept
                 | Some (SyscallAnswer.Completed answer, after) ->
+                    let queuedBefore = reference.Queued
                     let reference, wd = apply op reference
 
                     match wd with
                     | Some wd -> answer |> shouldEqual (int64 wd)
                     | None -> ()
 
-                    after, reference
+                    let kept =
+                        match op with
+                        | Op.Open _ -> kept @ [ int answer ]
+                        | Op.Close slot -> kept |> List.removeAt (slotIndex slot kept.Length)
+                        | _ -> kept
+
+                    match through with
+                    | Some through ->
+                        if reference.Queued <> queuedBefore then
+                            cover Label.ThroughDescriptor
+
+                            match through.Through with
+                            | Some name when name.Unlinked -> cover Label.ThroughUnlinked
+                            | Some name when name.Moved -> cover Label.ThroughMoved
+                            | _ -> ()
+
+                        // A watch that would have heard of the write but for
+                        // `IN_EXCL_UNLINK`.
+                        match through.Through with
+                        | Some name when writes && name.Unlinked ->
+                            let excludes (inode : int) =
+                                [ 0 ; 1 ]
+                                |> List.exists (fun instance ->
+                                    match Map.tryFind inode reference.Watches.[instance] with
+                                    | Some (_, mask) -> mask &&& modify <> 0u && mask &&& exclUnlink <> 0u
+                                    | None -> false
+                                )
+
+                            if excludes name.Parent || excludes (idOf through.Node) then
+                                cover Label.ExcludedUnlinked
+                        | _ -> ()
+                    | None -> ()
+
+                    after, reference, kept
 
             UnixSystem.checkInvariants system |> shouldEqual []
 
@@ -673,7 +1017,8 @@ module TestInotifyDelivery =
             system,
             { reference with
                 Queued = Map.ofList [ 0, [] ; 1, [] ]
-            }
+            },
+            kept
         )
         |> ignore
 
@@ -690,3 +1035,7 @@ module TestInotifyDelivery =
         coverage.Count Label.Modify |> shouldBeGreaterThan 50
         coverage.Count Label.Directory |> shouldBeGreaterThan 100
         coverage.Count Label.Ignored |> shouldBeGreaterThan 20
+        coverage.Count Label.ThroughDescriptor |> shouldBeGreaterThan 300
+        coverage.Count Label.ThroughUnlinked |> shouldBeGreaterThan 100
+        coverage.Count Label.ThroughMoved |> shouldBeGreaterThan 30
+        coverage.Count Label.ExcludedUnlinked |> shouldBeGreaterThan 20

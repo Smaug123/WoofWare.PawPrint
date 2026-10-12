@@ -508,6 +508,7 @@ module TestModeChange =
         =
         let fd, registry =
             FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (inodeAt system.Machine.FileSystem p))
                 (inodeAt system.Machine.FileSystem p)
                 access
                 (UnixSystemState.fileDescriptors system)
@@ -517,6 +518,7 @@ module TestModeChange =
     let private openedDirectory (p : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
             FileDescriptorRegistry.openDirectory
+                (ForgedName.ofInode system (inodeAt system.Machine.FileSystem p))
                 (inodeAt system.Machine.FileSystem p)
                 (UnixSystemState.fileDescriptors system)
 

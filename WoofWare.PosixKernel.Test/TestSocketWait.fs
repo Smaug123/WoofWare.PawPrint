@@ -177,6 +177,7 @@ module TestSocketWait =
 
             let fileFd, registry =
                 FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system (InodeNumber 1L))
                     (InodeNumber 1L)
                     FileAccessMode.ReadOnly
                     (UnixSystemState.fileDescriptors system)

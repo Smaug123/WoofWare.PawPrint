@@ -418,9 +418,13 @@ module TestSocketTable =
                         let _, registry =
                             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
                             | Some (InodeContent.Directory _) ->
-                                FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors kernel)
+                                FileDescriptorRegistry.openDirectory
+                                    (ForgedName.ofInode kernel inode)
+                                    inode
+                                    (UnixSystemState.fileDescriptors kernel)
                             | _ ->
                                 FileDescriptorRegistry.openFile
+                                    (ForgedName.ofInode kernel inode)
                                     inode
                                     FileAccessMode.ReadOnly
                                     (UnixSystemState.fileDescriptors kernel)
@@ -475,7 +479,7 @@ module TestSocketTable =
                         let holder, chosen = removable.[rng.Next removable.Length]
 
                         match
-                            GraphMutators.unbind
+                            VirtualFileSystem.unbind
                                 UnbindTargetEffect.LostALink
                                 holder
                                 chosen
@@ -483,15 +487,13 @@ module TestSocketTable =
                                 kernel.Machine.FileSystem
                         with
                         | Error e -> failwith $"unexpected unbind error: %O{e}"
-                        | Ok (inode, filesystem) ->
-                            let before = VirtualFileSystem.inodes filesystem |> Map.count
+                        | Ok (inode, mutation) ->
+                            let before = VirtualFileSystem.inodes (VfsMutation.after mutation) |> Map.count
 
                             kernel <-
                                 { kernel with
                                     Machine =
-                                        { kernel.Machine with
-                                            CommittedFileSystem = CommittedFileSystem.initial filesystem
-                                        }
+                                        UnixMachineState.commitFileSystem ChangeNotice.Names mutation kernel.Machine
                                 }
                                 |> ObjectLifetime.forgetIfUnheld inode
 

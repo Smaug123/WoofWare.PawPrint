@@ -164,10 +164,14 @@ module TestSyscallInterruption =
             | Error error -> failwith $"could not seed the file: %O{error}"
 
         let lockedThrough, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                FileAccessMode.ReadWrite
+                (UnixSystemState.fileDescriptors system)
 
         let waitingThrough, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite registry
+            FileDescriptorRegistry.openFile (ForgedName.ofInode system inode) inode FileAccessMode.ReadWrite registry
 
         let system =
             { system with

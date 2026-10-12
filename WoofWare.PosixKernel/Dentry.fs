@@ -11,25 +11,30 @@ type internal Dentry =
 
 /// How a syscall reached the inode whose contents or attributes it changed,
 /// which decides which directory's watch hears of the change beside the
-/// inode's own.
+/// inode's own: a path's walk, or the walk that opened the descriptor the
+/// syscall was given, which the open file description records as Linux's
+/// `struct file` keeps its dentry (`OpenFileTable.openedThrough`).
 [<RequireQualifiedAccess>]
 type internal ReachedThrough =
-    /// A path, whose walk reached the inode through the dentry; `None` at the
-    /// root, and at the root of a mounted filesystem, which no directory's
+    /// The name `dentry`. A walk always reaches a name not `unlinked`. A
+    /// description's record of one follows the graph: `rename` of exactly
+    /// that name moves it (Linux's `d_move`), and an unlink of it, a `rmdir`
+    /// of it, or a rename displacing the inode from it marks it `unlinked`,
+    /// keeping the directory and the name it had, which Linux still reports
+    /// a change under (measured, `inotify-probe.c` section H,
+    /// `inotify-dentry-probe.c` sections O and Q). A name linked or renamed
+    /// into that place afterwards is another name, and leaves it unlinked
+    /// (`inotify-dentry-probe.c` section L).
+    | Name of dentry : Dentry * unlinked : bool
+    /// The root, or the root of a mounted filesystem, which no directory's
     /// watch hears of (measured, `inotify-delivery-probe.c` row P
     /// chmod-mount-point).
-    | Path of Dentry option
-    /// A path that reached, by ".", ".." or "/", a directory whose last name
-    /// has gone, last named in `oldParent`. Linux reports a change to it at
-    /// `oldParent`'s watch under the name it had there (row P
+    | Unnamed
+    /// A directory whose last name had gone when a walk reached it by ".",
+    /// ".." or "/", last named in `oldParent`. Linux reports a change to it
+    /// at `oldParent`'s watch under the name it had there (row P
     /// chmod-removed-current), which this kernel does not keep.
     | RemovedDirectory of oldParent : InodeNumber
-    /// A descriptor: `write(2)`, `pwrite(2)`, `copy_file_range(2)`,
-    /// `ftruncate(2)`, `fchmod(2)`, `fchown(2)`, `futimens(2)`, and the `*at`
-    /// calls' empty path under `AT_EMPTY_PATH` with a descriptor. Linux reports
-    /// a change through one at the watch on the directory of the name it was
-    /// opened through, which this kernel does not record.
-    | Descriptor
 
 [<RequireQualifiedAccess>]
 module internal ReachedThrough =
@@ -41,7 +46,7 @@ module internal ReachedThrough =
             inode = VirtualFileSystem.root vfs
             || (VirtualFileSystem.mountOf inode vfs).IsSome
         then
-            ReachedThrough.Path None
+            ReachedThrough.Unnamed
         else
 
         match VirtualFileSystem.tryGetDirectory inode vfs with
@@ -56,12 +61,12 @@ module internal ReachedThrough =
 
         match name with
         | Some name ->
-            ReachedThrough.Path (
-                Some
-                    {
-                        Parent = directory.Parent
-                        Name = name
-                    }
+            ReachedThrough.Name (
+                {
+                    Parent = directory.Parent
+                    Name = name
+                },
+                false
             )
         | None -> ReachedThrough.RemovedDirectory directory.Parent
 
@@ -73,15 +78,63 @@ module internal ReachedThrough =
         match target with
         | ResolvedTarget.Directory (inode, _) -> ofDirectory inode vfs
         | ResolvedTarget.Entry (_, _, Some inode) when (VirtualFileSystem.mountOf inode vfs).IsSome ->
-            ReachedThrough.Path None
+            ReachedThrough.Unnamed
         | ResolvedTarget.Entry (directory, name, Some _) ->
-            ReachedThrough.Path (
-                Some
-                    {
-                        Parent = directory
-                        Name = name
-                    }
+            ReachedThrough.Name (
+                {
+                    Parent = directory
+                    Name = name
+                },
+                false
             )
         | ResolvedTarget.Entry (directory, name, None) ->
             failwith
                 $"ReachedThrough.ofResolved: the walk ended at \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, which names nothing, so nothing was changed through it (this is a bug in this library)."
+
+    /// The name `name` in `directory`, which a walk has just reached or made.
+    let ofEntry (directory : InodeNumber) (name : DirectoryEntryName) : ReachedThrough =
+        ReachedThrough.Name (
+            {
+                Parent = directory
+                Name = name
+            },
+            false
+        )
+
+    /// `through`, recorded on a description onto `inode`, after `change`: a
+    /// name `rename` moved, or one an unlink, a `rmdir` or a rename displacing
+    /// `inode` took away, which is then unlinked. A name already unlinked is
+    /// another name than the one now in its place, and stays as it is.
+    let followChange (inode : InodeNumber) (change : FsChange) (through : ReachedThrough) : ReachedThrough =
+        match through with
+        | ReachedThrough.Unnamed
+        | ReachedThrough.RemovedDirectory _
+        | ReachedThrough.Name (_, true) -> through
+        | ReachedThrough.Name (dentry, false) ->
+
+        let names (directory : InodeNumber) (name : DirectoryEntryName) =
+            dentry.Parent = directory && dentry.Name = name
+
+        match change with
+        | FsChange.EntryRemoved (directory, name, removed) when removed = inode && names directory name ->
+            ReachedThrough.Name (dentry, true)
+        | FsChange.EntryMoved (_, _, destination, destinationName, _, Some displaced) when
+            displaced = inode && names destination destinationName
+            ->
+            ReachedThrough.Name (dentry, true)
+        | FsChange.EntryMoved (source, sourceName, destination, destinationName, moved, _) when
+            moved = inode && names source sourceName
+            ->
+            ReachedThrough.Name (
+                {
+                    Parent = destination
+                    Name = destinationName
+                },
+                false
+            )
+        | FsChange.EntryAdded _
+        | FsChange.EntryRemoved _
+        | FsChange.EntryMoved _
+        | FsChange.ContentChanged _
+        | FsChange.AttributesChanged _
+        | FsChange.InodeForgotten _ -> through

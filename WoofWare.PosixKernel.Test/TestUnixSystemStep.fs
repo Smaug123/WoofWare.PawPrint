@@ -76,7 +76,11 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not seed the file: %O{error}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                FileAccessMode.ReadWrite
+                (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -103,7 +107,11 @@ module TestUnixSystemStep =
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode accessMode (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                accessMode
+                (UnixSystemState.fileDescriptors system)
 
         fd, UnixSystemState.withFileDescriptors registry system
 
@@ -830,7 +838,11 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not seed the directory: %O{error}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -1852,7 +1864,11 @@ module TestUnixSystemStep =
         let _, target, _, system = withTree linux
 
         let fd, registry =
-            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system target)
+                target
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let withDescriptor = UnixSystemState.withFileDescriptors registry system
 
@@ -2144,7 +2160,11 @@ module TestUnixSystemStep =
         let _, target, _, system = withTree linux
 
         let fd, registry =
-            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system target)
+                target
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let system = UnixSystemState.withFileDescriptors registry system
 
@@ -2730,7 +2750,11 @@ module TestUnixSystemStep =
             | other -> failwith $"expected a file, got %O{other}"
 
         let second, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system inode)
+                inode
+                FileAccessMode.ReadWrite
+                (UnixSystemState.fileDescriptors system)
 
         first, second, UnixSystemState.withFileDescriptors registry system
 
@@ -2740,7 +2764,11 @@ module TestUnixSystemStep =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.File (inode, _)) ->
             let another, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system inode)
+                    inode
+                    FileAccessMode.ReadWrite
+                    (UnixSystemState.fileDescriptors system)
 
             another, UnixSystemState.withFileDescriptors registry system
         | other -> failwith $"expected a file, got %O{other}"
@@ -3910,7 +3938,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixDescriptor.truncateAt ReachedThrough.Descriptor inode -1L system
+                UnixDescriptor.truncateAt ReachedThrough.Unnamed inode -1L system
                 |> ignore<Result<UnixSystem<int, string>, TruncationRefusal>>
             )
 
@@ -5530,7 +5558,11 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not resolve /f: %O{error}"
 
         let fd, descriptors =
-            FileDescriptorRegistry.openFile held FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system held)
+                held
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let system = UnixSystemState.withFileDescriptors descriptors system
 

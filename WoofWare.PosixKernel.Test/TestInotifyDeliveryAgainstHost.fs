@@ -14,8 +14,10 @@ open WoofWare.PosixKernel
 /// Which records a filesystem change queues on the inotify instances watching
 /// it, against a real Linux kernel: random sequences of path syscalls
 /// (creating, truncating, linking, unlinking, renaming, changing modes, owners
-/// and times) and of watches added and removed, on two instances, run over a
-/// fresh real temporary directory and over the model holding the same tree.
+/// and times), of descriptors opened, written through, truncated, `fchmod`ed
+/// and closed, and of watches added and removed, some with `IN_EXCL_UNLINK`,
+/// on two instances, run over a fresh real temporary directory and over the
+/// model holding the same tree.
 /// Every call must answer alike, and after each, the records each instance
 /// holds must be alike, cookies compared by which records share one.
 ///
@@ -74,6 +76,15 @@ module TestInotifyDeliveryAgainstHost =
     /// `times` is two `struct timespec`s: seconds and nanoseconds, twice.
     [<DllImport("libc", EntryPoint = "utimensat", SetLastError = true)>]
     extern int private hostUtimensat(int dirfd, byte[] path, int64[] times, int flags)
+
+    [<DllImport("libc", EntryPoint = "write", SetLastError = true)>]
+    extern nativeint private hostWrite(int fd, byte[] buffer, unativeint count)
+
+    [<DllImport("libc", EntryPoint = "ftruncate", SetLastError = true)>]
+    extern int private hostFtruncate(int fd, int64 length)
+
+    [<DllImport("libc", EntryPoint = "fchmod", SetLastError = true)>]
+    extern int private hostFchmod(int fd, int mode)
 
     [<DllImport("libc", EntryPoint = "geteuid")>]
     extern uint32 private hostGetEUid()
@@ -135,6 +146,14 @@ module TestInotifyDeliveryAgainstHost =
         | Utimes of path : int * times : Times
         | AddWatch of instance : int * path : int * mask : uint32
         | RmWatch of instance : int * wd : int
+        /// `open(2)` of the path, kept: read-only, or for reading and writing.
+        | Open of path : int * readOnly : bool
+        /// Through the kept descriptor `slot` (modulo how many are kept): a
+        /// write of `count` bytes.
+        | Write of slot : int * count : int
+        | Ftruncate of slot : int
+        | Fchmod of slot : int * mode : int
+        | Close of slot : int
 
     /// Every event this kernel raises but the two self events.
     let private eventBits : uint32 list =
@@ -144,9 +163,18 @@ module TestInotifyDeliveryAgainstHost =
         let path = Gen.choose (0, paths.Length - 1)
 
         let mask =
-            Gen.subListOf eventBits
-            |> Gen.map (List.fold (|||) 0u)
-            |> Gen.filter (fun mask -> mask <> 0u)
+            gen {
+                let! events =
+                    Gen.subListOf eventBits
+                    |> Gen.map (List.fold (|||) 0u)
+                    |> Gen.filter (fun mask -> mask <> 0u)
+
+                // `IN_EXCL_UNLINK`.
+                let! excl = Gen.elements [ 0u ; 0x04000000u ]
+                return events ||| excl
+            }
+
+        let slot = Gen.choose (0, 7)
 
         Gen.frequency
             [
@@ -172,6 +200,11 @@ module TestInotifyDeliveryAgainstHost =
                     (Gen.elements [ Times.Both ; Times.AccessOnly ; Times.ModificationOnly ])
                 5, Gen.map3 (fun i p m -> Op.AddWatch (i, p, m)) (Gen.choose (0, 1)) path mask
                 1, Gen.map2 (fun i w -> Op.RmWatch (i, w)) (Gen.choose (0, 1)) (Gen.choose (1, 6))
+                4, Gen.map2 (fun p r -> Op.Open (p, r)) path (Gen.elements [ false ; false ; true ])
+                5, Gen.map2 (fun s c -> Op.Write (s, c)) slot (Gen.elements [ 0 ; 1 ; 1 ; 3 ])
+                2, Gen.map Op.Ftruncate slot
+                2, Gen.map2 (fun s m -> Op.Fchmod (s, m)) slot (Gen.elements [ 0o755 ; 0o700 ])
+                2, Gen.map Op.Close slot
             ]
 
     /// Half the sequences open by watching every directory of the pool, on
@@ -199,6 +232,8 @@ module TestInotifyDeliveryAgainstHost =
         | AttribNamed
         | AttribSelf
         | Modified
+        /// A call through a kept descriptor that answered.
+        | ThroughDescriptor
 
     /// Numbers each cookie by the order it first appears in.
     type private Cookies () =
@@ -223,7 +258,7 @@ module TestInotifyDeliveryAgainstHost =
         record.Wd, record.Mask, cookies.Ordinal record.Cookie, record.Len, record.Name
 
     [<Test>]
-    let ``a real inotify and the model queue alike for every path change`` () : unit =
+    let ``a real inotify and the model queue alike for every path and descriptor change`` () : unit =
         onLinux (fun platform ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering platform
             let uid = hostGetEUid ()
@@ -311,6 +346,8 @@ module TestInotifyDeliveryAgainstHost =
 
                 let hostCookies = Cookies ()
                 let modelCookies = Cookies ()
+                // The kept descriptors, oldest first: the host's and the model's.
+                let kept = ResizeArray<int * int> ()
                 // The watches Linux dropped when their inode went, by instance.
                 let gone = [| HashSet<int> () ; HashSet<int> () |]
 
@@ -462,6 +499,78 @@ module TestInotifyDeliveryAgainstHost =
                                     mask
                                     system.Value
                                  |> Result.mapError InotifyAddWatchRefusal.describe)
+                        | Op.Open (path, readOnly) ->
+                            // O_RDONLY or O_RDWR.
+                            let hostFd = hostOpen (onHost paths.[path], (if readOnly then 0x0 else 0x2), 0)
+                            let host = hostAnswer hostFd
+
+                            let access =
+                                if readOnly then
+                                    FileAccessMode.ReadOnly
+                                else
+                                    FileAccessMode.ReadWrite
+
+                            match
+                                OpenFlagWords.openPath
+                                    (InotifyReplay.openFlags access false false false)
+                                    (PathArg.ofText paths.[path])
+                                    0
+                                    system.Value
+                            with
+                            | Ok (SyscallAnswer.Completed modelFd, after) when hostFd >= 0 ->
+                                system.Value <- after
+                                kept.Add (hostFd, int modelFd)
+                            | other ->
+                                if hostFd >= 0 then
+                                    hostClose hostFd |> ignore<int>
+
+                                answered op host other
+                        | Op.Write _
+                        | Op.Ftruncate _
+                        | Op.Fchmod _
+                        | Op.Close _ when kept.Count = 0 -> ()
+                        | Op.Write (slot, count) ->
+                            let hostFd, modelFd = kept.[slot % kept.Count]
+                            let payload = Array.create count (byte 'w')
+                            let host = hostWrite (hostFd, payload, unativeint count)
+
+                            let host = if host >= 0n then Ok (int64 host) else hostAnswer -1
+
+                            let model =
+                                WriteOutcomes.admitThenWrite
+                                    0
+                                    modelFd
+                                    UserBuffer.Mapped
+                                    (ImmutableArray.CreateRange payload)
+                                    system.Value
+                                |> WriteOutcomes.returned
+                                |> Result.map (fun (answer, after) ->
+                                    match answer with
+                                    | WriteAnswer.Completed written -> SyscallAnswer.Completed written, after
+                                    | WriteAnswer.Failed error -> SyscallAnswer.Failed error, after
+                                )
+
+                            answered op host model
+                        | Op.Ftruncate slot ->
+                            let hostFd, modelFd = kept.[slot % kept.Count]
+
+                            answered
+                                op
+                                (hostAnswer (hostFtruncate (hostFd, 0L)))
+                                (UnixDescriptor.tryFtruncate modelFd 0L system.Value)
+                        | Op.Fchmod (slot, mode) ->
+                            let hostFd, modelFd = kept.[slot % kept.Count]
+
+                            answered
+                                op
+                                (hostAnswer (hostFchmod (hostFd, mode)))
+                                (UnixPathResolution.tryFchmod modelFd mode system.Value)
+                        | Op.Close slot ->
+                            let index = slot % kept.Count
+                            let hostFd, modelFd = kept.[index]
+                            kept.RemoveAt index
+
+                            answered op (hostAnswer (hostClose hostFd)) (UnixDescriptor.tryClose modelFd system.Value)
                         | Op.RmWatch (instance, wd) when gone.[instance].Contains wd -> ()
                         | Op.RmWatch (instance, wd) ->
                             answered
@@ -525,9 +634,18 @@ module TestInotifyDeliveryAgainstHost =
 
                                 if mask &&& 0x2u <> 0u then
                                     cover Label.Modified
+
+                        match op with
+                        | Op.Write _
+                        | Op.Ftruncate _
+                        | Op.Fchmod _ when kept.Count > 0 -> cover Label.ThroughDescriptor
+                        | _ -> ()
                 finally
                     for fd in hostFds do
                         hostClose fd |> ignore<int>
+
+                    for hostFd, _ in kept do
+                        hostClose hostFd |> ignore<int>
 
                     Directory.Delete (root, true)
 
@@ -542,6 +660,7 @@ module TestInotifyDeliveryAgainstHost =
                     Label.AttribNamed
                     Label.AttribSelf
                     Label.Modified
+                    Label.ThroughDescriptor
                 ] do
                 if coverage.Count label < 20 then
                     failwith $"the fixed sample reached %A{label} only %d{coverage.Count label} times"

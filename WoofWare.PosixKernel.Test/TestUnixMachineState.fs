@@ -39,10 +39,14 @@ module TestUnixMachineState =
         let directoryInode = InodeNumber 9L
 
         let _fd, withFile =
-            FileDescriptorRegistry.openFile fileInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                fileInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let _directoryFd, withDirectory =
-            FileDescriptorRegistry.openDirectory directoryInode withFile
+            FileDescriptorRegistry.openDirectory ReachedThrough.Unnamed directoryInode withFile
 
         let _sock, withSocket =
             FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
@@ -56,6 +60,34 @@ module TestUnixMachineState =
         UnixMachineState.heldInodes machine
         |> shouldEqual (
             Set.ofList [ fileInode ; directoryInode ]
+            |> Set.union (machine.CurrentDirectories |> Map.keys |> Set.ofSeq)
+        )
+
+    [<Test>]
+    let ``a description holds the directory of the name it was opened through, unlinked or not`` () : unit =
+        // As Linux's dentry holds its parent's: measured
+        // (`inotify-dentry-probe.c` section U), a file unlinked while open
+        // keeps the directory it was named in through that directory's rmdir.
+        let fileInode = InodeNumber 7L
+        let parent = InodeNumber 11L
+
+        let through : ReachedThrough =
+            ReachedThrough.Name (
+                {
+                    Parent = parent
+                    Name = DirectoryEntryName.parseOrFail "test" "f"
+                },
+                true
+            )
+
+        let _fd, registry =
+            FileDescriptorRegistry.openFile through fileInode FileAccessMode.ReadOnly LaunchedStreams.registry
+
+        let machine = machineWith registry
+
+        UnixMachineState.heldInodes machine
+        |> shouldEqual (
+            Set.ofList [ fileInode ; parent ]
             |> Set.union (machine.CurrentDirectories |> Map.keys |> Set.ofSeq)
         )
 

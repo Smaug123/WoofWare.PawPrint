@@ -347,6 +347,7 @@ module TestKqueue =
         let fileFd, system =
             let fd, registry =
                 FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode system (InodeNumber 1L))
                     (InodeNumber 1L)
                     FileAccessMode.ReadOnly
                     (UnixSystemState.fileDescriptors system)
