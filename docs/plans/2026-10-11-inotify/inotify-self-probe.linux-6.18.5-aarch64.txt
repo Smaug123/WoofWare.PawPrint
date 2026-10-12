@@ -1,0 +1,56 @@
+6.18.5 aarch64
+U	wds	u=1 f=2 g=3
+U	unlink-last-name	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="f"
+U	rm-after	-1 errno22
+U	rm-after-events	(none)
+U	unlink-last-name-no-self-event	wd=3 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="g"
+U	recreate	wd=1 mask=CREATE cookie=0 len=16 name="f" | wd=1 mask=MODIFY cookie=0 len=16 name="f"
+U	rewatch	wd=4: (none)
+N	one-wds	dir=1 file=2
+N	one-unlink-held-name	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="a"
+N	one-unlink-last-name	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="b"
+N	one-write	wd=1 mask=MODIFY cookie=0 len=16 name="a"
+N	one-close	(none)
+N	one-rm-after	-1 errno22
+N	two-unlink-a	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="a"
+N	two-unlink-b	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="b"
+N	two-close-a	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+N	two-close-b	(none)
+N	same-unlink-b	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="b"
+N	same-unlink-a	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="a"
+N	same-close-first	(none)
+N	same-close-second	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+N	relinked-unlink-last-name	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="b"
+N	relinked-close-old	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+N	relinked-close-renewed	(none)
+N	rename-over-last-name	wd=1 mask=MOVED_FROM cookie=k1 len=16 name="x" | wd=1 mask=MOVED_TO cookie=k1 len=16 name="b" | wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+N	rename-over-close	(none)
+R	wds	r=1 s=2 t=3
+R	watched-over-watched	wd=1 mask=MOVED_FROM cookie=k2 len=16 name="s" | wd=1 mask=MOVED_TO cookie=k2 len=16 name="t" | wd=3 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=MOVE_SELF cookie=0 len=0 name="" | wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=3 mask=IGNORED cookie=0 len=0 name=""
+R	other-name-of-watched	wd=1 mask=MOVED_FROM cookie=k3 len=16 name="u" | wd=1 mask=MOVED_TO cookie=k3 len=16 name="v" | wd=2 mask=MOVE_SELF cookie=0 len=0 name=""
+R	name-onto-same-file	(none)
+R	name-onto-itself	(none)
+R	dir-wds	r=1 sd=2 td=3
+R	watched-dir-over-watched-dir	wd=1 mask=MOVED_FROM+ISDIR cookie=k4 len=16 name="sd" | wd=1 mask=MOVED_TO+ISDIR cookie=k4 len=16 name="td" | wd=3 mask=ATTRIB+ISDIR cookie=0 len=0 name="" | wd=2 mask=MOVE_SELF cookie=0 len=0 name="" | wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=3 mask=IGNORED cookie=0 len=0 name=""
+R	no-move-self-asked	wd=1: (none)
+D	dotnet-wds	d=1 sub=2
+D	dotnet-rmdir	wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+D	held-wds	d=1 sub=2
+D	held-rmdir	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+D	held-close	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+D	cwd-wds	d=1 sub=2
+D	cwd-rmdir	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+D	cwd-leave	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+D	chain-wds	d=1 a=2 b=3
+D	chain-rmdir-inner	wd=2 mask=DELETE+ISDIR cookie=0 len=16 name="b"
+D	chain-rmdir-outer	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="a"
+D	chain-leave	wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=3 mask=IGNORED cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+W	first	wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+W	second	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="f"
+Q	short-by-1	records=16385 | wd=1 mask=ATTRIB cookie=0 len=0 name="" | wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=-1 mask=Q_OVERFLOW cookie=0 len=0 name=""
+Q	short-by-1-rm-after	-1 errno22
+Q	short-by-2	records=16384 | wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=3 mask=IGNORED cookie=0 len=0 name=""
+Q	short-by-2-rm-after	-1 errno22
+X	open-a-b-a	a=1 b=2 status=0: wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+X	open-a-b	a=1 b=2 status=0: wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name="" | wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+X	open-b-a	a=1 b=2 status=0: wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
