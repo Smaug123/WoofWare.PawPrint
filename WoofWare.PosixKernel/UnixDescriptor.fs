@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// simulated platform. Linux numbers `SEEK_DATA` 3 and `SEEK_HOLE` 4; Darwin
 /// transposes them, which is why the raw number alone names no operation.
 [<RequireQualifiedAccess>]
-type SeekExtension =
+type internal SeekExtension =
     | SeekData
     | SeekHole
 

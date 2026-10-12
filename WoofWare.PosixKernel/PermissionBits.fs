@@ -58,7 +58,7 @@ type internal AccessRequest =
 ///
 /// Any combination of the three is one some caller can be in: root can own an
 /// inode or not, and an owner need not be in its inode's group.
-type Standing =
+type internal Standing =
     {
         /// Whether the caller is exempt from the permission rules.
         Privilege : CallerPrivilege

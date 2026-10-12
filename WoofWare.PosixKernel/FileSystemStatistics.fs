@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 /// One of the filesystems a Linux kernel keeps for objects that are not on any
 /// mount, which `fstatfs(2)` reports for a descriptor naming such an object.
 [<RequireQualifiedAccess>]
-type PseudoFileSystem =
+type internal PseudoFileSystem =
     /// `pipefs`, where both ends of a pipe live.
     | Pipe
     /// `sockfs`, where every socket lives.

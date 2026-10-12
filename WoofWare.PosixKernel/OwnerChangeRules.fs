@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// kernel's rule reads it: relative to the inode's current owner and to the
 /// caller.
 [<RequireQualifiedAccess>]
-type RequestedUser =
+type internal RequestedUser =
     /// `(uid_t)-1`: leave the owner as it is.
     | Unchanged
     /// The inode's current owner, named explicitly.
@@ -18,7 +18,7 @@ type RequestedUser =
 /// rule reads it: relative to the inode's current group and to the caller's
 /// groups.
 [<RequireQualifiedAccess>]
-type RequestedGroup =
+type internal RequestedGroup =
     /// `(gid_t)-1`: leave the group as it is.
     | Unchanged
     /// The inode's current group, named explicitly, whether or not the caller
@@ -33,7 +33,7 @@ type RequestedGroup =
 /// What a `chown(2)`-family call asks of one inode, as the kernel's rule reads
 /// it. The kernel derives it from the IDs the call names, the caller's
 /// credentials and the inode's owner.
-type OwnerChangeRequest =
+type internal OwnerChangeRequest =
     {
         UserAsked : RequestedUser
         GroupAsked : RequestedGroup
