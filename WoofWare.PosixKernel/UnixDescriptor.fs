@@ -165,9 +165,6 @@ type internal TruncationRefusal =
     /// What truncating the file at `inode` would do to its set-ID bits has
     /// not been measured for this process.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// An inotify watch could hear of the truncation, through a name this
-    /// kernel does not keep.
-    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal TruncationRefusal =
@@ -177,14 +174,12 @@ module internal TruncationRefusal =
             $"inode %O{inode} was asked to become %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file -- so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
         | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"truncating inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
-        | TruncationRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : TruncationRefusal) : RefusalKind =
         match refusal with
         | TruncationRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
         | TruncationRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
-        | TruncationRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why a Darwin close that ends a sleeping pipe `write` cannot be answered: the
 /// write raises `SIGPIPE` for the process as it returns, before the close does,
@@ -1051,7 +1046,8 @@ module UnixDescriptor =
     /// Not short-circuited when the file is already that length: unlike a write
     /// of no bytes, a truncation that moves no bytes still stamps the inode.
     ///
-    /// The caller reached the file `through` a path or a descriptor.
+    /// The caller reached the file `through` a path or a descriptor, by a
+    /// name: a regular file is reached no other way.
     let internal truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (through : ReachedThrough)
         (inode : InodeNumber)
@@ -1086,13 +1082,14 @@ module UnixDescriptor =
                         )
                 }
 
-            UnixMachineState.tryCommitFileSystem (ChangeNotice.SetAttributes (through, set)) mutation system.Machine
-            |> Result.map (fun machine ->
+            Ok
                 { system with
-                    Machine = machine
+                    Machine =
+                        UnixMachineState.commitFileSystem
+                            (ChangeNotice.SetAttributes (through, set))
+                            mutation
+                            system.Machine
                 }
-            )
-            |> Result.mapError TruncationRefusal.UnplacedChange
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
         | Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal) ->
@@ -1160,7 +1157,10 @@ module UnixDescriptor =
         // Measured on Darwin 27.0.0 (`fcntl-dup.c`, WRITTEN rows): a truncation
         // that succeeds marks the description written, even to the length the
         // file already had; one that fails does not.
-        truncateAt ReachedThrough.Descriptor inode length system
+        let through =
+            FileDescriptorRegistry.openedThrough "UnixDescriptor.ftruncate" fd (UnixSystemState.fileDescriptors system)
+
+        truncateAt through inode length system
         |> Result.map (fun system ->
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> SyscallAnswer.Completed 0L, system

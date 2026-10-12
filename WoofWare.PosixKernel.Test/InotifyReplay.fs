@@ -317,7 +317,6 @@ module internal InotifyReplay =
     let throughRemovedDirectory (refusal : UnplacedChangeRefusal) : unit =
         match refusal with
         | UnplacedChangeRefusal.RemovedDirectoryName _ -> ()
-        | other -> failwith $"refused as %A{other}, not through a removed directory"
 
     /// The refusal of `chmod(path, mode)`, which must be of a change an
     /// inotify watch could hear of through a name this kernel does not keep.

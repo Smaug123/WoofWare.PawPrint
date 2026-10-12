@@ -230,7 +230,8 @@ type internal ChModRefusal =
     /// This kernel will not resolve the path.
     | Path of PathRefusal
     /// An inotify watch could hear of the change, through a name this kernel
-    /// does not keep.
+    /// does not keep: that of a directory removed before the walk reached it
+    /// by ".", "..", or "/".
     | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
@@ -266,7 +267,8 @@ type internal FChModRefusal =
     /// `fchmod` changes. This kernel holds no such mode.
     | Socket of socket : SocketId
     /// An inotify watch could hear of the change, through a name this kernel
-    /// does not keep.
+    /// does not keep: that of a directory removed before the walk that opened
+    /// the descriptor reached it by ".", "..", or "/".
     | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
@@ -331,7 +333,8 @@ type internal ChOwnRefusal =
     /// This kernel will not resolve the path.
     | Path of PathRefusal
     /// An inotify watch could hear of the change, through a name this kernel
-    /// does not keep.
+    /// does not keep: that of a directory removed before the walk reached it
+    /// by ".", "..", or "/".
     | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
@@ -367,7 +370,8 @@ type internal FChOwnRefusal =
     /// that `fchown` changes. This kernel holds no such owner.
     | Socket of socket : SocketId
     /// An inotify watch could hear of the change, through a name this kernel
-    /// does not keep.
+    /// does not keep: that of a directory removed before the walk that opened
+    /// the descriptor reached it by ".", "..", or "/".
     | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
@@ -454,7 +458,8 @@ type internal UTimensAtRefusal =
     /// link the caller may write but does not own was available to measure.
     | UnmeasuredSymlinkWrite of inode : InodeNumber
     /// An inotify watch could hear of the change, through a name this kernel
-    /// does not keep.
+    /// does not keep: that of a directory removed before the walk reached it
+    /// by ".", "..", or "/".
     | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
@@ -1413,7 +1418,13 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeModeOf ReachedThrough.Descriptor inode mode system
+            let through =
+                FileDescriptorRegistry.openedThrough
+                    "UnixPathResolution.fchmod"
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+
+            changeModeOf through inode mode system
             |> Result.mapError (attributeChangeRefusal FChModRefusal.UnmeasuredModeChange FChModRefusal.UnplacedChange)
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1698,7 +1709,13 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeOwnerOf ReachedThrough.Descriptor inode user group system
+            let through =
+                FileDescriptorRegistry.openedThrough
+                    "UnixPathResolution.fchown"
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+
+            changeOwnerOf through inode user group system
             |> Result.mapError (attributeChangeRefusal FChOwnRefusal.UnmeasuredOwnerChange FChOwnRefusal.UnplacedChange)
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1942,12 +1959,20 @@ module UnixPathResolution =
         tryFchownat dirfd path user group flags system
         |> Refusal.orRaise "UnixPathResolution.fchownat" FChOwnAtRefusal.kind FChOwnAtRefusal.describe
 
+    /// The object `utimensat(2)` sets the times of.
+    [<RequireQualifiedAccess>]
+    type private TimesTarget =
+        /// An inode, reached through a name, or through none, by a path or by
+        /// the walk that opened a descriptor onto it.
+        | Inode of inode : InodeNumber * through : ReachedThrough
+        /// What a descriptor names that is not an inode.
+        | NotInode of OpenFileObject
+
     /// What `utimensat(2)` does once it has found the object whose times it
     /// sets: Linux's EINVAL for a nanosecond field it does not accept, then
     /// the permission check, then the change.
     let private setTimesOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (through : ReachedThrough)
-        (object : OpenFileObject)
+        (target : TimesTarget)
         (access : TimestampRequest)
         (modification : TimestampRequest)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1973,8 +1998,8 @@ module UnixPathResolution =
             | SimulatedUnixFlavour.Linux -> now
             | SimulatedUnixFlavour.Darwin -> UnixClock.gettimeofday system
 
-        match object with
-        | OpenFileObject.File inode ->
+        match target with
+        | TimesTarget.Inode (inode, through) ->
             let entry =
                 match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
                 | Some entry -> entry
@@ -2041,8 +2066,11 @@ module UnixPathResolution =
                     Machine = machine
                 }
             )
-        | OpenFileObject.Socket socket -> Error (UTimensAtRefusal.Socket socket)
-        | OpenFileObject.AnonymousInode ->
+        | TimesTarget.NotInode (OpenFileObject.File inode) ->
+            failwith
+                $"UnixPathResolution.utimensat: inode %O{inode} was given as no inode, where an inode is TimesTarget.Inode (this is a bug in this library)."
+        | TimesTarget.NotInode (OpenFileObject.Socket socket) -> Error (UTimensAtRefusal.Socket socket)
+        | TimesTarget.NotInode OpenFileObject.AnonymousInode ->
             // Measured by `utimensat-rules.c` (NULLFD, EMPTY) on Linux 6.18.5:
             // an epoll instance's inode is root's, mode 0600; both times now
             // are EACCES for uid 1000 and EOPNOTSUPP for root, and every other
@@ -2071,10 +2099,10 @@ module UnixPathResolution =
                 | TimestampChangePermission.UnmeasuredSymlinkWrite ->
                     Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
             | _ -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
-        | OpenFileObject.Kqueue _ ->
+        | TimesTarget.NotInode (OpenFileObject.Kqueue _) ->
             failwith
                 "UnixPathResolution.utimensat: a kqueue reached the descriptor's own times, which only Linux's null pathname and AT_EMPTY_PATH reach, and a Linux process holds no kqueue (this is a bug in this library)."
-        | OpenFileObject.Pipe pipeId ->
+        | TimesTarget.NotInode (OpenFileObject.Pipe pipeId) ->
             match flavour with
             | SimulatedUnixFlavour.Darwin ->
                 failwith
@@ -2155,7 +2183,15 @@ module UnixPathResolution =
         =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
-        | Some object -> setTimesOf ReachedThrough.Descriptor object access modification system
+        | Some (OpenFileObject.File inode) ->
+            let through =
+                FileDescriptorRegistry.openedThrough
+                    "UnixPathResolution.utimensat"
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+
+            setTimesOf (TimesTarget.Inode (inode, through)) access modification system
+        | Some object -> setTimesOf (TimesTarget.NotInode object) access modification system
 
     /// `utimensat` once the times are read: screen the flag word, copy the
     /// path in (the null pointer is EFAULT here), and set the times of what
@@ -2195,7 +2231,7 @@ module UnixPathResolution =
             setDescriptorTimes fd access modification system
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
             let cwd, through = currentDirectoryReached system
-            setTimesOf through (OpenFileObject.File cwd) access modification system
+            setTimesOf (TimesTarget.Inode (cwd, through)) access modification system
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
 
@@ -2206,7 +2242,7 @@ module UnixPathResolution =
         match resolvePathReached directory arguments.FinalSymlink path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (UTimensAtRefusal.Path refusal)
-        | Ok (inode, through) -> setTimesOf through (OpenFileObject.File inode) access modification system
+        | Ok (inode, through) -> setTimesOf (TimesTarget.Inode (inode, through)) access modification system
 
     /// `utimensat`, with a refusal answered as the `Error` rather than raised.
     let internal tryUtimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

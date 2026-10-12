@@ -345,6 +345,7 @@ module TestAccept =
         // things a descriptor can name that are not sockets.
         let fileFd, registry =
             FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (InodeNumber 1L))
                 (InodeNumber 1L)
                 FileAccessMode.ReadOnly
                 (UnixSystemState.fileDescriptors system)

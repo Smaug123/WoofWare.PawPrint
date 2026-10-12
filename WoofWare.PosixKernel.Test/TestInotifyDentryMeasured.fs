@@ -369,30 +369,34 @@ module TestInotifyDentryMeasured =
     let ``dentry section O: a name a rename displaced the file from is unlinked`` () : unit =
         let produced = ResizeArray<string * string> ()
 
+        // One machine for both, as the probe's, so that the two renames'
+        // cookies differ.
+        let mutable system =
+            boot
+                root
+                [
+                    for config in [ "no-excl" ; "excl" ] do
+                        $"o-%s{config}", directory 0o755 [ "s", file "s" ; "t", file "t" ]
+                ]
+
         for excl in [ false ; true ] do
             let config = if excl then "excl" else "no-excl"
-            let system = boot root [ "o", directory 0o755 [ "s", file "s" ; "t", file "t" ] ]
-            let ft, system = openFd writeOnly "o/t" 0 system
-            let fs, system = openFd writeOnly "o/s" 0 system
-            let instance, system = init1 nonblock system
+            let d = $"o-%s{config}"
+            let ft, s = openFd writeOnly $"%s{d}/t" 0 system
+            let fs, s = openFd writeOnly $"%s{d}/s" 0 s
+            let instance, s = init1 nonblock s
 
-            let _, system =
-                watch instance "o" (modelledEvents ||| (if excl then exclUnlink else 0u)) system
+            let _, s = watch instance d (modelledEvents ||| (if excl then exclUnlink else 0u)) s
 
-            let drained, system = system |> rename "o/s" "o/t" |> drain instance
+            let drained, s = s |> rename $"%s{d}/s" $"%s{d}/t" |> drain instance
             produced.Add ($"%s{config}-rename-over", drained)
-            let drained, system = system |> write ft "1" |> drain instance
+            let drained, s = s |> write ft "1" |> drain instance
             produced.Add ($"%s{config}-write-through-displaced", drained)
-            let drained, system = system |> fchmod ft 0o600 |> drain instance
+            let drained, s = s |> fchmod ft 0o600 |> drain instance
             produced.Add ($"%s{config}-fchmod-through-displaced", drained)
-            let drained, system = system |> write fs "2" |> drain instance
+            let drained, s = s |> write fs "2" |> drain instance
             produced.Add ($"%s{config}-write-through-moved", drained)
-
-            system
-            |> close ft
-            |> close fs
-            |> close instance
-            |> ignore<UnixSystem<int, string>>
+            system <- s |> close ft |> close fs |> close instance
 
         actual [] produced |> shouldEqual (expected dentryProbe "O" [])
 

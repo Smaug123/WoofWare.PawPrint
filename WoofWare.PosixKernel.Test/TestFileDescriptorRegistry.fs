@@ -49,12 +49,16 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``openFile takes the lowest free descriptor and a fresh description`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         a |> shouldEqual 3
 
         let b, registry =
-            FileDescriptorRegistry.openFile otherInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed otherInode FileAccessMode.ReadOnly registry
 
         b |> shouldEqual 4
 
@@ -74,10 +78,14 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens of one inode are two descriptions, unlike dup`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let b, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode FileAccessMode.ReadOnly registry
 
         FileDescriptorRegistry.tryFind a registry
         |> shouldEqual (FileDescriptorRegistry.tryFind b registry)
@@ -285,7 +293,11 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a closed description's identity is never handed out again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let firstId = FileDescriptorRegistry.tryFindId fd registry
 
@@ -295,7 +307,7 @@ module TestFileDescriptorRegistry =
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
         let reused, registry =
-            FileDescriptorRegistry.openFile otherInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed otherInode FileAccessMode.ReadOnly registry
 
         // The *descriptor* comes back...
         reused |> shouldEqual fd
@@ -385,7 +397,7 @@ module TestFileDescriptorRegistry =
                 FileAccessMode.ReadWrite
             ] do
             let fd, registry =
-                FileDescriptorRegistry.openFile someInode mode LaunchedStreams.registry
+                FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode mode LaunchedStreams.registry
 
             let duplicated, registry =
                 match FileDescriptorRegistry.dup fd registry with
@@ -659,8 +671,16 @@ module TestFileDescriptorRegistry =
 
                 match step with
                 | CountStep.Open ->
-                    registry <- snd (FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry)
-                | CountStep.Directory -> registry <- snd (FileDescriptorRegistry.openDirectory otherInode registry)
+                    registry <-
+                        snd (
+                            FileDescriptorRegistry.openFile
+                                ReachedThrough.Unnamed
+                                someInode
+                                FileAccessMode.ReadOnly
+                                registry
+                        )
+                | CountStep.Directory ->
+                    registry <- snd (FileDescriptorRegistry.openDirectory ReachedThrough.Unnamed otherInode registry)
                 | CountStep.Socket ->
                     registry <- snd (FileDescriptorRegistry.createSocket (SocketId nextSocket) registry)
                     nextSocket <- nextSocket + 1L
@@ -772,7 +792,14 @@ module TestFileDescriptorRegistry =
                     let fds = FileDescriptorRegistry.fds registry |> Map.toList |> List.map fst
 
                     match rng.Next 3 with
-                    | 0 -> snd (FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry)
+                    | 0 ->
+                        snd (
+                            FileDescriptorRegistry.openFile
+                                ReachedThrough.Unnamed
+                                someInode
+                                FileAccessMode.ReadOnly
+                                registry
+                        )
                     | _ ->
                         match FileDescriptorRegistry.dup fds.[rng.Next fds.Length] registry with
                         | Ok (_, after) -> after
@@ -1053,7 +1080,7 @@ module TestFileDescriptorRegistry =
     /// and threading the Result through by hand at every step obscures which
     /// step is the one under test.
     let private openOrFail (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
-        FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly registry
+        FileDescriptorRegistry.openFile ReachedThrough.Unnamed inode FileAccessMode.ReadOnly registry
 
     let private lockOrFail
         (fd : int)
@@ -1412,7 +1439,7 @@ module TestFileDescriptorRegistry =
                     let inode = inodes.[rng.Next inodes.Length]
 
                     let fd, registry' =
-                        FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly registry
+                        FileDescriptorRegistry.openFile ReachedThrough.Unnamed inode FileAccessMode.ReadOnly registry
 
                     let id =
                         match FileDescriptorRegistry.tryFindId fd registry' with
@@ -1570,7 +1597,11 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a fresh description starts at offset zero`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         offsetOf fd registry |> shouldEqual (Some 0L)
 
@@ -1585,7 +1616,11 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``dup shares one offset`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let copy, registry =
             match FileDescriptorRegistry.dup fd registry with
@@ -1607,10 +1642,14 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens on one file hold independent offsets`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let second, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode FileAccessMode.ReadOnly registry
 
         let registry = FileDescriptorRegistry.setOffset first 9L registry
 
@@ -1623,10 +1662,14 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``seeking leaves the object identity alone`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let second, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode FileAccessMode.ReadOnly registry
 
         // Positioned differently, and still the same file.
         let registry = FileDescriptorRegistry.setOffset first 40L registry
@@ -1667,7 +1710,11 @@ module TestFileDescriptorRegistry =
         onMissing.Message |> shouldContainText "EBADF"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let negative =
             Assert.Catch (fun () ->
@@ -1682,7 +1729,11 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a reopened file starts from zero again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         let registry = FileDescriptorRegistry.setOffset fd 11L registry
 
@@ -1692,7 +1743,7 @@ module TestFileDescriptorRegistry =
             | Error error -> failwith $"close failed: %O{error}"
 
         let reopened, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode FileAccessMode.ReadOnly registry
 
         offsetOf reopened registry |> shouldEqual (Some 0L)
 
@@ -1806,6 +1857,7 @@ module TestFileDescriptorRegistry =
                 | 5 ->
                     let _, registry' =
                         FileDescriptorRegistry.openFile
+                            ReachedThrough.Unnamed
                             (InodeNumber (int64 (rng.Next 5)))
                             FileAccessMode.ReadOnly
                             registry
@@ -1957,7 +2009,11 @@ module TestFileDescriptorRegistry =
         // O_NONBLOCK bit, `socket(2)` is given no SOCK_NONBLOCK, and an epoll
         // instance is handed out as `epoll_create1` makes it.
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
+            FileDescriptorRegistry.openFile
+                ReachedThrough.Unnamed
+                someInode
+                FileAccessMode.ReadOnly
+                LaunchedStreams.registry
 
         nonBlockingOf fd registry |> shouldEqual false
 
@@ -1973,7 +2029,7 @@ module TestFileDescriptorRegistry =
             FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         let fileFd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadWrite registry
+            FileDescriptorRegistry.openFile ReachedThrough.Unnamed someInode FileAccessMode.ReadWrite registry
 
         for fd in [ socketFd ; fileFd ] do
             let registry = FileDescriptorRegistry.setNonBlocking fd true registry

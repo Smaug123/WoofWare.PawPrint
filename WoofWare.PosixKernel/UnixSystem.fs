@@ -695,6 +695,32 @@ type UnixSystemDefect<'Task> =
     /// past the machine's `InotifyLimits.MaxQueuedEvents`, `limit`: the queue
     /// stops at the limit, and then takes one `IN_Q_OVERFLOW` record.
     | InotifyQueueBeyondLimit of instance : OpenFileDescriptionId * count : int * limit : int
+    /// The description `description`, onto `inode`, records that it was
+    /// opened through the name `name` in `parent`, not since unlinked, and
+    /// that directory does not bind that name to `inode`: a rename of the
+    /// name would have moved the record, and an unlink of it marked it.
+    | OpenedThroughNameUnbound of
+        description : OpenFileDescriptionId *
+        inode : InodeNumber *
+        parent : InodeNumber *
+        name : DirectoryEntryName
+    /// The description `description` records that it was opened through a
+    /// name, since unlinked, in `parent`, which is not a directory the
+    /// filesystem holds: the name holds its directory, as Linux's dentry
+    /// holds its parent's (`UnixMachineState.heldInodes`).
+    | OpenedThroughParentGone of description : OpenFileDescriptionId * parent : InodeNumber
+    /// The description `description`, onto `inode`, records that it was
+    /// opened through no name, and `inode` is neither the root nor a mounted
+    /// filesystem's root, the only inodes a walk reaches through none.
+    | OpenedThroughNoNameNotRoot of description : OpenFileDescriptionId * inode : InodeNumber
+    /// The description `description`, onto `inode`, records that it was
+    /// opened through a directory removed while it was last named in
+    /// `oldParent`, and `inode` is not a directory whose ".." is `oldParent`
+    /// and which `oldParent` does not name.
+    | OpenedThroughRemovedDirectoryNamed of
+        description : OpenFileDescriptionId *
+        inode : InodeNumber *
+        oldParent : InodeNumber
 
 [<RequireQualifiedAccess>]
 module UnixSystemDefect =
@@ -1463,6 +1489,51 @@ module UnixSystem =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
             )
+
+        // The name each description onto an inode was opened through, against
+        // the graph.
+        let openedThrough =
+            let graph = machine.FileSystem
+
+            OpenFileTable.toSeqOpenedThrough machine.OpenFiles
+            |> Seq.choose (fun (id, description, through) ->
+                let inode =
+                    match OpenFileDescription.object id description with
+                    | OpenFileObject.File inode -> inode
+                    | other ->
+                        failwith
+                            $"UnixSystem.checkInvariants: description %O{id} records the name it was opened through, and is onto %A{other}, not an inode, which OpenFileTable.create refuses (this is a bug in this library)."
+
+                match through with
+                | ReachedThrough.Name (dentry, false) ->
+                    match VirtualFileSystem.tryGetDirectory dentry.Parent graph with
+                    | Some parent when Map.tryFind dentry.Name parent.Entries = Some inode -> None
+                    | Some _
+                    | None -> Some (UnixSystemDefect.OpenedThroughNameUnbound (id, inode, dentry.Parent, dentry.Name))
+                | ReachedThrough.Name (dentry, true) ->
+                    match VirtualFileSystem.tryGetDirectory dentry.Parent graph with
+                    | Some _ -> None
+                    | None -> Some (UnixSystemDefect.OpenedThroughParentGone (id, dentry.Parent))
+                | ReachedThrough.Unnamed ->
+                    if
+                        inode = VirtualFileSystem.root graph
+                        || (VirtualFileSystem.mountOf inode graph).IsSome
+                    then
+                        None
+                    else
+                        Some (UnixSystemDefect.OpenedThroughNoNameNotRoot (id, inode))
+                | ReachedThrough.RemovedDirectory oldParent ->
+                    let named =
+                        match VirtualFileSystem.tryGetDirectory oldParent graph with
+                        | Some parent -> parent.Entries |> Map.exists (fun _ bound -> bound = inode)
+                        | None -> false
+
+                    match VirtualFileSystem.tryGetDirectory inode graph with
+                    | Some directory when directory.Parent = oldParent && not named -> None
+                    | Some _
+                    | None -> Some (UnixSystemDefect.OpenedThroughRemovedDirectoryNamed (id, inode, oldParent))
+            )
+            |> List.ofSeq
 
         // The machine's inotify limits, and each user's instances and watches
         // and each instance's queue against them.
@@ -2375,6 +2446,7 @@ module UnixSystem =
         @ freshness
         @ foreignObjects
         @ danglingInodes
+        @ openedThrough
         @ danglingConnections
         @ orphanConnections
         @ duplicateQueued

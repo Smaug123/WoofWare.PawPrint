@@ -760,3 +760,217 @@ module TestInotifyInvariants =
             ] do
             if coverage.Count label < 10 then
                 failwith $"the fixed sample reached %A{label} only %d{coverage.Count label} times"
+
+    // ------------------------------------------------ the name a description was opened through
+
+    /// A machine holding `d/f`, `d/g` and the directory `d/e`, with `d/f`
+    /// opened through its name for reading and writing: the system, the
+    /// description, and the inodes of `d` and `d/f`.
+    let private openedThroughName () : UnixSystem<int, string> * OpenFileDescriptionId * InodeNumber * InodeNumber =
+        let system =
+            InotifyReplay.boot
+                InotifyReplay.root
+                [
+                    "d",
+                    InotifyReplay.directory
+                        0o755
+                        [
+                            "f", InotifyReplay.file "x"
+                            "g", InotifyReplay.file "y"
+                            "e", InotifyReplay.directory 0o755 []
+                        ]
+                ]
+
+        let fd, system =
+            InotifyReplay.openFd (InotifyReplay.openFlags FileAccessMode.ReadWrite false false false) "d/f" 0 system
+
+        system, idOf fd system, InotifyReplay.numberOf "d" system, InotifyReplay.numberOf "d/f" system
+
+    /// `system` with the description `id` recorded as opened through `through`.
+    let private openedThroughForged
+        (id : OpenFileDescriptionId)
+        (through : ReachedThrough option)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        UnixSystemState.withFileDescriptors
+            (FileDescriptorRegistry.Unchecked.setOpenedThrough id through (UnixSystemState.fileDescriptors system))
+            system
+
+    [<Test>]
+    let ``each way the name a description was opened through can disagree with the graph is a defect`` () : unit =
+        let system, id, d, f = openedThroughName ()
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        let named (entry : string) (unlinked : bool) : ReachedThrough option =
+            Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = d
+                        Name = name entry
+                    },
+                    unlinked
+                )
+            )
+
+        openedThroughForged id (named "g" false) system
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.OpenedThroughNameUnbound (id, f, d, name "g") ]
+
+        openedThroughForged
+            id
+            (Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = InodeNumber 999L
+                        Name = name "f"
+                    },
+                    true
+                )
+            ))
+            system
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.OpenedThroughParentGone (id, InodeNumber 999L) ]
+
+        openedThroughForged id (Some ReachedThrough.Unnamed) system
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.OpenedThroughNoNameNotRoot (id, f) ]
+
+        openedThroughForged id (Some (ReachedThrough.RemovedDirectory d)) system
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.OpenedThroughRemovedDirectoryNamed (id, f, d) ]
+
+        // An unlinked name the directory still binds to the inode is no defect:
+        // the name may have been given again (`inotify-dentry-probe.c` section
+        // L).
+        openedThroughForged id (named "f" true) system
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a description onto an inode without the name it was opened through, or another with one, is a defect``
+        ()
+        : unit
+        =
+        let system, id, _, f = openedThroughName ()
+
+        openedThroughForged id None system
+        |> registryDefects
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.OpenedThroughMismatch (id, OpenFileTarget.File (f, 0L))
+            ]
+
+        let instance, system = init1 0x800 system
+        let instanceId = idOf instance system
+        let target = (OpenFileTable.get context instanceId system.Machine.OpenFiles).Target
+
+        openedThroughForged instanceId (Some ReachedThrough.Unnamed) system
+        |> registryDefects
+        |> shouldEqual [ FileDescriptorRegistryDefect.OpenedThroughMismatch (instanceId, target) ]
+
+    [<Test>]
+    let ``a description is made onto an inode with the name it was opened through, and onto nothing else with one``
+        ()
+        : unit
+        =
+        let description (target : OpenFileTarget) : OpenFileDescription =
+            {
+                Target = target
+                AccessMode = FileAccessMode.ReadOnly
+                NonBlocking = false
+                Flock = None
+                Status = OpenFileStatus.none
+            }
+
+        Assert.Throws<exn> (fun () ->
+            OpenFileTable.create (description (OpenFileTarget.File (InodeNumber 5L, 0L))) None OpenFileTable.empty
+            |> ignore<OpenFileDescriptionId * OpenFileTable>
+        )
+        |> ignore<exn>
+
+        Assert.Throws<exn> (fun () ->
+            OpenFileTable.create
+                (description (OpenFileTarget.Socket (SocketId 0L)))
+                (Some ReachedThrough.Unnamed)
+                OpenFileTable.empty
+            |> ignore<OpenFileDescriptionId * OpenFileTable>
+        )
+        |> ignore<exn>
+
+    [<Test>]
+    let ``a name unlinked and linked again to the same inode leaves the description's name unlinked`` () : unit =
+        // Measured (`inotify-dentry-probe.c` section L): the name given again is
+        // another name, and a write through the description opened by the old
+        // one is kept out of a watch with IN_EXCL_UNLINK.
+        let system, id, d, _ = openedThroughName ()
+
+        let system =
+            system
+            |> InotifyReplay.link "d/f" "d/h"
+            |> InotifyReplay.unlink "d/f"
+            |> InotifyReplay.link "d/h" "d/f"
+
+        OpenFileTable.openedThrough id system.Machine.OpenFiles
+        |> shouldEqual (
+            Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = d
+                        Name = name "f"
+                    },
+                    true
+                )
+            )
+        )
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+    [<Test>]
+    let ``a rename moves the name a description was opened through, and a rmdir of a directory's name unlinks it``
+        ()
+        : unit
+        =
+        let system, id, d, _ = openedThroughName ()
+        let e = InotifyReplay.numberOf "d/e" system
+
+        let directoryFd, system =
+            InotifyReplay.openFd (InotifyReplay.openFlags FileAccessMode.ReadOnly false false false) "d/e" 0 system
+
+        let directoryId = idOf directoryFd system
+
+        let system =
+            system
+            |> InotifyReplay.rename "d/f" "d/e/moved"
+            |> InotifyReplay.rename "d/e" "d/e2"
+
+        OpenFileTable.openedThrough id system.Machine.OpenFiles
+        |> shouldEqual (
+            Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = e
+                        Name = name "moved"
+                    },
+                    false
+                )
+            )
+        )
+
+        let system =
+            system |> InotifyReplay.unlink "d/e2/moved" |> InotifyReplay.rmdir "d/e2"
+
+        OpenFileTable.openedThrough directoryId system.Machine.OpenFiles
+        |> shouldEqual (
+            Some (
+                ReachedThrough.Name (
+                    {
+                        Parent = d
+                        Name = name "e2"
+                    },
+                    true
+                )
+            )
+        )
+
+        UnixSystem.checkInvariants system |> shouldEqual []

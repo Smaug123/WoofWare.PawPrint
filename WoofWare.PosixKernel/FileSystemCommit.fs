@@ -36,15 +36,17 @@ module internal CommittedFileSystem =
     /// `committed`'s own graph, and `openFiles` with the records its changes
     /// raise queued on every inotify instance watching what they changed,
     /// each instance's limit being `maxQueuedEvents` records
-    /// (`InotifyDelivery`). `notice` says how the syscall reached what it
-    /// changed.
+    /// (`InotifyDelivery`), and each description's record of the name it was
+    /// opened through moved or marked unlinked by them
+    /// (`OpenFileTable.followChanges`). `notice` says how the syscall reached
+    /// what it changed.
     ///
     /// Refused, changing nothing, where Linux would report a change to a
-    /// watch through a name this kernel does not keep: the name a descriptor
-    /// was opened through, and the name a removed directory had
-    /// (`UnplacedChangeRefusal`). Where no watch asks for an event the change
-    /// raises, the change is committed. A notice of `ChangeNotice.Names`, or
-    /// of a path that reached a named inode, is never refused.
+    /// watch through a name this kernel does not keep: the name a removed
+    /// directory had, for a change that reached it by ".", ".." or "/"
+    /// (`ReachedThrough.RemovedDirectory`, `UnplacedChangeRefusal`), when a
+    /// watch on its old parent asks for an event the change raises. Any other
+    /// change is committed.
     let commit
         (notice : ChangeNotice)
         (maxQueuedEvents : int)
@@ -63,7 +65,7 @@ module internal CommittedFileSystem =
         let notifications, unplaced, nextCookie =
             InotifyDelivery.notifications notice mutation committed.NextCookie
 
-        match InotifyDelivery.unplacedRefusal (VfsMutation.after mutation) unplaced openFiles with
+        match InotifyDelivery.unplacedRefusal unplaced openFiles with
         | Some refusal -> Error refusal
         | None ->
 
@@ -73,4 +75,5 @@ module internal CommittedFileSystem =
                 NextCookie = nextCookie
             },
             InotifyDelivery.deliver maxQueuedEvents notifications openFiles
+            |> OpenFileTable.followChanges (VfsMutation.changes mutation)
         )

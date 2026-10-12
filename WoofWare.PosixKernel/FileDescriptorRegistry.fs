@@ -1186,6 +1186,12 @@ type private OpenFileEntry =
         /// reason `Descriptors` is: a process's view cannot see another
         /// process's parks. `UnixSystem.checkInvariants` holds it to the parks.
         Holds : int
+        /// The name the description was opened through, for one onto an inode
+        /// (`OpenFileTable.namesInode`), which only a path's walk makes; `None`
+        /// for any other. The file's half of the `struct file` Linux keeps:
+        /// not the description's to show a client, which is why it is here
+        /// rather than in the `OpenFileDescription`.
+        OpenedThrough : ReachedThrough option
     }
 
 /// The machine's open file descriptions, POSIX's "open file description" and
@@ -1217,6 +1223,17 @@ type OpenFileTable =
             /// of this reason, inode reuse being visible to a process.
             NextId : OpenFileDescriptionId
         }
+
+/// An open file description nothing references any more, which
+/// `OpenFileTable.destroyIfUnreferenced` has removed from the table, for
+/// `ObjectLifetime.releaseDestroyed` to release what it was the last
+/// reference to.
+type internal DestroyedDescription =
+    {
+        Description : OpenFileDescription
+        /// The name it was opened through, whose directory it held.
+        OpenedThrough : ReachedThrough option
+    }
 
 /// Which of the machine's descriptors a `FileDescriptorRegistry`'s table
 /// holds, which decides what its own invariants can say about the open file
@@ -1448,6 +1465,10 @@ type FileDescriptorRegistryDefect =
     /// An inotify instance holds two watches of one inode: adding a watch of
     /// an inode the instance already watches changes that watch.
     | InotifyInodeWatchedTwice of instance : OpenFileDescriptionId * inode : InodeNumber
+    /// A description onto an inode records no name it was opened through, or
+    /// one onto anything else records one: only a path's walk makes a
+    /// description onto an inode, and it always does.
+    | OpenedThroughMismatch of description : OpenFileDescriptionId * target : OpenFileTarget
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistryDefect =
@@ -1502,13 +1523,63 @@ module OpenFileTable =
     let holdCount (id : OpenFileDescriptionId) (table : OpenFileTable) : int option =
         Map.tryFind id table.Entries |> Option.map (fun entry -> entry.Holds)
 
+    /// The inode a description of `target` is onto, if it is onto one: a
+    /// file, a directory, a device's node or a FIFO.
+    let private inodeOf (target : OpenFileTarget) : InodeNumber option =
+        match target with
+        | OpenFileTarget.File (inode, _)
+        | OpenFileTarget.Directory (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _)
+        | OpenFileTarget.Fifo (inode, _) -> Some inode
+        | OpenFileTarget.Epoll _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.Inotify _ -> None
+
+    /// Whether a description of `target` is onto an inode, and so was made by
+    /// a path's walk, and records the name it was opened through: a file, a
+    /// directory, a device's node or a FIFO.
+    let internal namesInode (target : OpenFileTarget) : bool = (inodeOf target).IsSome
+
+    /// The name the live description `id` was opened through, which `rename`
+    /// and the unlinks since have moved or marked (`followChanges`): `Some`
+    /// exactly for a description onto an inode (`namesInode`). Loudly partial
+    /// on a description that is not live.
+    let internal openedThrough (id : OpenFileDescriptionId) (table : OpenFileTable) : ReachedThrough option =
+        match Map.tryFind id table.Entries with
+        | Some entry -> entry.OpenedThrough
+        | None ->
+            failwith
+                $"OpenFileTable.openedThrough: open file description %O{id} is not present in the table (this is a bug in the caller, which resolved it moments ago)."
+
+    /// Every live description onto an inode, with its identity and the name it
+    /// was opened through, in identity order.
+    let internal toSeqOpenedThrough
+        (table : OpenFileTable)
+        : (OpenFileDescriptionId * OpenFileDescription * ReachedThrough) seq
+        =
+        table.Entries
+        |> Map.toSeq
+        |> Seq.choose (fun (id, entry) ->
+            entry.OpenedThrough
+            |> Option.map (fun through -> id, entry.Description, through)
+        )
+
     /// A fresh description, named by the one descriptor its creator is about to
-    /// install, and its identity.
+    /// install, and its identity. `openedThrough` is the name a path's walk
+    /// opened it through, which a description onto an inode has and no other
+    /// does (`namesInode`); loudly partial otherwise.
     let internal create
         (description : OpenFileDescription)
+        (openedThrough : ReachedThrough option)
         (table : OpenFileTable)
         : OpenFileDescriptionId * OpenFileTable
         =
+        if namesInode description.Target <> openedThrough.IsSome then
+            failwith
+                $"OpenFileTable.create: a description of %A{description.Target} opened through %A{openedThrough}, where a description onto an inode, and only one, records the name it was opened through (this is a bug in the caller)."
+
         let id = table.NextId
         let (OpenFileDescriptionId raw) = id
 
@@ -1521,9 +1592,51 @@ module OpenFileTable =
                         Description = description
                         Descriptors = 1
                         Holds = 0
+                        OpenedThrough = openedThrough
                     }
                     table.Entries
             NextId = OpenFileDescriptionId (raw + 1L)
+        }
+
+    /// `table` after a filesystem change of names: each description's record
+    /// of the name it was opened through moved by a rename of that name, or
+    /// marked unlinked by the name's going (`ReachedThrough.followChange`), in
+    /// the order of `changes`.
+    let internal followChanges (changes : FsChange list) (table : OpenFileTable) : OpenFileTable =
+        let follows =
+            changes
+            |> List.exists (fun change ->
+                match change with
+                | FsChange.EntryRemoved _
+                | FsChange.EntryMoved _ -> true
+                | FsChange.EntryAdded _
+                | FsChange.ContentChanged _
+                | FsChange.AttributesChanged _
+                | FsChange.InodeForgotten _ -> false
+            )
+
+        if not follows then
+            table
+        else
+
+        { table with
+            Entries =
+                table.Entries
+                |> Map.map (fun _ entry ->
+                    match entry.OpenedThrough, inodeOf entry.Description.Target with
+                    | Some through, Some inode ->
+                        { entry with
+                            OpenedThrough =
+                                Some (
+                                    (through, changes)
+                                    ||> List.fold (fun through change ->
+                                        ReachedThrough.followChange inode change through
+                                    )
+                                )
+                        }
+                    | Some _, _
+                    | None, _ -> entry
+                )
         }
 
     /// Rewrite the entry of the live description `id`. `operation` names the
@@ -1701,7 +1814,7 @@ module OpenFileTable =
     let internal destroyIfUnreferenced
         (id : OpenFileDescriptionId)
         (table : OpenFileTable)
-        : OpenFileTable * OpenFileDescription option
+        : OpenFileTable * DestroyedDescription option
         =
         match Map.tryFind id table.Entries with
         | None -> table, None
@@ -1709,7 +1822,12 @@ module OpenFileTable =
             if entry.Descriptors > 0 || entry.Holds > 0 then
                 table, None
             else
-                destroy id table, Some entry.Description
+                destroy id table,
+                Some
+                    {
+                        Description = entry.Description
+                        OpenedThrough = entry.OpenedThrough
+                    }
 
     /// May two *different* open file descriptions on one file hold these two
     /// locks at the same time? Symmetric, so `checkInvariants` can apply it to
@@ -2560,6 +2678,16 @@ module OpenFileTable =
                 | OpenFileTarget.CharacterDevice _ -> None
             )
 
+        let openedThrough =
+            table.Entries
+            |> Map.toList
+            |> List.choose (fun (id, entry) ->
+                if namesInode entry.Description.Target = entry.OpenedThrough.IsSome then
+                    None
+                else
+                    Some (FileDescriptorRegistryDefect.OpenedThroughMismatch (id, entry.Description.Target))
+            )
+
         let inotifyInstances =
             descriptions
             |> Map.toList
@@ -2586,6 +2714,7 @@ module OpenFileTable =
         @ readyEntries
         @ kqueueEntries
         @ reservedTargets
+        @ openedThrough
         @ inotifyInstances
 
     /// Every way in which `table` fails to be the open file descriptions of a
@@ -2698,6 +2827,20 @@ module FileDescriptorRegistry =
 
     /// What `fd` refers to and where in it, if `fd` is live. For the callers
     /// that move or consume the file offset.
+    /// The name the description `fd` names was opened through
+    /// (`OpenFileTable.openedThrough`). Loudly partial: `operation`, named in
+    /// the message, has just found `fd` naming a description onto an inode.
+    let internal openedThrough (operation : string) (fd : int) (registry : FileDescriptorRegistry) : ReachedThrough =
+        let recorded =
+            named fd registry.Descriptors.Fds
+            |> Option.bind (fun id -> OpenFileTable.openedThrough id registry.OpenFiles)
+
+        match recorded with
+        | Some through -> through
+        | None ->
+            failwith
+                $"%s{operation}: fd %d{fd} names no description onto an inode, though the caller found it naming one moments ago (this is a bug in this library)."
+
     let tryFindTarget (fd : int) (registry : FileDescriptorRegistry) : OpenFileTarget option =
         tryFind fd registry |> Option.map (fun description -> description.Target)
 
@@ -2790,15 +2933,18 @@ module FileDescriptorRegistry =
             OpenFiles = OpenFileTable.retain id registry.OpenFiles
         }
 
-    /// A fresh open file description, `description`, and the lowest
-    /// non-negative descriptor not in use to point at it, with neither
-    /// descriptor flag.
+    /// A fresh open file description, `description`, opened through
+    /// `openedThrough` (`OpenFileTable.create`), and the lowest non-negative
+    /// descriptor not in use to point at it, with neither descriptor flag.
     let private createDescription
         (description : OpenFileDescription)
+        (openedThrough : ReachedThrough option)
         (registry : FileDescriptorRegistry)
         : int * FileDescriptorRegistry
         =
-        let id, openFiles = OpenFileTable.create description registry.OpenFiles
+        let id, openFiles =
+            OpenFileTable.create description openedThrough registry.OpenFiles
+
         let fd = lowestFree registry.Descriptors.Fds
 
         fd,
@@ -2857,6 +3003,7 @@ module FileDescriptorRegistry =
                             Flock = None
                             Status = OpenFileStatus.none
                         }
+                        None
                         registry.OpenFiles
 
                 { registry with
@@ -2987,7 +3134,7 @@ module FileDescriptorRegistry =
         (owner : ProcessId)
         (fd : int)
         (registry : FileDescriptorRegistry)
-        : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
+        : Result<FileDescriptorRegistry * DestroyedDescription option, FileDescriptorCloseError>
         =
         match named fd registry.Descriptors.Fds with
         | None -> Error FileDescriptorCloseError.BadFd
@@ -3069,6 +3216,7 @@ module FileDescriptorRegistry =
     /// (`SimulatedUnixPlatform.descriptorBound`), which `UnixSystem.checkInvariants`
     /// holds every descriptor to.
     let internal openFile
+        (openedThrough : ReachedThrough)
         (inode : InodeNumber)
         (accessMode : FileAccessMode)
         (registry : FileDescriptorRegistry)
@@ -3085,6 +3233,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            (Some openedThrough)
             registry
 
     /// Mirrors the descriptor half of `open(2)` on a character device's node:
@@ -3095,6 +3244,7 @@ module FileDescriptorRegistry =
     /// Total, for the reasons `openFile` is; whether the process may open the
     /// node is decided before this is reached.
     let internal openCharacterDevice
+        (openedThrough : ReachedThrough)
         (inode : InodeNumber)
         (device : CharacterDevice)
         (accessMode : FileAccessMode)
@@ -3109,6 +3259,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            (Some openedThrough)
             registry
 
     /// Mirrors the descriptor half of `open(2)` on a directory: allocate a
@@ -3119,6 +3270,7 @@ module FileDescriptorRegistry =
     /// Total, for the reasons `openFile` is; whether `inode` is a directory the
     /// process may read is decided before this is reached.
     let internal openDirectory
+        (openedThrough : ReachedThrough)
         (inode : InodeNumber)
         (registry : FileDescriptorRegistry)
         : int * FileDescriptorRegistry
@@ -3131,6 +3283,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            (Some openedThrough)
             registry
 
     /// A fresh, blocking, read-write open file description naming `target`,
@@ -3148,6 +3301,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            None
             registry
 
     /// Mirrors `epoll_create1(2)`: allocate a fresh open file description
@@ -3204,6 +3358,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            None
             registry
 
     /// Mirrors `kqueue(2)`: allocate a fresh open file description naming a
@@ -3261,6 +3416,7 @@ module FileDescriptorRegistry =
                 Flock = None
                 Status = OpenFileStatus.none
             }
+            None
             registry
 
     /// Allocate the two open file descriptions of a new pipe, the read end
@@ -3293,6 +3449,7 @@ module FileDescriptorRegistry =
                     Flock = None
                     Status = OpenFileStatus.none
                 }
+                None
                 registry
 
         let readFd, registry = add PipeEnd.Read FileAccessMode.ReadOnly registry
@@ -3639,8 +3796,9 @@ module FileDescriptorRegistry =
     module internal Unchecked =
         /// A registry whose descriptor table is `fds` and whose open file
         /// descriptions are `descriptions`, each counting the descriptors in
-        /// `fds` that name it and no holds, with `nextId` the identity the next
-        /// one gets.
+        /// `fds` that name it and no holds, each onto an inode recorded as
+        /// opened through no name (`ReachedThrough.Unnamed`), with `nextId`
+        /// the identity the next one gets.
         let ofParts
             (fds : Map<int, OpenFileDescriptionId>)
             (descriptions : Map<OpenFileDescriptionId, OpenFileDescription>)
@@ -3663,6 +3821,11 @@ module FileDescriptorRegistry =
                                     Description = description
                                     Descriptors = Map.tryFind id naming |> Option.defaultValue 0
                                     Holds = 0
+                                    OpenedThrough =
+                                        if OpenFileTable.namesInode description.Target then
+                                            Some ReachedThrough.Unnamed
+                                        else
+                                            None
                                 }
                             )
                         NextId = nextId
@@ -3680,6 +3843,27 @@ module FileDescriptorRegistry =
             =
             registry
             |> mapOpenFiles (OpenFileTable.mapDescription "Unchecked.mapDescription" id f)
+
+        /// Record `through` as the name the description `id` was opened
+        /// through, whatever it names. Partial: the id must be live.
+        let setOpenedThrough
+            (id : OpenFileDescriptionId)
+            (through : ReachedThrough option)
+            (registry : FileDescriptorRegistry)
+            : FileDescriptorRegistry
+            =
+            { registry with
+                OpenFiles =
+                    { registry.OpenFiles with
+                        Entries =
+                            Map.add
+                                id
+                                { Map.find id registry.OpenFiles.Entries with
+                                    OpenedThrough = through
+                                }
+                                registry.OpenFiles.Entries
+                    }
+            }
 
         /// Record `count` as the number of descriptors naming the description
         /// `id`, however many do. Partial: the id must be live.

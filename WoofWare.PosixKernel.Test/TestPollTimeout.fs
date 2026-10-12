@@ -423,7 +423,10 @@ module TestPollTimeout =
         // A directory presents IN|OUT|RDNORM|WRNORM, so only a request for none of
         // them, such as PRI alone, leaves it waiting.
         let directory, registry =
-            FileDescriptorRegistry.openDirectory (InodeNumber 1L) (UnixSystemState.fileDescriptors idle)
+            FileDescriptorRegistry.openDirectory
+                (ForgedName.ofInode idle (InodeNumber 1L))
+                (InodeNumber 1L)
+                (UnixSystemState.fileDescriptors idle)
 
         let _, parked = parks [ entry directory 0x0002s ] 10 (withRegistry registry idle)
         UnixSystem.checkInvariants parked |> shouldEqual []
@@ -462,7 +465,11 @@ module TestPollTimeout =
             | Error error -> failwith $"drop failed: %O{error}"
 
         let reopened, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly registry
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (InodeNumber 1L))
+                (InodeNumber 1L)
+                FileAccessMode.ReadOnly
+                registry
 
         reopened |> shouldEqual fd
         withRegistry registry system

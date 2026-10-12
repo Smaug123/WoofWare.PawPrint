@@ -84,7 +84,11 @@ module TestPosixFadvise =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeOf system path) mode (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (inodeOf system path))
+                (inodeOf system path)
+                mode
+                (UnixSystemState.fileDescriptors system)
 
         fd, UnixSystemState.withFileDescriptors registry system
 

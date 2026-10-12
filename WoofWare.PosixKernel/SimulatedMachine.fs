@@ -612,7 +612,7 @@ module SimulatedMachine =
         let drop
             (fd : int)
             (dead : UnixSystem<'Task, 'Handler>)
-            : UnixSystem<'Task, 'Handler> * OpenFileDescription option
+            : UnixSystem<'Task, 'Handler> * DestroyedDescription option
             =
             match FileDescriptorRegistry.dropDescriptor processId fd (UnixSystemState.fileDescriptors dead) with
             | Error FileDescriptorCloseError.BadFd ->

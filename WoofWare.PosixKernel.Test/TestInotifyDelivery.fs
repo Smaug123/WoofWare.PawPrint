@@ -101,8 +101,8 @@ module TestInotifyDelivery =
         | RmWatch of instance : int * wd : int
         /// `open(2)` of the path, kept: read-only, or for reading and writing.
         | Open of path : int * readOnly : bool
-        /// Through the kept descriptor `slot` (modulo how many are kept): a
-        /// write of `count` bytes.
+        /// Through the kept descriptor `slot` (0 the newest, and back from
+        /// there, modulo how many are kept): a write of `count` bytes.
         | Write of slot : int * count : int
         | Ftruncate of slot : int
         | Fchmod of slot : int * mode : int
@@ -167,19 +167,57 @@ module TestInotifyDelivery =
                 2, Gen.map Op.Close slot
             ]
 
+    /// A descriptor opened through a name that something then happens to,
+    /// and a change through it: the name unlinked, renamed away, renamed over,
+    /// given again by a link or a fresh file, its directory removed, or left
+    /// alone. A slot of 0 is the newest kept descriptor, which this opened if
+    /// the open succeeded.
+    let private episodeGen : Gen<Op list> =
+        gen {
+            let path = Gen.choose (0, paths.Length - 1)
+            let! p = path
+            let! q = path
+            let! readOnly = Gen.elements [ false ; false ; true ]
+
+            let! meanwhile =
+                Gen.elements
+                    [
+                        [ Op.Unlink p ]
+                        [ Op.Rename (p, q) ]
+                        [ Op.Rename (q, p) ]
+                        [ Op.Unlink p ; Op.Link (q, p) ]
+                        [ Op.Unlink p ; Op.Create (p, false) ]
+                        [ Op.RmDir p ]
+                        []
+                    ]
+
+            let! change = Gen.elements [ Op.Write (0, 1) ; Op.Ftruncate 0 ; Op.Fchmod (0, 0o700) ]
+            return [ Op.Create (p, false) ; Op.Open (p, readOnly) ] @ meanwhile @ [ change ]
+        }
+
     /// Half the sequences open by watching every directory of the pool, on
-    /// both instances, for every event, so that most changes reach a watch.
+    /// both instances, for every event, half of those with `IN_EXCL_UNLINK`,
+    /// so that most changes reach a watch.
     let private caseGen : Gen<Op list> =
         gen {
             let! opening = Gen.elements [ true ; false ]
-            let! length = Gen.choose (10, 60)
-            let! ops = Gen.listOfLength length opGen
+            let! excl = Gen.elements [ 0u ; exclUnlink ]
+            let! length = Gen.choose (10, 40)
+
+            let! ops =
+                Gen.listOfLength length (Gen.frequency [ 3, Gen.map List.singleton opGen ; 1, episodeGen ])
+                |> Gen.map List.concat
 
             let watchAll =
                 [
                     for instance in 0..1 do
                         for dir in dirs do
-                            Op.AddWatch (instance, List.findIndex ((=) dir) paths, List.fold (|||) 0u eventBits, false)
+                            Op.AddWatch (
+                                instance,
+                                List.findIndex ((=) dir) paths,
+                                List.fold (|||) 0u eventBits ||| excl,
+                                false
+                            )
                 ]
 
             return (if opening then watchAll else []) @ ops
@@ -451,12 +489,16 @@ module TestInotifyDelivery =
                 reference
         | None -> failwith $"the reference holds %s{path} but not its directory"
 
+    /// The index, oldest first, of the kept descriptor `slot` picks among
+    /// `count`: the newest for 0, and back from there.
+    let private slotIndex (slot : int) (count : int) : int = count - 1 - slot % count
+
     /// The kept descriptor `slot` picks, if any is kept.
     let private keptAt (slot : int) (reference : Reference) : (int * Kept) option =
         match reference.Kept with
         | [] -> None
         | kept ->
-            let index = slot % kept.Length
+            let index = slotIndex slot kept.Length
             Some (index, kept.[index])
 
     let private bind (path : string) (node : Node) (reference : Reference) : Reference =
@@ -792,7 +834,7 @@ module TestInotifyDelivery =
         | [] -> None
         | kept ->
 
-        let slotOf (slot : int) = kept.[slot % kept.Length]
+        let slotOf (slot : int) = kept.[slotIndex slot kept.Length]
 
         let mustAnswer (result : Result<SyscallAnswer * UnixSystem<int, string>, 'r>) =
             match result with
@@ -894,7 +936,7 @@ module TestInotifyDelivery =
                     let kept =
                         match op with
                         | Op.Open _ -> kept @ [ int answer ]
-                        | Op.Close slot -> kept |> List.removeAt (slot % kept.Length)
+                        | Op.Close slot -> kept |> List.removeAt (slotIndex slot kept.Length)
                         | _ -> kept
 
                     match through with
@@ -993,7 +1035,7 @@ module TestInotifyDelivery =
         coverage.Count Label.Modify |> shouldBeGreaterThan 50
         coverage.Count Label.Directory |> shouldBeGreaterThan 100
         coverage.Count Label.Ignored |> shouldBeGreaterThan 20
-        coverage.Count Label.ThroughDescriptor |> shouldBeGreaterThan 100
-        coverage.Count Label.ThroughUnlinked |> shouldBeGreaterThan 20
-        coverage.Count Label.ThroughMoved |> shouldBeGreaterThan 20
-        coverage.Count Label.ExcludedUnlinked |> shouldBeGreaterThan 10
+        coverage.Count Label.ThroughDescriptor |> shouldBeGreaterThan 300
+        coverage.Count Label.ThroughUnlinked |> shouldBeGreaterThan 100
+        coverage.Count Label.ThroughMoved |> shouldBeGreaterThan 30
+        coverage.Count Label.ExcludedUnlinked |> shouldBeGreaterThan 20

@@ -140,7 +140,11 @@ module TestPoll =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.openFile
+                (ForgedName.ofInode system (InodeNumber 1L))
+                (InodeNumber 1L)
+                accessMode
+                (UnixSystemState.fileDescriptors system)
 
         fd, UnixSystemState.withFileDescriptors registry system
 

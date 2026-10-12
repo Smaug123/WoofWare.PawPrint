@@ -189,10 +189,12 @@ module ObjectLifetime =
     let internal lingerCanRefuseRelease (socket : SocketDescription) : bool =
         socket.Options.Linger.Enabled && (SocketPhase.connectionEnd socket.Phase).IsSome
 
-    /// Release what the open file description `destroyed` was the last
-    /// reference to — its socket and the connections nothing else references,
-    /// its pipe once neither end is open, its inode once nothing names or holds
-    /// it — in `system`, whose open file table no longer holds the description.
+    /// Release what the open file description `destroyedDescription` was the
+    /// last reference to — its socket and the connections nothing else
+    /// references, its pipe once neither end is open, its inode once nothing
+    /// names or holds it, and the directory of the name it was opened through
+    /// likewise — in `system`, whose open file table no longer holds the
+    /// description.
     ///
     /// Destroying a connected stream socket's description closes its end of
     /// the connection (`TcpTransfer.close`): the peer gets a FIN, behind
@@ -212,10 +214,12 @@ module ObjectLifetime =
     /// `listener-reset-order.c` for the order, in
     /// docs/plans/2026-10-08-tcp-shutdown-linger).
     let internal releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (destroyed : OpenFileDescription)
+        (destroyedDescription : DestroyedDescription)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
         =
+        let destroyed = destroyedDescription.Description
+
         match destroyed.Target with
         // An epoll instance's registrations are its own state, and a kqueue
         // holds none, so neither is the last reference to anything. Nor is an
@@ -228,8 +232,16 @@ module ObjectLifetime =
         | OpenFileTarget.CharacterDevice (inode, _) ->
             // The description may have been the last reference to an inode whose
             // last name went away earlier, which is what keeps `read` on an
-            // unlinked descriptor working right up until the descriptor goes.
-            Ok (forgetIfUnheld inode system)
+            // unlinked descriptor working right up until the descriptor goes;
+            // and then to the directory that name was in, which `rmdir` may
+            // have removed meanwhile (`UnixMachineState.heldInodes`).
+            let system = forgetIfUnheld inode system
+
+            match destroyedDescription.OpenedThrough with
+            | Some (ReachedThrough.Name (dentry, _)) -> Ok (forgetIfUnheld dentry.Parent system)
+            | Some ReachedThrough.Unnamed
+            | Some (ReachedThrough.RemovedDirectory _)
+            | None -> Ok system
         | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "ObjectLifetime.releaseDestroyed" inode
         | OpenFileTarget.Pipe (pipeId, _) when
             not (Map.containsKey pipeId system.Machine.Pipes)

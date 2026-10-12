@@ -95,9 +95,16 @@ module TestInodeLifetime =
         let fd, registry =
             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
             | Some (InodeContent.Directory _) ->
-                FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors kernel)
+                FileDescriptorRegistry.openDirectory
+                    (ForgedName.ofInode kernel inode)
+                    inode
+                    (UnixSystemState.fileDescriptors kernel)
             | _ ->
-                FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors kernel)
+                FileDescriptorRegistry.openFile
+                    (ForgedName.ofInode kernel inode)
+                    inode
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors kernel)
 
         fd, UnixSystemState.withFileDescriptors registry kernel
 
@@ -111,7 +118,7 @@ module TestInodeLifetime =
         : InodeNumber * UnixSystem<int, string>
         =
         match
-            GraphMutators.unbind
+            VirtualFileSystem.unbind
                 UnbindTargetEffect.LostALink
                 (inodeOf kernel path)
                 (name entry)
@@ -119,13 +126,10 @@ module TestInodeLifetime =
                 kernel.Machine.FileSystem
         with
         | Error error -> failwith $"could not unbind %s{entry} from %s{path}: %O{error}"
-        | Ok (inode, filesystem) ->
+        | Ok (inode, mutation) ->
             inode,
             { kernel with
-                Machine =
-                    { kernel.Machine with
-                        CommittedFileSystem = CommittedFileSystem.initial filesystem
-                    }
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation kernel.Machine
             }
 
     let private closed (fd : int) (kernel : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -373,9 +377,12 @@ module TestInodeLifetime =
 
         contains outer kernel |> shouldEqual true
 
+        // `outer` is also the directory of the name the descriptor opened
+        // `inner` through, which the description holds directly, as Linux's
+        // dentry holds its parent's.
         UnixMachineState.heldInodes kernel.Machine
         |> Set.contains outer
-        |> shouldEqual false
+        |> shouldEqual true
 
         ObjectLifetime.pinnedInodes kernel |> Set.contains outer |> shouldEqual true
 
