@@ -769,6 +769,10 @@ module TestShutdownAgainstHost =
     /// `foreignOn` names, a listener outside the pair holds the port across
     /// that bind, as another test's socket can. Each run of the scenario is
     /// counted in `attempts`.
+    ///
+    /// `c` binds explicitly to a port its own `bind` chose (`ClientLocked`),
+    /// which no other socket's `connect` will share, so that no socket but
+    /// the injected listener holds that port.
     let private releasedThenBound
         (flavour : SimulatedUnixFlavour)
         (foreignOn : int -> bool)
@@ -777,7 +781,7 @@ module TestShutdownAgainstHost =
         =
         fun pairOf ->
             attempts.Value <- attempts.Value + 1
-            let s = ShutdownRecorder (pairOf ShutdownPairShape.Plain)
+            let s = ShutdownRecorder (pairOf ShutdownPairShape.ClientLocked)
             let port = s.PortOf c
             s.Shutdown p TcpShutdownHow.Write |> ignore<string>
             s.Close c |> ignore<string>
@@ -848,7 +852,8 @@ module TestShutdownAgainstHost =
         )
 
     // `c` holds its endpoint in TIME_WAIT, so the bind's refusal is the
-    // pair's own, and the scenario runs once.
+    // pair's own, and the scenario runs once. `ClientLocked`, as for
+    // `releasedThenBound`, so that no other socket shares c's port.
     [<Test>]
     let ``a host scenario whose bind the pair itself refused is not run again`` () =
         onLinuxHost (fun () ->
@@ -857,7 +862,7 @@ module TestShutdownAgainstHost =
             let scenario : ShutdownProbe.Scenario =
                 fun pairOf ->
                     attempts.Value <- attempts.Value + 1
-                    let s = ShutdownRecorder (pairOf ShutdownPairShape.Plain)
+                    let s = ShutdownRecorder (pairOf ShutdownPairShape.ClientLocked)
                     let port = s.PortOf c
                     s.Close c |> ignore<string>
                     s.Shutdown p TcpShutdownHow.Write |> ignore<string>
