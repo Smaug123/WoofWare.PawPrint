@@ -287,11 +287,12 @@ module MultiProgram =
         let runEnd = RunningProgram.runEnd driver.Current outcome
 
         let remaining =
-            match SimulatedMachine.endProcess ended driver.Machine with
-            | Error refusal ->
-                failwith
-                    $"MultiProgram: process %O{pid} ended (%O{EndedProcess.termination ended}), and the machine would not close what it held: %s{ProcessEndRefusal.describe refusal}"
-            | Ok (_, remaining) -> remaining
+            try
+                SimulatedMachine.endProcess ended driver.Machine |> snd
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail
+                    $"MultiProgram: process %O{pid} ended (%O{EndedProcess.termination ended}), and the machine would not close what it held"
+                    e
 
         let endedRuns = Map.add pid runEnd driver.Roster.Ended
 
@@ -806,15 +807,20 @@ module MultiProgram =
             ||> List.mapFold (fun (index, machine) (launch, _) ->
                 let knobs = processKnobs index
 
-                match
-                    SimulatedMachine.launch
-                        (ProcessConfig.toLaunch knobs machineConfig.UnixPlatform launch.Process)
-                        machine
-                with
-                | Ok (pid, machine) -> pid, (index + 1, machine)
-                | Error refusal ->
-                    failwith
-                        $"%s{knobs}: the machine will not start the process: %s{ProcessCreationRefusal.describe refusal}"
+                let processLaunch =
+                    ProcessConfig.toLaunch knobs machineConfig.UnixPlatform launch.Process
+
+                let pid, machine =
+                    try
+                        SimulatedMachine.launch processLaunch machine
+                    with
+                    | :? UnmodelledException
+                    | :? System.ArgumentException as e ->
+                        KernelRefusal.fail
+                            $"%s{knobs}: the machine will not start the process (%s{knobs}.CurrentDirectory must name a directory in the machine's filesystem)"
+                            e
+
+                pid, (index + 1, machine)
             )
             |> fun (ids, (_, machine)) -> ids, machine
 

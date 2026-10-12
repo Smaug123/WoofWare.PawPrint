@@ -219,10 +219,9 @@ module NativeLibcSignalMask =
                             $"%s{operation}: `mask` is NULL. The kernel answers EFAULT, which PawPrint does not model. Pass a real sigset_t."
 
         match answered with
-        | Error refusal -> failwith $"%s{operation}: %s{SigsuspendRefusal.describe refusal}"
-        | Ok (SigsuspendOutcome.Failed error, system) ->
+        | SigsuspendOutcome.Failed error, system ->
             NativeSystemNative.withErrno ctx error system state |> pushInt32 ctx -1
-        | Ok (SigsuspendOutcome.WouldBlock _, system) ->
+        | SigsuspendOutcome.WouldBlock _, system ->
             NativeSystemNative.withAnswered system state
             |> Scheduler.parkInSyscall ctx.Thread
             |> NativeHandlerResult.blockedRetainingFrame
@@ -253,12 +252,7 @@ module NativeLibcSignalMask =
             // `int sigprocmask(int how, const sigset_t* set, sigset_t* oldset)`.
             let operation = "libc sigprocmask"
 
-            let call task how set system =
-                match UnixSignal.sigprocmask task how set system with
-                | Ok answered -> answered
-                | Error refusal -> failwith $"%s{operation}: %s{SigprocmaskRefusal.describe refusal}"
-
-            maskCall ctx operation (fun _ -> ErrorConvention.InErrno) call |> Some
+            maskCall ctx operation (fun _ -> ErrorConvention.InErrno) UnixSignal.sigprocmask |> Some
         | Some "sigpending",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->

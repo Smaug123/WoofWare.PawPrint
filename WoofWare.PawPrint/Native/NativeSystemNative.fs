@@ -210,6 +210,61 @@ module NativeSystemNative =
         | SimulatedUnixFlavour.Darwin -> $"If the kernel names an unmeasured Darwin row: %s{unmeasuredDarwinRow}"
         | SimulatedUnixFlavour.Linux -> ""
 
+    /// The socket `fd` names in `system`, if it names one: what a handler reads
+    /// to say how a guest came to hold the socket a call was refused for.
+    let private socketOf
+        (fd : int)
+        (system : UnixSystem<ThreadId, NativeSignalHandler>)
+        : SocketDescription option
+        =
+        match UnixSystem.descriptorTarget fd system with
+        | Some (OpenFileTarget.Socket socket) -> UnixSystem.socket socket system
+        | Some _
+        | None -> None
+
+    /// PawPrint's half of a refused transfer through `buffer` on `fd`, which it
+    /// derives from its own state: how a guest came to make the call, which is
+    /// a fact about CoreLib rather than about any kernel. `entryPoint` is the
+    /// managed call the advice names (`Send`, `Receive`), and `palFlags` the
+    /// guest's `SocketFlags`, for a socket call.
+    let private transferAdvice
+        (entryPoint : string)
+        (fd : int)
+        (buffer : BufferPointer)
+        (palFlags : int option)
+        (system : UnixSystem<ThreadId, NativeSignalHandler>)
+        : string
+        =
+        KernelRefusal.advising
+            [
+                BufferPointer.unmodelledHint buffer
+                match buffer with
+                | BufferPointer.RawAddress _ ->
+                    $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
+                | BufferPointer.Storage _
+                | BufferPointer.Symbolic _
+                | BufferPointer.Unstatable _ -> ""
+                match palFlags with
+                | Some flags when flags <> 0 ->
+                    $"The guest passed SocketFlags 0x%x{flags}, which CoreLib passes through from the caller's Socket.%s{entryPoint}."
+                | Some _
+                | None -> ""
+                match UnixSystem.descriptorTarget fd system with
+                | Some (OpenFileTarget.Socket socket) ->
+                    match UnixSystem.socket socket system with
+                    | Some description when (SocketPhase.connectionEnd description.Phase).IsNone ->
+                        $"A Socket.%s{entryPoint} on a socket that is not connected reaches this."
+                    | Some _
+                    | None -> ""
+                | Some _
+                | None -> ""
+                if ProcessId.toInt32 (UnixSystem.processId system) = 1 then
+                    "If the kernel names the init process: configure a process ID other than 1 (KernelConfig.ProcessId)."
+                else
+                    ""
+                "If the kernel says which task would take SIGPIPE is not modelled: PawPrint delivers a process's signals to its main thread only (SignalDispatch), so a guest that catches SIGPIPE must not block it on its main thread while another thread does not."
+            ]
+
     /// What lifts a refusal of a privileged caller's row on Darwin, which
     /// nobody has measured, said only where the process is such a caller.
     let private privilegedDarwinAdvice (system : UnixSystem<ThreadId, NativeSignalHandler>) : string =
@@ -4925,29 +4980,22 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            let refuseCopy (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
-                match refusal with
-                | SockaddrCopyRefusal.Reason.Buffer refusal ->
-                    failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | SockaddrCopyRefusal.Reason.UnmodelledDomain (_, domain) ->
-                    // The library says why no kernel answer exists; PawPrint says
-                    // how a guest could be holding such a socket, which is a fact
-                    // about CoreLib rather than about any kernel.
-                    let reachedBy =
-                        match domain with
-                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.Inet
-                        | SocketDomain.Inet6 ->
-                            failwith
-                                $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
+            // The library says why no kernel answer exists; PawPrint says which
+            // argument carried a buffer it cannot represent, and how a guest
+            // could be holding such a socket, which is a fact about CoreLib
+            // rather than about any kernel.
+            let refusing (e : exn) : 'a =
+                let reachedBy =
+                    match socketOf fd state.Kernel.System with
+                    | Some socket when socket.Domain = SocketDomain.Unix ->
+                        "That belongs with the filesystem work (issue #956), not here."
+                    | Some _
+                    | None -> ""
 
-                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
-                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
-
-            let refuse (refusal : BindRefusal) : NativeHandlerResult option =
-                match refusal with
-                | BindRefusal.Reason.Copy refusal -> refuseCopy refusal
-                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
+                KernelRefusal.failAdvising
+                    $"%s{operation}: fd %d{fd}"
+                    (KernelRefusal.advising [ BufferPointer.unmodelledHint addressArgument ; reachedBy ])
+                    e
 
             // The shim's `setsockopt`. Its value is the shim's own stack `int`,
             // so the value buffer is real storage holding 1 and its length is
@@ -4968,13 +5016,20 @@ module NativeSystemNative =
                 let setsockopt (supplied : ImmutableArray<byte> option) =
                     UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt supplied unix
 
+                // Linux refuses the option on a connected socket in TIME_WAIT,
+                // which a PT_TCP bind of one reaches; the bind itself then
+                // answers EINVAL.
                 let answer =
-                    match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
-                    | SetSockOptAdmission.Transfer _ ->
-                        setsockopt (Some (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1)))
-                    | SetSockOptAdmission.NoCopy
-                    | SetSockOptAdmission.Answered _
-                    | Error _ -> setsockopt None
+                    try
+                        match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
+                        | SetSockOptAdmission.Transfer _ ->
+                            setsockopt (Some (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1)))
+                        | SetSockOptAdmission.NoCopy
+                        | SetSockOptAdmission.Answered _ -> setsockopt None
+                    with :? UnmodelledException as e ->
+                        KernelRefusal.fail
+                            $"%s{operation}: fd %d{fd}: the shim sets SO_REUSEADDR through its own stack buffer before bind(2), and that was refused"
+                            e
 
                 match answer with
                 | SetSockOptAnswer.Set, unix -> state.MapKernel (EmulatedKernel.withUnix unix)
@@ -4993,15 +5048,16 @@ module NativeSystemNative =
             // the admission answers. The opposite of
             // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
             // wrapper itself dereferences and `requireStorage` refuses for.
-            match
-                UnixSocket.admitSockaddrCopy
-                    SockaddrCopySyscall.Bind
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    (uint32 declaredLength)
-                    state.Kernel.System
-            with
-            | admission ->
+            let admission =
+                try
+                    UnixSocket.admitSockaddrCopy
+                        SockaddrCopySyscall.Bind
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing e
 
             let copied =
                 match admission with
@@ -5010,15 +5066,16 @@ module NativeSystemNative =
                 | SockaddrCopyAdmission.Answered _ -> ImmutableArray.Empty
                 | SockaddrCopyAdmission.Transfer length -> copiedSockaddr ctx operation addressArgument length state
 
-            match
-                UnixSocket.bind
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    (uint32 declaredLength)
-                    copied
-                    state.Kernel.System
-            with
-            | answer, unix ->
+            let answer, unix =
+                try
+                    UnixSocket.bind
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        copied
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing e
 
             let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
@@ -5042,8 +5099,23 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match UnixSocket.listen fd backlog state.Kernel.System with
-            | answer, unix ->
+            let answer, unix =
+                try
+                    UnixSocket.listen fd backlog state.Kernel.System
+                with :? UnmodelledException as e ->
+                    // The library says why no kernel answer exists; PawPrint
+                    // says how a guest could be holding such a socket, which
+                    // is a fact about CoreLib rather than about any kernel.
+                    let reachedBy =
+                        match socketOf fd state.Kernel.System with
+                        | Some socket when socket.Domain = SocketDomain.Inet6 ->
+                            "A managed guest reaches an IPv6 listener by listening on an IPv6 or dual-mode `Socket`, such as one bound to IPAddress.IPv6Any; one bound to an IPv4 address is an IPv4 socket, which listens."
+                        | Some socket when socket.Domain = SocketDomain.Unix ->
+                            "That belongs with the filesystem work (issue #956), not here."
+                        | Some _
+                        | None -> ""
+
+                    KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}" reachedBy e
 
             let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
@@ -5086,10 +5158,41 @@ module NativeSystemNative =
             // shim's own `socklen_t addrLen`, which it copies out of
             // `*socketAddressLen` before calling `accept4` and writes back after:
             // the kernel reads and writes that local, never the guest's cell.
+            // The library says why no kernel answer exists; PawPrint says which
+            // argument carried a buffer it cannot represent, and how a guest
+            // could be holding such a socket, which is a fact about CoreLib
+            // rather than about any kernel. Every answer the C gets stores
+            // through `acceptedSocket`, so a stray pointer there is reported
+            // ahead of the refusal, as it is ahead of any answer.
+            let refusing (fd : int) (e : exn) : 'a =
+                requireStorage operation "acceptedSocket" acceptedArgument
+                |> ignore<ManagedPointerSource>
+
+                let reachedBy =
+                    match socketOf fd state.Kernel.System with
+                    | Some socket when socket.Domain = SocketDomain.Inet6 ->
+                        "A managed guest reaches this by accepting on an IPv6 or dual-mode `Socket`, which cannot be listening here: `SystemNative_Listen` refuses an IPv6 socket."
+                    | Some socket when socket.Domain = SocketDomain.Unix ->
+                        "That belongs with the filesystem work (issue #956), not here."
+                    | Some _
+                    | None -> ""
+
+                let unmapped =
+                    match addressArgument with
+                    | BufferPointer.RawAddress _ -> $"`socketAddress` is %O{addressArgument}; pass a real buffer."
+                    | BufferPointer.Storage _
+                    | BufferPointer.Symbolic _
+                    | BufferPointer.Unstatable _ -> ""
+
+                KernelRefusal.failAdvising
+                    $"%s{operation}: fd %d{fd}"
+                    (KernelRefusal.advising [ BufferPointer.unmodelledHint addressArgument ; unmapped ; reachedBy ])
+                    e
+
             let settle
                 (fd : int)
                 (declaredLength : int)
-                (outcome : Result<AcceptOutcome * UnixSystem<ThreadId, NativeSignalHandler>, AcceptRefusal>)
+                (outcome : AcceptOutcome * UnixSystem<ThreadId, NativeSignalHandler>)
                 : NativeHandlerResult option
                 =
                 // The C touches both of these only once `accept4` has returned,
@@ -5109,13 +5212,12 @@ module NativeSystemNative =
                 // A sleep, or a signal ending one, returns nothing to the C, which
                 // either is still in `accept4` or calls it again.
                 match outcome with
-                | Ok (AcceptOutcome.WouldBlock _, _)
-                | Ok (AcceptOutcome.Restarts, _)
-                | Ok (AcceptOutcome.Failed UnixError.EINTR, _) -> ()
-                | Ok (AcceptOutcome.Failed _, _)
-                | Ok (AcceptOutcome.DroppedConnection _, _)
-                | Ok (AcceptOutcome.Accepted _, _)
-                | Error _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
+                | AcceptOutcome.WouldBlock _, _
+                | AcceptOutcome.Restarts, _
+                | AcceptOutcome.Failed UnixError.EINTR, _ -> ()
+                | AcceptOutcome.Failed _, _
+                | AcceptOutcome.DroppedConnection _, _
+                | AcceptOutcome.Accepted _, _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
 
                 let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                     let raw =
@@ -5131,31 +5233,9 @@ module NativeSystemNative =
                     |> complete (UnixErrorPal.toPal error)
 
                 match outcome with
-                | Error (AcceptRefusal.Reason.UnmodelledDomain (_, domain) as refusal) ->
-                    // The library says why no kernel answer exists; PawPrint says how
-                    // a guest could be holding such a socket, which is a fact about
-                    // CoreLib rather than about any kernel.
-                    let reachedBy =
-                        match domain with
-                        | SocketDomain.Inet6 ->
-                            "A managed guest reaches this by accepting on an IPv6 or dual-mode `Socket`, which cannot be listening here: `SystemNative_Listen` refuses an IPv6 socket."
-                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.Inet ->
-                            failwith
-                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
-
-                    failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
-                | Error (AcceptRefusal.Reason.Buffer refusal) ->
-                    failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | Error (AcceptRefusal.Reason.UnmeasuredCopyOutFault _ as refusal) ->
-                    // The library never saw the pointer, only how PawPrint
-                    // classified it, so naming the argument is PawPrint's half.
-                    failwith
-                        $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
-                | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
-                | Ok (AcceptOutcome.Failed UnixError.EINTR, system) ->
+                | AcceptOutcome.Failed UnixError.EINTR, system ->
                     callAgainAfterSignal
                         ctx
                         operation
@@ -5163,7 +5243,7 @@ module NativeSystemNative =
                         (Some (NativeLocals.AcceptAddressLength declaredLength))
                         system
                         state
-                | Ok (AcceptOutcome.Restarts, system) ->
+                | AcceptOutcome.Restarts, system ->
                     callAgainAfterSignal
                         ctx
                         operation
@@ -5171,19 +5251,19 @@ module NativeSystemNative =
                         (Some (NativeLocals.AcceptAddressLength declaredLength))
                         system
                         state
-                | Ok (AcceptOutcome.Failed error, system) ->
+                | AcceptOutcome.Failed error, system ->
                     // A first call's failure changes nothing, but a finishing
                     // call's clears the task's park: under Darwin, an accept a
                     // close has ended answers ECONNABORTED from its park.
                     state.MapKernel (EmulatedKernel.withUnix system) |> failFromSyscall error
-                | Ok (AcceptOutcome.DroppedConnection error, system) ->
+                | AcceptOutcome.DroppedConnection error, system ->
                     // Only a negative length drops a connection, and the shim
                     // answers that itself before calling `accept4`, so no
                     // guest reaches this. Answered as the kernel answers all
                     // the same: the connection has gone, which the system
                     // records.
                     state.MapKernel (EmulatedKernel.withUnix system) |> failFromSyscall error
-                | Ok (AcceptOutcome.WouldBlock _, system) ->
+                | AcceptOutcome.WouldBlock _, system ->
                     // Park re-entrantly, as `SystemNative_Poll` does: the native
                     // frame stays and the caller's program counter still names the
                     // call, so a wake re-enters this handler, which finishes the
@@ -5194,7 +5274,7 @@ module NativeSystemNative =
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-                | Ok (AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), unix) ->
+                | AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), unix ->
 
                 // FD_CLOEXEC: Linux's `accept4(..., SOCK_CLOEXEC)` sets it as
                 // it accepts, and on Darwin the shim's `fcntl(F_SETFD,
@@ -5268,7 +5348,13 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Accept parked) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
-                settle fd (int parked.DeclaredLength) (UnixConnection.finishAccept ctx.Thread state.Kernel.System)
+                let outcome =
+                    try
+                        UnixConnection.finishAccept ctx.Thread state.Kernel.System
+                    with :? UnmodelledException as e ->
+                        refusing fd e
+
+                settle fd (int parked.DeclaredLength) outcome
             | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
@@ -5326,13 +5412,18 @@ module NativeSystemNative =
 
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            UnixConnection.accept
-                ctx.Thread
-                fd
-                (BufferPointer.toUserBuffer addressArgument)
-                (uint32 declaredLength)
-                state.Kernel.System
-            |> settle fd declaredLength
+            let outcome =
+                try
+                    UnixConnection.accept
+                        ctx.Thread
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing fd e
+
+            settle fd declaredLength outcome
         // `int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress,
         // int32_t socketAddressLen)` (pal_networking.c:1785):
         //
@@ -5378,24 +5469,24 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            let refuse (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
-                match refusal with
-                | SockaddrCopyRefusal.Reason.Buffer refusal ->
-                    failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | SockaddrCopyRefusal.Reason.UnmodelledDomain (_, domain) ->
-                    // The library says why no kernel answer exists; PawPrint says
-                    // how a guest could be holding such a socket, which is a fact
-                    // about CoreLib rather than about any kernel.
-                    let reachedBy =
-                        match domain with
-                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.Inet
-                        | SocketDomain.Inet6 ->
-                            failwith
-                                $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
+            // The library says which unmeasured or unmodelled input it will
+            // not answer across; PawPrint says which argument carried a buffer
+            // it cannot represent, and how a guest could be holding such a
+            // socket, which is a fact about CoreLib rather than about any
+            // kernel. A guest reaches every other refusal through the
+            // ordinary `Socket.Connect`.
+            let refusing (e : exn) : 'a =
+                let reachedBy =
+                    match socketOf fd state.Kernel.System with
+                    | Some socket when socket.Domain = SocketDomain.Unix ->
+                        "That belongs with the filesystem work (issue #956), not here."
+                    | Some _
+                    | None -> ""
 
-                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
-                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
+                KernelRefusal.failAdvising
+                    $"%s{operation}: fd %d{fd}"
+                    (KernelRefusal.advising [ BufferPointer.unmodelledHint addressArgument ; reachedBy ])
+                    e
 
             let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
                 match outcome with
@@ -5407,14 +5498,18 @@ module NativeSystemNative =
             // asked before the pointer is resolved: a call whose copy
             // takes no bytes never touches it, so a pointer PawPrint cannot
             // dereference is only a problem when bytes actually move.
-            match
-                UnixSocket.admitSockaddrCopy
-                    SockaddrCopySyscall.Connect
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    (uint32 declaredLength)
-                    state.Kernel.System
-            with
+            let admission =
+                try
+                    UnixSocket.admitSockaddrCopy
+                        SockaddrCopySyscall.Connect
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing e
+
+            match admission with
             | SockaddrCopyAdmission.Answered error ->
                 // Every admission answer precedes the ladder, so none of them
                 // changed anything: the system is the one we passed in. They are
@@ -5423,18 +5518,22 @@ module NativeSystemNative =
                 failFromSyscall error state
             | SockaddrCopyAdmission.Transfer length ->
 
-            match
-                UnixConnection.connect
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    (uint32 declaredLength)
-                    (copiedSockaddr ctx operation addressArgument length state)
-                    state.Kernel.System
-            with
-            | outcome, unix ->
-                // The system comes back on the failing arms too: several of
-                // connect's failures latch a phase change first.
-                answer outcome (state.MapKernel (EmulatedKernel.withUnix unix))
+            let copied = copiedSockaddr ctx operation addressArgument length state
+
+            let outcome, unix =
+                try
+                    UnixConnection.connect
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        copied
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing e
+
+            // The system comes back on the failing arms too: several of
+            // connect's failures latch a phase change first.
+            answer outcome (state.MapKernel (EmulatedKernel.withUnix unix))
 
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen)` (pal_networking.c:1871), and
@@ -5495,9 +5594,28 @@ module NativeSystemNative =
                 )
                 |> complete (UnixErrorPal.toPal error)
 
-            match
-                syscall fd (BufferPointer.toUserBuffer addressArgument) (uint32 declaredLength) state.Kernel.System
-            with
+            let answer =
+                try
+                    syscall fd (BufferPointer.toUserBuffer addressArgument) (uint32 declaredLength) state.Kernel.System
+                with :? UnmodelledException as e ->
+                    // The library says why no kernel answer exists; PawPrint
+                    // says how a guest could be holding such a socket, which
+                    // is a fact about CoreLib rather than about any kernel.
+                    let reachedBy =
+                        match socketOf fd state.Kernel.System with
+                        | Some socket when socket.Domain = SocketDomain.Unix ->
+                            "That belongs with the filesystem work (issue #956), not here."
+                        | Some socket when socket.Domain = SocketDomain.Inet6 && socket.Kind <> SocketKind.Stream ->
+                            "A managed guest reaches this through an IPv6 `Socket` of `SocketType.Dgram`."
+                        | Some _
+                        | None -> ""
+
+                    KernelRefusal.failAdvising
+                        $"%s{operation}: fd %d{fd}"
+                        (KernelRefusal.advising [ BufferPointer.unmodelledHint addressArgument ; reachedBy ])
+                        e
+
+            match answer with
             | GetSockNameAnswer.Failed (error, _lengthOverwritten) ->
                 // `lengthOverwritten` is dropped, and that is what the shim does
                 // rather than an omission: it passes the syscall a local
@@ -5567,8 +5685,7 @@ module NativeSystemNative =
                 match UnixSocket.admitGetSockOpt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
                 | GetSockOptAdmission.ReadLength -> Some 4u
                 | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _
-                | Error _ -> None
+                | GetSockOptAdmission.Answered _ -> None
 
             match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped declaredLength unix with
             | GetSockOptAnswer.Failed (error, _lengthOverwritten), unix ->
@@ -5829,76 +5946,22 @@ module NativeSystemNative =
                     (ImmutableArray.CreateRange bytes)
                     state
 
-            let refused (fd : int) (description : string) (reachability : string) : 'a =
-                failwith $"%s{operation}: fd %d{fd}: %s{description} %s{reachability}"
+            // The library says why no kernel answer exists; PawPrint says how a
+            // guest got there. CoreLib's own sends make the socket non-blocking
+            // before they first wait, so a send that slept is a hand-rolled
+            // P/Invoke.
+            let refusing (fd : int) (finishing : bool) (e : exn) : 'a =
+                let slept =
+                    if finishing then
+                        "CoreLib's own sends make the socket non-blocking before they first wait, so a send that slept is a hand-rolled P/Invoke."
+                    else
+                        ""
 
-            // The library's reasons for a send asleep on a socket having no
-            // answer, with PawPrint's account of how a guest got there.
-            let refusedFinishing (fd : int) (refusal : WriteRefusal) : 'a =
-                match refusal with
-                | WriteRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | WriteRefusal.Interruption _ ->
-                    refused
-                        fd
-                        (WriteRefusal.describe refusal)
-                        "A signal with a handler reached a send asleep on a socket at the moment the socket had room for it, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
-                | WriteRefusal.ConnectionBecameNonBlocking _
-                | WriteRefusal.ConnectionFault _ ->
-                    refused
-                        fd
-                        (WriteRefusal.describe refusal)
-                        "CoreLib's own sends make the socket non-blocking before they first wait, and pass a buffer they hold, so this is a hand-rolled P/Invoke."
-                | WriteRefusal.SignalReceiver _ ->
-                    refused
-                        fd
-                        (WriteRefusal.describe refusal)
-                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                | WriteRefusal.InitProcess _ ->
-                    refused
-                        fd
-                        (WriteRefusal.describe refusal)
-                        "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                | WriteRefusal.UnmodelledSocketPhase _
-                | WriteRefusal.SendBuffer _
-                | WriteRefusal.Inet6Binding _
-                | WriteRefusal.EphemeralPortsExhausted _
-                | WriteRefusal.ExceedsRepresentableLength _
-                | WriteRefusal.UnmeasuredSetIdChange _
-                | WriteRefusal.SignalAtPageBoundary _ ->
-                    failwith
-                        $"%s{operation}: fd %d{fd}: finishing a send asleep on a connected socket was refused with %A{refusal}, which only a write to another object gives (this is an interpreter bug)."
-
-            let refusedSending (fd : int) (refusal : SendRefusal) : 'a =
-                match refusal with
-                | SendRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | SendRefusal.UnmodelledFlags _ ->
-                    refused
-                        fd
-                        (SendRefusal.describe refusal)
-                        $"The guest passed SocketFlags 0x%x{palFlags}: CoreLib passes a caller's SocketFlags through, so a Socket.Send given OutOfBand, Peek, DontRoute, Truncated or ControlDataTruncated reaches this."
-                | SendRefusal.UnmodelledSocketPhase _ ->
-                    refused
-                        fd
-                        (SendRefusal.describe refusal)
-                        "A Socket.Send on a socket that is not connected reaches this."
-                | SendRefusal.ConnectionFault _ ->
-                    refused
-                        fd
-                        (SendRefusal.describe refusal)
-                        $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
-                | SendRefusal.SignalReceiver _ ->
-                    refused
-                        fd
-                        (SendRefusal.describe refusal)
-                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                | SendRefusal.InitProcess _ ->
-                    refused
-                        fd
-                        (SendRefusal.describe refusal)
-                        "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                | SendRefusal.UnmeasuredCount _ ->
-                    failwith
-                        $"%s{operation}: fd %d{fd}: %s{SendRefusal.describe refusal} The shim passes an int32_t it has screened for a negative, so no count above INT_MAX reaches the kernel (this is an interpreter bug)."
+                KernelRefusal.failAdvising
+                    $"%s{operation}: fd %d{fd}"
+                    (KernelRefusal.advising
+                        [ transferAdvice "Send" fd buffer (Some palFlags) state.Kernel.System ; slept ])
+                    e
 
             /// What `outcome` leaves the guest with, as `SystemNative_Write`'s
             /// `finish` does, storing through `sent`.
@@ -5970,10 +6033,23 @@ module NativeSystemNative =
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
-                match UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System with
+                let resumption =
+                    try
+                        UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System
+                    with :? UnmodelledException as e ->
+                        refusing fd true e
+
+                match resumption with
                 | WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted) ->
-                    match UnixReadWrite.finishWrite ctx.Thread (extract fd offset count) admitted with
-                    | outcome -> finish fd outcome
+                    let bytes = extract fd offset count
+
+                    let outcome =
+                        try
+                            UnixReadWrite.finishWrite ctx.Thread bytes admitted
+                        with :? UnmodelledException as e ->
+                            refusing fd true e
+
+                    finish fd outcome
                 | WriteOutcome.Returns (WriteResumption.Answered answer, after) ->
                     finish fd (WriteOutcome.Returns (answer, after))
                 | WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after) ->
@@ -6002,15 +6078,19 @@ module NativeSystemNative =
 
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            match
-                UnixReadWrite.admitSend
-                    ctx.Thread
-                    fd
-                    (BufferPointer.toUserBuffer buffer)
-                    (uint64 bufferLen)
-                    flags
-                    state.Kernel.System
-            with
+            let admission =
+                try
+                    UnixReadWrite.admitSend
+                        ctx.Thread
+                        fd
+                        (BufferPointer.toUserBuffer buffer)
+                        (uint64 bufferLen)
+                        flags
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing fd false e
+
+            match admission with
             | WriteOutcome.Returns (WriteAdmission.Answered answer, admitted) ->
                 finish fd (WriteOutcome.Returns (answer, admitted))
             | WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted) ->
@@ -6030,8 +6110,15 @@ module NativeSystemNative =
                 UnixReadWrite.sendThenSleep ctx.Thread fd total (extract fd 0 count) flags admitted
                 |> finish fd
             | WriteOutcome.Returns (WriteAdmission.Transfer count, admitted) ->
-                match UnixReadWrite.send ctx.Thread fd (extract fd 0 count) flags admitted with
-                | outcome -> finish fd outcome
+                let bytes = extract fd 0 count
+
+                let outcome =
+                    try
+                        UnixReadWrite.send ctx.Thread fd bytes flags admitted
+                    with :? UnmodelledException as e ->
+                        refusing fd false e
+
+                finish fd outcome
         // `int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t*
         // available)` (pal_networking.c): `ioctl(FIONREAD)` into the shim's own
         // `int`, with an EINTR retry, stored through `available`, or 0 there
@@ -6152,8 +6239,7 @@ module NativeSystemNative =
 
                     Some (readBytesThrough ctx operation storage count state)
                 | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _
-                | Error _ -> None
+                | SetSockOptAdmission.Answered _ -> None
 
             match UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix with
             | SetSockOptAnswer.Set, unix ->
@@ -6249,8 +6335,7 @@ module NativeSystemNative =
                 match UnixSocket.admitGetSockOpt fd level name value UserBuffer.Mapped unix with
                 | GetSockOptAdmission.ReadLength -> Some (uint32 declared)
                 | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _
-                | Error _ -> None
+                | GetSockOptAdmission.Answered _ -> None
 
             match UnixSocket.getsockopt fd level name value UserBuffer.Mapped read unix with
             | GetSockOptAnswer.Failed (error, _lengthOverwritten), unix ->
@@ -6333,8 +6418,7 @@ module NativeSystemNative =
                 match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 8u unix with
                 | SetSockOptAdmission.Transfer count -> Some (ImmutableArray.Create (lingerValue, 0, count))
                 | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _
-                | Error _ -> None
+                | SetSockOptAdmission.Answered _ -> None
 
             match UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u supplied unix with
             | SetSockOptAnswer.Set, unix ->
@@ -6386,8 +6470,7 @@ module NativeSystemNative =
                 match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
                 | GetSockOptAdmission.ReadLength -> Some 8u
                 | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _
-                | Error _ -> None
+                | GetSockOptAdmission.Answered _ -> None
 
             match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read unix with
             | GetSockOptAnswer.Failed (error, _), unix ->
@@ -7019,14 +7102,11 @@ module NativeSystemNative =
             // the call from the task's park record and writes the event batch
             // through the caller's own `buffer`, rather than the wake having to
             // reach into a frame it does not own from some other thread's step.
-            let refuse (refusal : EpollWaitRefusal) : NativeHandlerResult option =
-                match refusal with
-                | EpollWaitRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | EpollWaitRefusal.UnmeasuredCopyOutFault _
-                | EpollWaitRefusal.UnmodelledFlavour _
-                | EpollWaitRefusal.DeadlineBeyondClock _
-                | EpollWaitRefusal.Interruption _ ->
-                    failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal} The event buffer was %O{buffer}."
+            let refusing (e : exn) : 'a =
+                KernelRefusal.failAdvising
+                    operation
+                    (KernelRefusal.advising [ BufferPointer.unmodelledHint buffer ; $"The event buffer was %O{buffer}." ])
+                    e
 
             let settle
                 (outcome : EpollWaitOutcome)
@@ -7052,9 +7132,6 @@ module NativeSystemNative =
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-
-            let refuseKevent (refusal : KeventRefusal) : NativeHandlerResult option =
-                failwith $"%s{operation}: %s{KeventRefusal.describe refusal} The event buffer was %O{buffer}."
 
             // What one `kevent` returning does, as `settle` is for `epoll_wait`.
             let settleKevent
@@ -7173,11 +7250,21 @@ module NativeSystemNative =
             // kernel finishes the call from the park.
             match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.EpollWait _) ->
-                match UnixPoll.finishEpollWait ctx.Thread state.Kernel.System with
-                | outcome, system -> settle outcome system
+                let outcome, system =
+                    try
+                        UnixPoll.finishEpollWait ctx.Thread state.Kernel.System
+                    with :? UnmodelledException as e ->
+                        refusing e
+
+                settle outcome system
             | Some (ParkedSyscall.Kevent _) ->
-                match UnixKqueue.finishKevent ctx.Thread state.Kernel.System with
-                | outcome, system -> settleKevent outcome system
+                let outcome, system =
+                    try
+                        UnixKqueue.finishKevent ctx.Thread state.Kernel.System
+                    with :? UnmodelledException as e ->
+                        refusing e
+
+                settleKevent outcome system
             | Some (ParkedSyscall.Flock _) ->
                 // Unreachable, and refused rather than treated as a first entry
                 // for the reason `SystemNative_FLock`'s mirror of this gives: a
@@ -7233,24 +7320,32 @@ module NativeSystemNative =
             | SimulatedUnixFlavour.Linux ->
                 // `epoll_wait(port, events, *count, -1)`: the shim always waits
                 // for ever.
-                match UnixPoll.epollWait ctx.Thread fd requestedCount (BufferPointer.toUserBuffer buffer) -1 system with
-                | outcome, system -> settle outcome system
+                let outcome, system =
+                    try
+                        UnixPoll.epollWait ctx.Thread fd requestedCount (BufferPointer.toUserBuffer buffer) -1 system
+                    with :? UnmodelledException as e ->
+                        refusing e
+
+                settle outcome system
             | SimulatedUnixFlavour.Darwin ->
 
             // `kevent(port, NULL, 0, events, *count, NULL)`: no changes, and the
             // shim always waits for ever.
-            match
-                UnixKqueue.kevent
-                    ctx.Thread
-                    fd
-                    0
-                    []
-                    requestedCount
-                    (BufferPointer.toUserBuffer buffer)
-                    KeventTimeout.Null
-                    system
-            with
-            | outcome, system -> settleKevent outcome system
+            let outcome, system =
+                try
+                    UnixKqueue.kevent
+                        ctx.Thread
+                        fd
+                        0
+                        []
+                        requestedCount
+                        (BufferPointer.toUserBuffer buffer)
+                        KeventTimeout.Null
+                        system
+                with :? UnmodelledException as e ->
+                    refusing e
+
+            settleKevent outcome system
         | Some "SystemNative_Poll",
           [ ConcretePointer _
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
@@ -7394,38 +7489,57 @@ module NativeSystemNative =
 
             // `entries` are the `struct pollfd`s the call was made with, which
             // `Common_Poll` makes it again with.
+            // The library says why no kernel answer exists; PawPrint says which
+            // guest call asked, and what a guest could do instead, as it can
+            // tell from the entries and the timeout.
+            let polling
+                (entries : PollEntry list)
+                (call : unit -> PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>)
+                : PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>
+                =
+                try
+                    call ()
+                with :? UnmodelledException as e ->
+                    let eventQueue =
+                        entries
+                        |> List.exists (fun (entry : PollEntry) ->
+                            match UnixSystem.descriptorTarget entry.Fd state.Kernel.System with
+                            | Some (OpenFileTarget.Epoll _)
+                            | Some (OpenFileTarget.Kqueue _)
+                            | Some (OpenFileTarget.Inotify _) -> true
+                            | Some _
+                            | None -> false
+                        )
+
+                    KernelRefusal.failAdvising
+                        operation
+                        (KernelRefusal.advising
+                            [
+                                if eventQueue then
+                                    "No managed caller polls an event queue: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
+                                else
+                                    ""
+                                // The wrapper answers EINVAL for every timeout
+                                // below -1 before it reaches the kernel.
+                                if milliseconds < -1 then "This is a hand-rolled P/Invoke." else ""
+                                if milliseconds > 0 then
+                                    "If the kernel says the deadline is past its clock: PawPrint's virtual clock stops far short of that horizon, so the guest has been jumping it with long timed waits."
+                                else
+                                    ""
+                            ])
+                        e
+
             let settle
                 (entries : PollEntry list)
-                (outcome : Result<PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>, PollRefusal>)
+                (outcome : PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>)
                 : NativeHandlerResult option
                 =
                 match outcome with
-                | Error refusal ->
-                    // The library says why no kernel answer exists; PawPrint says
-                    // which guest call asked, and what a guest could do instead.
-                    let reachedBy =
-                        match refusal with
-                        | PollRefusal.UnmodelledTarget _ ->
-                            " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
-                        | PollRefusal.DeadlineBeyondClock _ ->
-                            " PawPrint's virtual clock stops far short of this horizon, so the guest has been jumping it with long timed waits."
-                        // The wrapper answers EINVAL for every timeout below -1
-                        // before it reaches the kernel, so a guest never gets here
-                        // through it.
-                        | PollRefusal.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
-                        | PollRefusal.UnmodelledSocket _
-                        | PollRefusal.UnmeasuredSocketKind _
-                        | PollRefusal.UnmodelledVnodeWait _
-                        | PollRefusal.UnmodelledEntryCount _
-                        | PollRefusal.EventsBesideDeadline
-                        | PollRefusal.Interruption _ -> ""
-
-                    failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
-                | Ok (PollOutcome.Answered (reported, triggeredCount), system) ->
+                | PollOutcome.Answered (reported, triggeredCount), system ->
                     answer reported triggeredCount (state.MapKernel (EmulatedKernel.withUnix system))
                 // A signal ended the sleep, and `Common_Poll`'s loop calls again
                 // after EINTR, with the same timeout in full.
-                | Ok (PollOutcome.Failed UnixError.EINTR, system) ->
+                | PollOutcome.Failed UnixError.EINTR, system ->
                     callAgainAfterSignal
                         ctx
                         operation
@@ -7438,7 +7552,7 @@ module NativeSystemNative =
                 // every entry's `TriggeredEvents` alone, with `errno` as the
                 // kernel left it: under Darwin, EINVAL for more entries than
                 // OPEN_MAX.
-                | Ok (PollOutcome.Failed error, system) ->
+                | PollOutcome.Failed error, system ->
                     withErrno ctx error system state
                     |> writeBytesThrough
                         ctx
@@ -7446,7 +7560,7 @@ module NativeSystemNative =
                         (requireStorage operation "triggered" triggeredPointer)
                         (ImmutableArray.CreateRange (Array.zeroCreate<byte> 4))
                     |> complete (UnixErrorPal.toPal error)
-                | Ok (PollOutcome.WouldBlock _, system) ->
+                | PollOutcome.WouldBlock _, system ->
                     // Park re-entrantly, as `SystemNative_WaitForSocketEvents`
                     // does: the native frame stays and the caller's program counter
                     // still names the call, so a wake re-enters this handler, which
@@ -7486,13 +7600,13 @@ module NativeSystemNative =
                             }
                     )
 
-                settle entries (PollEventsPal.finish ctx.Thread state.Kernel.System)
+                settle entries (polling entries (fun () -> PollEventsPal.finish ctx.Thread state.Kernel.System))
             | Some (ParkedSyscall.KqueuePoll parked) ->
                 if List.length parked.Entries <> int eventCount then
                     failwith
                         $"%s{operation}: thread %O{ctx.Thread} re-entered a poll of %d{eventCount} entries, but its park records %d{List.length parked.Entries}. A re-entry runs the same call with the same arguments (this is an interpreter bug)."
 
-                settle parked.Entries (PollEventsPal.finish ctx.Thread state.Kernel.System)
+                settle parked.Entries (polling parked.Entries (fun () -> PollEventsPal.finish ctx.Thread state.Kernel.System))
             | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
@@ -7518,7 +7632,7 @@ module NativeSystemNative =
             // Made again after a signal: with the `struct pollfd`s the C converted
             // before its loop, whatever the caller's array holds now.
             | Some (NativeLocals.PollEntries entries) ->
-                settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
+                settle entries (polling entries (fun () -> PollEventsPal.pollConverted ctx.Thread entries milliseconds system))
             | Some (NativeLocals.AcceptAddressLength _)
             | Some NativeLocals.SocketEventWaitLoop ->
                 failwith
@@ -7560,7 +7674,7 @@ module NativeSystemNative =
                     )
 
             let entries = PollEventsPal.convert entries
-            settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
+            settle entries (polling entries (fun () -> PollEventsPal.pollConverted ctx.Thread entries milliseconds system))
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -7608,32 +7722,37 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let refused (refusal : WriteRefusal) : 'a =
-                // The library says why no answer exists; PawPrint says which
-                // managed caller could have reached it.
+            // The library says why no answer exists; PawPrint says which managed
+            // caller could have reached it, as it can tell from what `fd` names.
+            let refusing (buffer : BufferPointer) (e : exn) : 'a =
                 let reachability =
-                    match refusal with
-                    | WriteRefusal.UnmodelledSocketPhase _
-                    | WriteRefusal.ConnectionBecameNonBlocking _
-                    | WriteRefusal.ConnectionFault _
-                    | WriteRefusal.SendBuffer _
-                    | WriteRefusal.Inet6Binding _
-                    | WriteRefusal.EphemeralPortsExhausted _ ->
+                    match UnixSystem.descriptorTarget fd state.Kernel.System with
+                    | Some (OpenFileTarget.Socket _) ->
                         "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
-                    | WriteRefusal.ExceedsRepresentableLength _ ->
-                        "Write less, or raise the model's file-length limit (issue #956)."
-                    | WriteRefusal.Interruption _ ->
-                        "A signal with a handler reached a write asleep in a pipe at the moment the pipe changed, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
-                    | WriteRefusal.InitProcess _ -> "Configure a process ID other than 1 (KernelConfig.ProcessId)."
-                    | WriteRefusal.SignalReceiver _ ->
-                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
-                    | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
-                    | WriteRefusal.UnmeasuredSetIdChange _ ->
-                        $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
-                    | WriteRefusal.SignalAtPageBoundary _ ->
+                    | Some (OpenFileTarget.File _) ->
+                        KernelRefusal.advising
+                            [
+                                "If the kernel says the file would be longer than it can represent: write less, or raise the model's file-length limit (issue #956)."
+                                darwinRowAdvice state.Kernel.UnixPlatform
+                            ]
+                    | Some (OpenFileTarget.CharacterDevice _) ->
                         "Reachable from the BCL: a FileStream write of more than a page to /dev/urandom while a signal is pending for the writing thread."
+                    | Some _
+                    | None -> ""
 
-                failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
+                KernelRefusal.failAdvising
+                    $"%s{operation}: fd %d{fd}"
+                    (KernelRefusal.advising
+                        [
+                            BufferPointer.unmodelledHint buffer
+                            reachability
+                            if ProcessId.toInt32 (UnixSystem.processId state.Kernel.System) = 1 then
+                                "If the kernel names the init process: configure a process ID other than 1 (KernelConfig.ProcessId)."
+                            else
+                                ""
+                            "If the kernel says which task would take SIGPIPE is not modelled: PawPrint delivers a process's signals to its main thread only (SignalDispatch), so a guest that catches SIGPIPE must not block it on its main thread while another thread does not."
+                        ])
+                    e
 
             let answered
                 (answer : WriteAnswer)
@@ -7740,24 +7859,34 @@ module NativeSystemNative =
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-                match UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System with
-                | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error refusal -> refused refusal
-                | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-                    match UnixReadWrite.finishWrite ctx.Thread (extract buffer offset count) admitted with
-                    | Error refusal -> refused refusal
-                    | Ok outcome -> finish outcome noEffect
-                | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
+                let resumption =
+                    try
+                        UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System
+                    with :? UnmodelledException as e ->
+                        refusing buffer e
+
+                match resumption with
+                | WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted) ->
+                    let bytes = extract buffer offset count
+
+                    let outcome =
+                        try
+                            UnixReadWrite.finishWrite ctx.Thread bytes admitted
+                        with :? UnmodelledException as e ->
+                            refusing buffer e
+
+                    finish outcome noEffect
+                | WriteOutcome.Returns (WriteResumption.Answered answer, after) ->
                     finish (WriteOutcome.Returns (answer, after)) noEffect
-                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after)) ->
+                | WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after) ->
                     finish (WriteOutcome.ReturnsRaising (answer, raised, after)) noEffect
-                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _)) ->
+                | WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _) ->
                     failwith
                         $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
-                | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
-                | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+                | WriteOutcome.ProcessEnded ended -> finish (WriteOutcome.ProcessEnded ended) noEffect
+                | WriteOutcome.WouldBlock (condition, after) ->
                     finish (WriteOutcome.WouldBlock (condition, after)) noEffect
-                | Ok (WriteOutcome.Restarts after) -> finish (WriteOutcome.Restarts after) noEffect
+                | WriteOutcome.Restarts after -> finish (WriteOutcome.Restarts after) noEffect
             | Some other ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
@@ -7788,41 +7917,54 @@ module NativeSystemNative =
             // itself is total, so it is the *extraction* below that waits.
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            match
-                UnixReadWrite.admitWrite
-                    ctx.Thread
-                    fd
-                    (BufferPointer.toUserBuffer buffer)
-                    (uint64 bufferSize)
-                    state.Kernel.System
-            with
-            | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Error refusal -> refused refusal
-            | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
+            let admission =
+                try
+                    UnixReadWrite.admitWrite
+                        ctx.Thread
+                        fd
+                        (BufferPointer.toUserBuffer buffer)
+                        (uint64 bufferSize)
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing buffer e
+
+            match admission with
+            | WriteOutcome.Returns (WriteAdmission.Answered answer, admitted) ->
                 finish (WriteOutcome.Returns (answer, admitted)) noEffect
-            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
+            | WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted) ->
                 finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
-            | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
-            | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+            | WriteOutcome.ProcessEnded ended -> finish (WriteOutcome.ProcessEnded ended) noEffect
+            | WriteOutcome.WouldBlock (condition, after) ->
                 finish (WriteOutcome.WouldBlock (condition, after)) noEffect
-            | Ok (WriteOutcome.Restarts _ as outcome) ->
+            | WriteOutcome.Restarts _ as outcome ->
                 failwith
                     $"%s{operation}: fd %d{fd}: a write that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
-            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _))
-            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _)) ->
+            | WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)
+            | WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
             // A blocking write into a pipe with room for part of it: the part is
             // read now, and the rest only as the pipe takes it.
-            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
-                match UnixReadWrite.writeThenSleep ctx.Thread fd total (extract buffer 0 count) admitted with
-                | Error refusal -> refused refusal
-                | Ok outcome -> finish outcome noEffect
-            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
+            | WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted) ->
+                let bytes = extract buffer 0 count
 
-            match UnixReadWrite.write ctx.Thread fd (extract buffer 0 count) admitted with
-            | Error refusal -> refused refusal
-            | Ok outcome ->
+                let outcome =
+                    try
+                        UnixReadWrite.writeThenSleep ctx.Thread fd total bytes admitted
+                    with :? UnmodelledException as e ->
+                        refusing buffer e
+
+                finish outcome noEffect
+            | WriteOutcome.Returns (WriteAdmission.Transfer count, admitted) ->
+
+            let bytes = extract buffer 0 count
+
+            let outcome =
+                try
+                    UnixReadWrite.write ctx.Thread fd bytes admitted
+                with :? UnmodelledException as e ->
+                    refusing buffer e
+
 
             // The host's own view of what the guest printed, which is
             // PawPrint's business rather than the kernel's: the kernel
