@@ -82,6 +82,9 @@ module TestShutdownAgainstHost =
     [<DllImport("libc", EntryPoint = "pipe", SetLastError = true)>]
     extern int private hostPipe(int[] fds)
 
+    [<DllImport("libc", EntryPoint = "dup", SetLastError = true)>]
+    extern int private hostDup(int fd)
+
     [<DllImport("libc", EntryPoint = "epoll_create1", SetLastError = true)>]
     extern int private hostEpollCreate1(int flags)
 
@@ -964,6 +967,54 @@ module TestShutdownAgainstHost =
             sectionU (hostU flavour)
             |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour "U" withoutSigPipe
             |> shouldEqual []
+        )
+
+    /// The test host is one process, any of whose threads may open a
+    /// descriptor between two of section U's calls, and a new descriptor takes
+    /// the lowest free number. Section U's host replay must answer as measured
+    /// even when every number it closes is taken again at once.
+    [<Test>]
+    let ``section U's host replay answers as measured when each descriptor it closes is reopened at once`` () =
+        HostPlatform.onUnixHost (fun flavour ->
+            let own = Array.zeroCreate<int> 2
+
+            if hostPipe own <> 0 then
+                failwith $"pipe failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+            let held = ResizeArray<int> ()
+            let world = hostU flavour
+
+            // Fill free numbers up to the one just closed; a number past it
+            // means another thread took it first.
+            let reopen (closed : int) : unit =
+                let mutable copy = -1
+
+                while copy < closed do
+                    copy <- hostDup own.[0]
+
+                    if copy < 0 then
+                        failwith $"dup failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+                    held.Add copy
+
+            let disagreements =
+                try
+                    sectionU
+                        { world with
+                            Close =
+                                fun fd ->
+                                    world.Close fd
+                                    reopen fd
+                        }
+                    |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour "U" withoutSigPipe
+                finally
+                    for fd in held do
+                        hostClose fd |> ignore<int>
+
+                    hostClose own.[0] |> ignore<int>
+                    hostClose own.[1] |> ignore<int>
+
+            disagreements |> shouldEqual []
         )
 
     // ------------------------------------------------------------------
