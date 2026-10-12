@@ -220,22 +220,22 @@ module TestDeviceFileSystem =
             FileSystemStatisticsAnswer.Reported (
                 FileSystemStatistics.Linux
                     {
-                        Type = 0x01021994L
-                        Geometry =
+                        TypeValue = 0x01021994L
+                        GeometryResult =
                             Ok
                                 {
                                     BlockSize = 4096L
                                     FragmentSize = 4096L
                                     NameLengthLimit = 255L
                                 }
-                        Capacity = Error CapacityRefusal.DeviceFileSystem
-                        FileSystemId =
+                        CapacityResult = Error CapacityRefusal.DeviceFileSystem
+                        FileSystemIdResult =
                             Ok
                                 {
                                     First = int32 0x544366deu
                                     Second = int32 0xad9235deu
                                 }
-                        Flags = Ok 0x1022L
+                        FlagsResult = Ok 0x1022L
                     }
             )
 

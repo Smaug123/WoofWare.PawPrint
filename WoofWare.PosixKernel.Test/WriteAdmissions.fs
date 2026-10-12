@@ -7,7 +7,7 @@ open WoofWare.PosixKernel
 /// leader, for a test whose write must raise no signal: the answer and the
 /// system, or the refusal. A write that raised one fails the test.
 [<RequireQualifiedAccess>]
-module WriteOutcomes =
+module internal WriteOutcomes =
 
     /// The answer and system of `outcome`, failing if the write raised a signal.
     let returned<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -116,7 +116,7 @@ module WriteOutcomes =
 /// every target but a Darwin pipe, whose timestamps a write moves whatever it
 /// answers but `EPIPE`.
 [<RequireQualifiedAccess>]
-module WriteAdmissions =
+module internal WriteAdmissions =
 
     /// The admission, having checked that the system came back as it arrived.
     let unchanged<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

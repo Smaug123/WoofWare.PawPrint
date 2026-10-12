@@ -5,7 +5,7 @@ open WoofWare.PosixKernel
 /// `UnixReadWrite.read` for a test about what a read answers rather than about
 /// whether it sleeps.
 [<RequireQualifiedAccess>]
-module ReadOutcomes =
+module internal ReadOutcomes =
 
     /// `UnixReadWrite.read` by the process's leader, failing the test if the
     /// call sleeps.

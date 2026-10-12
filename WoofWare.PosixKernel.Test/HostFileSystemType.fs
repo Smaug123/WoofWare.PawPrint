@@ -82,15 +82,15 @@ module HostFileSystemType =
         | SimulatedUnixFlavour.Linux ->
             FileSystemStatistics.Linux
                 {
-                    Type = int64At 0
-                    Geometry =
+                    TypeValue = int64At 0
+                    GeometryResult =
                         Ok
                             {
                                 BlockSize = int64At 8
                                 FragmentSize = int64At 72
                                 NameLengthLimit = int64At 64
                             }
-                    Capacity =
+                    CapacityResult =
                         Ok
                             {
                                 Blocks = uint64At 16
@@ -99,27 +99,27 @@ module HostFileSystemType =
                                 Files = uint64At 40
                                 FreeFiles = uint64At 48
                             }
-                    FileSystemId =
+                    FileSystemIdResult =
                         Ok
                             {
                                 First = int32At 56
                                 Second = int32At 60
                             }
-                    Flags = Ok (int64At 80)
+                    FlagsResult = Ok (int64At 80)
                 }
             |> FileSystemStatisticsAnswer.Reported
         | SimulatedUnixFlavour.Darwin ->
             FileSystemStatistics.Darwin
                 {
-                    Type = uint32At 60
-                    TypeName = cString fd "f_fstypename" buffer 72 16
-                    Geometry =
+                    TypeValue = uint32At 60
+                    TypeNameValue = cString fd "f_fstypename" buffer 72 16
+                    GeometryResult =
                         Ok
                             {
                                 BlockSize = uint32At 0
                                 IoSize = int32At 4
                             }
-                    Capacity =
+                    CapacityResult =
                         Ok
                             {
                                 Blocks = uint64At 8
@@ -128,13 +128,13 @@ module HostFileSystemType =
                                 Files = uint64At 32
                                 FreeFiles = uint64At 40
                             }
-                    FileSystemId =
+                    FileSystemIdResult =
                         Ok
                             {
                                 First = int32At 48
                                 Second = int32At 52
                             }
-                    Mount =
+                    MountResult =
                         Ok
                             {
                                 Owner = uint32At 56

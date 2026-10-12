@@ -53,7 +53,7 @@ module TestSyscallInterruption =
 
     /// How the call ended, whichever call it was.
     [<RequireQualifiedAccess>]
-    type Ending =
+    type internal Ending =
         | Completed
         | TimedOut
         | Eintr

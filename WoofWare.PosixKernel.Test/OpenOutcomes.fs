@@ -5,7 +5,7 @@ open WoofWare.PosixKernel
 /// `UnixNamespace.openPath` and `UnixNamespace.openat` for a test about what
 /// an open answers rather than about whether it sleeps.
 [<RequireQualifiedAccess>]
-module OpenOutcomes =
+module internal OpenOutcomes =
 
     /// An open's result as the answer it returned, failing the test if the
     /// call slept or restarted. Nothing in this version makes a FIFO, the one
