@@ -205,8 +205,6 @@ module TestInotifyDeliveryAgainstHost =
                 2, Gen.map Op.Close slot
             ]
 
-    /// Half the sequences open by watching every directory of the pool, on
-    /// both instances, for every event, so that most changes reach a watch.
     /// A file with two names, watched itself, opened through one or both or
     /// one twice, then its names unlinked or renamed over in some order and
     /// its descriptors closed; or a directory, watched, opened, removed and
@@ -259,6 +257,8 @@ module TestInotifyDeliveryAgainstHost =
                     @ closes
         }
 
+    /// Half the sequences open by watching every directory of the pool, on
+    /// both instances, for every event, so that most changes reach a watch.
     let private caseGen : Gen<Op list> =
         gen {
             let! opening = Gen.elements [ true ; false ]
