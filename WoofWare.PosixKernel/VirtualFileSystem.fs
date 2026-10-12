@@ -166,8 +166,14 @@ type VirtualFileSystem =
 /// A way in which a `VirtualFileSystem` fails to describe a filesystem any
 /// kernel could produce. `VirtualFileSystem.checkInvariants` returns these;
 /// none of the operations in this module can produce one.
+///
+/// A defect is a bug in this library, and its cases are not public: a client
+/// reports one with `VirtualFileSystemDefect.describe`, and has no reason to
+/// branch on which rule broke. Any version may add a rule or remove one, for
+/// instance when the types come to make a state it forbids unrepresentable.
 [<RequireQualifiedAccess>]
 type VirtualFileSystemDefect =
+    internal
     /// `Root` names an inode the graph does not contain.
     | RootMissing of root : InodeNumber
     /// `Root` names something other than a directory.
@@ -242,6 +248,13 @@ type VirtualFileSystemDefect =
     /// such as `InodeContent.Socket` or `InodeContent.Fifo`, or the node of a
     /// device that `CharacterDevice.all` does not list.
     | ReservedContent of inode : InodeNumber
+
+[<RequireQualifiedAccess>]
+module VirtualFileSystemDefect =
+    /// The defect, for a bug report: the rule that does not hold, by the name
+    /// this library's source gives it, and the values that break it.
+    let describe (defect : VirtualFileSystemDefect) : string =
+        $"the filesystem is in a state no kernel could produce, which is a bug in this library: %A{defect}"
 
 /// What a `VirtualFileSystem` mutator answers: the graph it was applied to,
 /// the graph after it, and the changes it made between the two, in the order
@@ -2516,8 +2529,8 @@ module VirtualFileSystem =
     ///
     /// Nothing here checks that a pinned inode is *in* the graph. That is the
     /// mirror-image defect — a descriptor naming an inode the filesystem has
-    /// forgotten — and it belongs to the layer holding the open file descriptions:
-    /// `UnixSystemDefect.DanglingOpenInode`.
+    /// forgotten — and it belongs to the layer holding the open file descriptions,
+    /// whose `UnixSystem.checkInvariants` reports it.
     ///
     /// Together, the link-count and reachability rules make tree-ness a
     /// theorem rather than a further check: the root has no incoming entry

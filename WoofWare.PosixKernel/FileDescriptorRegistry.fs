@@ -927,7 +927,7 @@ type OpenFileTarget =
     /// Reserved: nothing in this version makes one, since nothing makes a FIFO
     /// inode to open (`mknodat` of `S_IFIFO` answers `MkNodRefusal.Fifo`).
     /// `FileDescriptorRegistry.checkInvariants` reports a description naming
-    /// one as `FileDescriptorRegistryDefect.ReservedTarget`. The case exists so
+    /// one as a defect. The case exists so
     /// that a client's matches already handle it when FIFOs arrive.
     ///
     /// `inode` is the FIFO's identity: what `fstat` reports through any end,
@@ -1325,8 +1325,14 @@ type internal FlockError =
 /// kernel could produce, or an `OpenFileTable` the open file descriptions of one.
 /// `FileDescriptorRegistry.checkInvariants` returns these, and
 /// `SimulatedMachine.checkInvariants` reports them for every process.
+///
+/// A defect is a bug in this library, and its cases are not public: a client
+/// reports one with `FileDescriptorRegistryDefect.describe`, and has no reason
+/// to branch on which rule broke. Any version may add a rule or remove one, for
+/// instance when the types come to make a state it forbids unrepresentable.
 [<RequireQualifiedAccess>]
 type FileDescriptorRegistryDefect =
+    internal
     /// A live descriptor names a description that is not present. Every lookup
     /// through this descriptor would fail, which no kernel permits.
     | DanglingFd of fd : int * description : OpenFileDescriptionId
@@ -1442,6 +1448,12 @@ type FileDescriptorRegistryDefect =
     /// an inode the instance already watches changes that watch.
     | InotifyInodeWatchedTwice of instance : OpenFileDescriptionId * inode : InodeNumber
 
+[<RequireQualifiedAccess>]
+module FileDescriptorRegistryDefect =
+    /// The defect, for a bug report: the rule that does not hold, by the name
+    /// this library's source gives it, and the values that break it.
+    let describe (defect : FileDescriptorRegistryDefect) : string =
+        $"the descriptor table or the open file descriptions are in a state no kernel could produce, which is a bug in this library: %A{defect}"
 
 [<RequireQualifiedAccess>]
 module OpenFileTable =

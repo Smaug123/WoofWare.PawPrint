@@ -529,16 +529,16 @@ type ParkedSyscall =
     /// a signal with a handler, and holds no open file description.
     ///
     /// Reserved: nothing parks a task in it yet, and no finishing call answers
-    /// one. `UnixSystem.checkInvariants` reports a task parked in it as
-    /// `UnixSystemDefect.ReservedPark`.
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
     | Sleep of ParkedSleep
     /// A blocking `open(2)` or `openat(2)` of one end of a FIFO, waiting for
     /// the other end to be opened or for a signal with a handler. Holds the
     /// open file description it made (`ParkedFifoOpen.Opener`).
     ///
     /// Reserved: nothing parks a task in it yet, and no finishing call answers
-    /// one. `UnixSystem.checkInvariants` reports a task parked in it as
-    /// `UnixSystemDefect.ReservedPark`.
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
     | FifoOpen of ParkedFifoOpen
     /// A blocking `read(2)` of an inotify instance, waiting for a record or for
     /// a signal with a handler. Holds the instance (`ParkedInotifyRead.Instance`).

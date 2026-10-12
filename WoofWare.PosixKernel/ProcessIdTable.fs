@@ -2,8 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// Where each flavour takes a new process's ID from.
 [<RequireQualifiedAccess>]
-type ProcessIdCounter =
-    internal
+type internal ProcessIdCounter =
     /// Linux takes a process's ID from the counter it takes thread IDs from
     /// (`ThreadIdAllocator`): the ID is the process's first task's thread ID.
     | ThreadIds

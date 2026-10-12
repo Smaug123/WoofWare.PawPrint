@@ -183,11 +183,17 @@ module SyscallRefusal =
 /// Some cases concern the machine, and read facts that every process on it
 /// contributes to: `UnixSystem.checkInvariants` reports those of a process
 /// alone on its machine, and `SimulatedMachine.checkInvariants` those of a
-/// machine holding several (as `SimulatedMachineDefect.Machine`). The rest
+/// machine holding several (inside a `SimulatedMachineDefect`). The rest
 /// concern one process's view of the machine, and
 /// `UnixSystem.checkViewInvariants` reports those.
+///
+/// A defect is a bug in this library, and its cases are not public: a client
+/// reports one with `UnixSystemDefect.describe`, and has no reason to branch on
+/// which rule broke. Any version may add a rule or remove one, for instance
+/// when the types come to make a state it forbids unrepresentable.
 [<RequireQualifiedAccess>]
 type UnixSystemDefect<'Task> =
+    internal
     /// A live open file description names a socket the socket table does not
     /// hold, so resolving that descriptor would fail.
     | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
@@ -660,6 +666,13 @@ type UnixSystemDefect<'Task> =
     /// past the machine's `InotifyLimits.MaxQueuedEvents`, `limit`: the queue
     /// stops at the limit, and then takes one `IN_Q_OVERFLOW` record.
     | InotifyQueueBeyondLimit of instance : OpenFileDescriptionId * count : int * limit : int
+
+[<RequireQualifiedAccess>]
+module UnixSystemDefect =
+    /// The defect, for a bug report: the rule that does not hold, by the name
+    /// this library's source gives it, and the values that break it.
+    let describe<'Task> (defect : UnixSystemDefect<'Task>) : string =
+        $"the system's tables disagree with each other, in a state no kernel could be in, which is a bug in this library: %A{defect}"
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
