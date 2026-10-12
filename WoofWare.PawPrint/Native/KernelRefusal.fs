@@ -16,3 +16,15 @@ module KernelRefusal =
     /// so that which call may refuse stays visible where it is made.
     let fail<'a> (context : string) (e : exn) : 'a =
         raise (System.Exception ($"%s{context}: %s{e.Message}", e))
+
+    /// `fail`, with `advice` (what would lift the refusal, which PawPrint
+    /// derived from its own state rather than from the library's reason) after
+    /// the library's account. Empty advice adds nothing.
+    let failAdvising<'a> (context : string) (advice : string) (e : exn) : 'a =
+        let advice = if advice = "" then "" else " " + advice
+        raise (System.Exception ($"%s{context}: %s{e.Message}%s{advice}", e))
+
+    /// The pieces of advice that apply, each a sentence, joined; empty where
+    /// none does.
+    let advising (pieces : string list) : string =
+        pieces |> List.filter (fun piece -> piece <> "") |> String.concat " "
