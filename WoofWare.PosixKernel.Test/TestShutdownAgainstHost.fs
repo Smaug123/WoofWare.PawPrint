@@ -810,54 +810,6 @@ module TestShutdownAgainstHost =
         hostDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" false ShutdownProbe.sectionH
         |> shouldEqual []
 
-    /// Section H's `c released closed` row, reduced to one candidate: `c`
-    /// releases its endpoint, and a fresh socket binds it. On the attempts
-    /// `foreignOn` names, a listener outside the pair holds the port across
-    /// that bind, as another test's socket can. Each run of the scenario is
-    /// counted in `attempts`.
-    ///
-    /// `c` binds explicitly to a port its own `bind` chose (`ClientLocked`),
-    /// which no other socket's `connect` will share, so that no socket but
-    /// the injected listener holds that port.
-    let private releasedThenBound
-        (flavour : SimulatedUnixFlavour)
-        (foreignOn : int -> bool)
-        (attempts : int ref)
-        : ShutdownProbe.Scenario
-        =
-        fun pairOf ->
-            attempts.Value <- attempts.Value + 1
-            let s = ShutdownRecorder (pairOf ShutdownPairShape.ClientLocked)
-            let port = s.PortOf c
-            s.Shutdown p TcpShutdownHow.Write |> ignore<string>
-            s.Close c |> ignore<string>
-
-            let foreign =
-                if foreignOn attempts.Value then
-                    let fd = hostSocket (AF_INET, SOCK_STREAM, 0)
-
-                    let address =
-                        SimulatedUnixPlatform.encodeInternetSockaddr
-                            (HostPlatform.platformOf flavour)
-                            (Ipv4Endpoint.ofParts Ipv4Address.loopback (uint16 port))
-
-                    if
-                        fd < 0
-                        || hostBind (fd, address, uint32 address.Length) <> 0
-                        || hostListen (fd, 4) <> 0
-                    then
-                        failwith $"the foreign listener could not take port %d{port}"
-
-                    Some fd
-                else
-                    None
-
-            s.Emit (s.Candidate false false port)
-            foreign |> Option.iter (hostClose >> ignore<int>)
-            s.Lines
-
-    /// Only Linux's `connect` chooses a local port that another socket holds,
-    /// so only there is a foreign holder looked for.
     [<Test>]
     let ``a listed socket refuses an IPv4 bind exactly where the addresses overlap`` () =
         [
@@ -883,6 +835,67 @@ module TestShutdownAgainstHost =
                 "0000000000000000FFFF00000200007F", false, true
             ]
 
+    /// `releasedThenBound`'s listener could not take the port, because
+    /// another socket took it once `c` had released it.
+    exception private ForeignListenerRefused of port : int
+
+    /// Section H's `c released closed` row, reduced to one candidate: `c`
+    /// releases its endpoint, and a fresh socket binds it. On the attempts
+    /// `foreignOn` names, a listener outside the pair holds the port across
+    /// that bind, as another test's socket can; this raises
+    /// `ForeignListenerRefused` if another socket took the port first. Each
+    /// run of the scenario is counted in `attempts`.
+    ///
+    /// `c` binds explicitly to a port its own `bind` chose (`ClientLocked`),
+    /// which no other socket's `connect` will share, so that until `c`
+    /// releases it no socket but the pair holds that port.
+    let private releasedThenBound
+        (flavour : SimulatedUnixFlavour)
+        (foreignOn : int -> bool)
+        (attempts : int ref)
+        : ShutdownProbe.Scenario
+        =
+        fun pairOf ->
+            attempts.Value <- attempts.Value + 1
+            let s = ShutdownRecorder (pairOf ShutdownPairShape.ClientLocked)
+            let port = s.PortOf c
+            s.Shutdown p TcpShutdownHow.Write |> ignore<string>
+            s.Close c |> ignore<string>
+
+            let foreign =
+                if foreignOn attempts.Value then
+                    let fd = hostSocket (AF_INET, SOCK_STREAM, 0)
+
+                    if fd < 0 then
+                        failwith $"socket failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+                    let address =
+                        SimulatedUnixPlatform.encodeInternetSockaddr
+                            (HostPlatform.platformOf flavour)
+                            (Ipv4Endpoint.ofParts Ipv4Address.loopback (uint16 port))
+
+                    if hostBind (fd, address, uint32 address.Length) <> 0 || hostListen (fd, 4) <> 0 then
+                        hostClose fd |> ignore<int>
+                        raise (ForeignListenerRefused port)
+
+                    Some fd
+                else
+                    None
+
+            s.Emit (s.Candidate false false port)
+            foreign |> Option.iter (hostClose >> ignore<int>)
+            s.Lines
+
+    /// Runs `test` again, up to four more times, while `releasedThenBound`'s
+    /// listener found its port taken.
+    let rec private whileForeignListenerRefused (tries : int) (test : unit -> unit) : unit =
+        try
+            test ()
+        with ForeignListenerRefused _ when tries > 1 ->
+            whileForeignListenerRefused (tries - 1) test
+
+    /// Only Linux's `connect` chooses a local port that another socket holds,
+    /// so only there is a foreign holder looked for.
     let private onLinuxHost (action : unit -> unit) : unit =
         HostPlatform.onUnixHost (fun flavour ->
             match flavour with
@@ -890,36 +903,53 @@ module TestShutdownAgainstHost =
             | SimulatedUnixFlavour.Darwin -> Assert.Ignore "a foreign holder is looked for on Linux only"
         )
 
+    // A later attempt can meet a foreign holder of its own, so the count is
+    // at least two rather than exactly two.
     [<Test>]
     let ``a host scenario whose bind another socket refused is run again`` () =
         onLinuxHost (fun () ->
-            let attempts = ref 0
+            whileForeignListenerRefused
+                5
+                (fun () ->
+                    let attempts = ref 0
 
-            hostReplay
-                SimulatedUnixFlavour.Linux
-                false
-                [ releasedThenBound SimulatedUnixFlavour.Linux ((=) 1) attempts ]
-            |> shouldEqual [ ShutdownLine.Line "bind-ok listen-ok" ]
+                    hostReplay
+                        SimulatedUnixFlavour.Linux
+                        false
+                        [ releasedThenBound SimulatedUnixFlavour.Linux ((=) 1) attempts ]
+                    |> shouldEqual [ ShutdownLine.Line "bind-ok listen-ok" ]
 
-            attempts.Value |> shouldEqual 2
+                    attempts.Value |> shouldBeGreaterThan 1
+                )
         )
 
     [<Test>]
     let ``a host scenario whose binds another socket always refuses fails the replay`` () =
         onLinuxHost (fun () ->
-            let attempts = ref 0
+            whileForeignListenerRefused
+                5
+                (fun () ->
+                    let attempts = ref 0
 
-            let error =
-                Assert.Throws<exn> (fun () ->
-                    hostReplay
-                        SimulatedUnixFlavour.Linux
-                        false
-                        [ releasedThenBound SimulatedUnixFlavour.Linux (fun _ -> true) attempts ]
-                    |> ignore<ShutdownLine list>
+                    let error =
+                        try
+                            hostReplay
+                                SimulatedUnixFlavour.Linux
+                                false
+                                [ releasedThenBound SimulatedUnixFlavour.Linux (fun _ -> true) attempts ]
+                            |> ignore<ShutdownLine list>
+
+                            None
+                        with
+                        | ForeignListenerRefused _ -> reraise ()
+                        | error -> Some error
+
+                    match error with
+                    | None -> Assert.Fail "the replay returned although every run was refused by another socket"
+                    | Some error -> error.Message |> shouldContainText "another socket"
+
+                    attempts.Value |> shouldEqual hostScenarioAttempts
                 )
-
-            error.Message |> shouldContainText "another socket"
-            attempts.Value |> shouldEqual hostScenarioAttempts
         )
 
     // `c` holds its endpoint in TIME_WAIT, so the bind's refusal is the
