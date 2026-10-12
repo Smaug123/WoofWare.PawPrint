@@ -1,0 +1,99 @@
+6.18.5 aarch64
+E	parent-unlink	wd=1 mask=DELETE cookie=0 len=16 name="f"
+E	parent-write	1: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	parent-pwrite	1: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	parent-copy_file_range	3: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	parent-ftruncate	0: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	parent-fchmod	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-fchown	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-futimens	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-utimensat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-fchmodat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-fchownat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-close	(none)
+E	parent-excl-unlink	wd=1 mask=DELETE cookie=0 len=16 name="f"
+E	parent-excl-write	1: (none)
+E	parent-excl-pwrite	1: (none)
+E	parent-excl-copy_file_range	3: (none)
+E	parent-excl-ftruncate	0: wd=1 mask=MODIFY cookie=0 len=16 name="f"
+E	parent-excl-fchmod	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-fchown	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-futimens	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-utimensat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-fchmodat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-fchownat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+E	parent-excl-close	(none)
+E	self-unlink	wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-write	1: wd=1 mask=MODIFY cookie=0 len=0 name=""
+E	self-pwrite	1: wd=1 mask=MODIFY cookie=0 len=0 name=""
+E	self-copy_file_range	3: wd=1 mask=MODIFY cookie=0 len=0 name=""
+E	self-ftruncate	0: wd=1 mask=MODIFY cookie=0 len=0 name=""
+E	self-fchmod	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-fchown	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-futimens	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-utimensat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-fchmodat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-fchownat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-close	wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+E	self-excl-unlink	wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-write	1: (none)
+E	self-excl-pwrite	1: (none)
+E	self-excl-copy_file_range	3: (none)
+E	self-excl-ftruncate	0: wd=1 mask=MODIFY cookie=0 len=0 name=""
+E	self-excl-fchmod	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-fchown	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-futimens	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-utimensat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-fchmodat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-fchownat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=0 name=""
+E	self-excl-close	wd=1 mask=DELETE_SELF cookie=0 len=0 name="" | wd=1 mask=IGNORED cookie=0 len=0 name=""
+E	both-excl-unlink	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="f"
+E	both-excl-write	1: (none)
+E	both-excl-pwrite	1: (none)
+E	both-excl-copy_file_range	3: (none)
+E	both-excl-ftruncate	0: wd=1 mask=MODIFY cookie=0 len=16 name="f" | wd=2 mask=MODIFY cookie=0 len=0 name=""
+E	both-excl-fchmod	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-fchown	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-futimens	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-utimensat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-fchmodat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-fchownat-empty-path	0: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+E	both-excl-close	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+L	no-excl-write-through-relinked-name	wd=1 mask=MODIFY cookie=0 len=16 name="b"
+L	no-excl-write-through-fresh-open	wd=1 mask=MODIFY cookie=0 len=16 name="b"
+L	excl-write-through-relinked-name	(none)
+L	excl-write-through-fresh-open	wd=1 mask=MODIFY cookie=0 len=16 name="b"
+O	no-excl-rename-over	wd=1 mask=MOVED_FROM cookie=k1 len=16 name="s" | wd=1 mask=MOVED_TO cookie=k1 len=16 name="t"
+O	no-excl-write-through-displaced	wd=1 mask=MODIFY cookie=0 len=16 name="t"
+O	no-excl-fchmod-through-displaced	wd=1 mask=ATTRIB cookie=0 len=16 name="t"
+O	no-excl-write-through-moved	wd=1 mask=MODIFY cookie=0 len=16 name="t"
+O	excl-rename-over	wd=1 mask=MOVED_FROM cookie=k2 len=16 name="s" | wd=1 mask=MOVED_TO cookie=k2 len=16 name="t"
+O	excl-write-through-displaced	(none)
+O	excl-fchmod-through-displaced	wd=1 mask=ATTRIB cookie=0 len=16 name="t"
+O	excl-write-through-moved	wd=1 mask=MODIFY cookie=0 len=16 name="t"
+Q	no-excl-wds	q=1 other=2
+Q	no-excl-fchmod	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d"
+Q	no-excl-fchmod-after-rename	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d2"
+Q	no-excl-fchmod-after-move	wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	no-excl-rmdir	wd=2 mask=DELETE+ISDIR cookie=0 len=16 name="d3"
+Q	no-excl-fchmod-after-rmdir	0: wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	no-excl-futimens-after-rmdir	0: wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	no-excl-close	(none)
+Q	excl-wds	q=1 other=2
+Q	excl-fchmod	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d"
+Q	excl-fchmod-after-rename	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d2"
+Q	excl-fchmod-after-move	wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	excl-rmdir	wd=2 mask=DELETE+ISDIR cookie=0 len=16 name="d3"
+Q	excl-fchmod-after-rmdir	0: wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	excl-futimens-after-rmdir	0: wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="d3"
+Q	excl-close	(none)
+U	wds	u=1 sub=2
+U	unlink	wd=2 mask=DELETE cookie=0 len=16 name="f"
+U	rmdir-parent	wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+U	write-in-removed-parent	wd=2 mask=MODIFY cookie=0 len=16 name="f"
+U	close	wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+U	rm-sub-watch-after	-1 errno22
+U	rm-sub-watch-events	(none)
+V	write-dev-null	wd=1 write=1: (none)
+K	write-all-text	wd=1: wd=1 mask=CREATE cookie=0 len=32 name="server-address.tmp" | wd=1 mask=MODIFY cookie=0 len=32 name="server-address.tmp"
+K	move	wd=1 mask=MOVED_FROM cookie=k7 len=32 name="server-address.tmp" | wd=1 mask=MOVED_TO cookie=k7 len=16 name="server-address"

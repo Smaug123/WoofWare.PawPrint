@@ -503,27 +503,25 @@ module TestInotifyMeasured =
         actual.Add ("bad-fd", $"add on fd 999=%s{badFd}; add on a regular file's fd=%s{onRegular}")
 
         // The masks each add stores, checked here; and the changes the probe
-        // made under each. Each write is refused, made through a descriptor
-        // while a watch asks for `IN_MODIFY` (`w/d1`'s, if not `w/d2`'s) on a
-        // directory that could hold the name it was opened through; the first
-        // two rows record those writes' `IN_MODIFY`, and the first an
-        // `IN_OPEN`, which no watch here asks for.
+        // made under each. The first row records an `IN_OPEN` at `w/f`'s
+        // watch, which no watch here asks for.
         let maskOf (wd : int) =
             match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Inotify state) -> state.Watches.[WatchDescriptor wd].Mask.Events
             | other -> failwith $"%A{other}"
 
-        add "w/d2" modify |> shouldEqual "2"
+        let m1 = add "w/d2" modify
         maskOf 2 |> shouldEqual (Set.singleton InotifyEvent.Modify)
 
         system <-
             system
-            |> InotifyReplay.writeFileRefused "w/d2/x" "1"
+            |> InotifyReplay.writeFile "w/d2/x" "1"
             |> InotifyReplay.chmod "w/d2/x" 0o600
 
-        let _, s = drain fd system
+        let drained, s = drain fd system
         system <- s
-        add "w/d2" (attrib ||| maskAdd) |> shouldEqual "2"
+        actual.Add ("mask-replace", $"wd=%s{m1}; create+write+chmod under MODIFY only: %s{drained}")
+        let m2 = add "w/d2" (attrib ||| maskAdd)
 
         maskOf 2
         |> shouldEqual (Set.ofList [ InotifyEvent.Modify ; InotifyEvent.Attrib ])
@@ -531,17 +529,18 @@ module TestInotifyMeasured =
         system <-
             system
             |> InotifyReplay.chmod "w/d2/x" 0o644
-            |> InotifyReplay.writeFileRefused "w/d2/x" "2"
+            |> InotifyReplay.writeFile "w/d2/x" "2"
 
-        let _, s = drain fd system
+        let drained, s = drain fd system
         system <- s
+        actual.Add ("mask-add", $"wd=%s{m2}; chmod then write under MODIFY+ATTRIB: %s{drained}")
         let m3 = add "w/d2" create
         maskOf 2 |> shouldEqual (Set.singleton InotifyEvent.Create)
 
         system <-
             system
             |> InotifyReplay.chmod "w/d2/x" 0o600
-            |> InotifyReplay.writeFileRefused "w/d2/y" "1"
+            |> InotifyReplay.writeFile "w/d2/y" "1"
 
         let drained, s = drain fd system
         system <- s
@@ -567,8 +566,23 @@ module TestInotifyMeasured =
         system <- s
         actual.Add ("re-add-events", drained)
 
+        // The probe's watch on `w/f` asked for `IN_OPEN`, which no watch here
+        // can ask for.
         List.ofSeq actual
-        |> shouldEqual (rows probe "W" [ "mask-replace" ; "mask-add" ])
+        |> shouldEqual (
+            rows probe "W" []
+            |> List.map (fun (case, text) ->
+                match case with
+                | "mask-replace" ->
+                    let prefix = "wd=2; create+write+chmod under MODIFY only: "
+
+                    if not (text.StartsWith prefix) then
+                        failwith $"row mask-replace reads %s{text}"
+
+                    case, prefix + InotifyReplay.withoutUnmodelled (text.Substring prefix.Length)
+                | _ -> case, text
+            )
+        )
 
     [<Test>]
     let ``IN_ALL_EVENTS is refused, naming the events this kernel does not raise, where the add would succeed``

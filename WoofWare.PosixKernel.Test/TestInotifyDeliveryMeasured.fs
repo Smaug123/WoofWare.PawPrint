@@ -15,10 +15,6 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 ///
 /// Rows are skipped, each named, where the model cannot make the call or does
 /// not yet report what it records:
-/// - a change made through a descriptor (`write`, `pwrite`, `ftruncate`), which
-///   the model refuses where a watch would hear of it (`writeRefused` and
-///   the like expect the refusal), not knowing
-///   the name the descriptor was opened through;
 /// - `truncate(2)`, which the model does not have;
 /// - the records of the watched inode itself going (`IN_DELETE_SELF`,
 ///   `IN_MOVE_SELF`, and the `IN_IGNORED` after them), which the model does not
@@ -60,9 +56,6 @@ module TestInotifyDeliveryMeasured =
         |> List.filter (fun (case, _) -> not (List.contains case skipped))
         |> normaliseCookies
 
-    /// Rows of changes made through a descriptor.
-    let private descriptorRows : string list = [ "write" ; "pwrite" ; "ftruncate" ]
-
     /// `inotify-probe.c`'s `operations`: every operation of section E or N on
     /// the directory `dir`, watched with `mask`, each row the records it
     /// queued.
@@ -98,13 +91,13 @@ module TestInotifyDeliveryMeasured =
 
         system <- s
         row "open-creat"
-        writeRefused f "hello" system
+        system <- write f "hello" system
         row "write"
         system <- write f "" system
         row "write-0"
-        pwriteRefused f "p" 0L system
+        system <- pwrite f "p" 0L system
         row "pwrite"
-        ftruncateRefused f 2L system
+        system <- ftruncate f 2L system
         row "ftruncate"
         system <- close f system
         row "close-write"
@@ -140,15 +133,7 @@ module TestInotifyDeliveryMeasured =
         row "chmod-watched-dir"
         system <- mkdir (p "sub") 0o755 system
         row "mkdir"
-        // The write could have come through a name since unlinked from the
-        // watched directory, so this kernel refuses it under a watch asking
-        // for IN_MODIFY there, unless the watch has IN_EXCL_UNLINK.
-        system <-
-            if mask &&& 0x04000000u <> 0u then
-                writeFile (p "sub/inner") "x" system
-            else
-                writeFileRefused (p "sub/inner") "x" system
-
+        system <- writeFile (p "sub/inner") "x" system
         row "write-in-unwatched-subdir"
         system <- unlink (p "sub/inner") system
         system <- rmdir (p "sub") system
@@ -185,14 +170,14 @@ module TestInotifyDeliveryMeasured =
 
     [<Test>]
     let ``section E: what each operation queues on a watched directory`` () : unit =
-        let skipped = "truncate" :: descriptorRows
+        let skipped = [ "truncate" ]
 
         actual skipped (operations "e" modelledEvents)
         |> shouldEqual (expected probe "E" skipped)
 
     [<Test>]
     let ``section N: what each operation queues under FileSystemWatcher's mask`` () : unit =
-        let skipped = "truncate" :: descriptorRows
+        let skipped = [ "truncate" ]
 
         actual skipped (operations "n" dotnetMask)
         |> shouldEqual (expected probe "N" skipped)
@@ -246,12 +231,10 @@ module TestInotifyDeliveryMeasured =
             produced.Add (case, $"%d{records.Length} events: %s{text}")
 
         for text in [ "1" ; "2" ; "3" ] do
-            writeRefused f text system
+            system <- write f text system
 
         counted "three-writes"
-        writeRefused f "4" system
-        system <- chmod "c/f" 0o600 system
-        writeRefused f "5" system
+        system <- system |> write f "4" |> chmod "c/f" 0o600 |> write f "5"
         counted "write-chmod-write"
         system <- system |> chmod "c/f" 0o644 |> chmod "c/g" 0o644 |> chmod "c/f" 0o600
         counted "chmod-f-g-f"
@@ -259,15 +242,12 @@ module TestInotifyDeliveryMeasured =
         counted "chmod-f-f"
         system <- close f system
         let _, s = drain fd system
-        system <- writeFileRefused "c/h" "x" s
+        system <- writeFile "c/h" "x" s
 
         let g, s =
             openFd (openFlags FileAccessMode.WriteOnly false false false) "c/g" 0 system
 
-        system <- s
-        writeRefused g "a" system
-        writeRefused g "b" system
-        system <- system |> writeFileRefused "c/i" "x" |> close g
+        system <- s |> write g "a" |> write g "b" |> writeFile "c/i" "x" |> close g
         counted "create-write-write-create"
         system <- chmod "c/f" 0o644 system
 
@@ -288,8 +268,7 @@ module TestInotifyDeliveryMeasured =
             | other -> failwith $"read: %A{other}"
 
         produced.Add ("separated-by-read", $"first read=%d{first} second read=%d{second}")
-        let skipped = [ "three-writes" ; "write-chmod-write" ; "create-write-write-create" ]
-        actual skipped produced |> shouldEqual (expected probe "C" skipped)
+        actual [] produced |> shouldEqual (expected probe "C" [])
 
     [<Test>]
     let ``section K: the two records of a rename share a cookie, and the next rename's is one more`` () : unit =
@@ -507,6 +486,57 @@ module TestInotifyDeliveryMeasured =
 
             system <- close fd system
 
+        // A write that clears the set-ID bits, by uid 1000, of its own file:
+        // two records, so a queue one short of full overflows.
+        let mutable system = boot unprivileged [ "z", directoryOwnedBy 1000u 0o777 [] ]
+
+        for full in [ false ; true ] do
+            let d = if full then "z/wfull" else "z/w"
+            system <- system |> mkdir d 0o777 |> chmod d 0o777
+
+            system <-
+                system
+                |> writeFile $"%s{d}/f" "hello"
+                |> writeFile $"%s{d}/a" "x"
+                |> writeFile $"%s{d}/b" "x"
+
+            system <- chmod $"%s{d}/f" 0o6755 system
+            let before = modeOf $"%s{d}/f" system
+            let fd, s = init1 nonblock system
+            let _, s = watch fd d modelledEvents s
+
+            system <-
+                if full then
+                    fillToOneShort fd $"%s{d}/a" $"%s{d}/b" limit s
+                else
+                    s
+
+            let w, s =
+                openFd (openFlags FileAccessMode.WriteOnly false false false) $"%s{d}/f" 0 system
+
+            system <- s |> write w "y" |> close w
+            let after = modeOf $"%s{d}/f" system
+
+            if full then
+                let records, s = drainRecords fd system
+                system <- s
+
+                let overflows =
+                    records
+                    |> List.filter (fun record -> record.Mask &&& 0x4000u <> 0u)
+                    |> List.length
+
+                produced.Add (
+                    "write-at-one-short",
+                    $"records=%d{records.Length} overflows=%d{overflows} (filled %d{limit - 1})"
+                )
+            else
+                let drained, s = drain fd system
+                system <- s
+                produced.Add ("write", $"mode %o{before} -> %o{after}: %s{drained}")
+
+            system <- close fd system
+
         // A watch asking for one of the two events the truncation raises, by
         // uid 1000.
         let mutable system = boot unprivileged [ "z", directoryOwnedBy 1000u 0o777 [] ]
@@ -533,6 +563,22 @@ module TestInotifyDeliveryMeasured =
             let drained, s = drain fd system
             system <- close fd s
             produced.Add (case, drained)
+
+        // A write through a name since unlinked that clears the set-ID bits,
+        // under a watch with IN_EXCL_UNLINK on the old directory: its
+        // `IN_ATTRIB` is heard, and its `IN_MODIFY` is not.
+        system <- system |> mkdir "z/u" 0o777 |> writeFile "z/u/f" "hello" |> chmod "z/u/f" 0o6755
+
+        let w, s =
+            openFd (openFlags FileAccessMode.WriteOnly false false false) "z/u/f" 0 system
+
+        let s = unlink "z/u/f" s
+        let fd, s = init1 nonblock s
+        let _, s = watch fd "z/u" (attrib ||| modify ||| 0x04000000u) s
+        system <- write w "y" s
+        let drained, s = drain fd system
+        system <- s |> close w |> close fd
+        produced.Add ("write-unlinked-excl-unlink", drained)
 
         // `chown` by root.
         let mutable system = boot root [ "z", directory 0o777 [] ]
@@ -580,17 +626,8 @@ module TestInotifyDeliveryMeasured =
 
             system <- close fd system
 
-        // `truncate(2)`, which the model does not have, and writes, which are
-        // made through a descriptor.
-        let skipped =
-            [
-                "truncate"
-                "truncate-at-one-short"
-                "truncate-dotnet"
-                "write"
-                "write-at-one-short"
-                "write-unlinked-excl-unlink"
-            ]
+        // `truncate(2)`, which the model does not have.
+        let skipped = [ "truncate" ; "truncate-at-one-short" ; "truncate-dotnet" ]
 
         actual skipped produced |> shouldEqual (expected deliveryProbe "Z" skipped)
 
