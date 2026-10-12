@@ -695,6 +695,10 @@ type UnixSystemDefect<'Task> =
     /// past the machine's `InotifyLimits.MaxQueuedEvents`, `limit`: the queue
     /// stops at the limit, and then takes one `IN_Q_OVERFLOW` record.
     | InotifyQueueBeyondLimit of instance : OpenFileDescriptionId * count : int * limit : int
+    /// The inotify instance `instance` holds the watch `watch` of `inode`,
+    /// which the filesystem no longer holds: a watch ends when its inode goes
+    /// for inotify, which is at the latest when the inode is forgotten.
+    | InotifyWatchOfForgottenInode of instance : OpenFileDescriptionId * watch : WatchDescriptor * inode : InodeNumber
     /// The description `description`, onto `inode`, records that it was
     /// opened through the name `name` in `parent`, not since unlinked, and
     /// that directory does not bind that name to `inode`: a rename of the
@@ -1601,7 +1605,19 @@ module UnixSystem =
                         None
                 )
 
-            limitsDefects @ instanceCounts @ watchCounts @ queues
+            let forgottenWatches =
+                instances
+                |> List.collect (fun (id, state) ->
+                    state.Watches
+                    |> Map.toList
+                    |> List.choose (fun (watch, watched) ->
+                        match VirtualFileSystem.tryGet watched.Inode machine.FileSystem with
+                        | Some _ -> None
+                        | None -> Some (UnixSystemDefect.InotifyWatchOfForgottenInode (id, watch, watched.Inode))
+                    )
+                )
+
+            limitsDefects @ instanceCounts @ watchCounts @ queues @ forgottenWatches
 
         // Every reference any socket makes to a connection: as the end it is
         // (`Some`), or through an accept queue (`None`), which has its own

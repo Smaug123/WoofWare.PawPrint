@@ -860,6 +860,10 @@ module VirtualFileSystem =
             Changes = changes
         }
 
+    /// No change to `vfs`, for a commit that changes what holds a name rather
+    /// than the graph (`ChangeNotice.NameReleased`).
+    let internal unchanged (vfs : VirtualFileSystem) : VfsMutation = mutation vfs vfs []
+
     let private allocate
         (content : InodeContent)
         (owner : InodeOwner)

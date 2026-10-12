@@ -227,6 +227,7 @@
     <Compile Include="TestInotifyInvariants.fs" />
     <Compile Include="TestInotifyDeliveryMeasured.fs" />
     <Compile Include="TestInotifyDentryMeasured.fs" />
+    <Compile Include="TestInotifySelfMeasured.fs" />
     <Compile Include="TestInotifyDelivery.fs" />
     <Compile Include="TestInotifyDeliveryAgainstHost.fs" />
     <Compile Include="TestInotifyRefusals.fs" />
@@ -293,6 +294,7 @@
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-descriptor-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDescriptor.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-delivery-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDelivery.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-dentry-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDentry.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-self-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifySelf.linux.txt" />
   </ItemGroup>
 
   <ItemGroup>

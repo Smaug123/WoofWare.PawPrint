@@ -68,6 +68,10 @@ type internal ChangeNotice =
     /// `pwrite(2)` or `copy_file_range(2)`, of one regular file, which every
     /// change it holds is of: its contents, and the set-ID bits it cleared.
     | Written of through : ReachedThrough
+    /// The last description holding a name of `inode`, which is no directory,
+    /// since unlinked, was released (Linux's dentry going), and nothing in
+    /// the graph changed (`VirtualFileSystem.unchanged`).
+    | NameReleased of inode : InodeNumber
 
 /// One event Linux's fsnotify raises at the watches on one inode: what each
 /// inotify instance watching `Watched` queues as one record, if it asks for
@@ -93,6 +97,19 @@ type internal InotifyNotification =
         /// `inotify-delivery-probe.c` row Z write-unlinked-excl-unlink).
         HiddenByExclUnlink : bool
     }
+
+/// What a filesystem change does to the inotify instances, in order.
+[<RequireQualifiedAccess>]
+type internal InotifyEffect =
+    /// Queue the notification on each instance watching its inode and asking
+    /// for an event of it.
+    | Notify of InotifyNotification
+    /// The inode `inode` has gone, for inotify: each watch on it ends, its
+    /// instance queueing `IN_DELETE_SELF` if the watch asks for it, then
+    /// `IN_IGNORED`. Linux's `fsnotify_inoderemove`, which a name of an inode
+    /// raises as it dies while the inode has no link left (Linux's dentry
+    /// going), not the inode's going (measured, `inotify-self-probe.c`).
+    | WatchesEnd of inode : InodeNumber
 
 /// Events Linux raises at the watch on the directory a removed directory was
 /// last named in, `OldParent`, under the name it had there, which this kernel
@@ -232,43 +249,89 @@ module internal InotifyDelivery =
                     Events = events
                 }
 
-    /// The events `mutation`, made under `notice`, raises, in the order Linux
-    /// raises them; those this kernel cannot place (`Unplaced`); and the next
-    /// rename's cookie, `nextCookie` being this one's.
+    /// What `mutation`, made under `notice`, does to the inotify instances, in
+    /// the order Linux does it; the events this kernel cannot place
+    /// (`Unplaced`); and the next rename's cookie, `nextCookie` being this
+    /// one's. `openFiles` is the machine's open file table before the change.
     ///
     /// Every rename takes a cookie, whatever watches it (Linux's
     /// `fsnotify_get_cookie`, measured to count every rename since boot), and
     /// its two halves share it. The cookie after `UInt32.MaxValue` is 0, as
     /// Linux's counter wraps.
+    ///
+    /// A watched inode goes for inotify (`InotifyEffect.WatchesEnd`) when a
+    /// name of it dies while it has no link left, as Linux's dentry does,
+    /// rather than when the graph forgets it (measured,
+    /// `inotify-self-probe.c` sections U, N and R): a removal of a name of an
+    /// inode that is no directory, leaving it no link, where no description
+    /// was opened through that name (it holds the name); the release of the
+    /// last description holding a name since unlinked
+    /// (`ChangeNotice.NameReleased`); and the inode's forgetting, which for a
+    /// directory, having one name, is when that name dies. The going of an
+    /// inode whose name the change removed comes before that removal's
+    /// `IN_DELETE`, and after a rename's `IN_MOVE_SELF` (sections U, R, and
+    /// `inotify-probe.c` row D rmdir-watched-dir).
     let notifications
         (notice : ChangeNotice)
         (mutation : VfsMutation)
+        (openFiles : OpenFileTable)
         (nextCookie : uint32)
-        : InotifyNotification list * Unplaced option * uint32
+        : InotifyEffect list * Unplaced option * uint32
         =
         let changes = VfsMutation.changes mutation
         let isDirectory = isDirectoryIn mutation
+        let after = VfsMutation.after mutation
 
         let at (watched : InodeNumber) (event : InotifyEvent) (subject : InodeNumber) (cookie : uint32) name =
-            {
-                Watched = watched
-                Events = Set.singleton event
-                SubjectIsDirectory = isDirectory subject
-                Cookie = cookie
-                Name = name
-                HiddenByExclUnlink = false
-            }
+            InotifyEffect.Notify
+                {
+                    Watched = watched
+                    Events = Set.singleton event
+                    SubjectIsDirectory = isDirectory subject
+                    Cookie = cookie
+                    Name = name
+                    HiddenByExclUnlink = false
+                }
+
+        let notified (notifications : InotifyNotification list) : InotifyEffect list =
+            notifications |> List.map InotifyEffect.Notify
 
         match notice with
         | ChangeNotice.Names ->
-            let reversed, cookie =
-                (([], nextCookie), changes)
-                ||> List.fold (fun (reversed, cookie) change ->
+            let forgotten =
+                changes
+                |> List.choose (fun change ->
+                    match change with
+                    | FsChange.InodeForgotten inode -> Some inode
+                    | FsChange.EntryAdded _
+                    | FsChange.EntryRemoved _
+                    | FsChange.EntryMoved _
+                    | FsChange.ContentChanged _
+                    | FsChange.AttributesChanged _ -> None
+                )
+                |> Set.ofList
+
+            // Whether removing the name `name` in `directory` from `inode`
+            // ends `inode` for inotify.
+            let goes (directory : InodeNumber) (name : DirectoryEntryName) (inode : InodeNumber) : bool =
+                Set.contains inode forgotten
+                || not (isDirectory inode)
+                   && VirtualFileSystem.bindingCount inode after = 0
+                   && not (OpenFileTable.holdsLinkedName directory name inode openFiles)
+
+            let reversed, cookie, _ =
+                (([], nextCookie, Set.empty), changes)
+                ||> List.fold (fun (reversed, cookie, gone) change ->
                     match change with
                     | FsChange.EntryAdded (directory, name, inode) ->
-                        at directory InotifyEvent.Create inode 0u (Some name) :: reversed, cookie
+                        at directory InotifyEvent.Create inode 0u (Some name) :: reversed, cookie, gone
                     | FsChange.EntryRemoved (directory, name, inode) ->
-                        at directory InotifyEvent.Delete inode 0u (Some name) :: reversed, cookie
+                        let removed = [ at directory InotifyEvent.Delete inode 0u (Some name) ]
+
+                        if goes directory name inode then
+                            List.rev (InotifyEffect.WatchesEnd inode :: removed) @ reversed, cookie, Set.add inode gone
+                        else
+                            removed @ reversed, cookie, gone
                     | FsChange.EntryMoved (source, sourceName, destination, destinationName, inode, displaced) ->
                         let moved =
                             [
@@ -276,27 +339,70 @@ module internal InotifyDelivery =
                                 at destination InotifyEvent.MovedTo inode cookie (Some destinationName)
                             ]
 
-                        // Measured (`inotify-delivery-probe.c` section R): the
-                        // displaced inode's lost link, at its own watch, after
-                        // the two halves.
+                        // Measured (`inotify-delivery-probe.c` section R,
+                        // `inotify-self-probe.c` section R): the displaced
+                        // inode's lost link, at its own watch, after the two
+                        // halves; the moved inode's `IN_MOVE_SELF`, which
+                        // carries no `IN_ISDIR`; then the displaced inode's
+                        // going.
                         let lostLink =
                             match displaced with
                             | Some displaced -> [ at displaced InotifyEvent.Attrib displaced 0u None ]
                             | None -> []
 
-                        List.rev (moved @ lostLink) @ reversed, cookie + 1u
+                        let moveSelf =
+                            InotifyEffect.Notify
+                                {
+                                    Watched = inode
+                                    Events = Set.singleton InotifyEvent.MoveSelf
+                                    SubjectIsDirectory = false
+                                    Cookie = 0u
+                                    Name = None
+                                    HiddenByExclUnlink = false
+                                }
+
+                        let ending, gone =
+                            match displaced with
+                            | Some displaced when goes destination destinationName displaced ->
+                                [ InotifyEffect.WatchesEnd displaced ], Set.add displaced gone
+                            | Some _
+                            | None -> [], gone
+
+                        List.rev (moved @ lostLink @ [ moveSelf ] @ ending) @ reversed, cookie + 1u, gone
                     // A link gained or lost: Linux's `fsnotify_link_count`,
                     // to the inode's own watch and no other (measured,
                     // `inotify-delivery-probe.c` section X).
                     | FsChange.AttributesChanged inode ->
-                        at inode InotifyEvent.Attrib inode 0u None :: reversed, cookie
+                        at inode InotifyEvent.Attrib inode 0u None :: reversed, cookie, gone
                     | FsChange.ContentChanged inode ->
                         failwith
                             $"InotifyDelivery: a change of names changed the contents of inode %O{inode} (this is a bug in this library)."
-                    | FsChange.InodeForgotten _ -> reversed, cookie
+                    | FsChange.InodeForgotten inode when Set.contains inode gone -> reversed, cookie, gone
+                    | FsChange.InodeForgotten inode ->
+                        InotifyEffect.WatchesEnd inode :: reversed, cookie, Set.add inode gone
                 )
 
             List.rev reversed, None, cookie
+        | ChangeNotice.NameReleased inode ->
+            if not (List.isEmpty changes) then
+                failwith
+                    $"InotifyDelivery: the release of a name of inode %O{inode} changed the graph, %A{changes} (this is a bug in this library)."
+
+            match VirtualFileSystem.tryGetContent inode after with
+            | None
+            | Some (InodeContent.Directory _) ->
+                failwith
+                    $"InotifyDelivery: a name of inode %O{inode} was released, which is not a file this filesystem holds; a directory goes with its one name, when the graph forgets it (this is a bug in this library)."
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | Some (InodeContent.CharacterDevice _)
+            | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _) ->
+
+            if VirtualFileSystem.bindingCount inode after = 0 then
+                [ InotifyEffect.WatchesEnd inode ], None, nextCookie
+            else
+                [], None, nextCookie
         | ChangeNotice.SetAttributes (through, set) ->
             let inode, contents, attributes = attributeChanges "a setattr" changes
 
@@ -312,7 +418,7 @@ module internal InotifyDelivery =
             // A `setattr` carries no path, so no watch's `IN_EXCL_UNLINK`
             // keeps it out (measured, `inotify-dentry-probe.c` section E).
             let notifications, unplaced = reached mutation through inode events false
-            notifications, unplaced, nextCookie
+            notified notifications, unplaced, nextCookie
         | ChangeNotice.Written through ->
             // Linux's `file_remove_privs` raises `IN_ATTRIB` for the set-ID
             // bits a write clears, and the write `IN_MODIFY` (measured,
@@ -338,7 +444,7 @@ module internal InotifyDelivery =
                 else
                     []
 
-            cleared @ written, None, nextCookie
+            notified (cleared @ written), None, nextCookie
 
     /// The refusal of the change that raised `unplaced`, if some watch in
     /// `openFiles` on its old parent asks for an event of it: the first such,
@@ -370,72 +476,132 @@ module internal InotifyDelivery =
             UnplacedChangeRefusal.RemovedDirectoryName (unplaced.OldParent, unplaced.Events, instance, wd)
         )
 
-    /// `openFiles` with each of `notifications` queued, in order, on every
-    /// inotify instance that watches its inode and asks for any of its events,
-    /// but one whose watch has `IN_EXCL_UNLINK` where the notification is
-    /// `HiddenByExclUnlink`: one record carrying every one of its events,
-    /// those the watch did not ask for included (`OpenFileTable.enqueueInotify`). Measured
-    /// (`inotify-delivery-probe.c` rows Z open-trunc-modify-watch and
-    /// open-trunc-attrib-watch): a truncation that clears set-ID bits queues
-    /// `MODIFY+ATTRIB` under a watch asking for either alone. Instances hear
-    /// of each notification in the order of their descriptions' IDs.
-    let deliver
-        (maxQueuedEvents : int)
-        (notifications : InotifyNotification list)
+    /// The watches of each inotify instance in `openFiles`, in the order of
+    /// the instances' IDs, by the inode each watches.
+    let private watchesByInode
         (openFiles : OpenFileTable)
-        : OpenFileTable
+        : (OpenFileDescriptionId * Map<InodeNumber, WatchDescriptor * InotifyMask>) list
         =
-        if List.isEmpty notifications then
+        OpenFileTable.toSeq openFiles
+        |> Seq.choose (fun (id, description) ->
+            match description.Target with
+            | OpenFileTarget.Inotify state ->
+                let byInode =
+                    state.Watches
+                    |> Map.toSeq
+                    |> Seq.map (fun (watch, watched) -> watched.Inode, (watch, watched.Mask))
+                    |> Map.ofSeq
+
+                Some (id, byInode)
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
+            | OpenFileTarget.Pipe _ -> None
+        )
+        |> List.ofSeq
+
+    /// `openFiles` with each of `effects` made, in order, each instance's
+    /// queue limit being `maxQueuedEvents` records
+    /// (`OpenFileTable.enqueueInotify`). Instances hear of each effect in the
+    /// order of their descriptions' IDs.
+    ///
+    /// A notification is queued on every inotify instance that watches its
+    /// inode and asks for any of its events, but one whose watch has
+    /// `IN_EXCL_UNLINK` where the notification is `HiddenByExclUnlink`: one
+    /// record carrying every one of its events, those the watch did not ask
+    /// for included. Measured (`inotify-delivery-probe.c` rows Z
+    /// open-trunc-modify-watch and open-trunc-attrib-watch): a truncation
+    /// that clears set-ID bits queues `MODIFY+ATTRIB` under a watch asking for
+    /// either alone.
+    ///
+    /// The end of the watches on an inode removes each before queueing its
+    /// records, so the watch goes whether or not the queue takes its
+    /// `IN_IGNORED` (measured, `inotify-self-probe.c` section Q).
+    let deliver (maxQueuedEvents : int) (effects : InotifyEffect list) (openFiles : OpenFileTable) : OpenFileTable =
+        if List.isEmpty effects then
             openFiles
         else
 
-        // Queueing a record changes no watch, so the watches are read once.
-        let instances =
-            OpenFileTable.toSeq openFiles
-            |> Seq.choose (fun (id, description) ->
-                match description.Target with
-                | OpenFileTarget.Inotify state ->
-                    let byInode =
-                        state.Watches
-                        |> Map.toSeq
-                        |> Seq.map (fun (watch, watched) -> watched.Inode, (watch, watched.Mask))
-                        |> Map.ofSeq
+        // Queueing a record changes no watch, so the watches are read once,
+        // and again only after some end.
+        ((openFiles, watchesByInode openFiles), effects)
+        ||> List.fold (fun (table, instances) effect ->
+            match effect with
+            | InotifyEffect.Notify notification ->
+                let table =
+                    (table, instances)
+                    ||> List.fold (fun table (instance, watches) ->
+                        match Map.tryFind notification.Watched watches with
+                        | None -> table
+                        | Some (watch, mask) ->
 
-                    Some (id, byInode)
-                | OpenFileTarget.File _
-                | OpenFileTarget.Directory _
-                | OpenFileTarget.Epoll _
-                | OpenFileTarget.Kqueue _
-                | OpenFileTarget.Socket _
-                | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Fifo _
-                | OpenFileTarget.Pipe _ -> None
-            )
-            |> List.ofSeq
+                        if
+                            Set.intersect notification.Events mask.Events |> Set.isEmpty
+                            || notification.HiddenByExclUnlink && mask.ExcludeUnlinked
+                        then
+                            table
+                        else
+                            let record =
+                                InotifyRecord.Event (
+                                    watch,
+                                    notification.Events,
+                                    notification.SubjectIsDirectory,
+                                    notification.Cookie,
+                                    notification.Name
+                                )
 
-        (openFiles, notifications)
-        ||> List.fold (fun table notification ->
-            (table, instances)
-            ||> List.fold (fun table (instance, watches) ->
-                match Map.tryFind notification.Watched watches with
-                | None -> table
-                | Some (watch, mask) ->
+                            OpenFileTable.enqueueInotify maxQueuedEvents instance record table
+                    )
 
-                if
-                    Set.intersect notification.Events mask.Events |> Set.isEmpty
-                    || notification.HiddenByExclUnlink && mask.ExcludeUnlinked
-                then
-                    table
+                table, instances
+            | InotifyEffect.WatchesEnd inode ->
+                let watching =
+                    instances
+                    |> List.choose (fun (instance, watches) ->
+                        Map.tryFind inode watches |> Option.map (fun watched -> instance, watched)
+                    )
+
+                if List.isEmpty watching then
+                    table, instances
                 else
-                    let record =
-                        InotifyRecord.Event (
-                            watch,
-                            notification.Events,
-                            notification.SubjectIsDirectory,
-                            notification.Cookie,
-                            notification.Name
-                        )
 
-                    OpenFileTable.enqueueInotify maxQueuedEvents instance record table
-            )
+                let table =
+                    (table, watching)
+                    ||> List.fold (fun table (instance, (watch, mask)) ->
+                        let state = OpenFileTable.inotifyState "InotifyDelivery.deliver" instance table
+
+                        let table =
+                            OpenFileTable.setInotifyState
+                                "InotifyDelivery.deliver"
+                                instance
+                                { state with
+                                    Watches = Map.remove watch state.Watches
+                                }
+                                table
+
+                        let table =
+                            if Set.contains InotifyEvent.DeleteSelf mask.Events then
+                                OpenFileTable.enqueueInotify
+                                    maxQueuedEvents
+                                    instance
+                                    (InotifyRecord.Event (
+                                        watch,
+                                        Set.singleton InotifyEvent.DeleteSelf,
+                                        false,
+                                        0u,
+                                        None
+                                    ))
+                                    table
+                            else
+                                table
+
+                        OpenFileTable.enqueueInotify maxQueuedEvents instance (InotifyRecord.Ignored watch) table
+                    )
+
+                table, watchesByInode table
         )
+        |> fst
