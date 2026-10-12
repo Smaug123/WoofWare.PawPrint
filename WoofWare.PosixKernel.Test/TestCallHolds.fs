@@ -90,7 +90,7 @@ module TestCallHolds =
             }
 
         let system =
-            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created _, system) -> system
             | other -> failwith $"pipe2: %A{other}"
 
@@ -101,7 +101,7 @@ module TestCallHolds =
 
             UnixSystemState.withFileDescriptors registry system
         | SimulatedUnixFlavour.Darwin ->
-            match UnixKqueue.kqueue system with
+            match UnixKqueue.tryKqueue system with
             | Ok (_, system) -> system
             | Error refusal -> failwith $"kqueue: %A{refusal}"
 
@@ -438,7 +438,7 @@ module TestCallHolds =
                     | all ->
                         let fd, id, _ = all.[i % all.Length]
 
-                        match UnixDescriptor.close fd system with
+                        match UnixDescriptor.tryClose fd system with
                         | Error _ -> system, model
                         | Ok (_, after) ->
                             // Under Darwin a close of the descriptor a pipe transfer
@@ -479,7 +479,7 @@ module TestCallHolds =
                     | all ->
                         let fd, _, _ = all.[i % all.Length]
 
-                        match UnixDescriptor.dup fd system with
+                        match UnixDescriptor.tryDup fd system with
                         | Ok (_, after) -> after, model
                         | Error refusal -> failwith $"dup: %A{refusal}"
                 | Op.Spawn c ->
@@ -497,7 +497,7 @@ module TestCallHolds =
 
                     let before = ThreadIdAllocator.live system.Machine.ThreadIds
 
-                    match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
+                    match UnixTaskLifecycle.trySpawn parent child (CpuId 0) system with
                     | Error refusal -> failwith $"spawn: %s{SpawnRefusal.describe refusal}"
                     | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
                     | Ok (SpawnAnswer.Spawned id, after) ->
@@ -515,7 +515,7 @@ module TestCallHolds =
                         system, model
                     else
 
-                    match UnixTaskLifecycle.exitThread task 0 system with
+                    match UnixTaskLifecycle.tryExitThread task 0 system with
                     | Ok (TaskOutcome.Continues after) ->
                         cover Reached.Exit
 

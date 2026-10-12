@@ -146,17 +146,17 @@ module TestPollTimeout =
         (system : UnixSystem<int, string>)
         : WakeCondition * UnixSystem<int, string>
         =
-        match UnixPoll.poll task entries milliseconds system with
+        match UnixPoll.tryPoll task entries milliseconds system with
         | Ok (PollOutcome.WouldBlock condition, parked) -> condition, parked
         | other -> failwith $"expected a park, got %A{other}"
 
     let private finishes (system : UnixSystem<int, string>) : int16 list * int * UnixSystem<int, string> =
-        match UnixPoll.finishPoll task system with
+        match UnixPoll.tryFinishPoll task system with
         | Ok (PollOutcome.Answered (reported, count), finished) -> reported, count, finished
         | other -> failwith $"expected the poll to finish, got %A{other}"
 
     let private reparks (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixPoll.finishPoll task system with
+        match UnixPoll.tryFinishPoll task system with
         | Ok (PollOutcome.WouldBlock _, parked) -> parked
         | other -> failwith $"expected the poll to park again, got %A{other}"
 
@@ -303,7 +303,7 @@ module TestPollTimeout =
 
     [<Test>]
     let ``a timeout of zero never parks`` () : unit =
-        match UnixPoll.poll task [ entry listener pollIn ] 0 idle with
+        match UnixPoll.tryPoll task [ entry listener pollIn ] 0 idle with
         | Ok (PollOutcome.Answered (reported, count), after) ->
             reported |> shouldEqual [ 0s ]
             count |> shouldEqual 0
@@ -315,7 +315,7 @@ module TestPollTimeout =
         // `poll(NULL, 0, -1)` sleeps until a signal interrupts it.
         for entries in [ [] ; [ entry -1 pollIn ] ; [ entry -5 pollIn ; entry -1 0s ] ] do
             for milliseconds in [ -1 ; System.Int32.MinValue ] do
-                match UnixPoll.poll task entries milliseconds idle with
+                match UnixPoll.tryPoll task entries milliseconds idle with
                 | Ok (PollOutcome.WouldBlock condition, parked) ->
                     condition
                     |> shouldEqual (WakeCondition.Primitive WakePrimitive.SignalDeliverable)
@@ -333,7 +333,7 @@ module TestPollTimeout =
                 Scheduling = UnixSchedulingState.advanceClock uptime idle.Scheduling
             }
 
-        UnixPoll.poll task [ entry listener pollIn ] 1 (nearTheEnd (System.Int64.MaxValue - timeout + 1L))
+        UnixPoll.tryPoll task [ entry listener pollIn ] 1 (nearTheEnd (System.Int64.MaxValue - timeout + 1L))
         |> shouldEqual (Error (PollRefusal.DeadlineBeyondClock (System.Int64.MaxValue - timeout + 1L, 1)))
 
         let _, parked =
@@ -404,13 +404,13 @@ module TestPollTimeout =
         let withDup = withRegistry registry idle
         let _, parked = parks [ entry listener pollIn ] 10 withDup
 
-        match UnixDescriptor.close listener parked with
+        match UnixDescriptor.tryClose listener parked with
         | Error (CloseRefusal.PolledDescriptor (fd, waiter)) ->
             fd |> shouldEqual listener
             waiter |> shouldEqual task
         | other -> failwith $"expected the close to be refused, got %A{other}"
 
-        match UnixDescriptor.close dupFd parked with
+        match UnixDescriptor.tryClose dupFd parked with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
             UnixSystem.checkInvariants closed |> shouldEqual []
             let reported, count, _ = closed |> ready |> finishes
@@ -428,7 +428,7 @@ module TestPollTimeout =
         let _, parked = parks [ entry directory 0x0002s ] 10 (withRegistry registry idle)
         UnixSystem.checkInvariants parked |> shouldEqual []
 
-        match UnixDescriptor.close directory parked with
+        match UnixDescriptor.tryClose directory parked with
         | Error (CloseRefusal.PolledDescriptor (fd, waiter)) ->
             fd |> shouldEqual directory
             waiter |> shouldEqual task
@@ -498,7 +498,7 @@ module TestPollTimeout =
                 UnixSystemDefect.ParkedPollDescriptorRebound (task, listener, watched, Some (idOf listener rebound))
             ]
 
-        let exn = Assert.Throws<exn> (fun () -> UnixPoll.finishPoll task rebound |> ignore)
+        let exn = Assert.Throws<exn> (fun () -> UnixPoll.tryFinishPoll task rebound |> ignore)
 
         exn.Message |> shouldContainText "now names"
 
@@ -510,7 +510,7 @@ module TestPollTimeout =
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, watched) ]
 
         let exn =
-            Assert.Throws<exn> (fun () -> UnixPoll.finishPoll task destroyed |> ignore)
+            Assert.Throws<exn> (fun () -> UnixPoll.tryFinishPoll task destroyed |> ignore)
 
         exn.Message |> shouldContainText "a park holds its descriptions"
 
@@ -519,11 +519,11 @@ module TestPollTimeout =
         let _, parked = parks [ entry listener pollIn ] 10 idle
 
         let exn =
-            Assert.Throws<exn> (fun () -> UnixPoll.poll task [ entry listener pollIn ] 0 parked |> ignore)
+            Assert.Throws<exn> (fun () -> UnixPoll.tryPoll task [ entry listener pollIn ] 0 parked |> ignore)
 
         exn.Message |> shouldContainText "is parked in"
 
-        let exn = Assert.Throws<exn> (fun () -> UnixPoll.finishPoll task idle |> ignore)
+        let exn = Assert.Throws<exn> (fun () -> UnixPoll.tryFinishPoll task idle |> ignore)
         exn.Message |> shouldContainText "is not parked"
 
     [<Test>]

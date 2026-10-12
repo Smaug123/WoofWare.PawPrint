@@ -78,7 +78,7 @@ module TestDirectoryDescription =
         | SyscallAnswer.Failed error -> failwith $"%s{what} failed with %O{error}"
 
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok (SyscallAnswer.Completed _, system) -> system
         | other -> failwith $"close %d{fd}: %A{other}"
 
@@ -108,12 +108,12 @@ module TestDirectoryDescription =
         int fd, system
 
     let private read (fd : int) (system : UnixSystem<int, string>) =
-        match UnixNamespace.readDirectoryEntry fd system with
+        match UnixNamespace.tryReadDirectoryEntry fd system with
         | Ok result -> result
         | Error refusal -> failwith $"read of fd %d{fd} was refused: %s{ReadDirectoryRefusal.describe refusal}"
 
     let private seek (fd : int) (offset : int64) (whence : int) (system : UnixSystem<int, string>) =
-        match UnixDescriptor.lseek fd offset whence system with
+        match UnixDescriptor.tryLseek fd offset whence system with
         | Ok result -> result
         | Error refusal ->
             failwith $"lseek(%d{fd}, %d{offset}, %d{whence}) was refused: %s{LSeekRefusal.describe refusal}"
@@ -148,7 +148,7 @@ module TestDirectoryDescription =
         openAt directoryReading "d" system
 
     let private inodeOf (path : string) (system : UnixSystem<int, string>) : InodeNumber =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system with
         | Ok (FileStatusAnswer.Reported status) -> status.Inode
         | other -> failwith $"stat %s{path}: %A{other}"
 
@@ -368,7 +368,7 @@ module TestDirectoryDescription =
 
             let _, system = read fd system
 
-            match UnixDescriptor.lseek fd 0L 1 system with
+            match UnixDescriptor.tryLseek fd 0L 1 system with
             | Error (LSeekRefusal.DirectoryPosition _) -> ()
             | other -> failwith $"%O{platform}: SEEK_CUR part of the way through: %A{other}"
 
@@ -388,7 +388,7 @@ module TestDirectoryDescription =
             | SyscallAnswer.Completed answered, _ when answered = offset -> ()
             | other -> failwith $"SEEK_CUR after SEEK_SET %d{offset}: %A{other}"
 
-            match UnixNamespace.readDirectoryEntry fd system with
+            match UnixNamespace.tryReadDirectoryEntry fd system with
             | Error (ReadDirectoryRefusal.UnenumerablePosition (_, refused)) -> refused |> shouldEqual offset
             | other -> failwith $"read after SEEK_SET %d{offset}: %A{other}"
 
@@ -518,7 +518,7 @@ module TestDirectoryDescription =
             let _, system = seek fd 5L 0 system
             let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
 
-            match SimulatedUnixPlatform.flavour platform, UnixNamespace.readDirectoryEntry fd system with
+            match SimulatedUnixPlatform.flavour platform, UnixNamespace.tryReadDirectoryEntry fd system with
             | SimulatedUnixFlavour.Linux, Ok (ReadDirectoryAnswer.Failed UnixError.ENOENT, _) -> ()
             | SimulatedUnixFlavour.Darwin, Error (ReadDirectoryRefusal.UnenumerablePosition (_, 5L)) -> ()
             | flavour, other -> failwith $"%O{flavour}: %A{other}"
@@ -837,6 +837,6 @@ module TestDirectoryDescription =
         let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
         let _, system = read fd system
 
-        match UnixDescriptor.lseek fd 0L 1 system with
+        match UnixDescriptor.tryLseek fd 0L 1 system with
         | Error (LSeekRefusal.DirectoryPosition _) -> ()
         | other -> failwith $"%A{other}"

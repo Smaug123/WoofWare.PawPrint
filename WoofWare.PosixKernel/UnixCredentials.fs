@@ -31,7 +31,7 @@ type GetIdsAnswer<'Id> =
 
 /// Why this kernel will not answer a `setresuid(2)` or `setresgid(2)`.
 [<RequireQualifiedAccess>]
-type SetIdsRefusal =
+type internal SetIdsRefusal =
     /// This flavour has no such call: Darwin declares neither `setresuid` nor
     /// `setresgid`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
@@ -44,7 +44,7 @@ type SetIdsRefusal =
     | DumpabilityUnmodelled
 
 [<RequireQualifiedAccess>]
-module SetIdsRefusal =
+module internal SetIdsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which IDs.
     let describe (refusal : SetIdsRefusal) : string =
@@ -54,15 +54,21 @@ module SetIdsRefusal =
         | SetIdsRefusal.DumpabilityUnmodelled ->
             "the call changes the effective ID of a process that writes core dumps. Linux then sets the process's dumpable flag from the fs.suid_dumpable sysctl, which this kernel does not model, so whether the process would still write a core dump is unknown."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SetIdsRefusal) : RefusalKind =
+        match refusal with
+        | SetIdsRefusal.NoSuchCall _ -> RefusalKind.NotOnPlatform
+        | SetIdsRefusal.DumpabilityUnmodelled -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `setgroups(2)`.
 [<RequireQualifiedAccess>]
-type SetGroupsRefusal =
+type internal SetGroupsRefusal =
     /// A privileged process on this flavour, whose `setgroups` has not been
     /// measured, because measuring it needs root.
     | UnmeasuredPrivileged of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module SetGroupsRefusal =
+module internal SetGroupsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which list.
     let describe (refusal : SetGroupsRefusal) : string =
@@ -70,9 +76,14 @@ module SetGroupsRefusal =
         | SetGroupsRefusal.UnmeasuredPrivileged flavour ->
             $"the process is privileged, and what %O{flavour}'s setgroups(2) does for a privileged process has not been measured: measuring it needs root."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SetGroupsRefusal) : RefusalKind =
+        match refusal with
+        | SetGroupsRefusal.UnmeasuredPrivileged _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `getresuid(2)` or `getresgid(2)`.
 [<RequireQualifiedAccess>]
-type GetIdsRefusal =
+type internal GetIdsRefusal =
     /// This flavour has no such call: Darwin declares neither `getresuid` nor
     /// `getresgid`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
@@ -80,7 +91,7 @@ type GetIdsRefusal =
     | Buffer of BufferRefusal
 
 [<RequireQualifiedAccess>]
-module GetIdsRefusal =
+module internal GetIdsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and what the buffers were.
     let describe (refusal : GetIdsRefusal) : string =
@@ -88,6 +99,12 @@ module GetIdsRefusal =
         | GetIdsRefusal.NoSuchCall flavour ->
             $"%O{flavour} has no getresuid(2) or getresgid(2); its C library declares neither."
         | GetIdsRefusal.Buffer refusal -> BufferRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetIdsRefusal) : RefusalKind =
+        match refusal with
+        | GetIdsRefusal.NoSuchCall _ -> RefusalKind.NotOnPlatform
+        | GetIdsRefusal.Buffer _ -> RefusalKind.Unmodelled
 
 /// The calls by which a process reads and changes who it is: `getresuid(2)`,
 /// `getresgid(2)`, `setresuid(2)`, `setresgid(2)` and `setgroups(2)`.
@@ -137,7 +154,7 @@ module UnixCredentials =
     ///
     /// Changes nothing, so it returns no system. Refused on Darwin, which has
     /// no such call.
-    let getresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserBuffer)
         (effective : UserBuffer)
         (saved : UserBuffer)
@@ -153,7 +170,7 @@ module UnixCredentials =
     ///
     /// Changes nothing, so it returns no system. Refused on Darwin, which has
     /// no such call.
-    let getresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserBuffer)
         (effective : UserBuffer)
         (saved : UserBuffer)
@@ -232,7 +249,7 @@ module UnixCredentials =
     /// Refused on Darwin, which has no such call, and for a process that writes
     /// core dumps when its effective user ID would change (see
     /// `SetIdsRefusal.DumpabilityUnmodelled`).
-    let setresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySetresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserId option)
         (effective : UserId option)
         (saved : UserId option)
@@ -281,7 +298,7 @@ module UnixCredentials =
     /// Refused on Darwin, which has no such call, and for a process that writes
     /// core dumps when its effective group ID would change (see
     /// `SetIdsRefusal.DumpabilityUnmodelled`).
-    let setresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySetresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : GroupId option)
         (effective : GroupId option)
         (saved : GroupId option)
@@ -367,7 +384,7 @@ module UnixCredentials =
     ///
     /// Refused for a privileged Darwin process, whose answer has not been
     /// measured.
-    let setgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySetgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (size : int)
         (words : GroupListWords)
         (system : UnixSystem<'Task, 'Handler>)

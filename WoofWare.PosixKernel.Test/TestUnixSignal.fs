@@ -65,7 +65,7 @@ module TestUnixSignal =
     let ``kill of the calling process with SIGKILL ends it`` () : unit =
         let system = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGUSR1)
 
-        match UnixSignal.kill self 9 system with
+        match UnixSignal.tryKill self 9 system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGKILL, false))
@@ -88,7 +88,7 @@ module TestUnixSignal =
                 let system = systemLaunchedWith (ProcessLaunch.withCoreDumps coreDumps) flavour
 
                 let death (signo : int) : ProcessTermination =
-                    match UnixSignal.kill self signo system with
+                    match UnixSignal.tryKill self signo system with
                     | Ok (Ok (KillOutcome.ProcessEnded ended)) -> ended.Termination
                     | other -> failwith $"kill(self, %d{signo}) under %O{flavour}: %O{other}"
 
@@ -102,7 +102,7 @@ module TestUnixSignal =
         for flavour in flavours do
             let system = systemOn flavour
 
-            UnixSignal.kill self 0 system
+            UnixSignal.tryKill self 0 system
             |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues system)))
 
     [<Test>]
@@ -111,7 +111,7 @@ module TestUnixSignal =
         // in the process-wide pending set.
         let blocking = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGTERM)
 
-        match UnixSignal.kill self 15 blocking with
+        match UnixSignal.tryKill self 15 blocking with
         | Ok (Ok (KillOutcome.ProcessContinues after)) ->
             SignalState.pending after.Process.Signals
             |> shouldEqual
@@ -127,22 +127,22 @@ module TestUnixSignal =
     let ``kill is answered only for the calling process`` () : unit =
         // A pid that differs from the caller's by one, so a comparison against
         // the wrong field (or an off-by-one) is caught.
-        UnixSignal.kill (self + 1) 0 linux
+        UnixSignal.tryKill (self + 1) 0 linux
         |> shouldEqual (Error (KillRefusal.OtherProcess (self + 1)))
 
         for pid in [ 0 ; -1 ; -self ; Int32.MinValue ] do
-            UnixSignal.kill pid 0 linux
+            UnixSignal.tryKill pid 0 linux
             |> shouldEqual (Error (KillRefusal.ProcessGroup pid))
 
         // The same pid is the caller's own once the process is configured with it.
-        UnixSignal.kill (self + 1) 0 (linuxWithPid (self + 1))
+        UnixSignal.tryKill (self + 1) 0 (linuxWithPid (self + 1))
         |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (linuxWithPid (self + 1)))))
 
     [<Test>]
     let ``kill by an init process is refused`` () : unit =
         let init = linuxWithPid 1
 
-        UnixSignal.kill 1 9 init |> shouldEqual (Error KillRefusal.InitProcess)
+        UnixSignal.tryKill 1 9 init |> shouldEqual (Error KillRefusal.InitProcess)
 
     /// Measured by `docs/plans/2026-08-23-posix-kernel-extraction/kill-arguments.c`
     /// on Linux 6.18.5 and Darwin 25.6.0: the rows with the calling process as
@@ -152,7 +152,7 @@ module TestUnixSignal =
     [<Test>]
     let ``kill of the calling process answers the measured rows`` () : unit =
         let answer (flavour : SimulatedUnixFlavour) (signo : int) : string =
-            match UnixSignal.kill self signo (systemOn flavour) with
+            match UnixSignal.tryKill self signo (systemOn flavour) with
             | Ok (Ok _) -> "OK"
             | Ok (Error errno) -> $"%O{errno}"
             | Error refusal -> $"refused %O{refusal}"
@@ -190,7 +190,7 @@ module TestUnixSignal =
 
             let valid = signo >= 0 && signo <= highestSigno flavour
 
-            match UnixSignal.kill self signo system, valid with
+            match UnixSignal.tryKill self signo system, valid with
             | Ok (Error errno), false -> errno |> shouldEqual UnixError.EINVAL
             | Ok (Ok outcome), true ->
                 // A valid number is sent, and sending is exactly generating
@@ -267,7 +267,7 @@ module TestUnixSignal =
             }
 
         let property (flavour : SimulatedUnixFlavour, pid : int, signo : int) : unit =
-            match UnixSignal.kill pid signo (systemOn flavour) with
+            match UnixSignal.tryKill pid signo (systemOn flavour) with
             | Error (KillRefusal.OtherProcess refused) when pid > 0 -> refused |> shouldEqual pid
             | Error (KillRefusal.ProcessGroup refused) when pid <= 0 -> refused |> shouldEqual pid
             | other -> failwith $"kill(%d{pid}, %d{signo}) under %O{flavour}: expected a refusal, got %O{other}"
@@ -307,17 +307,17 @@ module TestUnixSignal =
             | Ok (_, system) -> system
             | Error errno -> failwith $"pthread_sigmask: %O{errno}"
 
-        match UnixSignal.kill self (Signal.toRawSignoUnder numbering signal) system with
+        match UnixSignal.tryKill self (Signal.toRawSignoUnder numbering signal) system with
         | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
         | other -> failwith $"kill(self, %O{signal}) under %O{flavour}: %O{other}"
 
     /// The process `before` was, ended by `onReturnToUser` of its only task,
     /// and then ended on its machine: the termination each reports.
     let private endedOnReturn (before : UnixSystem<int, string>) : ProcessTermination * ProcessTermination =
-        match UnixSignal.onReturnToUser 0 before with
+        match UnixSignal.tryOnReturnToUser 0 before with
         | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
             let onMachine, machine =
-                match SimulatedMachine.endProcess ended (SimulatedMachine.ofSystem (EndedProcess.endedIn ended)) with
+                match SimulatedMachine.tryEndProcess ended (SimulatedMachine.ofSystem (EndedProcess.endedIn ended)) with
                 | Ok ended -> ended
                 | Error refusal -> failwith (ProcessEndRefusal.describe refusal)
 
@@ -336,7 +336,7 @@ module TestUnixSignal =
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
                 for signal, coreDumped in fatalSignals coreDumps do
                     let suspended =
-                        match UnixSignal.sigsuspend 0 SignalMask.empty (pendingBehindMask flavour coreDumps signal) with
+                        match UnixSignal.trySigsuspend 0 SignalMask.empty (pendingBehindMask flavour coreDumps signal) with
                         | Ok (SigsuspendOutcome.Failed UnixError.EINTR, system) -> system
                         | other -> failwith $"sigsuspend under %O{flavour}: %O{other}"
 
@@ -510,10 +510,10 @@ module TestUnixSignal =
                 let answer =
                     match send.Target with
                     | None ->
-                        UnixSignal.kill self signo system
+                        UnixSignal.tryKill self signo system
                         |> Result.mapError (fun refusal -> $"%O{refusal}")
                     | Some task ->
-                        UnixSignal.pthreadKill task signo system
+                        UnixSignal.tryPthreadKill task signo system
                         |> Result.mapError (fun refusal -> $"%O{refusal}")
 
                 match answer with
@@ -556,7 +556,7 @@ module TestUnixSignal =
                         }
                 }
 
-            match UnixSignal.onReturnToUser case.Returning system, decided with
+            match UnixSignal.tryOnReturnToUser case.Returning system, decided with
             | Error refusal, Error expected -> refusal |> shouldEqual expected
             | Ok (ReturnToUserOutcome.Resumes after), Ok (None, signals) -> after |> shouldEqual (withSignals signals)
             | Ok (ReturnToUserOutcome.RunHandlers (frames, after)),
@@ -601,7 +601,7 @@ module TestUnixSignal =
                 SignalState.pending death.FinalProcess.Signals
                 |> shouldEqual (SignalState.pending signals |> List.filter (fun entry -> entry.Target.IsNone))
 
-                match SimulatedMachine.endProcess death (SimulatedMachine.ofSystem (EndedProcess.endedIn death)) with
+                match SimulatedMachine.tryEndProcess death (SimulatedMachine.ofSystem (EndedProcess.endedIn death)) with
                 | Ok (termination, machine) ->
                     termination |> shouldEqual (EndedProcess.termination death)
                     SimulatedMachine.processIds machine |> shouldBeEmpty

@@ -17,7 +17,7 @@ module InotifyInitFlags =
 /// Why this kernel will not answer an `inotify_init1(2)` or an
 /// `inotify_rm_watch(2)`.
 [<RequireQualifiedAccess>]
-type InotifyRefusal =
+type internal InotifyRefusal =
     /// This kernel is of `flavour` (Darwin), which has no inotify: no Darwin
     /// kernel has the call, so there is no answer to measure.
     | Flavour of flavour : SimulatedUnixFlavour
@@ -26,7 +26,7 @@ type InotifyRefusal =
     | DescriptorLimit of DescriptorLimitRefusal
 
 [<RequireQualifiedAccess>]
-module InotifyRefusal =
+module internal InotifyRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which of its entry points asked.
     let describe (refusal : InotifyRefusal) : string =
@@ -35,9 +35,15 @@ module InotifyRefusal =
             $"this kernel is %O{flavour}-flavoured, and inotify exists on Linux only, so no kernel of this flavour has the call."
         | InotifyRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : InotifyRefusal) : RefusalKind =
+        match refusal with
+        | InotifyRefusal.Flavour _ -> RefusalKind.NotOnPlatform
+        | InotifyRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `inotify_add_watch(2)`.
 [<RequireQualifiedAccess>]
-type InotifyAddWatchRefusal =
+type internal InotifyAddWatchRefusal =
     /// This kernel is of `flavour` (Darwin), which has no inotify.
     | Flavour of flavour : SimulatedUnixFlavour
     /// The call would succeed, and the watch would ask for `events`, none of
@@ -55,7 +61,7 @@ type InotifyAddWatchRefusal =
     | WatchDescriptorsExhausted
 
 [<RequireQualifiedAccess>]
-module InotifyAddWatchRefusal =
+module internal InotifyAddWatchRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which of its entry points asked.
     let describe (refusal : InotifyAddWatchRefusal) : string =
@@ -70,6 +76,15 @@ module InotifyAddWatchRefusal =
         | InotifyAddWatchRefusal.Path refusal -> PathRefusal.describe refusal
         | InotifyAddWatchRefusal.WatchDescriptorsExhausted ->
             "the instance has handed out every watch descriptor below Int32.MaxValue. Linux would hand out that one and then start again from 1, skipping those in use, and this kernel does not model the wrap."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : InotifyAddWatchRefusal) : RefusalKind =
+        match refusal with
+        | InotifyAddWatchRefusal.Flavour _ -> RefusalKind.NotOnPlatform
+        | InotifyAddWatchRefusal.UnmodelledEvents _ -> RefusalKind.Unmodelled
+        | InotifyAddWatchRefusal.OneShot -> RefusalKind.Unmodelled
+        | InotifyAddWatchRefusal.Path inner -> PathRefusal.kind inner
+        | InotifyAddWatchRefusal.WatchDescriptorsExhausted -> RefusalKind.Unmodelled
 
 /// `inotify_init1(2)`, `inotify_add_watch(2)` and `inotify_rm_watch(2)`: Linux's
 /// interface for watching the filesystem.
@@ -157,7 +172,7 @@ module UnixInotify =
     /// on the machine, is answered `EMFILE` (section U).
     ///
     /// Under the Darwin flavour every call is refused: Darwin has no inotify.
-    let inotifyInit1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryInotifyInit1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<int * UnixSystem<'Task, 'Handler>, UnixError>, InotifyRefusal>
@@ -239,7 +254,7 @@ module UnixInotify =
     ///
     /// Adding a watch queues nothing. Under the Darwin flavour every call is
     /// refused.
-    let inotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (path : PathArgumentBytes)
         (mask : uint32)
@@ -421,7 +436,7 @@ module UnixInotify =
     /// place unless it holds one.
     ///
     /// Under the Darwin flavour every call is refused.
-    let inotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryInotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (wd : int)
         (system : UnixSystem<'Task, 'Handler>)

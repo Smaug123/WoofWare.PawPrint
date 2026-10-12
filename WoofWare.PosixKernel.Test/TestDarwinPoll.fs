@@ -80,7 +80,7 @@ module TestDarwinPoll =
         | other -> failwith $"reading %d{count} bytes from fd %d{fd}: %A{other}"
 
     let private pipe (system : UnixSystem<int, string>) : (int * int) * UnixSystem<int, string> =
-        match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+        match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
         | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
         | other -> failwith $"pipe did not make a pipe: %A{other}"
 
@@ -363,7 +363,7 @@ module TestDarwinPoll =
         (system : UnixSystem<int, string>)
         : Result<PollOutcome * UnixSystem<int, string>, PollRefusal>
         =
-        UnixPoll.poll poller entries milliseconds system
+        UnixPoll.tryPoll poller entries milliseconds system
 
     let private answered (entries : PollEntry list) (system : UnixSystem<int, string>) : int16 list * int =
         match pollNow entries 0 system with
@@ -604,7 +604,7 @@ module TestDarwinPoll =
         not (Set.isEmpty (WakeCondition.satisfied poller condition system))
 
     let private finish (system : UnixSystem<int, string>) : Result<PollOutcome * UnixSystem<int, string>, PollRefusal> =
-        UnixPoll.finishPoll poller system
+        UnixPoll.tryFinishPoll poller system
 
     let private finishAnswer (system : UnixSystem<int, string>) : int16 list * int =
         match finish system with

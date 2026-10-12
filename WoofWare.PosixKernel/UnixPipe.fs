@@ -12,7 +12,7 @@ type Pipe2Answer =
 
 /// Why this kernel will not answer a `pipe2(2)`.
 [<RequireQualifiedAccess>]
-type Pipe2Refusal =
+type internal Pipe2Refusal =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -34,7 +34,7 @@ type Pipe2Refusal =
     | FatalToTheProcess
 
 [<RequireQualifiedAccess>]
-module Pipe2Refusal =
+module internal Pipe2Refusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what the destination was.
     let describe (refusal : Pipe2Refusal) : string =
@@ -47,6 +47,15 @@ module Pipe2Refusal =
         | Pipe2Refusal.Buffer refusal -> BufferRefusal.describe refusal
         | Pipe2Refusal.FatalToTheProcess ->
             "the destination names no storage, and this platform's C library stores the two descriptors into it itself, after the kernel has made the pipe: measured on Darwin 27.0.0, pipe2 through NULL or a small bad pointer kills the process with SIGSEGV, where Linux's kernel copies them out and answers EFAULT. A dead process is not an errno, so this kernel will not answer one."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : Pipe2Refusal) : RefusalKind =
+        match refusal with
+        | Pipe2Refusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | Pipe2Refusal.PacketMode _ -> RefusalKind.Unmodelled
+        | Pipe2Refusal.NotificationPipe _ -> RefusalKind.Unmodelled
+        | Pipe2Refusal.Buffer _ -> RefusalKind.Unmodelled
+        | Pipe2Refusal.FatalToTheProcess -> RefusalKind.Unmodelled
 
 /// `pipe2(2)`: making a pipe.
 ///
@@ -151,7 +160,7 @@ module UnixPipe =
     /// the next. Both are owned by
     /// the process's effective user and group, and stamped with the machine's
     /// realtime clock.
-    let pipe2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryPipe2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (destination : UserBuffer)
         (system : UnixSystem<'Task, 'Handler>)

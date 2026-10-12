@@ -25,7 +25,7 @@ module Become =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        UnixCredentials.setgroups
+        UnixCredentials.trySetgroups
             (List.length groups)
             (GroupListWords.Readable (groups |> List.map GroupId.toUInt32))
             system
@@ -40,12 +40,12 @@ module Become =
         =
         system
         |> setGroups credentials.SupplementaryGroups
-        |> UnixCredentials.setresgid
+        |> UnixCredentials.trySetresgid
             (Some credentials.RealGroup)
             (Some credentials.EffectiveGroup)
             (Some credentials.SavedGroup)
         |> completed "setresgid"
-        |> UnixCredentials.setresuid
+        |> UnixCredentials.trySetresuid
             (Some credentials.RealUser)
             (Some credentials.EffectiveUser)
             (Some credentials.SavedUser)
@@ -61,12 +61,12 @@ module Become =
         =
         system
         |> setGroups credentials.SupplementaryGroups
-        |> UnixCredentials.setresgid
+        |> UnixCredentials.trySetresgid
             (Some credentials.RealGroup)
             (Some credentials.EffectiveGroup)
             (Some credentials.SavedGroup)
         |> completed "setresgid"
-        |> UnixCredentials.setresuid None (Some credentials.EffectiveUser) None
+        |> UnixCredentials.trySetresuid None (Some credentials.EffectiveUser) None
         |> completed "setresuid"
 
     /// The process, whose real or saved user ID is 0, privileged again: its
@@ -75,5 +75,5 @@ module Become =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        UnixCredentials.setresuid None (Some UserId.root) None system
+        UnixCredentials.trySetresuid None (Some UserId.root) None system
         |> completed "setresuid"

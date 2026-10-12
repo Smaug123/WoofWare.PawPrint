@@ -108,13 +108,13 @@ module TestSocketAddressing =
         let bytes = OptionValue.ofInt value
 
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 4u system with
+            match UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped 4u system with
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (bytes, 0, count))
             | Ok SetSockOptAdmission.NoCopy
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        match UnixSocket.setsockopt fd level name UserBuffer.Mapped 4u supplied system with
+        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped 4u supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> Answer.Succeeded, system
         | Ok (SetSockOptAnswer.Failed error, system) -> Answer.Failed error, system
         | Error _ -> Answer.Refused, system
@@ -123,11 +123,11 @@ module TestSocketAddressing =
         let level, name = ipv6OnlyOption system.Machine.UnixPlatform
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped system with
+            match UnixSocket.tryAdmitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped system with
             | Ok GetSockOptAdmission.ReadLength -> Some 4u
             | _ -> None
 
-        match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported bytes, _) when bytes.Length = 4 ->
             Answer.Read (SimulatedUnixPlatform.decodeCInt system.Machine.UnixPlatform bytes 0)
         | Ok (GetSockOptAnswer.Reported bytes, _) -> failwith $"getsockopt reported %d{bytes.Length} bytes"
@@ -155,7 +155,7 @@ module TestSocketAddressing =
         | Error _ -> Answer.Refused, system
 
     let private listen (fd : int) (system : UnixSystem<int, string>) : Answer * UnixSystem<int, string> =
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (ListenAnswer.Listening _, system) -> Answer.Succeeded, system
         | Ok (ListenAnswer.Failed error, system) -> Answer.Failed error, system
         | Error _ -> Answer.Refused, system

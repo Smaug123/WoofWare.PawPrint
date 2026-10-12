@@ -169,13 +169,13 @@ module TestInodeOwner =
             Map.ofList [ name "p", SeedEntry.Directory (Map.empty, mode parentMode, Some parentOwner) ]
 
         UnixSystem.initial platform
-        |> UnixBootImage.withFileSystem epoch (owner 0u 0u) seed
+        |> UnixBootImage.tryWithFileSystem epoch (owner 0u 0u) seed
         |> ok
         |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private ownerAt (path : string) (system : UnixSystem<int, string>) : InodeOwner =
         match
-            UnixPathResolution.stat
+            UnixPathResolution.tryStat
                 SymlinkPolicy.NoFollowFinal
                 (PathArg.ofPath (UnixPath.parseOrFail context path))
                 system
@@ -297,7 +297,7 @@ module TestInodeOwner =
 
         let system =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withFileSystem epoch defaultOwner seed
+            |> UnixBootImage.tryWithFileSystem epoch defaultOwner seed
             |> ok
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 

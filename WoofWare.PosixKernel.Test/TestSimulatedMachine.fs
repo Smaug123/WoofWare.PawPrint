@@ -101,12 +101,12 @@ module TestSimulatedMachine =
             match pick fd (openFds system) with
             | None -> system
             | Some fd ->
-                match UnixConnection.accept 0 fd UserBuffer.Mapped 16u system with
+                match UnixConnection.tryAccept 0 fd UserBuffer.Mapped 16u system with
                 | Ok (_, system) -> system
                 // Outside what the kernel models, so the step changes nothing.
                 | Error _ -> system
         | Op.Pipe ->
-            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
             | Ok (_, system) -> system
             | Error refusal -> failwith $"pipe: %A{refusal}"
         | Op.Dup fd ->
@@ -117,7 +117,7 @@ module TestSimulatedMachine =
             match pick fd (openFds system) with
             | None -> system
             | Some fd ->
-                match UnixDescriptor.close fd system with
+                match UnixDescriptor.tryClose fd system with
                 | Ok (_, system) -> system
                 // Outside what the kernel models, so the step changes nothing.
                 | Error _ -> system
@@ -190,11 +190,11 @@ module TestSimulatedMachine =
             let machine = SimulatedMachine.ofSystem system
 
             let expected =
-                match UnixSystem.step 0 (Syscall.Dup 1) system with
+                match UnixSystem.tryStep 0 (Syscall.Dup 1) system with
                 | Ok (outcome, view) -> outcome, view
                 | Error refusal -> failwith $"dup: %A{refusal}"
 
-            match SimulatedMachine.step pid 0 (Syscall.Dup 1) machine with
+            match SimulatedMachine.tryStep pid 0 (Syscall.Dup 1) machine with
             | Some (Ok outcome, after) ->
                 outcome |> shouldEqual (fst expected)
 
@@ -204,7 +204,7 @@ module TestSimulatedMachine =
             | other -> failwith $"step: %A{other}"
 
             let other = ProcessId.parseOrFail "test" 7
-            SimulatedMachine.step other 0 (Syscall.Dup 1) machine |> shouldEqual None
+            SimulatedMachine.tryStep other 0 (Syscall.Dup 1) machine |> shouldEqual None
 
     [<Test>]
     let ``a refused step leaves the machine itself, so a view focused before it can still be written back`` () : unit =
@@ -216,7 +216,7 @@ module TestSimulatedMachine =
 
         let call = Syscall.CloneFile (PathArg.ofText "/a", PathArg.ofText "/b", 0)
 
-        match SimulatedMachine.step pid 0 call machine with
+        match SimulatedMachine.tryStep pid 0 call machine with
         | Some (Error _, after) ->
             obj.ReferenceEquals (after, machine) |> shouldEqual true
             SimulatedMachine.unfocus pending after |> shouldEqual machine

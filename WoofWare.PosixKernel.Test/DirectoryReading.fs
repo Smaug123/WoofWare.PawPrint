@@ -42,7 +42,7 @@ module internal DirectoryReading =
             if fuel <= 0 then
                 failwith $"fd %d{fd} did not reach end-of-directory after %d{List.length acc} entries"
 
-            match UnixNamespace.readDirectoryEntry fd system with
+            match UnixNamespace.tryReadDirectoryEntry fd system with
             | Ok (ReadDirectoryAnswer.EndOfDirectory, system) -> List.rev acc, system
             | Ok (ReadDirectoryAnswer.Entry record, system) -> go (fuel - 1) (record :: acc) system
             | Ok (ReadDirectoryAnswer.Failed error, _) -> failwith $"reading fd %d{fd} failed with %O{error}"

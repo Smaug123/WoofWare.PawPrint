@@ -6,7 +6,7 @@ namespace WoofWare.PosixKernel
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
 [<RequireQualifiedAccess>]
-type PollRefusal =
+type internal PollRefusal =
     /// The entry names an event queue, which this kernel does not answer
     /// `poll(2)` for: under Linux an epoll instance, whatever was asked; under
     /// Darwin a kqueue asked for a bit that registers `EVFILT_READ` on it.
@@ -79,7 +79,7 @@ type PollOutcome =
     | WouldBlock of WakeCondition
 
 [<RequireQualifiedAccess>]
-module PollRefusal =
+module internal PollRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : PollRefusal) : string =
@@ -102,6 +102,19 @@ module PollRefusal =
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | PollRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PollRefusal) : RefusalKind =
+        match refusal with
+        | PollRefusal.UnmodelledTarget _ -> RefusalKind.Unmodelled
+        | PollRefusal.UnmodelledSocket _ -> RefusalKind.Unmodelled
+        | PollRefusal.UnmeasuredSocketKind _ -> RefusalKind.Unmodelled
+        | PollRefusal.UnmodelledVnodeWait _ -> RefusalKind.Unmodelled
+        | PollRefusal.UnmeasuredNegativeTimeout _ -> RefusalKind.Unmodelled
+        | PollRefusal.UnmodelledEntryCount _ -> RefusalKind.Unmodelled
+        | PollRefusal.EventsBesideDeadline -> RefusalKind.Unmodelled
+        | PollRefusal.DeadlineBeyondClock _ -> RefusalKind.Unmodelled
+        | PollRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+
 /// The flags `epoll_create1(2)` accepts, in Linux's numbering.
 [<RequireQualifiedAccess>]
 module EpollCreateFlags =
@@ -112,7 +125,7 @@ module EpollCreateFlags =
 
 /// Why this kernel will not answer an `epoll_create1(2)`.
 [<RequireQualifiedAccess>]
-type EpollCreateRefusal =
+type internal EpollCreateRefusal =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -120,7 +133,7 @@ type EpollCreateRefusal =
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module EpollCreateRefusal =
+module internal EpollCreateRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : EpollCreateRefusal) : string =
@@ -128,6 +141,12 @@ module EpollCreateRefusal =
         | EpollCreateRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | EpollCreateRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_create1 exists on Linux only. This flavour's counterpart is kqueue (UnixKqueue.kqueue)."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : EpollCreateRefusal) : RefusalKind =
+        match refusal with
+        | EpollCreateRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | EpollCreateRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
 
 /// What became of an `epoll_wait(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -151,7 +170,7 @@ type EpollWaitOutcome =
 
 /// Why this kernel will not answer an `epoll_wait(2)`.
 [<RequireQualifiedAccess>]
-type EpollWaitRefusal =
+type internal EpollWaitRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has epoll.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// The buffer reached the up-front address screen and has no address to
@@ -174,7 +193,7 @@ type EpollWaitRefusal =
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
-module EpollWaitRefusal =
+module internal EpollWaitRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it actually passed.
     let describe (refusal : EpollWaitRefusal) : string =
@@ -187,6 +206,15 @@ module EpollWaitRefusal =
         | EpollWaitRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | EpollWaitRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : EpollWaitRefusal) : RefusalKind =
+        match refusal with
+        | EpollWaitRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | EpollWaitRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | EpollWaitRefusal.UnmeasuredCopyOutFault _ -> RefusalKind.Unmodelled
+        | EpollWaitRefusal.DeadlineBeyondClock _ -> RefusalKind.Unmodelled
+        | EpollWaitRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
 
 /// The `event` argument of `epoll_ctl(2)`, as the kernel's copy-in finds it.
 ///
@@ -280,7 +308,7 @@ type EpollCtlAnswer =
 /// that could fail it; so a call that would fail is answered with its failure
 /// whatever it asks for.
 [<RequireQualifiedAccess>]
-type EpollCtlRefusal =
+type internal EpollCtlRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has epoll.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// An `EPOLL_CTL_ADD` whose target is itself an epoll instance.
@@ -316,7 +344,7 @@ type EpollCtlRefusal =
     | UnmeasuredSocketKind of targetFd : int * domain : SocketDomain * kind : SocketKind
 
 [<RequireQualifiedAccess>]
-module EpollCtlRefusal =
+module internal EpollCtlRefusal =
     /// What this kernel knows about why it will not answer. The client supplies
     /// its own half -- which of its entry points was asked, and on whose
     /// behalf.
@@ -338,6 +366,18 @@ module EpollCtlRefusal =
             $"fd %d{targetFd} is a %O{kind} socket in %O{domain}, and the registration would succeed. What an epoll wait reports for this kind is unmeasured: only poll(2)'s level is (OUT|HUP|WRNORM|WRBAND when fresh), and the two waiters read one level, which this kernel will not infer from one of them. Measure an epoll wait on one before registering it."
         | EpollCtlRefusal.LevelTriggered ->
             "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This library's epoll models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : EpollCtlRefusal) : RefusalKind =
+        match refusal with
+        | EpollCtlRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | EpollCtlRefusal.NestedEpoll _ -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.Exclusive -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.OneShot -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.WakeUp -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.LevelTriggered -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.PipeTarget _ -> RefusalKind.Unmodelled
+        | EpollCtlRefusal.UnmeasuredSocketKind _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module UnixPoll =
@@ -440,7 +480,7 @@ module UnixPoll =
     /// succeed with one of the modes this library does not model, and an
     /// `ADD` of another epoll instance, are refused (see `EpollCtlRefusal`).
     /// Under the Darwin flavour every call is refused: Darwin has no epoll.
-    let epollCtl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryEpollCtl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (epfd : int)
         (op : int)
         (fd : int)
@@ -1342,7 +1382,7 @@ module UnixPoll =
     ///
     /// `task` must not already be parked: a task blocks in one syscall at a
     /// time, and a parked `poll` is finished with `finishPoll`.
-    let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (entries : PollEntry list)
         (milliseconds : int)
@@ -1382,7 +1422,7 @@ module UnixPoll =
     /// whatever woke it has gone again. An answer clears the park.
     ///
     /// `task` must be parked in a `poll`.
-    let finishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryFinishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
@@ -1419,7 +1459,7 @@ module UnixPoll =
     /// nothing.
     ///
     /// Under the Darwin flavour every call is refused: Darwin has no epoll.
-    let epollCreate1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryEpollCreate1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<int * UnixSystem<'Task, 'Handler>, UnixError>, EpollCreateRefusal>
@@ -1532,7 +1572,7 @@ module UnixPoll =
     ///
     /// `task` must not already be parked. Under the Darwin flavour every call
     /// is refused: Darwin has no epoll.
-    let epollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (epfd : int)
         (maxEvents : int)
@@ -1637,7 +1677,7 @@ module UnixPoll =
     /// see `epollWait` for the buffers that refuses.
     ///
     /// `task` must be parked in an `epoll_wait`.
-    let finishEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryFinishEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>

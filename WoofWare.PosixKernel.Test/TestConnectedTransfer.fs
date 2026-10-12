@@ -49,15 +49,15 @@ module TestConnectedTransfer =
         match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
         | SimulatedUnixFlavour.Linux ->
             image
-            |> UnixBootImage.withTcpSendSpaceMax (Some 30000)
+            |> UnixBootImage.tryWithTcpSendSpaceMax (Some 30000)
             |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
-            |> UnixBootImage.withTcpReceiveSpace (Some 10000)
+            |> UnixBootImage.tryWithTcpReceiveSpace (Some 10000)
             |> Configured.expectOk TcpReceiveSpaceRefusal.describe
         | SimulatedUnixFlavour.Darwin ->
             image
-            |> UnixBootImage.withTcpSendSpace (Some UnixMachineState.darwinLoopbackSendPipe)
+            |> UnixBootImage.tryWithTcpSendSpace (Some UnixMachineState.darwinLoopbackSendPipe)
             |> Configured.expectOk TcpSendSpaceRefusal.describe
-            |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
+            |> UnixBootImage.tryWithTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
             |> Configured.expectOk TcpReceiveSpaceRefusal.describe
 
     /// A connected pair on `system`, made by a blocking connect and accept:
@@ -142,7 +142,7 @@ module TestConnectedTransfer =
 
     /// `shutdown(fd, how)`, which must answer 0.
     let private shut (fd : int) (how : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixConnection.shutdown fd how system with
+        match UnixConnection.tryShutdown fd how system with
         | Ok (ShutdownAnswer.Shut, after) -> after
         | other -> failwith $"shutdown(%d{fd}, %d{how}): %A{other}"
 
@@ -204,7 +204,7 @@ module TestConnectedTransfer =
         for platform in Machines.platforms do
             let client, server, system = pair false (systemOn small platform)
 
-            match UnixReadWrite.read system.Leader client UserBuffer.Mapped 10UL system with
+            match UnixReadWrite.tryRead system.Leader client UserBuffer.Mapped 10UL system with
             | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"expected the read to sleep, got %A{other}"
 
@@ -261,7 +261,7 @@ module TestConnectedTransfer =
             |> Result.map fst
             |> shouldEqual (Ok (WriteAnswer.Completed 0L))
 
-            UnixReadWrite.admitWrite system.Leader client unmapped 0UL system
+            UnixReadWrite.tryAdmitWrite system.Leader client unmapped 0UL system
             |> Result.map (fun outcome ->
                 match outcome with
                 | WriteOutcome.Returns (admission, _) -> admission
@@ -270,7 +270,7 @@ module TestConnectedTransfer =
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
             // Something to copy.
-            UnixReadWrite.admitWrite system.Leader client unmapped 10UL system
+            UnixReadWrite.tryAdmitWrite system.Leader client unmapped 10UL system
             |> shouldEqual (Error (WriteRefusal.ConnectionFault (socketOf client system)))
 
             let system = sentAll server 10 system
@@ -319,7 +319,7 @@ module TestConnectedTransfer =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux ->
             let epoll, system =
-                match UnixPoll.epollCreate1 0 system with
+                match UnixPoll.tryEpollCreate1 0 system with
                 | Ok (Ok created) -> created
                 | other -> failwith $"epoll_create1: %A{other}"
 
@@ -331,7 +331,7 @@ module TestConnectedTransfer =
 
             let system =
                 match
-                    UnixPoll.epollCtl
+                    UnixPoll.tryEpollCtl
                         epoll
                         1
                         fd
@@ -342,7 +342,7 @@ module TestConnectedTransfer =
                 | other -> failwith $"epoll_ctl: %A{other}"
 
             let wait (system : UnixSystem<int, string>) =
-                match UnixPoll.epollWait 4 epoll 2 UserBuffer.Mapped 0 system with
+                match UnixPoll.tryEpollWait 4 epoll 2 UserBuffer.Mapped 0 system with
                 | Ok (EpollWaitOutcome.Answered [], system) -> "none", system
                 | Ok (EpollWaitOutcome.Answered ((_, events) :: _), system) -> $"0x%x{events}", system
                 | other -> failwith $"epoll_wait: %A{other}"
@@ -476,7 +476,7 @@ module TestConnectedTransfer =
 
             let writable (system : UnixSystem<int, string>) : bool =
                 match
-                    UnixPoll.poll
+                    UnixPoll.tryPoll
                         0
                         [
                             {
@@ -544,7 +544,7 @@ module TestConnectedTransfer =
             let system =
                 if pollBetween then
                     match
-                        UnixPoll.poll
+                        UnixPoll.tryPoll
                             0
                             [
                                 {
@@ -614,7 +614,7 @@ module TestConnectedTransfer =
 
         let level (system : UnixSystem<int, string>) : int16 =
             match
-                UnixPoll.poll
+                UnixPoll.tryPoll
                     0
                     [
                         {
@@ -663,11 +663,11 @@ module TestConnectedTransfer =
         let length = uint32 value.Length
 
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped length system with
+            match UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped length system with
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | other -> failwith $"admitting SO_LINGER on fd %d{fd}: %A{other}"
 
-        match UnixSocket.setsockopt fd level name UserBuffer.Mapped length supplied system with
+        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"
 
@@ -761,7 +761,7 @@ module TestConnectedTransfer =
 
             let c, p, filled, system = lingerRowSetUp platform written lingers blocking
 
-            match expected, UnixDescriptor.close c system with
+            match expected, UnixDescriptor.tryClose c system with
             | LingerRow.Waited,
               Error (CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose (socket, _, unsent))) ->
                 socket |> shouldEqual (socketOf c system)
@@ -822,7 +822,7 @@ module TestConnectedTransfer =
             TcpTransfer.sendSpace ConnectionEnd.Client connection.Transfer < capacity
             |> shouldEqual expectedStranded
 
-            match UnixDescriptor.close c system with
+            match UnixDescriptor.tryClose c system with
             | Ok (SyscallAnswer.Completed 0L, system) -> assertClean system
             | other -> failwith $"%A{SimulatedUnixPlatform.flavour platform}: closing c answered %A{other}"
 
@@ -899,7 +899,7 @@ module TestConnectedTransfer =
 
                 let direct =
                     thrice (fun system ->
-                        UnixReadWrite.write system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
+                        UnixReadWrite.tryWrite system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
                     )
 
                 (build, direct) |> shouldEqual (build, admitted)
@@ -1013,11 +1013,11 @@ module TestConnectedTransfer =
                 let reuse = SimulatedUnixPlatform.reuseAddressOption platform
 
                 let setsockopt, system =
-                    match UnixSocket.admitSetSockOpt keep level reuse UserBuffer.Mapped 4u system with
+                    match UnixSocket.tryAdmitSetSockOpt keep level reuse UserBuffer.Mapped 4u system with
                     | Ok (SetSockOptAdmission.Answered error) -> Some error, system
                     | Ok (SetSockOptAdmission.Transfer _) ->
                         match
-                            UnixSocket.setsockopt
+                            UnixSocket.trySetsockopt
                                 keep
                                 level
                                 reuse
@@ -1134,7 +1134,7 @@ module TestConnectedTransfer =
         for platform in Machines.platforms do
             let system =
                 systemOn
-                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                    (UnixBootImage.tryWithEphemeralPortRange (40000us, 40000us)
                      >> Configured.expectOk EphemeralPortRangeRefusal.describe)
                     platform
 
@@ -1164,7 +1164,7 @@ module TestConnectedTransfer =
         for platform in Machines.platforms do
             let system =
                 systemOn
-                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                    (UnixBootImage.tryWithEphemeralPortRange (40000us, 40000us)
                      >> Configured.expectOk EphemeralPortRangeRefusal.describe)
                     platform
 
@@ -1199,7 +1199,7 @@ module TestConnectedTransfer =
                 let system =
                     systemOn
                         (small
-                         >> UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                         >> UnixBootImage.tryWithEphemeralPortRange (40000us, 40000us)
                          >> Configured.expectOk EphemeralPortRangeRefusal.describe)
                         platform
 
@@ -1274,7 +1274,7 @@ module TestConnectedTransfer =
         let system = sentAll client 10 system
 
         let system =
-            match UnixConnection.accept 1 listener UserBuffer.Mapped 0xFFFFFFFFu system with
+            match UnixConnection.tryAccept 1 listener UserBuffer.Mapped 0xFFFFFFFFu system with
             | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, system) -> system
             | other -> failwith $"accept: %A{other}"
 
@@ -1314,7 +1314,7 @@ module TestConnectedTransfer =
             let system = ReuseAddress.set (not listenerReuse) listener system
 
             let system =
-                match UnixConnection.accept 1 listener UserBuffer.Mapped 0xFFFFFFFFu system with
+                match UnixConnection.tryAccept 1 listener UserBuffer.Mapped 0xFFFFFFFFu system with
                 | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, system) -> system
                 | other -> failwith $"accept: %A{other}"
 
@@ -1409,10 +1409,10 @@ module TestConnectedTransfer =
                 let value = Some (OptionValue.ofInt (if before then 0 else 1))
 
                 let flipped =
-                    match UnixSocket.admitSetSockOpt client level name UserBuffer.Mapped 4u system with
+                    match UnixSocket.tryAdmitSetSockOpt client level name UserBuffer.Mapped 4u system with
                     | Ok (SetSockOptAdmission.Answered _) -> Ok ("-1", system)
                     | Ok (SetSockOptAdmission.Transfer _) ->
-                        match UnixSocket.setsockopt client level name UserBuffer.Mapped 4u value system with
+                        match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u value system with
                         | Ok (SetSockOptAnswer.Set, system) -> Ok ("0", system)
                         | Ok (SetSockOptAnswer.Failed _, system) -> Ok ("-1", system)
                         | Error refusal -> Error refusal
@@ -1425,7 +1425,7 @@ module TestConnectedTransfer =
                     // Setting the value it has changes no copy, and is served.
                     let unchanged = Some (OptionValue.ofInt (if before then 1 else 0))
 
-                    match UnixSocket.setsockopt client level name UserBuffer.Mapped 4u unchanged system with
+                    match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u unchanged system with
                     | Ok (SetSockOptAnswer.Set, _) -> ()
                     | other -> failwith $"Linux %s{row}: setting the value it has answered %A{other}"
                 | Error refusal -> failwith $"%A{flavour} %s{row}: refused %A{refusal}"
@@ -1494,7 +1494,7 @@ module TestConnectedTransfer =
                         else
                             KeventWorld.close accepted system
 
-                    match UnixSocket.listen listener 8 system with
+                    match UnixSocket.tryListen listener 8 system with
                     | Ok (ListenAnswer.Listening _, system) -> assertClean system
                     | other ->
                         failwith $"%O{platform}, listener SO_REUSEADDR %b{listenerReuse}, child %s{child}: %A{other}"
@@ -1678,7 +1678,7 @@ module TestConnectedTransfer =
                         )
                         |> Seq.exactlyOne
 
-                    match UnixPoll.epollWait task epoll 2 UserBuffer.Mapped -1 view with
+                    match UnixPoll.tryEpollWait task epoll 2 UserBuffer.Mapped -1 view with
                     | Ok (EpollWaitOutcome.WouldBlock _, view) -> view
                     | other -> failwith $"epoll_wait: expected to sleep, got %A{other}"
                 | SimulatedUnixFlavour.Darwin ->
@@ -1695,7 +1695,7 @@ module TestConnectedTransfer =
                         )
                         |> Seq.exactlyOne
 
-                    match UnixKqueue.kevent task kq 0 [] 2 UserBuffer.Mapped KeventTimeout.Null view with
+                    match UnixKqueue.tryKevent task kq 0 [] 2 UserBuffer.Mapped KeventTimeout.Null view with
                     | Ok (KeventOutcome.WouldBlock _, view) -> view
                     | other -> failwith $"kevent: expected to sleep, got %A{other}"
             )
@@ -1715,7 +1715,7 @@ module TestConnectedTransfer =
                     b
                     (fun view ->
                         match
-                            UnixPoll.poll
+                            UnixPoll.tryPoll
                                 2
                                 [
                                     {
@@ -1789,7 +1789,7 @@ module TestConnectedTransfer =
                     |> fst
 
                 let machine =
-                    match SimulatedMachine.endProcess ended machine with
+                    match SimulatedMachine.tryEndProcess ended machine with
                     | Ok (_, machine) -> machine
                     | Error refusal -> failwith $"%A{refusal}"
 

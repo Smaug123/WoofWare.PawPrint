@@ -144,7 +144,7 @@ module TestTotalQueries =
                         let socketId = socketIdOf fd system
 
                         if close then
-                            match UnixDescriptor.close fd system with
+                            match UnixDescriptor.tryClose fd system with
                             | Ok (SyscallAnswer.Completed _, system) -> live, Set.add socketId closed, system
                             | other -> failwith $"closing socket descriptor %d{fd}: %A{other}"
                         else
@@ -188,7 +188,7 @@ module TestTotalQueries =
             // A machine with the processor the child is created on.
             let system : UnixSystem<int, string> =
                 UnixSystem.initial SimulatedUnixPlatform.linuxX64
-                |> UnixBootImage.withProcessorCount (cpu.Get + 1)
+                |> UnixBootImage.tryWithProcessorCount (cpu.Get + 1)
                 |> Configured.expectOk ProcessorCountRefusal.describe
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -200,7 +200,7 @@ module TestTotalQueries =
             Map.tryFind child (UnixSystem.tasks system) |> shouldEqual None
 
             let tid, system =
-                match UnixTaskLifecycle.spawn 0 child (CpuId cpu.Get) system with
+                match UnixTaskLifecycle.trySpawn 0 child (CpuId cpu.Get) system with
                 | Ok (SpawnAnswer.Spawned tid, system) -> tid, system
                 | other -> failwith $"spawning task %d{child}: %A{other}"
 
@@ -212,7 +212,7 @@ module TestTotalQueries =
             | None -> failwith $"task %d{child} was spawned, but the process holds no task by that name"
 
             let system =
-                match UnixTaskLifecycle.exitThread child 0 system with
+                match UnixTaskLifecycle.tryExitThread child 0 system with
                 | Ok (TaskOutcome.Continues system) -> system
                 | other -> failwith $"task %d{child}'s exit: %A{other}"
 

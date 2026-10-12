@@ -36,7 +36,7 @@ module WriteOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
         =
-        match UnixReadWrite.admitWrite task fd buffer (uint64 bytes.Length) system with
+        match UnixReadWrite.tryAdmitWrite task fd buffer (uint64 bytes.Length) system with
         | Error refusal -> Error refusal
         | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
@@ -48,12 +48,12 @@ module WriteOutcomes =
             if count > bytes.Length then
                 failwith $"admitWrite asked for %d{count} of %d{bytes.Length} bytes"
 
-            UnixReadWrite.write task fd (ImmutableArray.Create (bytes, 0, count)) admitted
+            UnixReadWrite.tryWrite task fd (ImmutableArray.Create (bytes, 0, count)) admitted
         | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
             if total <> bytes.Length || count > bytes.Length then
                 failwith $"admitWrite asked for %d{count} of %d{total} bytes, given %d{bytes.Length}"
 
-            UnixReadWrite.writeThenSleep task fd total (ImmutableArray.Create (bytes, 0, count)) admitted
+            UnixReadWrite.tryWriteThenSleep task fd total (ImmutableArray.Create (bytes, 0, count)) admitted
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, signal, _))
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), signal, _)) ->
             failwith $"admitWrite raised %A{signal} and still asked for %d{count} bytes"
@@ -71,7 +71,7 @@ module WriteOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, SendRefusal>
         =
-        match UnixReadWrite.admitSend task fd buffer (uint64 bytes.Length) flags system with
+        match UnixReadWrite.tryAdmitSend task fd buffer (uint64 bytes.Length) flags system with
         | Error refusal -> Error refusal
         | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
@@ -83,7 +83,7 @@ module WriteOutcomes =
             if count > bytes.Length then
                 failwith $"admitSend asked for %d{count} of %d{bytes.Length} bytes"
 
-            UnixReadWrite.send task fd (ImmutableArray.Create (bytes, 0, count)) flags admitted
+            UnixReadWrite.trySend task fd (ImmutableArray.Create (bytes, 0, count)) flags admitted
         | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
             if total <> bytes.Length || count > bytes.Length then
                 failwith $"admitSend asked for %d{count} of %d{total} bytes, given %d{bytes.Length}"
@@ -101,7 +101,7 @@ module WriteOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteAdmission * UnixSystem<'Task, 'Handler>, WriteRefusal>
         =
-        UnixReadWrite.admitWrite system.Leader fd buffer count system |> returned
+        UnixReadWrite.tryAdmitWrite system.Leader fd buffer count system |> returned
 
     /// `UnixReadWrite.write` by the leader, through `returned`.
     let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -110,7 +110,7 @@ module WriteOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, WriteRefusal>
         =
-        UnixReadWrite.write system.Leader fd bytes system |> returned
+        UnixReadWrite.tryWrite system.Leader fd bytes system |> returned
 
 /// `UnixReadWrite.admitWrite` for a write whose admission must change nothing:
 /// every target but a Darwin pipe, whose timestamps a write moves whatever it

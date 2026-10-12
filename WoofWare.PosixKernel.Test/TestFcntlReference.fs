@@ -341,7 +341,7 @@ module TestFcntlReference =
         let image = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) Owners.linuxDefault seed image
+            UnixBootImage.tryWithFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) Owners.linuxDefault seed image
         with
         | Ok image ->
             let system =
@@ -392,13 +392,13 @@ module TestFcntlReference =
                 (if nonBlocking then nonBlockBit r else 0)
                 ||| (if cloexec then cloexecBit r else 0)
 
-            match UnixPipe.pipe2 flags UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 flags UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created (readFd, _), system) ->
                 Outcome.Answered (SyscallAnswer.Completed (int64 readFd)), system
             | Error (Pipe2Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | other -> failwith $"pipe2: %A{other}"
         | FcntlOp.Dup fd ->
-            match UnixDescriptor.dup fd system with
+            match UnixDescriptor.tryDup fd system with
             | Ok (answer, system) -> Outcome.Answered answer, system
             | Error refusal -> Outcome.RefusedAtBound refusal, system
         | FcntlOp.DupFd (fd, minimum, cloexec) ->
@@ -408,20 +408,20 @@ module TestFcntlReference =
                 else
                     FcntlWorld.DupFd
 
-            ofFcntl (UnixDescriptor.fcntl fd command minimum system)
-        | FcntlOp.GetFd fd -> ofFcntl (UnixDescriptor.fcntl fd FcntlWorld.GetFd 0 system)
-        | FcntlOp.SetFd (fd, word) -> ofFcntl (UnixDescriptor.fcntl fd FcntlWorld.SetFd word system)
-        | FcntlOp.GetFl fd -> ofFcntl (UnixDescriptor.fcntl fd FcntlWorld.GetFl 0 system)
-        | FcntlOp.SetFl (fd, word) -> ofFcntl (UnixDescriptor.fcntl fd FcntlWorld.SetFl word system)
+            ofFcntl (UnixDescriptor.tryFcntl fd command minimum system)
+        | FcntlOp.GetFd fd -> ofFcntl (UnixDescriptor.tryFcntl fd FcntlWorld.GetFd 0 system)
+        | FcntlOp.SetFd (fd, word) -> ofFcntl (UnixDescriptor.tryFcntl fd FcntlWorld.SetFd word system)
+        | FcntlOp.GetFl fd -> ofFcntl (UnixDescriptor.tryFcntl fd FcntlWorld.GetFl 0 system)
+        | FcntlOp.SetFl (fd, word) -> ofFcntl (UnixDescriptor.tryFcntl fd FcntlWorld.SetFl word system)
         | FcntlOp.Dup2 (oldFd, newFd) ->
-            match UnixDescriptor.dup2 oldFd newFd system with
+            match UnixDescriptor.tryDup2 oldFd newFd system with
             | Ok (answer, system) -> Outcome.Answered answer, system
             | Error (Dup2Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | Error refusal -> failwith $"dup2 refused: %s{Dup2Refusal.describe refusal}"
         | FcntlOp.Dup3 (oldFd, newFd, cloexec, stray) ->
             let flags = (if cloexec then cloexecBit r else 0) ||| (if stray then 0x800 else 0)
 
-            match UnixDescriptor.dup3 oldFd newFd flags system with
+            match UnixDescriptor.tryDup3 oldFd newFd flags system with
             | Ok (answer, system) -> Outcome.Answered answer, system
             | Error (Dup3Refusal.NotProvided _) -> Outcome.Refused, system
             | Error (Dup3Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
@@ -438,7 +438,7 @@ module TestFcntlReference =
                 Outcome.Answered (SyscallAnswer.Failed error), system
             | other -> failwith $"write: %A{other}"
         | FcntlOp.Close fd ->
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (answer, system) -> Outcome.Answered answer, system
             | Error refusal -> failwith $"close refused: %s{CloseRefusal.describe refusal}"
 

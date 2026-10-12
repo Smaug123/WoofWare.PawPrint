@@ -96,7 +96,7 @@ module SocketFuzz =
     /// `close(2)`. A refusal is the model's, and is reported as one; an errno
     /// comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Error refusal -> raise (ModelRefusal $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}")
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
@@ -288,7 +288,7 @@ module SocketFuzz =
         : string * ExecState
         =
         match
-            UnixPoll.epollCtl
+            UnixPoll.tryEpollCtl
                 (slotFd epoll state)
                 op
                 (slotFd target state)
@@ -556,7 +556,7 @@ module SocketFuzz =
             // registered here for the call is never left behind in the state.
             let polling = Tasks.ensure pollTask state.Kernel
 
-            match UnixPoll.poll pollTask [ entry ] 0 polling with
+            match UnixPoll.tryPoll pollTask [ entry ] 0 polling with
             | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
             | Ok (PollOutcome.WouldBlock condition, _) ->
                 failwith $"FUZZ-DRIVER BUG: a poll at timeout 0 parked on %A{condition}."

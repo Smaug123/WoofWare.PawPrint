@@ -390,9 +390,9 @@ module TestSigaction =
                             let generated =
                                 let answer =
                                     if threadDirected then
-                                        UnixSignal.pthreadKill leader signo caught |> Result.mapError string
+                                        UnixSignal.tryPthreadKill leader signo caught |> Result.mapError string
                                     else
-                                        UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId caught)) signo caught
+                                        UnixSignal.tryKill (ProcessId.toInt32 (UnixSystem.processId caught)) signo caught
                                         |> Result.mapError string
 
                                 match answer with
@@ -436,7 +436,7 @@ module TestSigaction =
                     match
                         systemOn flavour
                         |> HandlerFrames.enterIn "carrier" leader (Set.singleton signal)
-                        |> UnixSignal.pthreadKill leader pendingSigno
+                        |> UnixSignal.tryPthreadKill leader pendingSigno
                     with
                     | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
                     | other -> failwith $"generating %d{pendingSigno}: %A{other}"

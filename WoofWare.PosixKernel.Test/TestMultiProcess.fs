@@ -35,7 +35,7 @@ module TestMultiProcess =
 
         ((([ UnixSystem.processId first ], machine)), [ 2..count ])
         ||> List.fold (fun (pids, machine) _ ->
-            match SimulatedMachine.launch (launchOn platform) machine with
+            match SimulatedMachine.tryLaunch (launchOn platform) machine with
             | Ok (pid, machine) -> pids @ [ pid ], machine
             | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
         )
@@ -89,7 +89,7 @@ module TestMultiProcess =
         // A thread of the first process takes the next thread ID, so the
         // second process gets the one after.
         let worker, first =
-            match UnixTaskLifecycle.spawn 0 1 (CpuId 0) first with
+            match UnixTaskLifecycle.trySpawn 0 1 (CpuId 0) first with
             | Ok (SpawnAnswer.Spawned worker, first) -> worker, first
             | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
             | Error refusal -> failwith $"spawn: %s{SpawnRefusal.describe refusal}"
@@ -97,7 +97,7 @@ module TestMultiProcess =
         OsThreadId.toUInt64 worker |> shouldEqual 4243UL
 
         let pid, machine =
-            match SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first) with
+            match SimulatedMachine.tryLaunch (launchOn platform) (SimulatedMachine.ofSystem first) with
             | Ok launched -> launched
             | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
 
@@ -131,7 +131,7 @@ module TestMultiProcess =
         let pids, machine =
             ((([], SimulatedMachine.ofSystem first)), [ 1..2 ])
             ||> List.fold (fun (pids, machine) _ ->
-                match SimulatedMachine.launch (launchOn platform) machine with
+                match SimulatedMachine.tryLaunch (launchOn platform) machine with
                 | Ok (pid, machine) -> pids @ [ pid ], machine
                 | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
             )
@@ -152,7 +152,7 @@ module TestMultiProcess =
         let platform = SimulatedUnixPlatform.macOsArm64
 
         UnixSystem.initial<int, string> platform
-        |> UnixBootImage.withProcessId (ProcessId.parseOrFail context ProcessIdTable.darwinPidMax)
+        |> UnixBootImage.tryWithProcessId (ProcessId.parseOrFail context ProcessIdTable.darwinPidMax)
         |> Result.map ignore
         |> shouldEqual (
             Error (
@@ -168,7 +168,7 @@ module TestMultiProcess =
             |> Launched.processId (ProcessId.parseOrFail context (ProcessIdTable.darwinPidMax - 1))
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first)
+        SimulatedMachine.tryLaunch (launchOn platform) (SimulatedMachine.ofSystem first)
         |> Result.map ignore
         |> shouldEqual (Error (ProcessCreationRefusal.DarwinPidMaxReached ProcessIdTable.darwinPidMax))
 
@@ -183,7 +183,7 @@ module TestMultiProcess =
             |> Launched.leaderThreadId (System.UInt64.MaxValue - 1UL)
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first)
+        SimulatedMachine.tryLaunch (launchOn platform) (SimulatedMachine.ofSystem first)
         |> Result.map ignore
         |> shouldEqual (Error ProcessCreationRefusal.DarwinThreadIdCounterExhausted)
 
@@ -194,7 +194,7 @@ module TestMultiProcess =
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let pid, machine =
-            match SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first) with
+            match SimulatedMachine.tryLaunch (launchOn platform) (SimulatedMachine.ofSystem first) with
             | Ok launched -> launched
             | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
 
@@ -202,7 +202,7 @@ module TestMultiProcess =
         |> OsThreadId.toUInt64
         |> shouldEqual (System.UInt64.MaxValue - 1UL)
 
-        SimulatedMachine.launch (launchOn platform) machine
+        SimulatedMachine.tryLaunch (launchOn platform) machine
         |> Result.map ignore
         |> shouldEqual (Error ProcessCreationRefusal.DarwinThreadIdCounterExhausted)
 
@@ -218,13 +218,13 @@ module TestMultiProcess =
             |> UnixSystem.writePidMaxSysctl context 301
 
         let pid, machine =
-            match SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first) with
+            match SimulatedMachine.tryLaunch (launchOn platform) (SimulatedMachine.ofSystem first) with
             | Ok launched -> launched
             | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
 
         ProcessId.toInt32 pid |> shouldEqual 300
 
-        SimulatedMachine.launch (launchOn platform) machine
+        SimulatedMachine.tryLaunch (launchOn platform) machine
         |> Result.map ignore
         |> shouldEqual (Error ProcessCreationRefusal.NoFreeProcessId)
 
@@ -232,7 +232,7 @@ module TestMultiProcess =
     let ``a launch is refused for another platform, and for a directory the filesystem does not hold`` () : unit =
         let _, machine = machineOf SimulatedUnixPlatform.linuxX64 1
 
-        SimulatedMachine.launch (launchOn SimulatedUnixPlatform.linuxArm64) machine
+        SimulatedMachine.tryLaunch (launchOn SimulatedUnixPlatform.linuxArm64) machine
         |> Result.map ignore
         |> shouldEqual (
             Error (
@@ -244,7 +244,7 @@ module TestMultiProcess =
 
         let nowhere = AbsoluteUnixPath.parseOrFail context "/nowhere"
 
-        SimulatedMachine.launch
+        SimulatedMachine.tryLaunch
             (launchOn SimulatedUnixPlatform.linuxX64
              |> ProcessLaunch.withCurrentDirectory nowhere)
             machine
@@ -336,7 +336,7 @@ module TestMultiProcess =
 
             let write (text : string) (view : UnixSystem<int, string>) =
                 match
-                    UnixReadWrite.write 0 1 (ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes text)) view
+                    UnixReadWrite.tryWrite 0 1 (ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes text)) view
                 with
                 | Ok (WriteOutcome.Returns (_, view)) -> (), view
                 | other -> failwith $"write: %A{other}"
@@ -366,7 +366,7 @@ module TestMultiProcess =
         Answered.chdir (PathArg.ofText path) view
 
     let private rmdir (path : string) (view : UnixSystem<int, string>) : SyscallAnswer * UnixSystem<int, string> =
-        match UnixNamespace.rmdir (PathArg.ofText path) view with
+        match UnixNamespace.tryRmdir (PathArg.ofText path) view with
         | Ok answered -> answered
         | Error refusal -> failwith $"rmdir: %s{RemovalRefusal.describe refusal}"
 

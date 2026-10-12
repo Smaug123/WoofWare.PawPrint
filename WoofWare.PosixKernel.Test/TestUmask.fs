@@ -191,7 +191,7 @@ module TestUmask =
             let _, system = UnixSystem.umask earlier (fresh platforms.[platformIndex])
             let previous, expected = UnixSystem.umask mask system
 
-            match UnixSystem.step 0 (Syscall.UMask mask) system with
+            match UnixSystem.tryStep 0 (Syscall.UMask mask) system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed answer), after) ->
                 answer |> shouldEqual (int64 (PermissionBits.toInt previous))
                 after |> shouldEqual expected
@@ -224,7 +224,7 @@ module TestUmask =
                     UnixSystem.checkInvariants system |> shouldEqual []
                 else
                     Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> ProcessLaunch.withUmask (mode bits)
+                    |> ProcessLaunch.tryWithUmask (mode bits)
                     |> Result.map ignore
                     |> shouldEqual (
                         Error (
@@ -275,7 +275,7 @@ module TestUmask =
 
     let private created (p : string) (system : UnixSystem<int, string>) : int =
         match
-            UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (UnixPath.parseOrFail context p)) system
+            UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (UnixPath.parseOrFail context p)) system
         with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o7777
         | other -> failwith $"%s{p}: %A{other}"

@@ -41,7 +41,7 @@ module TestSuppliedPipe =
         | Error refusal -> failwith $"read(0, %d{count}) was refused: %s{ReadRefusal.describe refusal}"
 
     let private fionread (system : UnixSystem<int, string>) : int =
-        match UnixDescriptor.bytesAvailable 0 UserBuffer.Mapped system with
+        match UnixDescriptor.tryBytesAvailable 0 UserBuffer.Mapped system with
         | Ok (BytesAvailableAnswer.Reported count) -> count
         | other -> failwith $"FIONREAD on descriptor 0 answered %A{other}"
 
@@ -441,13 +441,13 @@ module TestSuppliedPipe =
             let system = launch SimulatedUnixPlatform.linuxArm64 (patterned length)
 
             let epoll, system =
-                match UnixPoll.epollCreate1 0 system with
+                match UnixPoll.tryEpollCreate1 0 system with
                 | Ok (Ok (epoll, system)) -> epoll, system
                 | other -> failwith $"%s{name}: epoll_create1 answered %A{other}"
 
             let system =
                 match
-                    UnixPoll.epollCtl
+                    UnixPoll.tryEpollCtl
                         epoll
                         1
                         0
@@ -458,7 +458,7 @@ module TestSuppliedPipe =
                 | other -> failwith $"%s{name}: the registration answered %A{other}"
 
             let wait (where : string) (system : UnixSystem<int, string>) : uint32 option * UnixSystem<int, string> =
-                match UnixPoll.epollWait 0 epoll 8 UserBuffer.Mapped 0 system with
+                match UnixPoll.tryEpollWait 0 epoll 8 UserBuffer.Mapped 0 system with
                 | Ok (EpollWaitOutcome.Answered [], system) -> None, system
                 | Ok (EpollWaitOutcome.Answered [ 7UL, events ], system) -> Some events, system
                 | other -> failwith $"%s{where}: epoll_wait answered %A{other}"
@@ -495,7 +495,7 @@ module TestSuppliedPipe =
                 | other -> failwith $"dup(0) answered %A{other}"
 
             let closeOrFail (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-                match UnixDescriptor.close fd system with
+                match UnixDescriptor.tryClose fd system with
                 | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"close(%d{fd}) answered %A{other}"
 

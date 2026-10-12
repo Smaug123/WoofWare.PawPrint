@@ -353,7 +353,7 @@ module TestConnectDestinationMeasured =
 
             let system =
                 if kind = SocketKind.Stream then
-                    match UnixSocket.listen target 8 system with
+                    match UnixSocket.tryListen target 8 system with
                     | Ok (ListenAnswer.Listening _, system) -> system
                     | other -> failwith $"%s{line}: listen answered %A{other}"
                 else

@@ -28,7 +28,7 @@ module TestDescriptorBound =
 
         ([ 4..last ], system)
         ||> List.foldBack (fun target system ->
-            match UnixDescriptor.dup2 3 target system with
+            match UnixDescriptor.tryDup2 3 target system with
             | Ok (SyscallAnswer.Completed _, system) -> system
             | other -> failwith $"filling the table at %d{target}: %A{other}"
         )
@@ -63,13 +63,13 @@ module TestDescriptorBound =
 
             for command in [ FcntlWorld.DupFd ; FcntlWorld.dupFdCloexec run.Platform ] do
                 for minimum in [ 0 ; 4 ; bound - 1 ] do
-                    match UnixDescriptor.fcntl 3 command minimum full with
+                    match UnixDescriptor.tryFcntl 3 command minimum full with
                     | Error (FcntlRefusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound bound)
                     | other -> failwith $"%s{run.Name}: F_DUPFD from %d{minimum} on a full table: %A{other}"
 
                 let oneLeft = filledTo (bound - 2) run
 
-                match UnixDescriptor.fcntl 3 command (bound - 1) oneLeft with
+                match UnixDescriptor.tryFcntl 3 command (bound - 1) oneLeft with
                 | Ok (SyscallAnswer.Completed fd, after) ->
                     fd |> shouldEqual (int64 (bound - 1))
                     UnixSystem.checkInvariants after |> shouldEqual []
@@ -85,14 +85,14 @@ module TestDescriptorBound =
             let system = filledTo 3 run
 
             for target in [ bound ; bound + 1 ; Int32.MaxValue ] do
-                match UnixDescriptor.dup2 3 target system with
+                match UnixDescriptor.tryDup2 3 target system with
                 | Error (Dup2Refusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound target)
                 | other -> failwith $"%s{run.Name}: dup2 onto %d{target}: %A{other}"
 
                 match SimulatedUnixPlatform.flavour run.Platform with
                 | SimulatedUnixFlavour.Darwin -> ()
                 | SimulatedUnixFlavour.Linux ->
-                    match UnixDescriptor.dup3 3 target OpenFlagNumbering.LinuxCloseOnExec system with
+                    match UnixDescriptor.tryDup3 3 target OpenFlagNumbering.LinuxCloseOnExec system with
                     | Error (Dup3Refusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound target)
                     | other -> failwith $"%s{run.Name}: dup3 onto %d{target}: %A{other}"
 
@@ -104,13 +104,13 @@ module TestDescriptorBound =
         for run in runs do
             let bound = SimulatedUnixPlatform.descriptorBound run.Platform
 
-            match UnixPipe.pipe2 0 UserBuffer.Mapped (filledTo (bound - 3) run) with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped (filledTo (bound - 3) run) with
             | Ok (Pipe2Answer.Created (r, w), after) ->
                 (r, w) |> shouldEqual (bound - 2, bound - 1)
                 UnixSystem.checkInvariants after |> shouldEqual []
             | other -> failwith $"%s{run.Name}: pipe2 with two left: %A{other}"
 
-            match UnixPipe.pipe2 0 UserBuffer.Mapped (filledTo (bound - 2) run) with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped (filledTo (bound - 2) run) with
             | Error (Pipe2Refusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound bound)
             | other -> failwith $"%s{run.Name}: pipe2 with one left: %A{other}"
 
@@ -129,7 +129,7 @@ module TestDescriptorBound =
             let listening, system = FcntlWorld.listener 5000us false system
 
             let system =
-                match UnixConnection.accept 1 listening UserBuffer.Mapped 16u system with
+                match UnixConnection.tryAccept 1 listening UserBuffer.Mapped 16u system with
                 | Ok (AcceptOutcome.WouldBlock _, system) -> system
                 | other -> failwith $"accept on an empty listener: %A{other}"
 
@@ -141,14 +141,14 @@ module TestDescriptorBound =
             let system =
                 ([ client + 1 .. bound - 1 ], system)
                 ||> List.foldBack (fun target system ->
-                    match UnixDescriptor.dup2 file target system with
+                    match UnixDescriptor.tryDup2 file target system with
                     | Ok (SyscallAnswer.Completed _, system) -> system
                     | other -> failwith $"filling the table at %d{target}: %A{other}"
                 )
 
             UnixWait.wakes (Set.singleton 1) system |> List.map fst |> shouldEqual [ 1 ]
 
-            match UnixConnection.finishAccept 1 system with
+            match UnixConnection.tryFinishAccept 1 system with
             | Error (AcceptRefusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound bound)
             | other -> failwith $"%s{run.Name}: finishing the accept on a full table: %A{other}"
 
@@ -179,7 +179,7 @@ module TestDescriptorBound =
             let full =
                 ([ client + 1 .. bound - 1 ], system)
                 ||> List.foldBack (fun target system ->
-                    match UnixDescriptor.dup2 file target system with
+                    match UnixDescriptor.tryDup2 file target system with
                     | Ok (SyscallAnswer.Completed _, system) -> system
                     | other -> failwith $"filling the table at %d{target}: %A{other}"
                 )
@@ -190,7 +190,7 @@ module TestDescriptorBound =
             e.Message |> shouldContainText $"at or above %d{bound}"
 
             let oneLeft =
-                match UnixDescriptor.close (bound - 1) full with
+                match UnixDescriptor.tryClose (bound - 1) full with
                 | Ok (SyscallAnswer.Completed _, system) -> system
                 | other -> failwith $"%s{run.Name}: closing %d{bound - 1}: %A{other}"
 
@@ -204,7 +204,7 @@ module TestDescriptorBound =
         for run in runs do
             let bound = SimulatedUnixPlatform.descriptorBound run.Platform
 
-            match UnixSystem.step 0 (Syscall.Dup 3) (filledTo (bound - 1) run) with
+            match UnixSystem.tryStep 0 (Syscall.Dup 3) (filledTo (bound - 1) run) with
             | Error (SyscallRefusal.Dup refusal) -> refusal |> shouldEqual (refusalAt bound bound)
             | other -> failwith $"%s{run.Name}: step Dup on a full table: %A{other}"
 
@@ -246,10 +246,10 @@ module TestDescriptorBound =
             |> UnixSystem.checkInvariants
             |> shouldEqual []
 
-            ProcessLaunch.create platform (Map.ofList [ bound, LaunchDescriptor.Drained ]) 0 (CpuId 0)
+            ProcessLaunch.tryCreate platform (Map.ofList [ bound, LaunchDescriptor.Drained ]) 0 (CpuId 0)
             |> Result.map ignore
             |> shouldEqual (Error (LaunchTableRefusal.AtOrAboveBound (bound, bound)))
 
-            ProcessLaunch.create platform (Map.ofList [ -1, LaunchDescriptor.Drained ]) 0 (CpuId 0)
+            ProcessLaunch.tryCreate platform (Map.ofList [ -1, LaunchDescriptor.Drained ]) 0 (CpuId 0)
             |> Result.map ignore
             |> shouldEqual (Error (LaunchTableRefusal.NegativeDescriptor -1))

@@ -57,7 +57,7 @@ module TestInodeLifetime =
     let private standingAt (dir : string) : UnixSystem<int, string> =
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault seed
+            |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault seed
         with
         | Ok image ->
             (Launched.bootWith
@@ -129,7 +129,7 @@ module TestInodeLifetime =
             }
 
     let private closed (fd : int) (kernel : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd kernel with
+        match UnixDescriptor.tryClose fd kernel with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
         | Ok (SyscallAnswer.Failed error, _) -> failwith $"could not close fd %d{fd}: %O{error}"
         | Ok (SyscallAnswer.Completed _, system) -> system

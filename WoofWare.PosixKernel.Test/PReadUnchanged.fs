@@ -16,7 +16,7 @@ module internal PReadUnchanged =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadAnswer, BufferRefusal>
         =
-        match UnixReadWrite.pread system.Leader fd buffer count offset system with
+        match UnixReadWrite.tryPread system.Leader fd buffer count offset system with
         | Error (PReadRefusal.Buffer refusal) -> Error refusal
         | Error (PReadRefusal.SignalAtPageBoundary _ as refusal) ->
             failwith $"pread(%d{fd}, %d{count}@%d{offset}) was refused, which only a device's can be: %A{refusal}"

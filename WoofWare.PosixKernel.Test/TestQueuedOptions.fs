@@ -92,11 +92,11 @@ module TestQueuedOptions =
         : UnixSystem<int, string>
         =
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level option UserBuffer.Mapped (uint32 value.Length) system with
+            match UnixSocket.tryAdmitSetSockOpt fd level option UserBuffer.Mapped (uint32 value.Length) system with
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | other -> failwith $"setsockopt(%d{level}, %d{option}) on fd %d{fd} was admitted as %A{other}"
 
-        match UnixSocket.setsockopt fd level option UserBuffer.Mapped (uint32 value.Length) supplied system with
+        match UnixSocket.trySetsockopt fd level option UserBuffer.Mapped (uint32 value.Length) supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | other -> failwith $"setsockopt(%d{level}, %d{option}) of %A{value} on fd %d{fd}: %A{other}"
 
@@ -105,11 +105,11 @@ module TestQueuedOptions =
         let size = if linger then 8u else 4u
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level option UserBuffer.Mapped UserBuffer.Mapped system with
+            match UnixSocket.tryAdmitGetSockOpt fd level option UserBuffer.Mapped UserBuffer.Mapped system with
             | Ok GetSockOptAdmission.ReadLength -> Some size
             | other -> failwith $"getsockopt(%d{level}, %d{option}) on fd %d{fd} was admitted as %A{other}"
 
-        match UnixSocket.getsockopt fd level option UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockopt fd level option UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported bytes, _) when bytes.Length = int size ->
             let field (offset : int) =
                 BitConverter.ToInt32 (bytes.AsSpan().Slice (offset, 4))
@@ -215,7 +215,7 @@ module TestQueuedOptions =
         let client, system = connectTo system
         let system = set listener (level, option) (valueOf accepted) system
 
-        match UnixConnection.accept 1 listener UserBuffer.Mapped UInt32.MaxValue system with
+        match UnixConnection.tryAccept 1 listener UserBuffer.Mapped UInt32.MaxValue system with
         | Error refusal ->
             match FileDescriptorRegistry.tryFindTarget listener (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socket) -> Error (refusal, socket)

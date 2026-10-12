@@ -78,7 +78,7 @@ type KeventTimeout =
 
 /// Why this kernel will not answer a `kqueue(2)`.
 [<RequireQualifiedAccess>]
-type KqueueRefusal =
+type internal KqueueRefusal =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -86,7 +86,7 @@ type KqueueRefusal =
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module KqueueRefusal =
+module internal KqueueRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : KqueueRefusal) : string =
@@ -94,6 +94,12 @@ module KqueueRefusal =
         | KqueueRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | KqueueRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and kqueue exists on Darwin only."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : KqueueRefusal) : RefusalKind =
+        match refusal with
+        | KqueueRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | KqueueRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
 
 /// What became of a `kevent(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -134,7 +140,7 @@ type KeventOutcome =
 
 /// Why this kernel will not answer a `kevent(2)`.
 [<RequireQualifiedAccess>]
-type KeventRefusal =
+type internal KeventRefusal =
     /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// The changelist holds this change, whose flags are not one of the
@@ -187,7 +193,7 @@ type KeventRefusal =
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
-module KeventRefusal =
+module internal KeventRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it actually passed.
     let describe (refusal : KeventRefusal) : string =
@@ -217,6 +223,23 @@ module KeventRefusal =
             $"a task asleep in kevent on kqueue %O{kqueue} has both reached its deadline (0 events) and an event to report. Darwin answers whichever of the two reached the sleeping task first, and this kernel does not record which did."
         | KeventRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : KeventRefusal) : RefusalKind =
+        match refusal with
+        | KeventRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | KeventRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledFilter _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledFilterParameters _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledTarget _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledSocket _ -> RefusalKind.Unmodelled
+        | KeventRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmeasuredCopyOutFault _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DeadlineBeyondClock _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DrainBesideDeadline _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DrainBesideEvents _ -> RefusalKind.Unmodelled
+        | KeventRefusal.EventsBesideDeadline _ -> RefusalKind.Unmodelled
+        | KeventRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+
 /// Darwin's kqueue: `kqueue(2)`, and `kevent(2)`.
 [<RequireQualifiedAccess>]
 module UnixKqueue =
@@ -227,7 +250,7 @@ module UnixKqueue =
     /// and `FD_CLOFORK`.
     ///
     /// Under the Linux flavour every call is refused: Linux has no kqueue.
-    let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryKqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Result<int * UnixSystem<'Task, 'Handler>, KqueueRefusal>
         =
@@ -605,7 +628,7 @@ module UnixKqueue =
     /// an `Opaque` or `Addressless` one.
     /// `task` must not already be parked. Under the Linux flavour every call
     /// is refused: Linux has no kqueue.
-    let kevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (kq : int)
         (nchanges : int)
@@ -804,7 +827,7 @@ module UnixKqueue =
     /// with; see `kevent` for the eventlists that refuses.
     ///
     /// `task` must be parked in a `kevent`.
-    let finishKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryFinishKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<KeventOutcome * UnixSystem<'Task, 'Handler>, KeventRefusal>

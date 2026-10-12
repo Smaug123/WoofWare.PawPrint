@@ -66,18 +66,23 @@ type WaitIdCode =
 /// Why this library will not render a termination as a status a parent would read:
 /// a case whose encoding has not been measured.
 [<RequireQualifiedAccess>]
-type WaitStatusRefusal =
+type internal WaitStatusRefusal =
     /// A death by `signal` that wrote a core dump, on Darwin.
     | CoreDumpOnDarwin of signal : Signal
 
 [<RequireQualifiedAccess>]
-module WaitStatusRefusal =
+module internal WaitStatusRefusal =
 
     /// A human-readable account of why the status was refused.
     let describe (refusal : WaitStatusRefusal) : string =
         match refusal with
         | WaitStatusRefusal.CoreDumpOnDarwin signal ->
             $"how Darwin reports a death by %O{signal} that wrote a core dump has not been measured"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : WaitStatusRefusal) : RefusalKind =
+        match refusal with
+        | WaitStatusRefusal.CoreDumpOnDarwin _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module ProcessTermination =
@@ -92,7 +97,7 @@ module ProcessTermination =
 
     /// The status word a parent's `waitpid(2)` stores for a child that ended so, under
     /// `platform`'s signal numbering.
-    let waitpidStatus
+    let internal tryWaitpidStatus
         (platform : SimulatedUnixPlatform)
         (termination : ProcessTermination)
         : Result<int32, WaitStatusRefusal>
@@ -113,7 +118,7 @@ module ProcessTermination =
 
     /// What a parent's `waitid(2)` reports for a child that ended so (`si_code` and
     /// `si_status`), under `platform`'s signal numbering.
-    let waitidStatus
+    let internal tryWaitidStatus
         (platform : SimulatedUnixPlatform)
         (termination : ProcessTermination)
         : Result<WaitIdCode * int32, WaitStatusRefusal>

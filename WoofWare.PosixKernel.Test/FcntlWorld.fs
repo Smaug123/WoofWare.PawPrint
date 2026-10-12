@@ -142,7 +142,7 @@ module internal FcntlWorld =
 
         let image : UnixBootImage<int, string> = UnixSystem.initial run.Platform
 
-        match UnixBootImage.withFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) root seed image with
+        match UnixBootImage.tryWithFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) root seed image with
         | Ok image ->
             (Launched.bootWith
                 (Launched.credentials run.Caller
@@ -162,7 +162,7 @@ module internal FcntlWorld =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixDescriptor.fcntl fd command argument system with
+        match UnixDescriptor.tryFcntl fd command argument system with
         | Ok answered -> answered
         | Error refusal ->
             failwith $"fcntl(%d{fd}, %d{command}, 0x%x{argument}) was refused: %s{FcntlRefusal.describe refusal}"
@@ -216,7 +216,7 @@ module internal FcntlWorld =
 
     /// A pipe made with the raw `pipe2` word `flags`: its read and write ends.
     let pipe (flags : int) (system : UnixSystem<int, string>) : (int * int) * UnixSystem<int, string> =
-        match UnixPipe.pipe2 flags UserBuffer.Mapped system with
+        match UnixPipe.tryPipe2 flags UserBuffer.Mapped system with
         | Ok (Pipe2Answer.Created (r, w), system) -> (r, w), system
         | other -> failwith $"pipe2(0x%x{flags}): %A{other}"
 
@@ -242,7 +242,7 @@ module internal FcntlWorld =
             | other -> failwith $"bind: %A{other}"
 
         let system =
-            match UnixSocket.listen fd 16 system with
+            match UnixSocket.tryListen fd 16 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listen: %A{other}"
 
@@ -280,7 +280,7 @@ module internal FcntlWorld =
 
         let system = connect client port system
 
-        match UnixConnection.accept 0 listenerFd UserBuffer.Mapped 16u system with
+        match UnixConnection.tryAccept 0 listenerFd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
         | other -> failwith $"accept: %A{other}"
 
@@ -295,7 +295,7 @@ module internal FcntlWorld =
             let domain, kind, protocol =
                 NewSocket.arguments platform SocketDomain.Inet SocketKind.Stream SocketProtocol.Default
 
-            match UnixSocket.socket domain (kind ||| extra) protocol system with
+            match UnixSocket.trySocket domain (kind ||| extra) protocol system with
             | Ok (Ok created) -> Some created
             | other -> failwith $"socket with 0x%x{extra}: %A{other}"
 
@@ -367,15 +367,15 @@ module internal FcntlWorld =
         | "accepted" -> Some (accepted 5000us false system)
         | "accepted-from-nonblocking" -> Some (accepted 5000us true system)
         | "port" when linux ->
-            match UnixPoll.epollCreate1 0 system with
+            match UnixPoll.tryEpollCreate1 0 system with
             | Ok (Ok created) -> Some created
             | other -> failwith $"epoll_create1(0): %A{other}"
         | "port-cloexec" when linux ->
-            match UnixPoll.epollCreate1 EpollCreateFlags.CloseOnExec system with
+            match UnixPoll.tryEpollCreate1 EpollCreateFlags.CloseOnExec system with
             | Ok (Ok created) -> Some created
             | other -> failwith $"epoll_create1(EPOLL_CLOEXEC): %A{other}"
         | "port" ->
-            match UnixKqueue.kqueue system with
+            match UnixKqueue.tryKqueue system with
             | Ok created -> Some created
             | Error refusal -> failwith $"kqueue: %s{KqueueRefusal.describe refusal}"
         | "null-rdonly" when linux -> Some (openWith (opening FileAccessMode.ReadOnly) "/dev/null" system)

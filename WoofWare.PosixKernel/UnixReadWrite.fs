@@ -26,7 +26,7 @@ type ReadAnswer =
 
 /// Why this kernel will not answer a `read`.
 [<RequireQualifiedAccess>]
-type ReadRefusal =
+type internal ReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
     /// A socket in `phase`, which has a datagram peer or a refused
@@ -61,7 +61,7 @@ type ReadRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module ReadRefusal =
+module internal ReadRefusal =
     /// Shared with `PReadRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -87,6 +87,18 @@ module ReadRefusal =
             $"the read was asleep on a pipe or a connected socket: %s{SyscallInterruptionRefusal.describe refusal}"
         | ReadRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ReadRefusal) : RefusalKind =
+        match refusal with
+        | ReadRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | ReadRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ConnectionBecameNonBlocking _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | ReadRefusal.DatagramSleep _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ScannedDirectoryPosition _ -> RefusalKind.Unmodelled
+        | ReadRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+        | ReadRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `pread`.
 ///
 /// `ReadRefusal` without its cases for sockets, pipes and directories partway
@@ -94,20 +106,26 @@ module ReadRefusal =
 /// first two and reads a directory at the offset it is given, so a shared type
 /// would hand every client arms it could not reach.
 [<RequireQualifiedAccess>]
-type PReadRefusal =
+type internal PReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
     /// As `ReadRefusal.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module PReadRefusal =
+module internal PReadRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half.
     let describe (refusal : PReadRefusal) : string =
         match refusal with
         | PReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | PReadRefusal.SignalAtPageBoundary count -> ReadRefusal.describeSignalAtPageBoundary count
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PReadRefusal) : RefusalKind =
+        match refusal with
+        | PReadRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | PReadRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
 
 /// What became of a `read(2)` this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -209,7 +227,7 @@ module BrokenWriteTarget =
 
 /// Why this kernel will not answer a `write`.
 [<RequireQualifiedAccess>]
-type WriteRefusal =
+type internal WriteRefusal =
     /// The buffer has no answer at the step the write reached.
     | Buffer of BufferRefusal
     /// A socket in `phase`, which has a datagram peer or a refused
@@ -261,7 +279,7 @@ type WriteRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module WriteRefusal =
+module internal WriteRefusal =
     /// Shared with `PWriteRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -304,6 +322,23 @@ module WriteRefusal =
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
         | WriteRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : WriteRefusal) : RefusalKind =
+        match refusal with
+        | WriteRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | WriteRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ConnectionBecameNonBlocking _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | WriteRefusal.SendBuffer _ -> RefusalKind.Unmodelled
+        | WriteRefusal.Inet6Binding _ -> RefusalKind.Unmodelled
+        | WriteRefusal.EphemeralPortsExhausted _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | WriteRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | WriteRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+        | WriteRefusal.SignalReceiver (_, inner) -> SignalReceiverRefusal.kind inner
+        | WriteRefusal.InitProcess _ -> RefusalKind.Unmodelled
+        | WriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `recv(2)`.
 ///
 /// Its own type rather than `ReadRefusal`: `recv` decodes a flag word and
@@ -311,7 +346,7 @@ module WriteRefusal =
 /// could not reach. A `recv` that sleeps is finished by
 /// `UnixReadWrite.finishRead`, whose refusals are `ReadRefusal`'s.
 [<RequireQualifiedAccess>]
-type ReceiveRefusal =
+type internal ReceiveRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The flag word holds `flags`, which this kernel does not model for
@@ -326,7 +361,7 @@ type ReceiveRefusal =
     | ConnectionFault of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module ReceiveRefusal =
+module internal ReceiveRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -342,13 +377,22 @@ module ReceiveRefusal =
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}, which is not an end of a connection. This kernel answers recv(2) on a connected stream socket only; what it answers on any other socket has not been measured."
         | ReceiveRefusal.ConnectionFault socket -> ReadRefusal.describe (ReadRefusal.ConnectionFault socket)
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ReceiveRefusal) : RefusalKind =
+        match refusal with
+        | ReceiveRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmeasuredCount _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `send(2)`.
 ///
 /// Its own type rather than `WriteRefusal`, as `ReceiveRefusal` is. A `send`
 /// that sleeps is finished by `UnixReadWrite.admitFinishWrite` and
 /// `UnixReadWrite.finishWrite`, whose refusals are `WriteRefusal`'s.
 [<RequireQualifiedAccess>]
-type SendRefusal =
+type internal SendRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The flag word holds `flags`, which this kernel does not model for
@@ -367,7 +411,7 @@ type SendRefusal =
     | InitProcess of target : BrokenWriteTarget
 
 [<RequireQualifiedAccess>]
-module SendRefusal =
+module internal SendRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -385,6 +429,17 @@ module SendRefusal =
         | SendRefusal.SignalReceiver (target, refusal) ->
             WriteRefusal.describe (WriteRefusal.SignalReceiver (target, refusal))
         | SendRefusal.InitProcess target -> WriteRefusal.describe (WriteRefusal.InitProcess target)
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SendRefusal) : RefusalKind =
+        match refusal with
+        | SendRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmeasuredCount _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | SendRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | SendRefusal.SignalReceiver (_, inner) -> SignalReceiverRefusal.kind inner
+        | SendRefusal.InitProcess _ -> RefusalKind.Unmodelled
 
 /// What a `write(2)` or `send(2)` this kernel answered did to the process that
 /// made it, besides answering: `'Answer` is what the call answered, a
@@ -446,7 +501,7 @@ type PWriteAdmission =
 /// reaches its own write operation, and a shared type would hand every client
 /// arms it could not reach and would have to invent messages for.
 [<RequireQualifiedAccess>]
-type PWriteRefusal =
+type internal PWriteRefusal =
     /// The buffer has no answer at the step this `pwrite` reached: its screen, or
     /// the copy it never got to make.
     | Buffer of BufferRefusal
@@ -461,7 +516,7 @@ type PWriteRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module PWriteRefusal =
+module internal PWriteRefusal =
     /// What this kernel knows about why it cannot complete a `pwrite`. The client
     /// supplies its own half -- which entry point, which descriptor, and what it
     /// would have to build or configure to lift the refusal.
@@ -476,9 +531,17 @@ module PWriteRefusal =
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
         | PWriteRefusal.SignalAtPageBoundary count -> WriteRefusal.describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PWriteRefusal) : RefusalKind =
+        match refusal with
+        | PWriteRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | PWriteRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | PWriteRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | PWriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `copy_file_range(2)`.
 [<RequireQualifiedAccess>]
-type CopyFileRangeRefusal =
+type internal CopyFileRangeRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has `copy_file_range`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// Both descriptors name regular files on a mount of this type, whose
@@ -492,7 +555,7 @@ type CopyFileRangeRefusal =
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
-module CopyFileRangeRefusal =
+module internal CopyFileRangeRefusal =
     /// What this kernel knows about why it cannot complete a copy. The client
     /// supplies its own half: which entry point, and which descriptors.
     let describe (refusal : CopyFileRangeRefusal) : string =
@@ -505,6 +568,14 @@ module CopyFileRangeRefusal =
             WriteRefusal.describeExceedsRepresentableLength inode offset count
         | CopyFileRangeRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : CopyFileRangeRefusal) : RefusalKind =
+        match refusal with
+        | CopyFileRangeRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | CopyFileRangeRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
+        | CopyFileRangeRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | CopyFileRangeRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
 
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -1637,7 +1708,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -2268,7 +2339,7 @@ module UnixReadWrite =
     /// again. No close ends it.
     ///
     /// `task` must be asleep in a `read` or a `recv`.
-    let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryFinishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
@@ -2352,7 +2423,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let recv<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryRecv<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -2433,7 +2504,7 @@ module UnixReadWrite =
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a read of `/dev/urandom` asks whether it has
     /// a signal pending (`PReadRefusal.SignalAtPageBoundary`).
-    let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryPread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -2938,7 +3009,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -3294,7 +3365,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -3762,7 +3833,7 @@ module UnixReadWrite =
     ///   taken.
     ///
     /// `task` must be asleep in a `write` or a `send`.
-    let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
@@ -3865,7 +3936,7 @@ module UnixReadWrite =
     /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
     /// the system the one it came with: anything else is the caller's mistake,
     /// and fails loudly.
-    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
@@ -3895,7 +3966,7 @@ module UnixReadWrite =
     /// `bytes` must be exactly the ones the admission named, and the system the
     /// one it came with: anything else is the caller's mistake, and fails
     /// loudly.
-    let writeThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWriteThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (total : int)
@@ -4021,7 +4092,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let admitSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -4077,7 +4148,7 @@ module UnixReadWrite =
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let send<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -4288,7 +4359,7 @@ module UnixReadWrite =
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a write to `/dev/urandom` asks whether it
     /// has a signal pending (`PWriteRefusal.SignalAtPageBoundary`).
-    let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -4453,7 +4524,7 @@ module UnixReadWrite =
     /// which a real kernel would cut short, is refused.
     ///
     /// `task` is as `admitPWrite`'s.
-    let pwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryPwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -4488,7 +4559,7 @@ module UnixReadWrite =
     /// and EINVAL for a copy within one file whose two ranges overlap. A copy writes as `write(2)` does: the destination's
     /// modification and status-change times move and its set-ID bits are
     /// stripped as a write strips them. A copy of nothing changes nothing.
-    let copyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryCopyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inFd : int)
         (outFd : int)
         (length : uint64)

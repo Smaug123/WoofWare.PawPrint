@@ -338,7 +338,7 @@ module TestOpenFlagWord =
         let system : UnixBootImage<int, string> = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystem
+            UnixBootImage.tryWithFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess credentials)
                 seed
@@ -371,7 +371,7 @@ module TestOpenFlagWord =
     /// What became of `f` and `nx`, in the probe's notation.
     let private aftermath (system : UnixSystem<int, string>) : string =
         let size (path : string) : int64 option =
-            match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system with
+            match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system with
             | Ok (FileStatusAnswer.Reported status) -> Some status.Size
             | Ok (FileStatusAnswer.Failed _) -> None
             | Error refusal -> failwith $"stat %s{path} was refused: %A{refusal}"
@@ -382,7 +382,7 @@ module TestOpenFlagWord =
 
     /// What `fcntl(fd, command)` answers, as the probe prints it.
     let private flagWord (fd : int) (command : int) (system : UnixSystem<int, string>) : string =
-        match UnixDescriptor.fcntl fd command 0 system with
+        match UnixDescriptor.tryFcntl fd command 0 system with
         | Ok (SyscallAnswer.Completed word, _) -> $"0x%x{word}"
         | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
         | Error refusal -> $"refused (%s{FcntlRefusal.describe refusal})"

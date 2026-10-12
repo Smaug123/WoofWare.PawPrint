@@ -82,7 +82,7 @@ module TestLinkCount =
             EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour platform)
 
         system
-        |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+        |> UnixBootImage.tryWithMount (Some (EmulatedMount.defaultOf fsType))
         |> Configured.expectOk MountRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -103,14 +103,14 @@ module TestLinkCount =
                 Answered.openPath creating (rooted path) 0o644 system
                 |> completed $"creat %s{path}"
 
-            match UnixDescriptor.close (int fd) system with
+            match UnixDescriptor.tryClose (int fd) system with
             | Ok (SyscallAnswer.Completed _, system) -> held, system
             | other -> failwith $"close %d{fd}: %A{other}"
         | LinkCountStep.Unlink path -> held, Answered.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
         | LinkCountStep.RemoveDirectory path ->
             held, Answered.rmdir (rooted path) system |> completed $"rmdir %s{path}" |> snd
         | LinkCountStep.Rename (source, destination) ->
-            match UnixNamespace.rename (PathArg.ofText $"/%s{source}") (PathArg.ofText $"/%s{destination}") system with
+            match UnixNamespace.tryRename (PathArg.ofText $"/%s{source}") (PathArg.ofText $"/%s{destination}") system with
             | Ok result -> held, result |> completed $"rename %s{source} %s{destination}" |> snd
             | Error refusal -> failwith $"rename %s{source} %s{destination} was refused: %A{refusal}"
         | LinkCountStep.Hold path ->
@@ -132,9 +132,9 @@ module TestLinkCount =
         =
         match observation with
         | LinkCountObservation.Path path ->
-            UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system
+            UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system
             |> reported $"lstat %s{path}"
-        | LinkCountObservation.Held path -> UnixPathResolution.fstat held.[path] system |> reported $"fstat %s{path}"
+        | LinkCountObservation.Held path -> UnixPathResolution.tryFstat held.[path] system |> reported $"fstat %s{path}"
 
     /// The scenarios, each with what it observes. Every row is one
     /// `stat-fields.c` measured.
@@ -250,7 +250,7 @@ module TestLinkCount =
                 |> List.fold applyToModel (Map.empty, systemOn platform)
 
             let root =
-                UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/") system
+                UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofText "/") system
                 |> reported "stat /"
 
             match SimulatedUnixPlatform.flavour platform with
@@ -268,7 +268,7 @@ module TestLinkCount =
             let _, system = Answered.rmdir (rooted "c") system |> completed "rmdir"
 
             let here =
-                UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText ".") system
+                UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofText ".") system
                 |> reported "stat ."
 
             match SimulatedUnixPlatform.flavour platform with
@@ -429,7 +429,7 @@ module TestLinkCount =
                 |> List.fold applyToModel (Map.empty, systemOn platform)
 
             let (readFd, writeFd), system =
-                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                 | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
                 | other -> failwith $"pipe2: %A{other}"
 
@@ -439,8 +439,8 @@ module TestLinkCount =
                     observeModel held system (LinkCountObservation.Path "d/f")
                     observeModel held system (LinkCountObservation.Path "d/.hidden")
                     observeModel held system (LinkCountObservation.Held "d/f")
-                    UnixPathResolution.fstat readFd system |> reported "fstat read end"
-                    UnixPathResolution.fstat writeFd system |> reported "fstat write end"
+                    UnixPathResolution.tryFstat readFd system |> reported "fstat read end"
+                    UnixPathResolution.tryFstat writeFd system |> reported "fstat write end"
                 ]
 
             let flags =
@@ -460,22 +460,22 @@ module TestLinkCount =
             let system = systemOn platform
 
             let (readFd, writeFd), system =
-                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                 | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
                 | other -> failwith $"pipe2: %A{other}"
 
-            (UnixPathResolution.fstat readFd system |> reported "read end").LinkCount
+            (UnixPathResolution.tryFstat readFd system |> reported "read end").LinkCount
             |> shouldEqual expected
 
-            (UnixPathResolution.fstat writeFd system |> reported "write end").LinkCount
+            (UnixPathResolution.tryFstat writeFd system |> reported "write end").LinkCount
             |> shouldEqual expected
 
             let system =
-                match UnixDescriptor.close writeFd system with
+                match UnixDescriptor.tryClose writeFd system with
                 | Ok (SyscallAnswer.Completed _, system) -> system
                 | other -> failwith $"close: %A{other}"
 
-            (UnixPathResolution.fstat readFd system |> reported "read end, writer closed").LinkCount
+            (UnixPathResolution.tryFstat readFd system |> reported "read end, writer closed").LinkCount
             |> shouldEqual expected
 
     // ------------------------------------------------------------ the host
@@ -589,7 +589,7 @@ module TestLinkCount =
                 let system = systemOn (HostPlatform.platformOf flavour)
 
                 let (readFd, writeFd), system =
-                    match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                    match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                     | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
                     | other -> failwith $"pipe2: %A{other}"
 
@@ -597,7 +597,7 @@ module TestLinkCount =
                     let host = HostStat.fstat flavour hostFd
 
                     let model =
-                        UnixPathResolution.fstat modelFd system
+                        UnixPathResolution.tryFstat modelFd system
                         |> reported "fstat pipe"
                         |> HostStat.ofModel
 

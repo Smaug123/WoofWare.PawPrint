@@ -103,7 +103,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : ImmutableArray<byte>
         =
-        match UnixSocket.admitSockaddrCopy syscall fd destination declaredLength system with
+        match UnixSocket.tryAdmitSockaddrCopy syscall fd destination declaredLength system with
         | Ok (SockaddrCopyAdmission.Transfer length) -> prefix blob length
         | Ok (SockaddrCopyAdmission.Answered _)
         | Error _ -> ImmutableArray.Empty
@@ -118,7 +118,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        UnixSocket.bind
+        UnixSocket.tryBind
             fd
             destination
             declaredLength
@@ -135,7 +135,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
-        UnixConnection.connect
+        UnixConnection.tryConnect
             fd
             destination
             declaredLength

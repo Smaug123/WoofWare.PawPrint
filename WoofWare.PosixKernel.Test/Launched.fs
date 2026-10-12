@@ -17,7 +17,7 @@ module internal Launched =
         (cpu : CpuId)
         : ProcessLaunch<'Task>
         =
-        ProcessLaunch.create platform streams leader cpu
+        ProcessLaunch.tryCreate platform streams leader cpu
         |> Configured.expectOk LaunchTableRefusal.describe
 
     /// `image` booted with a first process launched with `streams`, its leader
@@ -32,7 +32,7 @@ module internal Launched =
         =
         let launch = launch (UnixBootImage.platform image) streams leader cpu |> configure
 
-        UnixBootImage.boot launch image |> Configured.expectOk LaunchRefusal.describe
+        UnixBootImage.tryBoot launch image |> Configured.expectOk LaunchRefusal.describe
 
     /// `bootWith` with the launch as `ProcessLaunch.create` makes it.
     let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -50,7 +50,7 @@ module internal Launched =
         (launch : ProcessLaunch<'Task>)
         : ProcessLaunch<'Task>
         =
-        ProcessLaunch.withCredentials credentials launch
+        ProcessLaunch.tryWithCredentials credentials launch
         |> Configured.expectOk CredentialsRefusal.describe
 
     /// `ProcessLaunch.withUmask`, which the test means to admit it.
@@ -59,7 +59,7 @@ module internal Launched =
         (launch : ProcessLaunch<'Task>)
         : ProcessLaunch<'Task>
         =
-        ProcessLaunch.withUmask umask launch
+        ProcessLaunch.tryWithUmask umask launch
         |> Configured.expectOk UmaskRefusal.describe
 
     /// `UnixBootImage.withProcessId`, which the test means to admit it.
@@ -68,7 +68,7 @@ module internal Launched =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        UnixBootImage.withProcessId pid image
+        UnixBootImage.tryWithProcessId pid image
         |> Configured.expectOk ProcessIdRefusal.describe
 
     /// `UnixBootImage.withLeaderThreadId`, which the test means to admit it.
@@ -77,7 +77,7 @@ module internal Launched =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        UnixBootImage.withLeaderThreadId id image
+        UnixBootImage.tryWithLeaderThreadId id image
         |> Configured.expectOk LeaderThreadIdRefusal.describe
 
     /// `UnixBootImage.withFileSystem`, which the test means to admit the seed.
@@ -88,7 +88,7 @@ module internal Launched =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        UnixBootImage.withFileSystem createdAt defaultOwner seed image
+        UnixBootImage.tryWithFileSystem createdAt defaultOwner seed image
         |> Configured.expectOk (sprintf "%A")
 
     /// `system` with the machine's record of the directories processes stand

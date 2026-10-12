@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// Why `UnixBootImage.withUserAddressLimit` refuses a limit.
 [<RequireQualifiedAccess>]
-type UserAddressLimitRefusal =
+type internal UserAddressLimitRefusal =
     /// The machine's flavour screens no buffer before performing an
     /// operation (Darwin), so it has no `TASK_SIZE_MAX` for a limit to set.
     /// Contradictory: no machine of the flavour has the setting.
@@ -17,7 +17,7 @@ type UserAddressLimitRefusal =
         observedOn : SimulatedUnixArchitecture option
 
 [<RequireQualifiedAccess>]
-module UserAddressLimitRefusal =
+module internal UserAddressLimitRefusal =
     /// What this library knows about why it refused the limit, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : UserAddressLimitRefusal) : string =
@@ -29,16 +29,22 @@ module UserAddressLimitRefusal =
         | UserAddressLimitRefusal.NotObservedOn (limit, architecture, None) ->
             $"no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : UserAddressLimitRefusal) : RefusalKind =
+        match refusal with
+        | UserAddressLimitRefusal.NoUpFrontScreen _ -> RefusalKind.Contradictory "limit"
+        | UserAddressLimitRefusal.NotObservedOn _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withProcessorCount` refuses a count.
 [<RequireQualifiedAccess>]
-type ProcessorCountRefusal =
+type internal ProcessorCountRefusal =
     /// The count is below 1. Contradictory: a machine running the process
     /// has at least the processor it runs on, and programs divide by the
     /// count.
     | NotPositive of count : int
 
 [<RequireQualifiedAccess>]
-module ProcessorCountRefusal =
+module internal ProcessorCountRefusal =
     /// What this library knows about why it refused the count, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : ProcessorCountRefusal) : string =
@@ -46,9 +52,14 @@ module ProcessorCountRefusal =
         | ProcessorCountRefusal.NotPositive count ->
             $"%d{count} logical processors is not a machine: a process runs on at least one, and programs divide by the count."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessorCountRefusal) : RefusalKind =
+        match refusal with
+        | ProcessorCountRefusal.NotPositive _ -> RefusalKind.OutOfRange "count"
+
 /// Why `UnixBootImage.withEphemeralPortRange` refuses a range.
 [<RequireQualifiedAccess>]
-type EphemeralPortRangeRefusal =
+type internal EphemeralPortRangeRefusal =
     /// The range starts at port 0, which is how a process *asks* for an
     /// ephemeral port, so it cannot also be one handed out. Contradictory.
     | LowIsZero of high : uint16
@@ -57,7 +68,7 @@ type EphemeralPortRangeRefusal =
     | Empty of low : uint16 * high : uint16
 
 [<RequireQualifiedAccess>]
-module EphemeralPortRangeRefusal =
+module internal EphemeralPortRangeRefusal =
     /// What this library knows about why it refused the range, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : EphemeralPortRangeRefusal) : string =
@@ -67,9 +78,15 @@ module EphemeralPortRangeRefusal =
         | EphemeralPortRangeRefusal.Empty (low, high) ->
             $"the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : EphemeralPortRangeRefusal) : RefusalKind =
+        match refusal with
+        | EphemeralPortRangeRefusal.LowIsZero _ -> RefusalKind.OutOfRange "low"
+        | EphemeralPortRangeRefusal.Empty _ -> RefusalKind.Contradictory "high"
+
 /// Why `UnixBootImage.withBootTime` refuses an instant.
 [<RequireQualifiedAccess>]
-type BootTimeRefusal =
+type internal BootTimeRefusal =
     /// The instant is before the Unix epoch. Unmodelled: this library models
     /// no realtime clock reading before it.
     | BeforeEpoch of bootTime : UnixTimestamp
@@ -84,7 +101,7 @@ type BootTimeRefusal =
     | FinerThanMicrosecond of bootTime : UnixTimestamp
 
 [<RequireQualifiedAccess>]
-module BootTimeRefusal =
+module internal BootTimeRefusal =
     /// What this library knows about why it refused the instant, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : BootTimeRefusal) : string =
@@ -96,9 +113,16 @@ module BootTimeRefusal =
         | BootTimeRefusal.FinerThanMicrosecond bootTime ->
             $"%O{bootTime} is finer than a microsecond, and Darwin keeps its boot instant as a struct timeval (sysctl kern.boottime), so no Darwin machine booted at it."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : BootTimeRefusal) : RefusalKind =
+        match refusal with
+        | BootTimeRefusal.BeforeEpoch _ -> RefusalKind.Unmodelled
+        | BootTimeRefusal.PastMaxBootTime _ -> RefusalKind.Unmodelled
+        | BootTimeRefusal.FinerThanMicrosecond _ -> RefusalKind.Contradictory "bootTime"
+
 /// Why `UnixBootImage.withMount` refuses a mount.
 [<RequireQualifiedAccess>]
-type MountRefusal =
+type internal MountRefusal =
     /// A kernel of `flavour` cannot report `fileSystemType`
     /// (`EmulatedFileSystemType.isReportableUnder`), so a process asking
     /// `fstatfs(2)` would learn a fact no such system could tell it: APFS on
@@ -108,7 +132,7 @@ type MountRefusal =
     | NotReportableUnder of fileSystemType : EmulatedFileSystemType * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module MountRefusal =
+module internal MountRefusal =
     /// What this library knows about why it refused the mount, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : MountRefusal) : string =
@@ -116,16 +140,22 @@ module MountRefusal =
         | MountRefusal.NotReportableUnder (fileSystemType, flavour) ->
             $"a %O{flavour} kernel cannot report %O{fileSystemType}, so a process asking fstatfs would learn a fact no such system could tell it."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : MountRefusal) : RefusalKind =
+        match refusal with
+        | MountRefusal.NotReportableUnder (_, SimulatedUnixFlavour.Linux) -> RefusalKind.Contradictory "mount"
+        | MountRefusal.NotReportableUnder (_, SimulatedUnixFlavour.Darwin) -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withProtectedFiles` refuses a setting.
 [<RequireQualifiedAccess>]
-type ProtectedFilesRefusal =
+type internal ProtectedFilesRefusal =
     /// `protection` sets an `fs.protected_*` sysctl, and a kernel of
     /// `flavour` (Darwin) has none: measured on Darwin 27.0, it applies none
     /// of their rules. Contradictory.
     | NoSuchSysctls of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module ProtectedFilesRefusal =
+module internal ProtectedFilesRefusal =
     /// What this library knows about why it refused the setting, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : ProtectedFilesRefusal) : string =
@@ -133,9 +163,14 @@ module ProtectedFilesRefusal =
         | ProtectedFilesRefusal.NoSuchSysctls (protection, flavour) ->
             $"%A{protection} sets an fs.protected_* sysctl, which a %O{flavour} kernel does not have; it applies none of their rules (measured on Darwin 27.0, protected-sysctls.c). Leave every one of them Off."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProtectedFilesRefusal) : RefusalKind =
+        match refusal with
+        | ProtectedFilesRefusal.NoSuchSysctls _ -> RefusalKind.Contradictory "protection"
+
 /// Why `UnixBootImage.withPipeDevice` refuses a device.
 [<RequireQualifiedAccess>]
-type PipeDeviceRefusal =
+type internal PipeDeviceRefusal =
     /// The machine is Darwin's, whose pipes all report `st_dev` 0 (measured
     /// on 27.0.0), and the device is not 0. Contradictory.
     | DarwinReportsZero of device : int64
@@ -143,7 +178,7 @@ type PipeDeviceRefusal =
     | Negative of device : int64
 
 [<RequireQualifiedAccess>]
-module PipeDeviceRefusal =
+module internal PipeDeviceRefusal =
     /// What this library knows about why it refused the device, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : PipeDeviceRefusal) : string =
@@ -152,16 +187,22 @@ module PipeDeviceRefusal =
             $"%d{device} is not a device a Darwin pipe reports; every pipe on Darwin reports st_dev 0 (measured on 27.0.0)."
         | PipeDeviceRefusal.Negative device -> $"%d{device} is negative, which no dev_t is."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PipeDeviceRefusal) : RefusalKind =
+        match refusal with
+        | PipeDeviceRefusal.DarwinReportsZero _ -> RefusalKind.Contradictory "device"
+        | PipeDeviceRefusal.Negative _ -> RefusalKind.OutOfRange "device"
+
 /// Why `UnixBootImage.withSoMaxConn` refuses a value.
 [<RequireQualifiedAccess>]
-type SoMaxConnRefusal =
+type internal SoMaxConnRefusal =
     /// The value is below 1. Unmeasured: no kernel was measured with a
     /// non-positive `somaxconn`, so the accept-queue capacity it would imply
     /// is a guess.
     | NotPositive of value : int
 
 [<RequireQualifiedAccess>]
-module SoMaxConnRefusal =
+module internal SoMaxConnRefusal =
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : SoMaxConnRefusal) : string =
@@ -169,9 +210,14 @@ module SoMaxConnRefusal =
         | SoMaxConnRefusal.NotPositive value ->
             $"%d{value} is not positive, and no kernel was measured with a non-positive somaxconn, so the accept-queue capacity it would imply is a guess."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SoMaxConnRefusal) : RefusalKind =
+        match refusal with
+        | SoMaxConnRefusal.NotPositive _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withInotifyLimits` refuses a value.
 [<RequireQualifiedAccess>]
-type InotifyLimitsRefusal =
+type internal InotifyLimitsRefusal =
     /// The machine is of `flavour` (Darwin), which has no inotify, so nothing
     /// would read the limits.
     | NotReadOn of flavour : SimulatedUnixFlavour
@@ -190,7 +236,7 @@ type InotifyLimitsRefusal =
     | MaxQueuedEventsTooLarge of value : int * largest : int
 
 [<RequireQualifiedAccess>]
-module InotifyLimitsRefusal =
+module internal InotifyLimitsRefusal =
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : InotifyLimitsRefusal) : string =
@@ -206,9 +252,18 @@ module InotifyLimitsRefusal =
         | InotifyLimitsRefusal.MaxQueuedEventsTooLarge (value, largest) ->
             $"max_queued_events %d{value} is above %d{largest}: a full queue's bytes would pass what ioctl(FIONREAD) reports in an int, where Linux's count wraps, which this kernel does not model."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : InotifyLimitsRefusal) : RefusalKind =
+        match refusal with
+        | InotifyLimitsRefusal.NotReadOn _ -> RefusalKind.Contradictory "limits"
+        | InotifyLimitsRefusal.MaxUserInstancesNotPositive _ -> RefusalKind.Unmodelled
+        | InotifyLimitsRefusal.MaxUserWatchesNotPositive _ -> RefusalKind.Unmodelled
+        | InotifyLimitsRefusal.MaxQueuedEventsNotPositive _ -> RefusalKind.Unmodelled
+        | InotifyLimitsRefusal.MaxQueuedEventsTooLarge _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withTcpSendSpace` refuses a value.
 [<RequireQualifiedAccess>]
-type TcpSendSpaceRefusal =
+type internal TcpSendSpaceRefusal =
     /// A value was configured on a machine of `flavour` (Linux), where this
     /// library models no TCP send buffer, so nothing would read it.
     /// Unmodelled.
@@ -224,7 +279,7 @@ type TcpSendSpaceRefusal =
     | BelowLoopbackSendPipe of value : int * sendPipe : int
 
 [<RequireQualifiedAccess>]
-module TcpSendSpaceRefusal =
+module internal TcpSendSpaceRefusal =
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpSendSpaceRefusal) : string =
@@ -236,9 +291,16 @@ module TcpSendSpaceRefusal =
         | TcpSendSpaceRefusal.BelowLoopbackSendPipe (value, sendPipe) ->
             $"%d{value} is below %d{sendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : TcpSendSpaceRefusal) : RefusalKind =
+        match refusal with
+        | TcpSendSpaceRefusal.NotReadOn _ -> RefusalKind.Unmodelled
+        | TcpSendSpaceRefusal.AboveSocketBufferMax _ -> RefusalKind.OutOfRange "value"
+        | TcpSendSpaceRefusal.BelowLoopbackSendPipe _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withProcessId` refuses a process ID.
 [<RequireQualifiedAccess>]
-type ProcessIdRefusal =
+type internal ProcessIdRefusal =
     /// On Linux, the ID is not below the machine's `pid_max`, so a Linux kernel
     /// could not have handed it out. Contradictory.
     | NotBelowPidMax of pid : ProcessId * pidMax : int32
@@ -248,7 +310,7 @@ type ProcessIdRefusal =
     | NotBelowDarwinPidMax of pid : ProcessId * pidMax : int32
 
 [<RequireQualifiedAccess>]
-module ProcessIdRefusal =
+module internal ProcessIdRefusal =
     /// What this library knows about why it refused the process ID, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessIdRefusal) : string =
@@ -258,9 +320,15 @@ module ProcessIdRefusal =
         | ProcessIdRefusal.NotBelowDarwinPidMax (pid, pidMax) ->
             $"process ID %O{pid} is not below Darwin's PID_MAX %d{pidMax}, so a Darwin kernel could not have handed it out."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessIdRefusal) : RefusalKind =
+        match refusal with
+        | ProcessIdRefusal.NotBelowPidMax _ -> RefusalKind.OutOfRange "pid"
+        | ProcessIdRefusal.NotBelowDarwinPidMax _ -> RefusalKind.OutOfRange "pid"
+
 /// Why `UnixBootImage.withLeaderThreadId` refuses a thread ID.
 [<RequireQualifiedAccess>]
-type LeaderThreadIdRefusal =
+type internal LeaderThreadIdRefusal =
     /// The machine is Linux's, where the leader's thread ID is the process ID,
     /// so it cannot be set apart from it. Contradictory.
     | IsTheProcessIdOnLinux
@@ -270,7 +338,7 @@ type LeaderThreadIdRefusal =
     | OutsideCounter of id : uint64
 
 [<RequireQualifiedAccess>]
-module LeaderThreadIdRefusal =
+module internal LeaderThreadIdRefusal =
     /// What this library knows about why it refused the thread ID, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : LeaderThreadIdRefusal) : string =
@@ -280,9 +348,15 @@ module LeaderThreadIdRefusal =
         | LeaderThreadIdRefusal.OutsideCounter id ->
             $"%d{id} is not a thread ID this library will start a Darwin counter at; it must be between 1 and %d{System.UInt64.MaxValue - 1UL}."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : LeaderThreadIdRefusal) : RefusalKind =
+        match refusal with
+        | LeaderThreadIdRefusal.IsTheProcessIdOnLinux -> RefusalKind.Contradictory "id"
+        | LeaderThreadIdRefusal.OutsideCounter _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withTcpReceiveSpace` refuses a value.
 [<RequireQualifiedAccess>]
-type TcpReceiveSpaceRefusal =
+type internal TcpReceiveSpaceRefusal =
     /// The value is not positive, and Linux refuses such a
     /// `net.ipv4.tcp_rmem` default. Contradictory.
     | NotPositive of value : int
@@ -293,7 +367,7 @@ type TcpReceiveSpaceRefusal =
     | GrowsAfterHandshake of value : int * reason : string
 
 [<RequireQualifiedAccess>]
-module TcpReceiveSpaceRefusal =
+module internal TcpReceiveSpaceRefusal =
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpReceiveSpaceRefusal) : string =
@@ -302,9 +376,15 @@ module TcpReceiveSpaceRefusal =
             $"%d{value} is not positive, and Linux refuses such a net.ipv4.tcp_rmem default."
         | TcpReceiveSpaceRefusal.GrowsAfterHandshake (_, reason) -> reason
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : TcpReceiveSpaceRefusal) : RefusalKind =
+        match refusal with
+        | TcpReceiveSpaceRefusal.NotPositive _ -> RefusalKind.OutOfRange "value"
+        | TcpReceiveSpaceRefusal.GrowsAfterHandshake _ -> RefusalKind.Unmodelled
+
 /// Why `UnixBootImage.withTcpSendSpaceMax` refuses a value.
 [<RequireQualifiedAccess>]
-type TcpSendSpaceMaxRefusal =
+type internal TcpSendSpaceMaxRefusal =
     /// A value was configured on a machine of `flavour` (Darwin), where this
     /// library sizes a send buffer from `TcpSendSpace` alone, so nothing would
     /// read it. Unmodelled.
@@ -314,7 +394,7 @@ type TcpSendSpaceMaxRefusal =
     | NotPositive of value : int
 
 [<RequireQualifiedAccess>]
-module TcpSendSpaceMaxRefusal =
+module internal TcpSendSpaceMaxRefusal =
     /// What this library knows about why it refused the value, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : TcpSendSpaceMaxRefusal) : string =
@@ -323,6 +403,12 @@ module TcpSendSpaceMaxRefusal =
             $"%d{value} was configured on a %O{flavour} machine, but this kernel sizes a %O{flavour} send buffer from TcpSendSpace alone, so nothing would read it."
         | TcpSendSpaceMaxRefusal.NotPositive value ->
             $"%d{value} is not positive, and Linux refuses such a net.ipv4.tcp_wmem maximum."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : TcpSendSpaceMaxRefusal) : RefusalKind =
+        match refusal with
+        | TcpSendSpaceMaxRefusal.NotReadOn _ -> RefusalKind.Unmodelled
+        | TcpSendSpaceMaxRefusal.NotPositive _ -> RefusalKind.OutOfRange "value"
 
 /// The boot-time configuration of a simulated machine, applied to the
 /// `UnixBootImage` that `UnixSystem.initial` makes, and `boot`, which ends it
@@ -369,7 +455,7 @@ module UnixBootImage =
     /// starts at. Refuses a launch described for another platform, one whose
     /// leader is on a processor the machine does not have, and one whose
     /// directory the machine's filesystem does not let it start in.
-    let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryBoot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (launch : ProcessLaunch<'Task>)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, LaunchRefusal>
@@ -401,7 +487,7 @@ module UnixBootImage =
     /// Refuses, on Linux, a process ID that is not below the machine's
     /// `pid_max`, and on Darwin one that is not below `PID_MAX`
     /// (`ProcessIdTable.darwinPidMax`).
-    let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pid : ProcessId)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, ProcessIdRefusal>
@@ -444,7 +530,7 @@ module UnixBootImage =
     ///
     /// Refuses a Linux machine, where the leader's thread ID is the process ID
     /// (set that with `withProcessId`), and 0 and the largest 64-bit ID.
-    let withLeaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithLeaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (id : uint64)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, LeaderThreadIdRefusal>
@@ -484,7 +570,7 @@ module UnixBootImage =
     /// filesystem can hold. Also refuses a seed whose `dev` at the root is
     /// anything but an empty directory, since the device filesystem is mounted
     /// there.
-    let withFileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithFileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (createdAt : UnixTimestamp)
         (defaultOwner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
@@ -552,7 +638,7 @@ module UnixBootImage =
     /// Refuses a limit on a platform that screens no buffer up front, which
     /// has no such limit to set, and a limit no machine of the platform's
     /// architecture has been observed to have (see `ObservedUserAddressLimit`).
-    let withUserAddressLimit<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithUserAddressLimit<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (limit : uint64)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, UserAddressLimitRefusal>
@@ -594,7 +680,7 @@ module UnixBootImage =
     ///
     /// Refuses a count below 1 at the boundary, rather than letting it reach a
     /// program that will divide by it.
-    let withProcessorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithProcessorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (count : int)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, ProcessorCountRefusal>
@@ -616,7 +702,7 @@ module UnixBootImage =
     /// port from wherever the previous range had reached.
     ///
     /// Refuses a range that starts at port 0, and an empty one.
-    let withEphemeralPortRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithEphemeralPortRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         ((low, high) : uint16 * uint16)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, EphemeralPortRangeRefusal>
@@ -643,7 +729,7 @@ module UnixBootImage =
     /// which the realtime clock could leave `time_t`. On Darwin, also refuses an
     /// instant with a nonzero sub-microsecond part: Darwin keeps the time it
     /// booted as a `struct timeval`, so it has no finer boot instant.
-    let withBootTime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithBootTime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (bootTime : UnixTimestamp)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, BootTimeRefusal>
@@ -704,7 +790,7 @@ module UnixBootImage =
     /// Refuses a mount of a type this machine's flavour could not report,
     /// because `fstatfs(2)` answers a *file* from the mount and every other
     /// descriptor from the flavour, so the pair must describe one machine.
-    let withMount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithMount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (mount : EmulatedMount option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, MountRefusal>
@@ -736,7 +822,7 @@ module UnixBootImage =
     ///
     /// Refuses anything but `ProtectedFiles.off` on Darwin, which has no such
     /// settings.
-    let withProtectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithProtectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (protection : ProtectedFiles)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, ProtectedFilesRefusal>
@@ -760,7 +846,7 @@ module UnixBootImage =
     ///
     /// Refuses anything but 0 on Darwin, whose pipes all report 0, and a
     /// negative device on Linux, which no `dev_t` is.
-    let withPipeDevice<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithPipeDevice<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (device : int64 option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, PipeDeviceRefusal>
@@ -794,7 +880,7 @@ module UnixBootImage =
     ///
     /// Refuses a value below 1: no machine was measured with a non-positive
     /// somaxconn.
-    let withSoMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithSoMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, SoMaxConnRefusal>
@@ -819,7 +905,7 @@ module UnixBootImage =
     /// `UnixSystem.defaultInotifyLimits`. Each limit must be positive, the
     /// queue's at most `InotifyLimits.largestQueuedEvents`, and the machine
     /// Linux-flavoured: Darwin has no inotify to read them.
-    let withInotifyLimits<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithInotifyLimits<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (limits : InotifyLimits)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, InotifyLimitsRefusal>
@@ -868,7 +954,7 @@ module UnixBootImage =
     /// which route it took, which this kernel does not model. Under Linux
     /// nothing reads the value, so this refuses any configured one rather than
     /// silently ignoring it.
-    let withTcpSendSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithTcpSendSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, TcpSendSpaceRefusal>
@@ -903,7 +989,7 @@ module UnixBootImage =
     /// Under Linux a value must be positive. Under Darwin it must be one whose
     /// buffer a connection's handshake sizes once and for all (see
     /// `TcpReceiveSpaceRefusal`).
-    let withTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, TcpReceiveSpaceRefusal>
@@ -940,7 +1026,7 @@ module UnixBootImage =
     /// value, since this kernel sizes a Darwin send buffer from
     /// `TcpSendSpace` alone, so configuring one is refused rather than
     /// silently ignored.
-    let withTcpSendSpaceMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryWithTcpSendSpaceMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
         : Result<UnixBootImage<'Task, 'Handler>, TcpSendSpaceMaxRefusal>

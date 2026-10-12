@@ -454,7 +454,7 @@ module TestProtectedFiles =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform
-            |> UnixBootImage.withProtectedFiles protection
+            |> UnixBootImage.tryWithProtectedFiles protection
             |> Configured.expectOk ProtectedFilesRefusal.describe
             |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -476,7 +476,7 @@ module TestProtectedFiles =
         | SyscallAnswer.Failed error -> $"%A{error}"
 
     let private statText (policy : SymlinkPolicy) (p : string) (system : UnixSystem<int, string>) : string =
-        match UnixPathResolution.stat policy (PathArg.ofPath (path p)) system |> ok with
+        match UnixPathResolution.tryStat policy (PathArg.ofPath (path p)) system |> ok with
         | FileStatusAnswer.Reported _ -> "ok"
         | FileStatusAnswer.Failed error -> $"%A{error}"
 
@@ -576,7 +576,7 @@ module TestProtectedFiles =
 
         let readlinkText =
             match
-                UnixNamespace.readlink (PathArg.ofPath (path "/s/lf")) UserBuffer.Mapped 4096 system
+                UnixNamespace.tryReadlink (PathArg.ofPath (path "/s/lf")) UserBuffer.Mapped 4096 system
                 |> ok
             with
             | ReadLinkAnswer.Reported _ -> "ok"
@@ -596,15 +596,15 @@ module TestProtectedFiles =
                     system
             )
             "readlink", readlinkText
-            "access", accessText (UnixPathResolution.access (bytes "/s/lf") 4 system)
-            "access-nofollow", accessText (UnixPathResolution.faccessat -100 (bytes "/s/lf") 0 0x100 system)
+            "access", accessText (UnixPathResolution.tryAccess (bytes "/s/lf") 4 system)
+            "access-nofollow", accessText (UnixPathResolution.tryFaccessat -100 (bytes "/s/lf") 0 0x100 system)
             "chown",
-            UnixPathResolution.chown (PathArg.ofPath (path "/s/lf")) None None system
+            UnixPathResolution.tryChown (PathArg.ofPath (path "/s/lf")) None None system
             |> ok
             |> fst
             |> answerText
             "lchown",
-            UnixPathResolution.lchown (PathArg.ofPath (path "/s/lf")) None None system
+            UnixPathResolution.tryLchown (PathArg.ofPath (path "/s/lf")) None None system
             |> ok
             |> fst
             |> answerText
@@ -627,7 +627,7 @@ module TestProtectedFiles =
             "cycle-stat", stat "/s/lcyc"
             "via-chain", stat "/v/via"
             "unlink",
-            UnixNamespace.unlink (PathArg.ofPath (path "/s/lf")) system
+            UnixNamespace.tryUnlink (PathArg.ofPath (path "/s/lf")) system
             |> ok
             |> fst
             |> answerText
@@ -693,9 +693,9 @@ module TestProtectedFiles =
                 let actual =
                     Map.ofList
                         [
-                            "access", UnixPathResolution.access (bytes "/ids/lf") 4 system |> ok |> answerText
+                            "access", UnixPathResolution.tryAccess (bytes "/ids/lf") 4 system |> ok |> answerText
                             "access-eaccess",
-                            UnixPathResolution.faccessat -100 (bytes "/ids/lf") 4 0x200 system
+                            UnixPathResolution.tryFaccessat -100 (bytes "/ids/lf") 4 0x200 system
                             |> ok
                             |> answerText
                             "stat", statText SymlinkPolicy.Follow "/ids/lf" system
@@ -750,7 +750,7 @@ module TestProtectedFiles =
                     // The kernel's answer here is EACCES or ELOOP by its cache.
                     [ "EACCES" ; "ELOOP" ] |> shouldContain row.["stat"]
 
-                    match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (path start)) system with
+                    match UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofPath (path start)) system with
                     | Error (StatRefusal.Path (PathRefusal.ProtectedSymlinkCacheDependent (_, _, refusedAt, limit))) ->
                         (n, refusedAt, limit) |> shouldEqual (n, traversal, linuxLimit)
                     | other -> failwith $"chain %d{n}: expected the cache-dependent refusal, got %A{other}"
@@ -817,14 +817,14 @@ module TestProtectedFiles =
         let linuxAtEAccess = 0x200
 
         let step (call : Syscall) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-            match UnixSystem.step 0 call system with
+            match UnixSystem.tryStep 0 call system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), after) -> after
             | other -> failwith $"setting up, %A{call}: %A{other}"
 
         let system : UnixSystem<int, string> =
             let booted : UnixSystem<int, string> =
                 UnixSystem.initial linux
-                |> UnixBootImage.withProtectedFiles
+                |> UnixBootImage.tryWithProtectedFiles
                     { ProtectedFiles.off with
                         Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                     }
@@ -854,16 +854,16 @@ module TestProtectedFiles =
 
         let calls : (string * (string -> WalkOutcome)) list =
             [
-                "stat", (fun p -> UnixPathResolution.stat SymlinkPolicy.Follow (bytes p) system |> ofStatus)
+                "stat", (fun p -> UnixPathResolution.tryStat SymlinkPolicy.Follow (bytes p) system |> ofStatus)
                 // A trailing separator follows the final link even for lstat.
                 "lstat of p/",
                 (fun p ->
-                    UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (bytes (p + "/")) system
+                    UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (bytes (p + "/")) system
                     |> ofStatus
                 )
                 "fstatat",
                 (fun p ->
-                    match UnixPathResolution.fstatat atFdCwd (bytes p) 0 system with
+                    match UnixPathResolution.tryFstatat atFdCwd (bytes p) 0 system with
                     | Ok (FileStatusAnswer.Reported _) -> WalkOutcome.Answered None
                     | Ok (FileStatusAnswer.Failed error) -> WalkOutcome.Answered (Some error)
                     | Error (FStatAtRefusal.Stat (StatRefusal.Path refusal)) -> WalkOutcome.Refused refusal
@@ -871,45 +871,45 @@ module TestProtectedFiles =
                 )
                 "statfs",
                 (fun p ->
-                    match UnixPathResolution.statfs (bytes p) system with
+                    match UnixPathResolution.tryStatfs (bytes p) system with
                     | Ok (FileSystemStatisticsAnswer.Reported _) -> WalkOutcome.Answered None
                     | Ok (FileSystemStatisticsAnswer.Failed error) -> WalkOutcome.Answered (Some error)
                     | Error refusal -> WalkOutcome.Refused refusal
                 )
                 "open", (fun p -> OpenOutcomes.openPath 0 (bytes p) 0 system |> ofOpen)
                 "openat", (fun p -> OpenOutcomes.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
-                "chdir", (fun p -> UnixSystem.step 0 (Syscall.ChDir (bytes p)) system |> ofStep)
+                "chdir", (fun p -> UnixSystem.tryStep 0 (Syscall.ChDir (bytes p)) system |> ofStep)
                 "chmod",
                 (fun p ->
-                    UnixSystem.step 0 (Syscall.FChModAt (atFdCwd, bytes p, 0o755, 0)) system
+                    UnixSystem.tryStep 0 (Syscall.FChModAt (atFdCwd, bytes p, 0o755, 0)) system
                     |> ofStep
                 )
                 "chown",
                 (fun p ->
-                    UnixSystem.step 0 (Syscall.FChOwnAt (atFdCwd, bytes p, None, None, 0)) system
+                    UnixSystem.tryStep 0 (Syscall.FChOwnAt (atFdCwd, bytes p, None, None, 0)) system
                     |> ofStep
                 )
-                "access", (fun p -> UnixSystem.step 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system |> ofStep)
+                "access", (fun p -> UnixSystem.tryStep 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system |> ofStep)
                 "faccessat(AT_EACCESS)",
                 (fun p ->
-                    UnixSystem.step 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, linuxAtEAccess)) system
+                    UnixSystem.tryStep 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, linuxAtEAccess)) system
                     |> ofStep
                 )
                 // `readlink` reads a final link rather than following it,
                 // except through a trailing separator.
                 "readlink of p/",
                 (fun p ->
-                    UnixNamespace.readlink (bytes (p + "/")) UserBuffer.Mapped 64 system
+                    UnixNamespace.tryReadlink (bytes (p + "/")) UserBuffer.Mapped 64 system
                     |> ofReadLink
                 )
                 "readlinkat of p/",
                 (fun p ->
-                    UnixNamespace.readlinkat atFdCwd (bytes (p + "/")) UserBuffer.Mapped 64 system
+                    UnixNamespace.tryReadlinkat atFdCwd (bytes (p + "/")) UserBuffer.Mapped 64 system
                     |> ofReadLink
                 )
                 "linkat(AT_SYMLINK_FOLLOW)",
                 (fun p ->
-                    UnixSystem.step
+                    UnixSystem.tryStep
                         0
                         (Syscall.LinkAt (atFdCwd, bytes p, atFdCwd, bytes "/a/new", linuxAtSymlinkFollow))
                         system
@@ -1201,7 +1201,7 @@ module TestProtectedFiles =
 
         system.Machine.ProtectedFiles |> shouldEqual ProtectedFiles.off
 
-        UnixBootImage.withProtectedFiles ProtectedFiles.off image
+        UnixBootImage.tryWithProtectedFiles ProtectedFiles.off image
         |> Configured.expectOk ProtectedFilesRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> shouldEqual system
@@ -1219,7 +1219,7 @@ module TestProtectedFiles =
                             }
 
                         if protection <> ProtectedFiles.off then
-                            UnixBootImage.withProtectedFiles protection image
+                            UnixBootImage.tryWithProtectedFiles protection image
                             |> Result.map ignore<UnixBootImage<int, string>>
                             |> shouldEqual (
                                 Error (ProtectedFilesRefusal.NoSuchSysctls (protection, SimulatedUnixFlavour.Darwin))
@@ -1258,7 +1258,7 @@ module TestProtectedFiles =
                             }
 
                         let set =
-                            UnixBootImage.withProtectedFiles protection image
+                            UnixBootImage.tryWithProtectedFiles protection image
                             |> Configured.expectOk ProtectedFilesRefusal.describe
                             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 

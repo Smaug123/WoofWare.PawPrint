@@ -148,12 +148,12 @@ module BindingProbes =
         | BindingProbeCall.OpenCreate path -> Answered.openPath creating (rooted path) 0o666 system |> fst |> ofAnswer
         | BindingProbeCall.OpenRead path -> Answered.openPath reading (rooted path) 0 system |> fst |> ofAnswer
         | BindingProbeCall.Exists path ->
-            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (rooted path)) system with
+            match UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofPath (rooted path)) system with
             | Ok (FileStatusAnswer.Reported _) -> None
             | Ok (FileStatusAnswer.Failed error) -> Some error
             | Error refusal -> failwith $"stat refused: %s{StatRefusal.describe refusal}"
         | BindingProbeCall.ReadLink path ->
-            match UnixNamespace.readlink (PathArg.ofPath (rooted path)) UserBuffer.Mapped 8192 system with
+            match UnixNamespace.tryReadlink (PathArg.ofPath (rooted path)) UserBuffer.Mapped 8192 system with
             | Ok (ReadLinkAnswer.Reported _) -> None
             | Ok (ReadLinkAnswer.Failed error) -> Some error
             | Error refusal -> failwith $"readlink refused its buffer: %A{refusal}"
@@ -163,6 +163,6 @@ module BindingProbes =
             let argument (path : byte list) =
                 PathArg.ofBytes (UnixPathText.separatorByte :: path)
 
-            match UnixNamespace.rename (argument source) (argument destination) system with
+            match UnixNamespace.tryRename (argument source) (argument destination) system with
             | Ok (answer, _) -> ofAnswer answer
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"

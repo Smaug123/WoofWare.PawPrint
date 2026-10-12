@@ -589,7 +589,7 @@ module TestConnectedTransferAgainstHost =
         CopyIn.inet platform (Ipv4Endpoint.ofParts Ipv4Address.loopback kernelPort)
 
     let private kernelClose (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok (SyscallAnswer.Completed 0L, system) -> system
         | other -> failwith $"closing fd %d{fd}: %A{other}"
 
@@ -622,7 +622,7 @@ module TestConnectedTransferAgainstHost =
             | other -> failwith $"bind: %A{other}"
 
         let system =
-            match UnixSocket.listen listener 8 system with
+            match UnixSocket.tryListen listener 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listen: %A{other}"
 
@@ -635,7 +635,7 @@ module TestConnectedTransferAgainstHost =
             | other -> failwith $"connect: %A{other}"
 
         let server, system =
-            match UnixConnection.accept 1 listener UserBuffer.Mapped 16u system with
+            match UnixConnection.tryAccept 1 listener UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted (accepted, _, _), system) -> accepted, system
             | other -> failwith $"accept: %A{other}"
 
@@ -727,7 +727,7 @@ module TestConnectedTransferAgainstHost =
 
         let revents, system =
             match
-                UnixPoll.poll
+                UnixPoll.tryPoll
                     system.Leader
                     [
                         {
@@ -742,7 +742,7 @@ module TestConnectedTransferAgainstHost =
             | other -> failwith $"poll: %A{other}"
 
         let readable =
-            match UnixDescriptor.bytesAvailable fd UserBuffer.Mapped system with
+            match UnixDescriptor.tryBytesAvailable fd UserBuffer.Mapped system with
             | Ok (BytesAvailableAnswer.Reported count) -> count
             | other -> failwith $"FIONREAD: %A{other}"
 
@@ -808,7 +808,7 @@ module TestConnectedTransferAgainstHost =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
-            match UnixSocket.getsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
+            match UnixSocket.tryGetsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int 0), system) -> [ Seen.PendingError None ], system
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int raw), system) ->
                 [

@@ -77,7 +77,7 @@ type TaskOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 /// model, rather than an error a kernel would report, because the thread-exit
 /// syscall cannot fail.
 [<RequireQualifiedAccess>]
-type ThreadExitRefusal<'Task> =
+type internal ThreadExitRefusal<'Task> =
     /// The task is blocked in a syscall, so it cannot be making another one.
     | Parked of task : 'Task * park : TaskPark
     /// The task is the process's leader, and other tasks live. On both flavours
@@ -89,7 +89,7 @@ type ThreadExitRefusal<'Task> =
     | LastTaskOnDarwin of task : 'Task
 
 [<RequireQualifiedAccess>]
-module ThreadExitRefusal =
+module internal ThreadExitRefusal =
 
     /// A human-readable account of why the exit was refused.
     let describe<'Task> (refusal : ThreadExitRefusal<'Task>) : string =
@@ -100,6 +100,13 @@ module ThreadExitRefusal =
             $"task %O{task} is the process's leader, and other tasks are still running; this library does not model a process whose leader has exited before them"
         | ThreadExitRefusal.LastTaskOnDarwin task ->
             $"task %O{task} is the process's last task, and what Darwin does when the last task makes the thread-exit syscall has not been measured"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ThreadExitRefusal<'Task>) : RefusalKind =
+        match refusal with
+        | ThreadExitRefusal.Parked _ -> RefusalKind.Misuse
+        | ThreadExitRefusal.LeaderBeforeOthers _ -> RefusalKind.Unmodelled
+        | ThreadExitRefusal.LastTaskOnDarwin _ -> RefusalKind.Unmodelled
 
 /// What `clone(2)` with `CLONE_THREAD` answered, for a request this library
 /// could answer.
@@ -115,20 +122,25 @@ type SpawnAnswer =
 /// does not model or has not measured, rather than an error a kernel would
 /// report.
 [<RequireQualifiedAccess>]
-type SpawnRefusal<'Task> =
+type internal SpawnRefusal<'Task> =
     /// Unmeasured. Darwin's 64-bit thread ID counter has reached the top of its
     /// range, and what Darwin does when a thread is created then has not been
     /// measured.
     | ThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
-module SpawnRefusal =
+module internal SpawnRefusal =
 
     /// A human-readable account of why the thread's creation was refused.
     let describe<'Task> (refusal : SpawnRefusal<'Task>) : string =
         match refusal with
         | SpawnRefusal.ThreadIdCounterExhausted ->
             "Darwin's thread ID counter has reached the top of its 64-bit range, and what Darwin does when a thread is created then has not been measured"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SpawnRefusal<'Task>) : RefusalKind =
+        match refusal with
+        | SpawnRefusal.ThreadIdCounterExhausted -> RefusalKind.Unmodelled
 
 /// How tasks join and leave a process, and how a process ends.
 [<RequireQualifiedAccess>]
@@ -204,7 +216,7 @@ module UnixTaskLifecycle =
     /// other task lives, and the process's last task on Darwin.
     ///
     /// Fails loudly if `task` names no task, which is a bug in the client.
-    let exitThread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryExitThread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (status : int32)
         (system : UnixSystem<'Task, 'Handler>)
@@ -269,7 +281,7 @@ module UnixTaskLifecycle =
     /// Fails loudly if `parent` names no task or is parked in a syscall, if
     /// `child` already names a task, or if `cpu` is not one of the machine's
     /// processors (`UnixSystem.processorCount`): each is a bug in the client.
-    let spawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySpawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (parent : 'Task)
         (child : 'Task)
         (cpu : CpuId)

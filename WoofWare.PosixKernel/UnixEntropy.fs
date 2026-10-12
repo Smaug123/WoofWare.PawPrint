@@ -38,7 +38,7 @@ type GetRandomAnswer =
 
 /// Why this kernel will not answer a `getrandom`.
 [<RequireQualifiedAccess>]
-type GetRandomRefusal =
+type internal GetRandomRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The simulated kernel has no `getrandom` system call.
@@ -48,7 +48,7 @@ type GetRandomRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module GetRandomRefusal =
+module internal GetRandomRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetRandomRefusal) : string =
@@ -58,6 +58,13 @@ module GetRandomRefusal =
             $"the simulated kernel is %O{flavour}, which has no getrandom system call; getentropy(2) is how a process asks it for random bytes."
         | GetRandomRefusal.SignalAtPageBoundary count ->
             $"the request moves %d{count} bytes, more than a page, and a signal is pending that the calling task would take on its return to user mode. Linux's getrandom stops at the first page boundary once a signal is pending, short of the count, and this kernel answers no short getrandom."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetRandomRefusal) : RefusalKind =
+        match refusal with
+        | GetRandomRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetRandomRefusal.NoSuchSyscall _ -> RefusalKind.NotOnPlatform
+        | GetRandomRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
 
 /// What `getentropy(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -76,14 +83,14 @@ type GetEntropyAnswer =
 
 /// Why this kernel will not answer a `getentropy`.
 [<RequireQualifiedAccess>]
-type GetEntropyRefusal =
+type internal GetEntropyRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The simulated kernel has no `getentropy` system call.
     | NoSuchSyscall of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module GetEntropyRefusal =
+module internal GetEntropyRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetEntropyRefusal) : string =
@@ -91,6 +98,12 @@ module GetEntropyRefusal =
         | GetEntropyRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetEntropyRefusal.NoSuchSyscall flavour ->
             $"the simulated kernel is %O{flavour}, which has no getentropy system call; getrandom(2) is how a process asks it for random bytes."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetEntropyRefusal) : RefusalKind =
+        match refusal with
+        | GetEntropyRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetEntropyRefusal.NoSuchSyscall _ -> RefusalKind.NotOnPlatform
 
 /// The syscalls that hand out bytes from the kernel's entropy pool.
 [<RequireQualifiedAccess>]
@@ -194,7 +207,7 @@ module UnixEntropy =
     /// A request that moves more than a page, by a task with a signal pending,
     /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
     /// short at the first page boundary.
-    let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (buffer : UserBuffer)
         (count : uint64)
@@ -242,7 +255,7 @@ module UnixEntropy =
     /// A `length` above `getEntropyMaxLength` is EINVAL, whatever the buffer.
     ///
     /// Darwin-only: under any other flavour the call is refused.
-    let getEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (buffer : UserBuffer)
         (length : uint64)
         (system : UnixSystem<'Task, 'Handler>)

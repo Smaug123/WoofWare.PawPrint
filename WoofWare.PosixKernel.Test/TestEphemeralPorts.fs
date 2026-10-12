@@ -50,7 +50,7 @@ module TestEphemeralPorts =
 
 
         system
-        |> UnixBootImage.withEphemeralPortRange (low, high)
+        |> UnixBootImage.tryWithEphemeralPortRange (low, high)
         |> Configured.expectOk EphemeralPortRangeRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -95,7 +95,7 @@ module TestEphemeralPorts =
         | Error refusal, system -> Error refusal, system
 
     let private listenOn (fd : int) (system : UnixSystem<int, string>) : ListenAnswer * UnixSystem<int, string> =
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (answer, system) -> answer, system
         | Error refusal -> failwith $"listen refused: %A{refusal}"
 
@@ -123,7 +123,7 @@ module TestEphemeralPorts =
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     let private acceptFrom (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixConnection.accept 0 fd UserBuffer.Mapped 16u system with
+        match UnixConnection.tryAccept 0 fd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.Accepted (accepted, _, _), system) -> accepted, system
         | Ok (AcceptOutcome.Failed error, _) -> failwith $"accept failed with %A{error}"
         | Ok (AcceptOutcome.DroppedConnection error, _) -> failwith $"accept dropped the connection with %A{error}"
@@ -132,7 +132,7 @@ module TestEphemeralPorts =
         | Error refusal -> failwith $"accept refused: %A{refusal}"
 
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok (SyscallAnswer.Completed 0L, system) -> system
         | Ok (answer, _) -> failwith $"close answered %A{answer}"
         | Error refusal -> failwith $"close refused: %A{refusal}"
@@ -442,7 +442,7 @@ module TestEphemeralPorts =
         | Op.Listen slot ->
             let fd = run.Slots.[slot]
 
-            match UnixSocket.listen fd 8 run.System with
+            match UnixSocket.tryListen fd 8 run.System with
             | Ok (_, system) ->
                 { run with
                     System = system

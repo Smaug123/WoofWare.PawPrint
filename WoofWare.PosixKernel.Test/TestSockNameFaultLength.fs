@@ -150,7 +150,7 @@ module TestSockNameFaultLength =
                     | "null" -> UserBuffer.Unmapped 0UL
                     | _ -> UserBuffer.Unmapped 0x1000UL
 
-                match UnixSocket.getsockname fd destination row.Declared system with
+                match UnixSocket.tryGetsockname fd destination row.Declared system with
                 | Ok (GetSockNameAnswer.Failed (error, overwritten)) ->
                     let errno =
                         UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering m.Platform) error
@@ -170,7 +170,7 @@ module TestSockNameFaultLength =
         let listener, system = boundSocket platform
 
         let system =
-            match UnixSocket.listen listener 8 system with
+            match UnixSocket.tryListen listener 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listening: %A{other}"
 
@@ -197,7 +197,7 @@ module TestSockNameFaultLength =
                     | "null" -> UserBuffer.Unmapped 0UL
                     | _ -> UserBuffer.Unmapped 0x1000UL
 
-                match UnixSocket.getpeername fd destination row.Declared system with
+                match UnixSocket.tryGetpeername fd destination row.Declared system with
                 | Ok (GetSockNameAnswer.Failed (error, overwritten)) ->
                     let errno =
                         UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering m.Platform) error
@@ -385,7 +385,7 @@ module TestSockNameFaultLengthAgainstHost =
         =
         let platform = system.Machine.UnixPlatform
 
-        match UnixSocket.getsockname fd destination declared system with
+        match UnixSocket.tryGetsockname fd destination declared system with
         | Ok (GetSockNameAnswer.Reported (_, reported)) -> 0, uint32 reported
         | Ok (GetSockNameAnswer.Failed (error, overwritten)) ->
             UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error,

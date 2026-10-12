@@ -203,16 +203,16 @@ module TestCopyFileSyscalls =
             fd, withRegistry registry system
         | "pipe-r"
         | "pipe-w" ->
-            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
                 (if kind = "pipe-r" then readFd else writeFd), system
             | other -> failwith $"pipe2: %A{other}"
         | "socket" ->
-            match UnixSocket.socket 2 1 0 system with
+            match UnixSocket.trySocket 2 1 0 system with
             | Ok (Ok (fd, system)) -> fd, system
             | other -> failwith $"socket: %A{other}"
         | "port" ->
-            match UnixPoll.epollCreate1 0 system with
+            match UnixPoll.tryEpollCreate1 0 system with
             | Ok (Ok (fd, system)) -> fd, system
             | other -> failwith $"epoll_create1: %A{other}"
         | "closed" -> 700, system
@@ -276,7 +276,7 @@ module TestCopyFileSyscalls =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixReadWrite.copyFileRange inFd outFd length flags system with
+        match UnixReadWrite.tryCopyFileRange inFd outFd length flags system with
         | Ok result -> result
         | Error refusal ->
             failwith
@@ -326,7 +326,7 @@ module TestCopyFileSyscalls =
                 let source, system = make inKind "ksrc" (kindsSystem ())
                 let destination, system = make outKind "kdst" system
 
-                match UnixDescriptor.fileClone destination source system with
+                match UnixDescriptor.tryFileClone destination source system with
                 | Ok error ->
                     if $"%O{error}" <> measured then
                         failwith $"in=%s{inKind} out=%s{outKind}: measured %s{measured}, the model answered %O{error}"
@@ -344,31 +344,31 @@ module TestCopyFileSyscalls =
         let inFd, darwin = opened "f" FileAccessMode.ReadOnly darwin
         let outFd, darwin = opened "g" FileAccessMode.WriteOnly darwin
 
-        UnixReadWrite.copyFileRange inFd outFd 5UL 0 darwin
+        UnixReadWrite.tryCopyFileRange inFd outFd 5UL 0 darwin
         |> Result.map fst
         |> shouldEqual (Error (CopyFileRangeRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
-        UnixDescriptor.fileClone outFd inFd darwin
+        UnixDescriptor.tryFileClone outFd inFd darwin
         |> shouldEqual (Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
         let nfs =
             kindsSystemWith (
-                UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                UnixBootImage.tryWithMount (Some EmulatedMount.Nfs)
                 >> Configured.expectOk MountRefusal.describe
             )
 
         let inFd, nfs = opened "ksrc" FileAccessMode.ReadOnly nfs
         let outFd, nfs = opened "kdst" FileAccessMode.WriteOnly nfs
 
-        UnixReadWrite.copyFileRange inFd outFd 5UL 0 nfs
+        UnixReadWrite.tryCopyFileRange inFd outFd 5UL 0 nfs
         |> Result.map fst
         |> shouldEqual (Error (CopyFileRangeRefusal.UnmeasuredFileSystem EmulatedFileSystemType.Nfs))
 
-        UnixDescriptor.fileClone outFd inFd nfs
+        UnixDescriptor.tryFileClone outFd inFd nfs
         |> shouldEqual (Error (FileCloneRefusal.UnmeasuredFileSystem EmulatedFileSystemType.Nfs))
 
         // A refusal the descriptors earn first is still answered.
-        UnixReadWrite.copyFileRange inFd 9999 5UL 0 nfs
+        UnixReadWrite.tryCopyFileRange inFd 9999 5UL 0 nfs
         |> Result.map fst
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF))
 
@@ -654,7 +654,7 @@ module TestCopyFileSyscalls =
 
                 let expected =
                     match
-                        UnixReadWrite.pwrite 0 outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
+                        UnixReadWrite.tryPwrite 0 outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
                     with
                     | Ok (WriteAnswer.Completed _, written) ->
                         written
@@ -674,12 +674,12 @@ module TestCopyFileSyscalls =
         let inFd, system = opened "ksrc" FileAccessMode.ReadOnly system
         let outFd, system = opened "kdst" FileAccessMode.WriteOnly system
 
-        match UnixSystem.step 0 (Syscall.CopyFileRange (inFd, outFd, 5UL, 0)) system with
+        match UnixSystem.tryStep 0 (Syscall.CopyFileRange (inFd, outFd, 5UL, 0)) system with
         | Ok (SyscallOutcome.Answered answer, after) ->
             (answer, after) |> shouldEqual (copyFileRangeAnswer inFd outFd 5UL 0 system)
         | other -> failwith $"%A{other}"
 
-        match UnixSystem.step 0 (Syscall.FileClone (outFd, inFd)) system with
+        match UnixSystem.tryStep 0 (Syscall.FileClone (outFd, inFd)) system with
         | Ok (SyscallOutcome.Answered answer, after) ->
             answer |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP)
             after |> shouldEqual system
@@ -707,7 +707,7 @@ module TestCopyFileSyscalls =
         (modification : UnixTimestamp)
         (system : UnixSystem<int, string>)
         =
-        UnixPathResolution.utimensat
+        UnixPathResolution.tryUtimensat
             fd
             NullablePathArgument.Null
             (TimesArgument.Fields (fieldsOf access, fieldsOf modification))
@@ -763,13 +763,13 @@ module TestCopyFileSyscalls =
             |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, system))
 
         // Both ends of a pipe report the times set through either.
-        match UnixPipe.pipe2 0 UserBuffer.Mapped (kindsSystem ()) with
+        match UnixPipe.tryPipe2 0 UserBuffer.Mapped (kindsSystem ()) with
         | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
             for fd in [ readFd ; writeFd ] do
                 match futimens fd atime mtime system with
                 | Ok (SyscallAnswer.Completed 0L, after) ->
                     for pipeEnd in [ readFd ; writeFd ] do
-                        match UnixPathResolution.fstat pipeEnd after with
+                        match UnixPathResolution.tryFstat pipeEnd after with
                         | Ok (FileStatusAnswer.Reported status) ->
                             (status.AccessTime, status.ModificationTime) |> shouldEqual (atime, mtime)
                         | other -> failwith $"fd %d{fd}: fstat(%d{pipeEnd}): %A{other}"
@@ -847,7 +847,7 @@ module TestCopyFileSyscalls =
                         0
                     )
 
-                match UnixSystem.step 0 call system with
+                match UnixSystem.tryStep 0 call system with
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), stepped) -> stepped |> shouldEqual after
                 | other -> failwith $"step: %A{other}"
             | other -> failwith $"%A{other}"
@@ -906,7 +906,7 @@ module TestCopyFileRangeLarge =
             }
             |> UnixSystemState.withFileDescriptors registry
 
-        match UnixReadWrite.copyFileRange source destination (uint64 length) 0 system with
+        match UnixReadWrite.tryCopyFileRange source destination (uint64 length) 0 system with
         | Ok (SyscallAnswer.Completed moved, after) ->
             moved |> shouldEqual (int64 TestTransferCounts.LinuxMaxTransfer)
             TestTransferCounts.positionOf source after |> shouldEqual moved

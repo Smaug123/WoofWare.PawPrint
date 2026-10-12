@@ -167,7 +167,7 @@ module TestSymlink =
         =
         let image : UnixBootImage<int, string> = UnixSystem.initial envelope.Platform
 
-        match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess envelope.Credentials) seed image with
+        match UnixBootImage.tryWithFileSystem epoch (InodeOwner.ofProcess envelope.Credentials) seed image with
         | Ok image ->
             (Launched.bootWith
                 (Launched.credentials envelope.Credentials
@@ -197,7 +197,7 @@ module TestSymlink =
 
     /// What `lstat` makes of `p` in `system`: absent, or the kind it names.
     let private kindAt (p : string) (system : UnixSystem<int, string>) : string =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text p) system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text p) system with
         | Ok (FileStatusAnswer.Reported status) ->
             match status.Mode &&& 0o170000 with
             | 0o120000 -> "symlink"
@@ -254,7 +254,7 @@ module TestSymlink =
         let target, path, created = symlinkRow envelope label
         let system = probeCell envelope
 
-        match UnixNamespace.symlink target path system with
+        match UnixNamespace.trySymlink target path system with
         | Error SymlinkRefusal.EmptyTarget -> "refused: empty target"
         | Error refusal -> $"refused: %s{SymlinkRefusal.describe refusal}"
         | Ok (answer, after) ->
@@ -266,7 +266,7 @@ module TestSymlink =
             match answer with
             | SyscallAnswer.Failed error -> $"%A{error}%s{kinds}"
             | SyscallAnswer.Completed _ ->
-                match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text created) after with
+                match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text created) after with
                 | Ok (FileStatusAnswer.Reported status) -> $"ok%s{kinds}(size=%d{status.Size})"
                 | other -> failwith $"%s{context}: the new link at %s{created} does not stat: %A{other}"
 
@@ -353,7 +353,7 @@ module TestSymlink =
                             probe
 
                     let actual =
-                        UnixNamespace.symlinkat
+                        UnixNamespace.trySymlinkat
                             (orderTarget envelope targetLabel)
                             dirfd
                             (orderName envelope nameLabel)
@@ -403,7 +403,7 @@ module TestSymlink =
                 let label = row.[0]
                 let target, path = permRow label
 
-                let actual = UnixNamespace.symlink target path (probeCell envelope) |> rendered
+                let actual = UnixNamespace.trySymlink target path (probeCell envelope) |> rendered
 
                 let expected = probeAnswer row.[1]
 
@@ -422,7 +422,7 @@ module TestSymlink =
     // ------------------------------------------------------------ SYMMODE and SYMGROUP
 
     let private modeOf (p : string) (system : UnixSystem<int, string>) : int =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text p) system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text p) system with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o7777
         | other -> failwith $"%s{context}: lstat(%s{p}) did not report: %A{other}"
 
@@ -445,7 +445,7 @@ module TestSymlink =
                         Convert.ToInt32 (row.[1].Substring (row.[1].IndexOf "mode=" + "mode=".Length), 8)
 
                     let system =
-                        UnixNamespace.symlink (text "t") (text "n") (boot envelope umask (cell None 0o755))
+                        UnixNamespace.trySymlink (text "t") (text "n") (boot envelope umask (cell None 0o755))
                         |> created
 
                     umask, modeOf "n" system, mode
@@ -474,11 +474,11 @@ module TestSymlink =
                 let seed = cell (Some directoryGroup) (if setgid then 0o2777 else 0o777)
 
                 let system =
-                    UnixNamespace.symlink (text "t") (text "e/n") (boot envelope 0o022 seed)
+                    UnixNamespace.trySymlink (text "t") (text "e/n") (boot envelope 0o022 seed)
                     |> created
 
                 let group =
-                    match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text "e/n") system with
+                    match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text "e/n") system with
                     | Ok (FileStatusAnswer.Reported status) -> GroupId.toUInt32 status.GroupId
                     | other -> failwith $"%s{context}: lstat(e/n) did not report: %A{other}"
 
@@ -501,14 +501,14 @@ module TestSymlink =
             let envelope = if darwin then darwinUser else linuxUser
 
             let system =
-                UnixNamespace.symlink (ofBytes target) (text "n") (probeCell envelope)
+                UnixNamespace.trySymlink (ofBytes target) (text "n") (probeCell envelope)
                 |> created
 
-            match UnixNamespace.readlink (text "n") UserBuffer.Mapped 4096 system with
+            match UnixNamespace.tryReadlink (text "n") UserBuffer.Mapped 4096 system with
             | Ok (ReadLinkAnswer.Reported written) -> written |> List.ofSeq |> shouldEqual target
             | other -> failwith $"%s{context}: readlink did not report: %A{other}"
 
-            match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text "n") system with
+            match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text "n") system with
             | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual (int64 target.Length)
             | other -> failwith $"%s{context}: lstat(n) did not report: %A{other}"
 
@@ -528,9 +528,9 @@ module TestSymlink =
                 let system = probeCell envelope
 
                 let direct =
-                    match UnixNamespace.symlinkat (text target) atFdCwd (text path) system with
+                    match UnixNamespace.trySymlinkat (text target) atFdCwd (text path) system with
                     | Ok (answer, after) -> Ok (SyscallOutcome.Answered answer, after)
                     | Error refusal -> Error (SyscallRefusal.Symlink refusal)
 
-                UnixSystem.step 0 (Syscall.SymlinkAt (text target, atFdCwd, text path)) system
+                UnixSystem.tryStep 0 (Syscall.SymlinkAt (text target, atFdCwd, text path)) system
                 |> shouldEqual direct

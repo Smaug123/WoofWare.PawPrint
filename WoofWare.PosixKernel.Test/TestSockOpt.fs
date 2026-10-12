@@ -100,7 +100,7 @@ module TestSockOpt =
         : Result<SetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
         =
         let read =
-            match UnixSocket.admitSetSockOpt fd level optionName value optionLength system with
+            match UnixSocket.tryAdmitSetSockOpt fd level optionName value optionLength system with
             | Ok (SetSockOptAdmission.Transfer length) ->
                 length |> shouldEqual 4
                 Some (OptionValue.ofInt supplied)
@@ -108,7 +108,7 @@ module TestSockOpt =
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.setsockopt fd level optionName value optionLength read system
+        UnixSocket.trySetsockopt fd level optionName value optionLength read system
 
     /// The whole `getsockopt(2)` a client makes: ask the admission, read the
     /// length cell only if the kernel would, then make the call.
@@ -123,13 +123,13 @@ module TestSockOpt =
         : Result<GetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
         =
         let read =
-            match UnixSocket.admitGetSockOpt fd level optionName value length system with
+            match UnixSocket.tryAdmitGetSockOpt fd level optionName value length system with
             | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
             | Ok GetSockOptAdmission.SkipLength
             | Ok (GetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.getsockopt fd level optionName value length read system
+        UnixSocket.tryGetsockopt fd level optionName value length read system
 
     /// `getWithSystem`'s answer alone.
     let private getWith
@@ -336,7 +336,7 @@ module TestSockOpt =
             let level, optionName = numbered platform Option.ReuseAddress
 
             let attempt fd buffer length =
-                UnixSocket.admitSetSockOpt fd level optionName buffer length system
+                UnixSocket.tryAdmitSetSockOpt fd level optionName buffer length system
 
             attempt socketFd UserBuffer.Opaque 4u
             |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
@@ -379,14 +379,14 @@ module TestSockOpt =
                     UserBuffer.Opaque, BufferRefusal.OpaqueAtTransfer
                     UserBuffer.Addressless, BufferRefusal.AddresslessAtTransfer
                 ] do
-                UnixSocket.admitGetSockOpt socketFd level optionName UserBuffer.Mapped buffer system
+                UnixSocket.tryAdmitGetSockOpt socketFd level optionName UserBuffer.Mapped buffer system
                 |> shouldEqual (Error (SocketOptionRefusal.Buffer refusal))
 
-                UnixSocket.admitGetSockOpt closedFd level optionName UserBuffer.Mapped buffer system
+                UnixSocket.tryAdmitGetSockOpt closedFd level optionName UserBuffer.Mapped buffer system
                 |> shouldEqual (Ok (GetSockOptAdmission.Answered UnixError.EBADF))
 
             let get value declaredLength =
-                UnixSocket.getsockopt socketFd level optionName value UserBuffer.Mapped (Some declaredLength) system
+                UnixSocket.tryGetsockopt socketFd level optionName value UserBuffer.Mapped (Some declaredLength) system
                 |> Result.map fst
 
             get UserBuffer.Opaque 4u
@@ -404,7 +404,7 @@ module TestSockOpt =
             | SimulatedUnixFlavour.Darwin ->
                 // Whether the length cell is read at all turns on whether the
                 // value buffer is null, which an addressless one cannot say.
-                UnixSocket.admitGetSockOpt socketFd level optionName UserBuffer.Addressless UserBuffer.Mapped system
+                UnixSocket.tryAdmitGetSockOpt socketFd level optionName UserBuffer.Addressless UserBuffer.Mapped system
                 |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
     /// Every phase this kernel models, measured through a `setsockopt` of 1 and
@@ -481,7 +481,7 @@ module TestSockOpt =
                         let rawDomain, rawKind, rawProtocol =
                             NewSocket.arguments platform domain kind protocol
 
-                        match UnixSocket.socket rawDomain rawKind rawProtocol system with
+                        match UnixSocket.trySocket rawDomain rawKind rawProtocol system with
                         | Ok (Ok (fd, system)) ->
                             created <- created + 1
                             let system = ReuseAddress.set true fd system
@@ -699,7 +699,7 @@ module TestSockOpt =
 
             let tooMuch =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.setsockopt
+                    UnixSocket.trySetsockopt
                         socketFd
                         level
                         optionName
@@ -714,7 +714,7 @@ module TestSockOpt =
 
             let tooLittle =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.setsockopt socketFd level optionName UserBuffer.Mapped 4u None system
+                    UnixSocket.trySetsockopt socketFd level optionName UserBuffer.Mapped 4u None system
                     |> ignore<_>
                 )
 
@@ -722,7 +722,7 @@ module TestSockOpt =
 
             let lengthNotRead =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.getsockopt socketFd level optionName UserBuffer.Mapped null' (Some 4u) system
+                    UnixSocket.tryGetsockopt socketFd level optionName UserBuffer.Mapped null' (Some 4u) system
                     |> ignore<_>
                 )
 
@@ -730,7 +730,7 @@ module TestSockOpt =
 
             let lengthRead =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.getsockopt socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped None system
+                    UnixSocket.tryGetsockopt socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped None system
                     |> ignore<_>
                 )
 
@@ -847,6 +847,6 @@ module TestSockOpt =
         let system = ReuseAddress.set true b system |> boundAt b (loopback 40000us)
         let system = ReuseAddress.set false b system
 
-        match UnixSocket.listen a 5 system with
+        match UnixSocket.tryListen a 5 system with
         | Ok (answer, _) -> answer |> shouldEqual (ListenAnswer.Failed UnixError.EADDRINUSE)
         | Error refusal -> failwith $"expected an answer, got %s{ListenRefusal.describe refusal}"

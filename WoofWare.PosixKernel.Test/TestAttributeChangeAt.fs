@@ -185,7 +185,7 @@ module TestAttributeChangeAt =
 
         let image : UnixBootImage<int, string> = UnixSystem.initial caller.Platform
 
-        match UnixBootImage.withFileSystem epoch (ownedBy 0u 0u) seed image with
+        match UnixBootImage.tryWithFileSystem epoch (ownedBy 0u 0u) seed image with
         | Ok image ->
             Launched.bootWith
                 (Launched.credentials Owners.root
@@ -209,13 +209,13 @@ module TestAttributeChangeAt =
     /// The permission bits `stat` (or `lstat`, under `NoFollowFinal`) reports
     /// for `path`, or `None` where it fails.
     let private modeOf (policy : SymlinkPolicy) (path : string) (system : UnixSystem<int, string>) : int option =
-        match UnixPathResolution.stat policy (PathArg.ofText path) system with
+        match UnixPathResolution.tryStat policy (PathArg.ofText path) system with
         | Ok (FileStatusAnswer.Reported status) -> Some (status.Mode &&& 0o7777)
         | Ok (FileStatusAnswer.Failed _) -> None
         | Error refusal -> failwith $"%s{context}: stat(%s{path}) was refused: %s{StatRefusal.describe refusal}"
 
     let private ownerOf (path : string) (system : UnixSystem<int, string>) : string =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system with
         | Ok (FileStatusAnswer.Reported status) ->
             $"%d{UserId.toUInt32 status.UserId}:%d{GroupId.toUInt32 status.GroupId}"
         | Ok (FileStatusAnswer.Failed _) -> "-"
@@ -274,7 +274,7 @@ module TestAttributeChangeAt =
         let lstatBefore = modeOf SymlinkPolicy.NoFollowFinal path system
         let statBefore = modeOf SymlinkPolicy.Follow path system
 
-        match UnixPathResolution.fchmodat (atFdCwd caller) (PathArg.ofText path) mode (noFollow caller) system with
+        match UnixPathResolution.tryFchmodat (atFdCwd caller) (PathArg.ofText path) mode (noFollow caller) system with
         | Error refusal -> $"refused: %s{FChModAtRefusal.describe refusal}"
         | Ok (answer, after) ->
             $"%s{errno answer} l:%s{rendered lstatBefore}>%s{rendered (modeOf SymlinkPolicy.NoFollowFinal path after)} s:%s{rendered statBefore}>%s{rendered (modeOf SymlinkPolicy.Follow path after)}"
@@ -336,7 +336,7 @@ module TestAttributeChangeAt =
                             | Error refusal -> $"refused: %s{refusal}"
 
                         let viaAt =
-                            UnixPathResolution.fchownat
+                            UnixPathResolution.tryFchownat
                                 (atFdCwd caller)
                                 (PathArg.ofText path)
                                 None
@@ -347,7 +347,7 @@ module TestAttributeChangeAt =
                             |> outcome
 
                         let viaLChOwn =
-                            UnixPathResolution.lchown (PathArg.ofText path) None egid (boot caller |> dropped caller)
+                            UnixPathResolution.tryLchown (PathArg.ofText path) None egid (boot caller |> dropped caller)
                             |> Result.mapError ChOwnRefusal.describe
                             |> outcome
 
@@ -391,7 +391,7 @@ module TestAttributeChangeAt =
         let made (system : UnixSystem<int, string>) (name : string) =
             match subject with
             | Subject.Link ->
-                match UnixNamespace.symlink (PathArg.ofText "f") (PathArg.ofText name) system with
+                match UnixNamespace.trySymlink (PathArg.ofText "f") (PathArg.ofText name) system with
                 | Ok (SyscallAnswer.Completed _, system) -> system
                 | other -> failwith $"%s{context}: symlink(f, %s{name}): %A{other}"
             | Subject.File ->
@@ -404,7 +404,7 @@ module TestAttributeChangeAt =
                 | other -> failwith $"%s{context}: mkdir(%s{name}): %A{other}"
 
         let lchowned (user : UserId option) (group : GroupId) (system : UnixSystem<int, string>) (name : string) =
-            match UnixPathResolution.lchown (PathArg.ofText name) user (Some group) system with
+            match UnixPathResolution.tryLchown (PathArg.ofText name) user (Some group) system with
             | Ok (SyscallAnswer.Completed _, system) -> system
             | other -> failwith $"%s{context}: lchown(%s{name}): %A{other}"
 
@@ -478,7 +478,7 @@ module TestAttributeChangeAt =
                 let before = modeOf SymlinkPolicy.NoFollowFinal path system
 
                 match
-                    UnixPathResolution.fchmodat (atFdCwd caller) (PathArg.ofText path) mode (noFollow caller) system
+                    UnixPathResolution.tryFchmodat (atFdCwd caller) (PathArg.ofText path) mode (noFollow caller) system
                 with
                 | Error refusal ->
                     failwith $"%s{context}: %s{path} mode %04o{mode}: %s{FChModAtRefusal.describe refusal}"
@@ -532,7 +532,7 @@ module TestAttributeChangeAt =
                     let before = modeOf SymlinkPolicy.NoFollowFinal path system
 
                     match
-                        UnixPathResolution.fchmodat
+                        UnixPathResolution.tryFchmodat
                             (atFdCwd caller)
                             (PathArg.ofText path)
                             (Option.get before)
@@ -579,7 +579,7 @@ module TestAttributeChangeAt =
         (system : UnixSystem<int, string>)
         : FileStatus option
         =
-        match UnixPathResolution.stat policy (PathArg.ofText path) system with
+        match UnixPathResolution.tryStat policy (PathArg.ofText path) system with
         | Ok (FileStatusAnswer.Reported status) -> Some status
         | Ok (FileStatusAnswer.Failed _) -> None
         | Error refusal -> failwith $"%s{context}: stat(%s{path}) was refused: %s{StatRefusal.describe refusal}"
@@ -606,7 +606,7 @@ module TestAttributeChangeAt =
             | Some mode -> mode
             | None -> Option.get (modeOf SymlinkPolicy.NoFollowFinal link system)
 
-        match UnixPathResolution.fchmodat (atFdCwd caller) (PathArg.ofText link) mode (noFollow caller) system with
+        match UnixPathResolution.tryFchmodat (atFdCwd caller) (PathArg.ofText link) mode (noFollow caller) system with
         | Error refusal -> [ $"refused: %s{FChModAtRefusal.describe refusal}" ]
         | Ok (answer, after) ->
             [
@@ -664,7 +664,7 @@ module TestAttributeChangeAt =
 
                 let system =
                     match
-                        UnixPathResolution.fchownat
+                        UnixPathResolution.tryFchownat
                             (atFdCwd caller)
                             (PathArg.ofText path)
                             None
@@ -676,11 +676,11 @@ module TestAttributeChangeAt =
                     | other -> failwith $"%s{context}: chown(%s{path}, -1, egid): %A{other}"
 
                 let system =
-                    match UnixPathResolution.fchmodat (atFdCwd caller) (PathArg.ofText path) mode flags system with
+                    match UnixPathResolution.tryFchmodat (atFdCwd caller) (PathArg.ofText path) mode flags system with
                     | Ok (SyscallAnswer.Completed _, system) -> system
                     | other -> failwith $"%s{context}: chmod(%s{path}, %o{mode}): %A{other}"
 
-                match UnixPathResolution.fchownat (atFdCwd caller) (PathArg.ofText path) None group flags system with
+                match UnixPathResolution.tryFchownat (atFdCwd caller) (PathArg.ofText path) None group flags system with
                 | Ok (answer, after) ->
                     let before = rendered (modeOf SymlinkPolicy.NoFollowFinal path system)
                     let changed = rendered (modeOf SymlinkPolicy.NoFollowFinal path after)
@@ -739,16 +739,16 @@ module TestAttributeChangeAt =
             | "dir" -> Some (opened "d" system)
             | "file" -> Some (opened "f" system)
             | "pipe-read" ->
-                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                 | Ok (Pipe2Answer.Created (readFd, _), system) -> Some (readFd, system)
                 | other -> failwith $"%s{context}: pipe2: %A{other}"
             | "pipe-write" ->
-                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                 | Ok (Pipe2Answer.Created (_, writeFd), system) -> Some (writeFd, system)
                 | other -> failwith $"%s{context}: pipe2: %A{other}"
             | "socket" -> Some (NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system)
             | "epoll" ->
-                match UnixPoll.epollCreate1 0 system with
+                match UnixPoll.tryEpollCreate1 0 system with
                 | Ok (Ok created) -> Some created
                 | other -> failwith $"%s{context}: epoll_create1: %A{other}"
             | "devnull" -> Some (opened "/dev/null" system)
@@ -771,13 +771,13 @@ module TestAttributeChangeAt =
             | "locked" ->
                 let fd, system = opened "d" system
 
-                match UnixPathResolution.chmod (PathArg.ofText "d") 0 system with
+                match UnixPathResolution.tryChmod (PathArg.ofText "d") 0 system with
                 | Ok answer -> Some (fd, completed "chmod(d, 0)" answer)
                 | Error refusal -> failwith $"%s{context}: chmod(d, 0): %s{ChModRefusal.describe refusal}"
             | "moved" ->
                 let fd, system = opened "d" system
 
-                match UnixNamespace.rename (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
+                match UnixNamespace.tryRename (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
                 | Ok answer -> Some (fd, completed "rename(d, d-moved)" answer)
                 | Error refusal -> failwith $"%s{context}: rename: %s{RenameRefusal.describe refusal}"
             | "theirs" -> Some (opened "tf" system)
@@ -802,10 +802,10 @@ module TestAttributeChangeAt =
         let current =
             let status =
                 if kind = "cwd" then
-                    UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText ".") system
+                    UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofText ".") system
                     |> Result.mapError StatRefusal.describe
                 else
-                    UnixPathResolution.fstat dirfd system |> Result.mapError FStatRefusal.describe
+                    UnixPathResolution.tryFstat dirfd system |> Result.mapError FStatRefusal.describe
 
             // A descriptor this library will not report the status of (a
             // socket, an epoll instance) is asked for a mode of its own: the
@@ -853,25 +853,25 @@ module TestAttributeChangeAt =
                     // descriptor (chmod or chown of "." for AT_FDCWD) does.
                     let call (path : PathArgumentBytes) (flags : int) =
                         if op = "fchmodat" then
-                            UnixPathResolution.fchmodat dirfd path mode flags system
+                            UnixPathResolution.tryFchmodat dirfd path mode flags system
                             |> Result.mapError FChModAtRefusal.describe
                         else
-                            UnixPathResolution.fchownat dirfd path user group flags system
+                            UnixPathResolution.tryFchownat dirfd path user group flags system
                             |> Result.mapError FChOwnAtRefusal.describe
 
                     let reference =
                         match op, kind with
                         | "fchmodat", "cwd" ->
-                            UnixPathResolution.chmod (PathArg.ofText ".") mode system
+                            UnixPathResolution.tryChmod (PathArg.ofText ".") mode system
                             |> Result.mapError ChModRefusal.describe
                         | "fchmodat", _ ->
-                            UnixPathResolution.fchmod dirfd mode system
+                            UnixPathResolution.tryFchmod dirfd mode system
                             |> Result.mapError FChModRefusal.describe
                         | _, "cwd" ->
-                            UnixPathResolution.chown (PathArg.ofText ".") user group system
+                            UnixPathResolution.tryChown (PathArg.ofText ".") user group system
                             |> Result.mapError ChOwnRefusal.describe
                         | _, _ ->
-                            UnixPathResolution.fchown dirfd user group system
+                            UnixPathResolution.tryFchown dirfd user group system
                             |> Result.mapError FChOwnRefusal.describe
 
                     match reference with
@@ -939,10 +939,10 @@ module TestAttributeChangeAt =
                         | path -> path
 
                     let actual =
-                        match UnixPathResolution.fchmodat dirfd (PathArg.ofText path) 0o600 flags system with
+                        match UnixPathResolution.tryFchmodat dirfd (PathArg.ofText path) 0o600 flags system with
                         | Ok (answer, after) ->
                             let mode =
-                                match UnixPathResolution.fstatat dirfd (PathArg.ofText path) 0 after with
+                                match UnixPathResolution.tryFstatat dirfd (PathArg.ofText path) 0 after with
                                 | Ok (FileStatusAnswer.Reported status) -> Some (status.Mode &&& 0o7777)
                                 | Ok (FileStatusAnswer.Failed _) -> None
                                 | Error refusal -> failwith $"%s{context}: fstatat: %s{FStatAtRefusal.describe refusal}"
@@ -973,11 +973,11 @@ module TestAttributeChangeAt =
                         let actual =
                             match row.[1] with
                             | "fchmodat" ->
-                                UnixPathResolution.fchmodat (atFdCwd caller) (PathArg.ofText "f") 0o644 flags system
+                                UnixPathResolution.tryFchmodat (atFdCwd caller) (PathArg.ofText "f") 0o644 flags system
                                 |> Result.map (fst >> errno)
                                 |> Result.mapError (fun r -> r = FChModAtRefusal.UnmodelledFlags flags)
                             | _ ->
-                                UnixPathResolution.fchownat (atFdCwd caller) (PathArg.ofText "f") None None flags system
+                                UnixPathResolution.tryFchownat (atFdCwd caller) (PathArg.ofText "f") None None flags system
                                 |> Result.map (fst >> errno)
                                 |> Result.mapError (fun r -> r = FChOwnAtRefusal.UnmodelledFlags flags)
 
@@ -1000,7 +1000,7 @@ module TestAttributeChangeAt =
         |> errno
 
     let private statAnswer (policy : SymlinkPolicy) (path : string) (system : UnixSystem<int, string>) : string =
-        match UnixPathResolution.stat policy (PathArg.ofText path) system with
+        match UnixPathResolution.tryStat policy (PathArg.ofText path) system with
         | Ok (FileStatusAnswer.Reported _) -> "ok"
         | Ok (FileStatusAnswer.Failed error) -> $"%A{error}"
         | Error refusal -> failwith $"%s{context}: stat(%s{path}) was refused: %s{StatRefusal.describe refusal}"
@@ -1023,7 +1023,7 @@ module TestAttributeChangeAt =
                     |> List.fold
                         (fun system link ->
                             match
-                                UnixPathResolution.fchmodat
+                                UnixPathResolution.tryFchmodat
                                     (atFdCwd caller)
                                     (PathArg.ofText link)
                                     mode
@@ -1036,14 +1036,14 @@ module TestAttributeChangeAt =
                         (boot caller |> dropped caller)
 
                 let readlink =
-                    match UnixNamespace.readlink (PathArg.ofText "lf") UserBuffer.Mapped 64 system with
+                    match UnixNamespace.tryReadlink (PathArg.ofText "lf") UserBuffer.Mapped 64 system with
                     | Ok (ReadLinkAnswer.Reported _) -> "ok"
                     | Ok (ReadLinkAnswer.Failed error) -> $"%A{error}"
                     | Error refusal -> $"refused: %s{ReadLinkRefusal.describe refusal}"
 
                 let access =
                     match
-                        UnixPathResolution.faccessat (atFdCwd caller) (PathArg.ofText "lf") 4 (noFollow caller) system
+                        UnixPathResolution.tryFaccessat (atFdCwd caller) (PathArg.ofText "lf") 4 (noFollow caller) system
                     with
                     | Ok answer -> errno answer
                     | Error refusal -> $"refused: %s{AccessRefusal.describe refusal}"
@@ -1258,7 +1258,7 @@ module TestAttributeChangeAt =
 
                     let actual =
                         match
-                            UnixPathResolution.fchmodat
+                            UnixPathResolution.tryFchmodat
                                 (atFdCwd caller)
                                 (PathArg.ofText "lf")
                                 0o777
@@ -1279,7 +1279,7 @@ module TestAttributeChangeAt =
 
                     let actual =
                         match
-                            UnixPathResolution.fchmodat
+                            UnixPathResolution.tryFchmodat
                                 (atFdCwd caller)
                                 (PathArg.ofText path)
                                 0o170640
@@ -1310,7 +1310,7 @@ module TestAttributeChangeAt =
                     let dirfd, system = opened "d" (boot caller |> dropped caller)
 
                     let actual =
-                        match UnixPathResolution.fchmodat dirfd (PathArg.ofText "l") 0o640 flags system with
+                        match UnixPathResolution.tryFchmodat dirfd (PathArg.ofText "l") 0o640 flags system with
                         | Ok (answer, after) ->
                             let link = rendered (modeOf SymlinkPolicy.NoFollowFinal "d/l" after)
                             let target = rendered (modeOf SymlinkPolicy.NoFollowFinal "f" after)

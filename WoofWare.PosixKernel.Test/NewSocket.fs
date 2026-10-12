@@ -48,7 +48,7 @@ module NewSocket =
         let rawDomain, rawKind, rawProtocol =
             arguments system.Machine.UnixPlatform domain kind protocol
 
-        match UnixSocket.socket rawDomain rawKind rawProtocol system with
+        match UnixSocket.trySocket rawDomain rawKind rawProtocol system with
         | Ok (Ok created) -> created
         | Ok (Error error) ->
             failwith $"NewSocket.create: socket(%d{rawDomain}, %d{rawKind}, %d{rawProtocol}) answered %O{error}"
@@ -79,7 +79,7 @@ module NewSocket =
         let rawDomain, rawKind, rawProtocol =
             arguments system.Machine.UnixPlatform domain kind protocol
 
-        match UnixSocket.socket rawDomain rawKind rawProtocol system with
+        match UnixSocket.trySocket rawDomain rawKind rawProtocol system with
         | Ok (Ok created) -> Some created
         | Ok (Error _)
         | Error _ -> None

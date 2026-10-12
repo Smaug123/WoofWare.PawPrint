@@ -25,18 +25,23 @@ type GetCpuAnswer =
 
 /// Why this kernel will not answer a `getcpu(2)`.
 [<RequireQualifiedAccess>]
-type GetCpuRefusal =
+type internal GetCpuRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has `getcpu`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module GetCpuRefusal =
+module internal GetCpuRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : GetCpuRefusal) : string =
         match refusal with
         | GetCpuRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and getcpu exists on Linux only. Darwin's libc has neither sched_getcpu nor getcpu."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetCpuRefusal) : RefusalKind =
+        match refusal with
+        | GetCpuRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
 
 /// Which task runs on which of the machine's logical processors.
 ///
@@ -137,7 +142,7 @@ module UnixScheduling =
     /// running (`runningOn`): a task making a syscall is running, so each
     /// means the client's record of what it runs disagrees with this
     /// library's, which is a bug in the client.
-    let getcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetCpuAnswer, GetCpuRefusal>

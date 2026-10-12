@@ -62,7 +62,7 @@ module PendingSignal =
             | Error error -> failwith $"sigaction: %O{error}"
 
         let send (target : int) (signo : int) (system : UnixSystem<int, string>) =
-            match UnixSignal.pthreadKill target signo system with
+            match UnixSignal.tryPthreadKill target signo system with
             | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
             | other -> failwith $"pthread_kill %d{target} %d{signo}: %A{other}"
 

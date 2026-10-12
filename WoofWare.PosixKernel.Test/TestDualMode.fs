@@ -37,7 +37,7 @@ module TestDualMode =
         let name = SimulatedUnixPlatform.ipv6OnlyOption platform
 
         match
-            UnixSocket.setsockopt
+            UnixSocket.trySetsockopt
                 fd
                 level
                 name
@@ -67,7 +67,7 @@ module TestDualMode =
             | other -> failwith $"listener bind answered %A{other}"
 
         let system =
-            match UnixSocket.listen listener 8 system with
+            match UnixSocket.tryListen listener 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listen answered %A{other}"
 
@@ -269,7 +269,7 @@ module TestDualMode =
     let ``an IPv6 socket does not listen`` (platform : SimulatedUnixPlatform) : unit =
         let _, client, system = listenerAndClient platform 0
 
-        match UnixSocket.listen client 8 system with
+        match UnixSocket.tryListen client 8 system with
         | Error (ListenRefusal.Ipv6Listener socket) -> socket |> shouldEqual (socketIdOf client system)
         | other -> failwith $"listen answered %A{other}"
 
@@ -293,7 +293,7 @@ module TestDualMode =
             Error (BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledInet6Kind (socketId, SocketKind.Datagram)))
         )
 
-        UnixSocket.getsockname fd UserBuffer.Mapped 28u system
+        UnixSocket.tryGetsockname fd UserBuffer.Mapped 28u system
         |> shouldEqual (Error (GetSockNameRefusal.UnmodelledInet6Kind (socketId, SocketKind.Datagram)))
 
     [<Test>]

@@ -104,7 +104,7 @@ type internal OwnerChange =
 /// Why this library will not say what a `chown(2)`-family call does: the
 /// kernel's answer for that caller and that inode has not been measured.
 [<RequireQualifiedAccess>]
-type OwnerChangeRefusal =
+type internal OwnerChangeRefusal =
     /// A privileged caller, under `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`,
     /// standing as `standing` towards an inode carrying `bits`, asking
     /// `request`.
@@ -119,7 +119,7 @@ type OwnerChangeRefusal =
     | UnmeasuredSetIdChange of standing : Standing * request : OwnerChangeRequest * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
-module OwnerChangeRefusal =
+module internal OwnerChangeRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : OwnerChangeRefusal) : string =
@@ -131,6 +131,12 @@ module OwnerChangeRefusal =
             $"what Darwin's chown does for a privileged caller, standing %A{standing} towards an inode carrying %O{bits} and asking %A{request}, has not been measured; measuring it needs root. %s{measured}"
         | OwnerChangeRefusal.UnmeasuredSetIdChange (standing, request, bits) ->
             $"what Darwin's chown does for a caller standing %A{standing} towards an inode carrying %O{bits} and asking %A{request} has not been measured; setting that inode up needs root or a second user. %s{measured}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : OwnerChangeRefusal) : RefusalKind =
+        match refusal with
+        | OwnerChangeRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
+        | OwnerChangeRefusal.UnmeasuredSetIdChange _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module internal OwnerChangeRequest =

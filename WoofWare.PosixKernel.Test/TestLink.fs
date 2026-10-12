@@ -108,13 +108,13 @@ module TestLink =
         =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial platform
-            |> UnixBootImage.withProtectedFiles
+            |> UnixBootImage.tryWithProtectedFiles
                 { ProtectedFiles.off with
                     Hardlinks = protection
                 }
             |> Configured.expectOk ProtectedFilesRefusal.describe
 
-        match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess credentials) seed image with
+        match UnixBootImage.tryWithFileSystem epoch (InodeOwner.ofProcess credentials) seed image with
         | Ok image ->
             (Launched.bootWith
                 (Launched.credentials credentials
@@ -134,7 +134,7 @@ module TestLink =
     let private refusedForDevices (answer : string) : bool = answer.StartsWith "refused: the path"
 
     let private kindAt (p : string) (system : UnixSystem<int, string>) : string * int64 * int64 =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (text p) system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (text p) system with
         | Ok (FileStatusAnswer.Reported status) ->
             let kind =
                 match status.Mode &&& 0o170000 with
@@ -233,10 +233,10 @@ module TestLink =
         (system : UnixSystem<int, string>)
         =
         match how with
-        | None -> UnixNamespace.link (text source) (text dest) system
+        | None -> UnixNamespace.tryLink (text source) (text dest) system
         | Some flags ->
             let atFdCwd = AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour platform)
-            UnixNamespace.linkat atFdCwd (text source) atFdCwd (text dest) flags system
+            UnixNamespace.tryLinkat atFdCwd (text source) atFdCwd (text dest) flags system
 
     /// LINKSRC: link each source kind to "n" three ways; on success, what "n"
     /// is (the source itself or f, which a followed link names) and the
@@ -299,7 +299,7 @@ module TestLink =
                 let system =
                     boot envelope.Platform envelope.Credentials envelope.Protection (seedOf None symlinkCell)
 
-                let actual = UnixNamespace.link (text "f") (text dest) system |> rendered
+                let actual = UnixNamespace.tryLink (text "f") (text dest) system |> rendered
 
                 if actual <> probe then
                     yield $"%s{dest}: the probe answered %s{probe}, this library %s{actual}"
@@ -322,7 +322,7 @@ module TestLink =
                 let system =
                     boot envelope.Platform envelope.Credentials envelope.Protection (seedOf None symlinkCell)
 
-                let actual = UnixNamespace.link (text pair.[0]) (text pair.[1]) system |> rendered
+                let actual = UnixNamespace.tryLink (text pair.[0]) (text pair.[1]) system |> rendered
 
                 let refusedHere =
                     match SimulatedUnixPlatform.flavour envelope.Platform with
@@ -392,7 +392,7 @@ module TestLink =
                     | other -> failwith $"%s{context}: the probe has no LINKPERM row %s{other}"
 
                 let system = boot envelope.Platform me envelope.Protection (seedOf mine entries)
-                let actual = UnixNamespace.link (text source) (text dest) system |> rendered
+                let actual = UnixNamespace.tryLink (text source) (text dest) system |> rendered
 
                 if actual <> probe then
                     yield $"%s{label}: the probe answered %s{probe}, this library %s{actual}"
@@ -510,7 +510,7 @@ module TestLink =
                     let dest = cell.Substring (0, at)
                     let probe = probeAnswer (cell.Substring (at + 1))
                     let system = rulesSystem darwinFlavour protection caller
-                    let actual = UnixNamespace.link (text source) (text dest) system |> rendered
+                    let actual = UnixNamespace.tryLink (text source) (text dest) system |> rendered
 
                     // A free name in /dev is refused unless the source alone
                     // decides the call: this library's device filesystem knows
@@ -570,7 +570,7 @@ module TestLink =
                     let system = rulesSystem darwinFlavour protection caller
 
                     let actual =
-                        UnixNamespace.linkat atFdCwd (text source) destFd dest 0 system |> rendered
+                        UnixNamespace.tryLinkat atFdCwd (text source) destFd dest 0 system |> rendered
 
                     if actual <> probe then
                         yield
@@ -606,7 +606,7 @@ module TestLink =
                     | other -> failwith $"%s{context}: the probe has no DESTMORE row %s{other}"
 
                 let actual =
-                    UnixNamespace.link (text "f") dest (rulesSystem darwinFlavour protection caller)
+                    UnixNamespace.tryLink (text "f") dest (rulesSystem darwinFlavour protection caller)
                     |> rendered
 
                 if actual <> probe then
@@ -651,7 +651,7 @@ module TestLink =
                     else
                         rulesSystem false protection caller
 
-                UnixNamespace.link (text source) (text dest) system
+                UnixNamespace.tryLink (text source) (text dest) system
                 |> rendered
                 |> fun actual ->
                     (row.[0], row.[1], row.[2], actual)
@@ -741,7 +741,7 @@ module TestLink =
                     | other -> failwith $"%s{context}: the probe has no EMPTY row %s{other}"
 
                 let actual =
-                    UnixNamespace.linkat fd (text path) -100 (text "n") flags system |> rendered
+                    UnixNamespace.tryLinkat fd (text path) -100 (text "n") flags system |> rendered
 
                 let expected = expectedEmptyPath caller fd path flags probe
 
@@ -810,7 +810,7 @@ module TestLink =
                         failwith $"%s{context}: the probe has no CRED row %s{label}"
 
                 let actual =
-                    UnixNamespace.linkat dirfd (text path) linuxAtFdCwd (text "n") flags system
+                    UnixNamespace.tryLinkat dirfd (text path) linuxAtFdCwd (text "n") flags system
                     |> rendered
 
                 let expected = expectedEmptyPath caller dirfd path flags probe
@@ -851,7 +851,7 @@ module TestLink =
                     | other -> failwith $"%s{context}: the probe has no UNLINKED row %s{other}"
 
                 let actual =
-                    UnixNamespace.linkat fd (text "") destFd dest linuxEmptyPath system |> rendered
+                    UnixNamespace.tryLinkat fd (text "") destFd dest linuxEmptyPath system |> rendered
 
                 let expected = expectedEmptyPath caller fd "" linuxEmptyPath probe
 
@@ -894,7 +894,7 @@ module TestLink =
                 boot platform credentials HardlinkProtection.Off (seedOf (Some owner) [ "f", File (0o644, None) ])
 
             for i in 0 .. links - 1 do
-                match UnixNamespace.link (text "f") (text $"l%d{i}") system with
+                match UnixNamespace.tryLink (text "f") (text $"l%d{i}") system with
                 | Ok (SyscallAnswer.Completed _, after) -> system <- after
                 | other -> failwith $"%s{context}: link %d{i} did not succeed: %A{other}"
 
@@ -932,14 +932,14 @@ module TestLink =
     let ``a link on NFS is refused`` () : unit =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial linux
-            |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
+            |> UnixBootImage.tryWithMount (Some EmulatedMount.Nfs)
             |> Configured.expectOk MountRefusal.describe
 
         let credentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
 
         let system =
             match
-                UnixBootImage.withFileSystem
+                UnixBootImage.tryWithFileSystem
                     epoch
                     (InodeOwner.ofProcess credentials)
                     (seedOf None [ "f", File (0o644, None) ])
@@ -954,7 +954,7 @@ module TestLink =
                     image
             | Error fault -> failwith $"%A{fault}"
 
-        UnixNamespace.link (text "f") (text "n") system
+        UnixNamespace.tryLink (text "f") (text "n") system
         |> rendered
         |> shouldEqual
             $"refused: %s{LinkRefusal.describe (LinkRefusal.UnmeasuredFileSystem EmulatedFileSystemType.Nfs)}"
@@ -969,9 +969,9 @@ module TestLink =
                 let system = rulesSystem darwinFlavour 0 1000
 
                 let direct =
-                    match UnixNamespace.linkat atFdCwd (text source) atFdCwd (text dest) 0 system with
+                    match UnixNamespace.tryLinkat atFdCwd (text source) atFdCwd (text dest) 0 system with
                     | Ok (answer, after) -> Ok (SyscallOutcome.Answered answer, after)
                     | Error refusal -> Error (SyscallRefusal.Link refusal)
 
-                UnixSystem.step 0 (Syscall.LinkAt (atFdCwd, text source, atFdCwd, text dest, 0)) system
+                UnixSystem.tryStep 0 (Syscall.LinkAt (atFdCwd, text source, atFdCwd, text dest, 0)) system
                 |> shouldEqual direct

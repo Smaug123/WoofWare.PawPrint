@@ -84,7 +84,7 @@ module SocketLadder =
             | other -> failwith $"setUp: bind answered %A{other}"
 
         let listen (fd : int) (system : UnixSystem<int, string>) =
-            match UnixSocket.listen fd 128 system with
+            match UnixSocket.tryListen fd 128 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"setUp: listen answered %A{other}"
 

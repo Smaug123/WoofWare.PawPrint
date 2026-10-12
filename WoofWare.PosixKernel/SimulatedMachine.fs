@@ -170,7 +170,7 @@ module SimulatedMachineDefect =
 
 /// Why `SimulatedMachine.launch` will not start a process.
 [<RequireQualifiedAccess>]
-type ProcessCreationRefusal =
+type internal ProcessCreationRefusal =
     /// The launch itself is refused; see `LaunchRefusal`.
     | Launch of LaunchRefusal
     /// On Linux, every ID the machine would hand out, from 300 up to its
@@ -186,7 +186,7 @@ type ProcessCreationRefusal =
     | DarwinThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
-module ProcessCreationRefusal =
+module internal ProcessCreationRefusal =
     /// What this library knows about why it would not start the process, for
     /// a client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessCreationRefusal) : string =
@@ -199,10 +199,18 @@ module ProcessCreationRefusal =
         | ProcessCreationRefusal.DarwinThreadIdCounterExhausted ->
             "the machine's thread ID counter has reached the top of its 64-bit range, so the new process's leader would take an ID beyond it; what Darwin does then has not been measured."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessCreationRefusal) : RefusalKind =
+        match refusal with
+        | ProcessCreationRefusal.Launch inner -> LaunchRefusal.kind inner
+        | ProcessCreationRefusal.NoFreeProcessId -> RefusalKind.Unmodelled
+        | ProcessCreationRefusal.DarwinPidMaxReached _ -> RefusalKind.Unmodelled
+        | ProcessCreationRefusal.DarwinThreadIdCounterExhausted -> RefusalKind.Unmodelled
+
 /// Why `SimulatedMachine.endProcess` will not end a process: what closing
 /// its descriptors would do has not been measured.
 [<RequireQualifiedAccess>]
-type ProcessEndRefusal =
+type internal ProcessEndRefusal =
     /// Closing the process's descriptors releases an open file description
     /// this library will not release (`DescriptionReleaseRefusal`): so far,
     /// the last reference to a connected socket whose `SO_LINGER` would make
@@ -210,13 +218,18 @@ type ProcessEndRefusal =
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
-module ProcessEndRefusal =
+module internal ProcessEndRefusal =
     /// What this library knows about why it will not end the process, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessEndRefusal) : string =
         match refusal with
         | ProcessEndRefusal.Release refusal ->
             $"the process's end closes its descriptors, and %s{DescriptionReleaseRefusal.describe refusal}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessEndRefusal) : RefusalKind =
+        match refusal with
+        | ProcessEndRefusal.Release inner -> DescriptionReleaseRefusal.kind inner
 
 /// Moving between a `SimulatedMachine` and the views of it its processes'
 /// syscalls are made in.
@@ -280,7 +293,7 @@ module SimulatedMachine =
     ///
     /// Refuses a launch `LaunchRefusal` describes, and a machine with no
     /// process ID left to hand out.
-    let launch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryLaunch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (launch : ProcessLaunch<'Task>)
         (machine : SimulatedMachine<'Task, 'Handler>)
         : Result<ProcessId * SimulatedMachine<'Task, 'Handler>, ProcessCreationRefusal>
@@ -494,7 +507,7 @@ module SimulatedMachine =
     /// A refused call changes nothing, and answers `machine` itself, so a view
     /// focused from it can still be written back. `None` if no process on the
     /// machine has that ID.
-    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (processId : ProcessId)
         (task : 'Task)
         (call : Syscall)
@@ -503,7 +516,7 @@ module SimulatedMachine =
         =
         focus processId machine
         |> Option.map (fun view ->
-            match UnixSystem.step task call view with
+            match UnixSystem.tryStep task call view with
             | Ok (outcome, view) -> Ok outcome, unfocus view machine
             | Error refusal -> Error refusal, machine
         )
@@ -536,7 +549,7 @@ module SimulatedMachine =
     ///
     /// Fails loudly, as `unfocus` does, if the view the process ended in
     /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.
-    let endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryEndProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (ended : EndedProcess<'Task, 'Handler>)
         (machine : SimulatedMachine<'Task, 'Handler>)
         : Result<ProcessTermination * SimulatedMachine<'Task, 'Handler>, ProcessEndRefusal>

@@ -49,7 +49,7 @@ module TestKqueue =
         | None -> failwith $"fd %d{fd} names no description"
 
     let private createKqueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixKqueue.kqueue system with
+        match UnixKqueue.tryKqueue system with
         | Ok (fd, system) -> fd, system
         | Error refusal -> failwith $"expected a kqueue, got %s{KqueueRefusal.describe refusal}"
 
@@ -59,7 +59,7 @@ module TestKqueue =
         | Error error -> failwith $"dup: %O{error}"
 
     let private close (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok (SyscallAnswer.Completed 0L, closed) -> closed
         | other -> failwith $"expected the close of fd %d{fd} to succeed, got %A{other}"
 
@@ -76,7 +76,7 @@ module TestKqueue =
         (system : UnixSystem<int, string>)
         : Result<KeventOutcome * UnixSystem<int, string>, KeventRefusal>
         =
-        UnixKqueue.kevent task fd 0 [] 1 UserBuffer.Mapped timeout system
+        UnixKqueue.tryKevent task fd 0 [] 1 UserBuffer.Mapped timeout system
 
     let private parks (task : int) (fd : int) (timeout : KeventTimeout) (system : UnixSystem<int, string>) =
         match waits task fd timeout system with
@@ -84,7 +84,7 @@ module TestKqueue =
         | other -> failwith $"expected task %d{task} to park, got %A{other}"
 
     let private finishes (task : int) (system : UnixSystem<int, string>) : KeventOutcome * UnixSystem<int, string> =
-        match UnixKqueue.finishKevent task system with
+        match UnixKqueue.tryFinishKevent task system with
         | Ok (outcome, finished) ->
             UnixTaskTable.parkedFor task finished.Tasks |> shouldEqual None
             outcome, finished
@@ -200,7 +200,7 @@ module TestKqueue =
 
     [<Test>]
     let ``Linux has no kqueue, so kqueue and kevent are refused`` () : unit =
-        UnixKqueue.kqueue linux
+        UnixKqueue.tryKqueue linux
         |> shouldEqual (Error (KqueueRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux))
 
         waits 1 3 KeventTimeout.Null linux
@@ -377,7 +377,7 @@ module TestKqueue =
                 let nchanges, readable = changesOf changes
 
                 match
-                    UnixKqueue.kevent
+                    UnixKqueue.tryKevent
                         1
                         (descriptor fd)
                         nchanges
@@ -421,7 +421,7 @@ module TestKqueue =
                 let nchanges, readable = changesOf changes
 
                 match
-                    UnixKqueue.kevent 2 d nchanges readable (int nevents) UserBuffer.Mapped (timeoutOf timeout) system
+                    UnixKqueue.tryKevent 2 d nchanges readable (int nevents) UserBuffer.Mapped (timeoutOf timeout) system
                 with
                 | Ok (outcome, after) ->
                     try
@@ -585,7 +585,7 @@ module TestKqueue =
 
         let property (nchanges : int, readable : Kevent list, nevents : int, timeout : KeventTimeout) : unit =
             let actual =
-                UnixKqueue.kevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout system
+                UnixKqueue.tryKevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout system
 
             match oracle system nchanges readable nevents timeout, actual with
             | Error expected, actual -> actual |> shouldEqual (Error expected)
@@ -617,7 +617,7 @@ module TestKqueue =
             // Even a readable change, which a kqueue would apply or refuse, is never reached.
             let readable = if nchanges > 0 then [ someChange ] else []
 
-            UnixKqueue.kevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout darwin
+            UnixKqueue.tryKevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout darwin
             |> shouldEqual (Ok (expected, darwin))
 
         // Standard input, output and error are pipe ends; 7 and -1 are not open.
@@ -665,7 +665,7 @@ module TestKqueue =
 
             let ordinalBefore = (UnixTaskTable.parkOf 1 parked.Tasks).Value.Ordinal
 
-            match UnixKqueue.finishKevent 1 short with
+            match UnixKqueue.tryFinishKevent 1 short with
             | Ok (KeventOutcome.WouldBlock _, reparked) ->
                 UnixWait.deadlines (Set.singleton 1) reparked |> shouldEqual [ deadline ]
 
@@ -942,15 +942,15 @@ module TestKqueue =
 
         let both = close k parked |> after 5L
 
-        UnixKqueue.finishKevent 1 both
+        UnixKqueue.tryFinishKevent 1 both
         |> shouldEqual (Error (KeventRefusal.DrainBesideDeadline kqueue))
 
-        match UnixKqueue.finishKevent 1 (signalled 1 (close k parked)) with
+        match UnixKqueue.tryFinishKevent 1 (signalled 1 (close k parked)) with
         | Error (KeventRefusal.Interruption (SyscallInterruptionRefusal.SignalBesideCompletion SimulatedUnixFlavour.Darwin)) ->
             ()
         | other -> failwith $"expected the signal beside the drain to be refused, got %A{other}"
 
-        match UnixKqueue.finishKevent 1 (signalled 1 (after 5L parked)) with
+        match UnixKqueue.tryFinishKevent 1 (signalled 1 (after 5L parked)) with
         | Error (KeventRefusal.Interruption (SyscallInterruptionRefusal.SignalBesideCompletion SimulatedUnixFlavour.Darwin)) ->
             ()
         | other -> failwith $"expected the signal beside the deadline to be refused, got %A{other}"
@@ -1002,12 +1002,12 @@ module TestKqueue =
 
         exn.Message |> shouldContainText "is parked"
 
-        let exn = Assert.Throws<exn> (fun () -> UnixKqueue.finishKevent 1 system |> ignore)
+        let exn = Assert.Throws<exn> (fun () -> UnixKqueue.tryFinishKevent 1 system |> ignore)
         exn.Message |> shouldContainText "is not parked"
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixKqueue.kevent 1 fd 1 [ someChange ; someChange ] 1 UserBuffer.Mapped KeventTimeout.Null system
+                UnixKqueue.tryKevent 1 fd 1 [ someChange ; someChange ] 1 UserBuffer.Mapped KeventTimeout.Null system
                 |> ignore
             )
 

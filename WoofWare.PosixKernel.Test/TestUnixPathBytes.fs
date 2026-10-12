@@ -65,7 +65,7 @@ module TestUnixPathBytes =
             |> Answered.chdir (PathArg.ofPath (pathOf directory))
             |> completed
 
-        match UnixPathResolution.getcwd UserBuffer.Mapped 4096UL system with
+        match UnixPathResolution.tryGetcwd UserBuffer.Mapped 4096UL system with
         | Ok (GetCwdAnswer.Reported bytes) -> List.ofSeq bytes |> shouldEqual (directory @ [ 0uy ])
         | other -> failwith $"expected a path, got %A{other}"
 
@@ -182,7 +182,7 @@ module TestUnixPathBytes =
     /// to exist.
     let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (image : UnixBootImage<int, string>) =
         match
-            UnixBootImage.withFileSystem
+            UnixBootImage.tryWithFileSystem
                 epoch
                 (InodeOwner.ofProcess
                     (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Process.Credentials)
@@ -240,7 +240,7 @@ module TestUnixPathBytes =
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
-            match UnixNamespace.rename (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
+            match UnixNamespace.tryRename (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
             | Ok (answer, _) -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"
 
@@ -358,13 +358,13 @@ module TestUnixPathBytes =
                     seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] image
 
                 match
-                    UnixNamespace.readlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
+                    UnixNamespace.tryReadlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
                 with
                 | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
                 | other -> failwith $"expected a target, got %A{other}"
 
                 match
-                    UnixPathResolution.stat
+                    UnixPathResolution.tryStat
                         SymlinkPolicy.NoFollowFinal
                         (PathArg.ofPath (pathOf [ slash ; byte 'l' ]))
                         system
@@ -387,7 +387,7 @@ module TestUnixPathBytes =
                 linuxImage
 
         match
-            UnixPathResolution.stat
+            UnixPathResolution.tryStat
                 SymlinkPolicy.Follow
                 (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]))
                 system
@@ -410,7 +410,7 @@ module TestUnixPathBytes =
             let system =
                 seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwinImage
 
-            UnixPathResolution.stat
+            UnixPathResolution.tryStat
                 SymlinkPolicy.Follow
                 (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]))
                 system

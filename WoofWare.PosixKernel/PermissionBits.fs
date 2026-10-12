@@ -198,7 +198,7 @@ type PermissionBits =
 /// set-user-ID and set-group-ID bits: the kernel's answer for that caller and
 /// that mode has not been measured.
 [<RequireQualifiedAccess>]
-type SetIdChangeRefusal =
+type internal SetIdChangeRefusal =
     /// A content-changing write, under `SetGroupIdOnWrite.StripAlways`, by a
     /// caller standing as `standing` towards a file whose bits are `bits`.
     | UnmeasuredDarwinWrite of standing : Standing * bits : PermissionBits
@@ -207,7 +207,7 @@ type SetIdChangeRefusal =
     | UnmeasuredDarwinTruncation of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
-module SetIdChangeRefusal =
+module internal SetIdChangeRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which file it was.
     let describe (refusal : SetIdChangeRefusal) : string =
@@ -219,6 +219,12 @@ module SetIdChangeRefusal =
             $"what Darwin does to the set-ID bits of a %O{bits} file written to by a caller standing %A{standing} towards it has not been measured. %s{measured}"
         | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) ->
             $"what Darwin does to the set-ID bits of a %O{bits} file truncated by a caller standing %A{standing} towards it has not been measured. %s{measured}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SetIdChangeRefusal) : RefusalKind =
+        match refusal with
+        | SetIdChangeRefusal.UnmeasuredDarwinWrite _ -> RefusalKind.Unmodelled
+        | SetIdChangeRefusal.UnmeasuredDarwinTruncation _ -> RefusalKind.Unmodelled
 
 /// What a privileged caller is granted when it asks to execute something that
 /// is not a directory: `X_OK` on a regular file or a symbolic link.
@@ -243,19 +249,24 @@ type PrivilegedExecution =
 /// Why this library will not say whether a caller may execute something: the
 /// kernel's answer for that caller has not been measured.
 [<RequireQualifiedAccess>]
-type ExecutionRefusal =
+type internal ExecutionRefusal =
     /// A privileged caller, under `PrivilegedExecution.Unmeasured`, standing
     /// as `standing` towards an inode carrying `bits`.
     | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
-module ExecutionRefusal =
+module internal ExecutionRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : ExecutionRefusal) : string =
         match refusal with
         | ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits) ->
             $"whether Darwin lets a privileged caller, standing %A{standing} towards it, execute a non-directory carrying %O{bits} has not been measured. What has been measured: every unprivileged caller's answer, which is the owner, group or other triple's execute bit. Linux grants root execution exactly when some execute bit is set; measuring Darwin's root needs root."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ExecutionRefusal) : RefusalKind =
+        match refusal with
+        | ExecutionRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
 
 /// Whether reading a symbolic link's target, `readlink(2)`, consults the
 /// link's own permission bits.
@@ -277,19 +288,24 @@ type LinkReadRule =
 /// Why this library will not say whether a caller may read a symbolic link's
 /// target: the kernel's answer for that caller has not been measured.
 [<RequireQualifiedAccess>]
-type LinkReadRefusal =
+type internal LinkReadRefusal =
     /// A privileged caller, under `LinkReadRule.ReadBitOfSelectedTriple`,
     /// standing as `standing` towards a link carrying `bits`.
     | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
-module LinkReadRefusal =
+module internal LinkReadRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which link it was.
     let describe (refusal : LinkReadRefusal) : string =
         match refusal with
         | LinkReadRefusal.UnmeasuredPrivilegedCaller (standing, bits) ->
             $"whether Darwin lets a privileged caller, standing %A{standing} towards it, read the target of a symbolic link carrying %O{bits} has not been measured. What has been measured: an unprivileged caller is refused unless the owner, group or other triple its standing selects has the read bit. Measuring Darwin's root needs root."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : LinkReadRefusal) : RefusalKind =
+        match refusal with
+        | LinkReadRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
 
 /// What a privileged caller's `chmod(2)` or `fchmod(2)` does to the mode it
 /// asks for.
@@ -323,19 +339,24 @@ type internal ModeChange =
 /// Why this library will not say what a `chmod(2)` or `fchmod(2)` does: the
 /// kernel's answer for that caller has not been measured.
 [<RequireQualifiedAccess>]
-type ModeChangeRefusal =
+type internal ModeChangeRefusal =
     /// A privileged caller, under `PrivilegedModeChange.Unmeasured`, standing
     /// as `standing` towards the inode and asking for `requested`.
     | UnmeasuredPrivilegedCaller of standing : Standing * requested : PermissionBits
 
 [<RequireQualifiedAccess>]
-module ModeChangeRefusal =
+module internal ModeChangeRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : ModeChangeRefusal) : string =
         match refusal with
         | ModeChangeRefusal.UnmeasuredPrivilegedCaller (standing, requested) ->
             $"what Darwin's chmod does for a privileged caller, standing %A{standing} towards the inode and asking for %O{requested}, has not been measured. What has been measured: every unprivileged caller, owner or not, in the inode's group or not, over every mode. Measuring the privileged rows needs root on Darwin."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ModeChangeRefusal) : RefusalKind =
+        match refusal with
+        | ModeChangeRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module PermissionBits =

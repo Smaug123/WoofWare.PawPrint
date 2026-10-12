@@ -92,7 +92,7 @@ module TestSocketErrorOption =
         let fd, system = stream system
         let system = bindAt fd (loopback listenerPort) system
 
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (ListenAnswer.Listening _, system) -> fd, system
         | Ok (answer, _) -> failwith $"listen answered %A{answer}"
         | Error refusal -> failwith $"listen refused: %s{ListenRefusal.describe refusal}"
@@ -133,13 +133,13 @@ module TestSocketErrorOption =
         let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level optionName value length system with
+            match UnixSocket.tryAdmitGetSockOpt fd level optionName value length system with
             | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
             | Ok GetSockOptAdmission.SkipLength
             | Ok (GetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        match UnixSocket.getsockopt fd level optionName value length read system with
+        match UnixSocket.tryGetsockopt fd level optionName value length read system with
         | Ok answer -> answer
         | Error refusal -> failwith $"getsockopt refused: %s{SocketOptionRefusal.describe refusal}"
 

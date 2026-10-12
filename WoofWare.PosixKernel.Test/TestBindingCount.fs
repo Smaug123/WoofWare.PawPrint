@@ -142,7 +142,7 @@ module TestBindingCount =
             platform,
             fsType,
             system
-            |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> UnixBootImage.tryWithMount (Some (EmulatedMount.defaultOf fsType))
             |> Configured.expectOk MountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         )

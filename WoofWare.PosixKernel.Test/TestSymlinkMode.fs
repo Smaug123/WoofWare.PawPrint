@@ -134,7 +134,7 @@ module TestSymlinkMode =
         |> Launched.restand
 
     let private lstatMode (system : UnixSystem<int, string>) : int =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText "/l") system with
+        match UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofText "/l") system with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode
         | other -> failwith $"%s{context}: lstat(/l) did not report: %A{other}"
 
@@ -150,7 +150,7 @@ module TestSymlinkMode =
         // caller is neither the link's owner nor in its group, so "other"
         // decides.
         let ask (linkBits : int) : SyscallAnswer =
-            match UnixPathResolution.faccessat -2 (PathArg.ofText "/l") 4 0x20 (systemWithLink darwin linkBits) with
+            match UnixPathResolution.tryFaccessat -2 (PathArg.ofText "/l") 4 0x20 (systemWithLink darwin linkBits) with
             | Ok answer -> answer
             | Error refusal -> failwith $"%s{context}: faccessat was refused: %s{AccessRefusal.describe refusal}"
 
@@ -170,7 +170,7 @@ module TestSymlinkMode =
         let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystem
+            UnixBootImage.tryWithFileSystem
                 epoch
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 seed

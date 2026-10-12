@@ -151,7 +151,7 @@ module TestBindingAgainstHost =
 
         match
             UnixSystem.initial platform
-            |> UnixBootImage.withFileSystem
+            |> UnixBootImage.tryWithFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess credentials)
                 BindingProbes.tree

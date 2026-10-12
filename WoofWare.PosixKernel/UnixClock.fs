@@ -5,7 +5,7 @@ namespace WoofWare.PosixKernel
 /// Distinct from an errno: each case is a clock id that a real kernel of the
 /// simulated flavour answers, naming a clock this kernel does not model.
 [<RequireQualifiedAccess>]
-type ClockGettimeRefusal =
+type internal ClockGettimeRefusal =
     /// `CLOCK_PROCESS_CPUTIME_ID` or `CLOCK_THREAD_CPUTIME_ID`. This kernel does
     /// not account the CPU time a process or thread consumes.
     | CpuTime of clockId : int
@@ -26,7 +26,7 @@ type ClockGettimeRefusal =
     | MachineDependent of clockId : int
 
 [<RequireQualifiedAccess>]
-module ClockGettimeRefusal =
+module internal ClockGettimeRefusal =
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : ClockGettimeRefusal) : string =
@@ -39,6 +39,14 @@ module ClockGettimeRefusal =
             $"clock id %d{clockId} is a coarse approximation of another clock on the simulated platform, which this kernel does not model."
         | ClockGettimeRefusal.MachineDependent clockId ->
             $"clock id %d{clockId} reads a clock whose value depends on the machine (a real-time-clock device, the TAI offset a time daemon sets, or whether an auxiliary clock was built and enabled), which this kernel's machine does not describe."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ClockGettimeRefusal) : RefusalKind =
+        match refusal with
+        | ClockGettimeRefusal.CpuTime _ -> RefusalKind.Unmodelled
+        | ClockGettimeRefusal.EncodedClock _ -> RefusalKind.Unmodelled
+        | ClockGettimeRefusal.Coarse _ -> RefusalKind.Unmodelled
+        | ClockGettimeRefusal.MachineDependent _ -> RefusalKind.Unmodelled
 
 /// Which of the machine's two clocks a clock id reads, and to what granularity
 /// its flavour reports it.
@@ -196,7 +204,7 @@ module UnixClock =
     /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
     /// dropping the finer digits. Every other answered clock reports to the
     /// nanosecond.
-    let clockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryClockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (clockId : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<UnixTimestamp, UnixError>, ClockGettimeRefusal>

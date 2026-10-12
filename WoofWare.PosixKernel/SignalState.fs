@@ -217,7 +217,7 @@ type internal SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Hand
 /// Why this library will not say what a process's signal does: a case it does
 /// not model, rather than one a kernel refuses.
 [<RequireQualifiedAccess>]
-type SignalReceiverRefusal =
+type internal SignalReceiverRefusal =
     /// `signal` is sent to the process as a whole, and its leader blocks it
     /// while another task does not, so some task other than the leader would
     /// take it: a caught one to run its handler, and under Linux's numbering an
@@ -242,7 +242,7 @@ type SignalReceiverRefusal =
     | PendingForProcessAndLeader of signal : Signal
 
 [<RequireQualifiedAccess>]
-module SignalReceiverRefusal =
+module internal SignalReceiverRefusal =
     /// What this kernel knows about why it cannot say what the signal does.
     /// The client supplies its own half: which call or return reached it, and
     /// in which task.
@@ -254,6 +254,13 @@ module SignalReceiverRefusal =
             $"returning to user mode, a task would take %O{signal}, whose default stops or continues the process, after handler frames were pushed for other signals at the same return. What a stopped process does with frames already pushed has not been measured."
         | SignalReceiverRefusal.PendingForProcessAndLeader signal ->
             $"under Darwin, %O{signal} would be left pending on the process as a whole while an instance of it is pending on the leader alone, or the other way round. Darwin holds the two as one instance, and this kernel keeps the process's pending set apart from each task's."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SignalReceiverRefusal) : RefusalKind =
+        match refusal with
+        | SignalReceiverRefusal.LeaderBlocks _ -> RefusalKind.Unmodelled
+        | SignalReceiverRefusal.DefaultBehindHandlers _ -> RefusalKind.Unmodelled
+        | SignalReceiverRefusal.PendingForProcessAndLeader _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module SignalState =

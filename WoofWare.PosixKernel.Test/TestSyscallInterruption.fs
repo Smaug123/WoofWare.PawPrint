@@ -124,7 +124,7 @@ module TestSyscallInterruption =
             | other -> failwith $"binding the listener: %A{other}"
 
         let system =
-            match UnixSocket.listen listener 8 system with
+            match UnixSocket.tryListen listener 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listening: %A{other}"
 
@@ -134,12 +134,12 @@ module TestSyscallInterruption =
             | SimulatedUnixFlavour.Linux ->
 
             let epoll, system =
-                match UnixPoll.epollCreate1 0 system with
+                match UnixPoll.tryEpollCreate1 0 system with
                 | Ok (Ok (fd, system)) -> fd, system
                 | other -> failwith $"expected an epoll instance, got %A{other}"
 
             match
-                UnixPoll.epollCtl
+                UnixPoll.tryEpollCtl
                     epoll
                     1
                     listener
@@ -179,7 +179,7 @@ module TestSyscallInterruption =
             |> withRegistry registry
 
         let system =
-            match UnixDescriptor.flock holder lockedThrough 2 system with
+            match UnixDescriptor.tryFlock holder lockedThrough 2 system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> system
             | other -> failwith $"expected the holder's lock, got %A{other}"
 
@@ -209,7 +209,7 @@ module TestSyscallInterruption =
         | Sleep.Flock ->
             parked
                 "the flock"
-                (UnixDescriptor.flock task world.WaitingThrough 2 world.System)
+                (UnixDescriptor.tryFlock task world.WaitingThrough 2 world.System)
                 (function
                 | SyscallOutcome.WouldBlock _ -> true
                 | _ -> false
@@ -217,7 +217,7 @@ module TestSyscallInterruption =
         | Sleep.Accept ->
             parked
                 "the accept"
-                (UnixConnection.accept task world.Listener UserBuffer.Mapped 16u world.System)
+                (UnixConnection.tryAccept task world.Listener UserBuffer.Mapped 16u world.System)
                 (function
                 | AcceptOutcome.WouldBlock _ -> true
                 | _ -> false
@@ -225,7 +225,7 @@ module TestSyscallInterruption =
         | Sleep.Poll milliseconds ->
             parked
                 "the poll"
-                (UnixPoll.poll
+                (UnixPoll.tryPoll
                     task
                     [
                         {
@@ -242,7 +242,7 @@ module TestSyscallInterruption =
         | Sleep.PollOfNothing ->
             parked
                 "the poll of nothing"
-                (UnixPoll.poll
+                (UnixPoll.tryPoll
                     task
                     [
                         {
@@ -259,7 +259,7 @@ module TestSyscallInterruption =
         | Sleep.EpollWait milliseconds ->
             parked
                 "the epoll_wait"
-                (UnixPoll.epollWait task world.Epoll 8 UserBuffer.Mapped milliseconds world.System)
+                (UnixPoll.tryEpollWait task world.Epoll 8 UserBuffer.Mapped milliseconds world.System)
                 (function
                 | EpollWaitOutcome.WouldBlock _ -> true
                 | _ -> false
@@ -270,7 +270,7 @@ module TestSyscallInterruption =
     let private makeReady (world : World) (sleep : Sleep) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match sleep with
         | Sleep.Flock ->
-            match UnixDescriptor.flock holder world.LockedThrough 8 system with
+            match UnixDescriptor.tryFlock holder world.LockedThrough 8 system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> system
             | other -> failwith $"expected the holder's release, got %A{other}"
         | Sleep.PollOfNothing -> failwith "a poll of nothing is never ready"
@@ -303,7 +303,7 @@ module TestSyscallInterruption =
 
         match sleep with
         | Sleep.Flock ->
-            match UnixDescriptor.flockAcquire task system with
+            match UnixDescriptor.tryFlockAcquire task system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> Ending.Completed, system
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), system) -> Ending.Eintr, system
             | Ok (SyscallOutcome.Restarts, system) -> Ending.Restart, system
@@ -311,7 +311,7 @@ module TestSyscallInterruption =
             | Error (FLockRefusal.Interruption refusal) -> Ending.Refused refusal, system
             | other -> unexpected other
         | Sleep.Accept ->
-            match UnixConnection.finishAccept task system with
+            match UnixConnection.tryFinishAccept task system with
             | Ok (AcceptOutcome.Accepted _, system) -> Ending.Completed, system
             | Ok (AcceptOutcome.Failed UnixError.EINTR, system) -> Ending.Eintr, system
             | Ok (AcceptOutcome.Restarts, system) -> Ending.Restart, system
@@ -320,7 +320,7 @@ module TestSyscallInterruption =
             | other -> unexpected other
         | Sleep.Poll _
         | Sleep.PollOfNothing ->
-            match UnixPoll.finishPoll task system with
+            match UnixPoll.tryFinishPoll task system with
             | Ok (PollOutcome.Answered (_, count), system) when count > 0 -> Ending.Completed, system
             | Ok (PollOutcome.Answered (_, 0), system) -> Ending.TimedOut, system
             | Ok (PollOutcome.Failed UnixError.EINTR, system) -> Ending.Eintr, system
@@ -328,7 +328,7 @@ module TestSyscallInterruption =
             | Error (PollRefusal.Interruption refusal) -> Ending.Refused refusal, system
             | other -> unexpected other
         | Sleep.EpollWait _ ->
-            match UnixPoll.finishEpollWait task system with
+            match UnixPoll.tryFinishEpollWait task system with
             | Ok (EpollWaitOutcome.Answered (_ :: _), system) -> Ending.Completed, system
             | Ok (EpollWaitOutcome.Answered [], system) -> Ending.TimedOut, system
             | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) -> Ending.Eintr, system
@@ -534,7 +534,7 @@ module TestSyscallInterruption =
 
             let system =
                 if closedUnder then
-                    match UnixDescriptor.close (Option.get (enteredThrough world sleep)) system with
+                    match UnixDescriptor.tryClose (Option.get (enteredThrough world sleep)) system with
                     | Ok (SyscallAnswer.Completed 0L, system) -> system
                     | other -> failwith $"%O{sleep}: expected the close to succeed, got %A{other}"
                 else
@@ -607,7 +607,7 @@ module TestSyscallInterruption =
                     )
                     |> Set.ofList
 
-                match UnixSignal.onReturnToUser task after with
+                match UnixSignal.tryOnReturnToUser task after with
                 | Ok (ReturnToUserOutcome.Resumes _) -> caught |> shouldEqual Set.empty
                 | Ok (ReturnToUserOutcome.RunHandlers (frames, _)) ->
                     frames
@@ -833,7 +833,7 @@ module TestSyscallInterruption =
             let self = ProcessId.toInt32 (UnixSystem.processId system)
 
             let system =
-                match UnixSignal.kill self 10 system with
+                match UnixSignal.tryKill self 10 system with
                 | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
                 | other -> failwith $"unexpected kill: %A{other}"
 
@@ -849,7 +849,7 @@ module TestSyscallInterruption =
             |> send 0 [ Sent.Caught (Signal.SIGUSR1, true) ]
 
         let thrown =
-            Assert.Throws<exn> (fun () -> UnixSignal.onReturnToUser 0 system |> ignore)
+            Assert.Throws<exn> (fun () -> UnixSignal.tryOnReturnToUser 0 system |> ignore)
 
         thrown.Message |> shouldContainText "asleep"
 

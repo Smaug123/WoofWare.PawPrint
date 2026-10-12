@@ -184,7 +184,7 @@ module TestMkNod =
 
         let image : UnixBootImage<int, string> = UnixSystem.initial envelope.Platform
 
-        match UnixBootImage.withFileSystem epoch owner seed image with
+        match UnixBootImage.tryWithFileSystem epoch owner seed image with
         | Ok image ->
             Launched.bootWith
                 (Launched.credentials envelope.Credentials
@@ -425,14 +425,14 @@ module TestMkNod =
                 let fd, system = opened "d" (cell envelope "/c/w" umask)
 
                 let actual =
-                    UnixNamespace.mknodat fd path mode 0u system |> rendered mknodRefusal system
+                    UnixNamespace.tryMknodat fd path mode 0u system |> rendered mknodRefusal system
 
                 if actual <> expected envelope mode 0u at then
                     yield $"%s{row}: the probe's mknodat answered %s{at}, this library %s{actual}"
 
                 let system = cell envelope "/c/w/d" umask
 
-                let actual = UnixNamespace.mknod path mode 0u system |> rendered mknodRefusal system
+                let actual = UnixNamespace.tryMknod path mode 0u system |> rendered mknodRefusal system
 
                 if actual <> expected envelope mode 0u plain then
                     yield $"%s{row}: the probe's mknod answered %s{plain}, this library %s{actual}"
@@ -541,7 +541,7 @@ module TestMkNod =
                         let system = cell envelope "/c/w/d" 0o022
 
                         let actual =
-                            UnixNamespace.mknod (pathOf label) mode dev system
+                            UnixNamespace.tryMknod (pathOf label) mode dev system
                             |> rendered mknodRefusal system
 
                         let want = expected envelope mode dev probe
@@ -594,12 +594,12 @@ module TestMkNod =
                                     Answered.rmdir (UnixPath.parseOrFail context "gone") system
                                     |> completed "rmdir(gone)"
 
-                                UnixNamespace.mknodat fd (PathArg.ofText "nx") mode dev system
+                                UnixNamespace.tryMknodat fd (PathArg.ofText "nx") mode dev system
                                 |> rendered mknodRefusal system
                             | target ->
                                 let system = cell envelope "/c/w/d" 0o022
 
-                                UnixNamespace.mknod (pathOf target) mode dev system
+                                UnixNamespace.tryMknod (pathOf target) mode dev system
                                 |> rendered mknodRefusal system
 
                         let want = expected envelope mode dev probe
@@ -633,7 +633,7 @@ module TestMkNod =
                         let system = cell envelope "/c/w/d" 0o022
 
                         let actual =
-                            UnixNamespace.mknod (PathArg.ofText "nx") mode 0u system
+                            UnixNamespace.tryMknod (PathArg.ofText "nx") mode 0u system
                             |> rendered mknodRefusal system
 
                         let want = expected envelope mode 0u probe
@@ -684,7 +684,7 @@ module TestMkNod =
                             | text -> PathArg.ofText text
 
                         let actual =
-                            UnixNamespace.mknodat dirfd path mode dev system |> rendered mknodRefusal system
+                            UnixNamespace.tryMknodat dirfd path mode dev system |> rendered mknodRefusal system
 
                         let want = expected envelope mode dev probe
 
@@ -726,7 +726,7 @@ module TestMkNod =
                         let result =
                             match call with
                             | "mknod" ->
-                                UnixNamespace.mknod (PathArg.ofText "nx") 0o100644 0u system
+                                UnixNamespace.tryMknod (PathArg.ofText "nx") 0o100644 0u system
                                 |> Result.mapError MkNodRefusal.describe
                             | "open" ->
                                 openExclusive (PathArg.ofText "nx") 0o644 system
@@ -847,7 +847,7 @@ module TestMkNod =
                             let system = cell envelope "/c/w/d" 0o022
 
                             let actual =
-                                UnixNamespace.mknod (PathArg.ofText path) mode dev system
+                                UnixNamespace.tryMknod (PathArg.ofText path) mode dev system
                                 |> rendered mknodRefusal system
                                 |> stripped
 
@@ -901,7 +901,7 @@ module TestMkNod =
                         let system = cell envelope "/c/w/d" 0o022
 
                         let actual =
-                            UnixNamespace.mknodat dirfd path mode 0u system
+                            UnixNamespace.tryMknodat dirfd path mode 0u system
                             |> Result.map (fun (answer, _) -> answer)
 
                         let want =

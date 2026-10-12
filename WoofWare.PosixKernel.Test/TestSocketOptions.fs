@@ -72,13 +72,13 @@ module TestSocketOptions =
         let level, name = numbered system.Machine.UnixPlatform option
 
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name buffer length system with
+            match UnixSocket.tryAdmitSetSockOpt fd level name buffer length system with
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | Ok SetSockOptAdmission.NoCopy
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.setsockopt fd level name buffer length supplied system
+        UnixSocket.trySetsockopt fd level name buffer length supplied system
 
     /// A set through real storage at the option's own size, which must succeed.
     let private setOk (option : Option) (fd : int) (value : ImmutableArray<byte>) (system : UnixSystem<int, string>) =
@@ -98,11 +98,11 @@ module TestSocketOptions =
         let level, name = numbered system.Machine.UnixPlatform option
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level name value length system with
+            match UnixSocket.tryAdmitGetSockOpt fd level name value length system with
             | Ok GetSockOptAdmission.ReadLength -> Some declared
             | _ -> None
 
-        match UnixSocket.getsockopt fd level name value length read system with
+        match UnixSocket.tryGetsockopt fd level name value length read system with
         | Ok (answer, _) -> answer
         | Error refusal -> failwith $"getsockopt refused: %s{SocketOptionRefusal.describe refusal}"
 
@@ -543,7 +543,7 @@ module TestSocketOptions =
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"bind answered %A{other}"
 
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (ListenAnswer.Listening _, system) -> fd, system
         | other -> failwith $"listen answered %A{other}"
 
@@ -570,7 +570,7 @@ module TestSocketOptions =
         let system = connectTo 5000us client system
 
         let accepted, system =
-            match UnixConnection.accept 0 listener UserBuffer.Mapped 16u system with
+            match UnixConnection.tryAccept 0 listener UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
             | other -> failwith $"accept answered %A{other}"
 
@@ -670,12 +670,12 @@ module TestSocketOptions =
         let system = connectTo 5000us client system
 
         let accepted, system =
-            match UnixConnection.accept 0 listener UserBuffer.Mapped 16u system with
+            match UnixConnection.tryAccept 0 listener UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
             | other -> failwith $"accept answered %A{other}"
 
         let close (fd : int) (system : UnixSystem<int, string>) =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (SyscallAnswer.Completed _, system) -> Ok system
             | Ok (SyscallAnswer.Failed error, _) -> failwith $"close answered %O{error}"
             | Error refusal -> Error refusal
@@ -719,7 +719,7 @@ module TestSocketOptions =
             let system = connectTo 5000us client system
             // A negative length: Linux takes the connection, then answers
             // EINVAL and drops it.
-            UnixConnection.accept 0 listener UserBuffer.Mapped System.UInt32.MaxValue system
+            UnixConnection.tryAccept 0 listener UserBuffer.Mapped System.UInt32.MaxValue system
 
         match withLinger 0 with
         | Error (AcceptRefusal.AbortiveDrop _) -> ()
@@ -741,7 +741,7 @@ module TestSocketOptions =
 
         let short =
             Assert.Throws<exn> (fun () ->
-                UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u (Some (OptionValue.ofInt 1)) system
+                UnixSocket.trySetsockopt fd level name UserBuffer.Mapped 8u (Some (OptionValue.ofInt 1)) system
                 |> ignore<_>
             )
 

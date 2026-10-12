@@ -78,7 +78,7 @@ module TestUnixSystemInitial =
 
         let configured =
             image
-            |> UnixBootImage.withSoMaxConn (Some 7)
+            |> UnixBootImage.tryWithSoMaxConn (Some 7)
             |> Configured.expectOk SoMaxConnRefusal.describe
 
         (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) configured).Machine.SoMaxConn
@@ -86,7 +86,7 @@ module TestUnixSystemInitial =
 
         // Back to the default, from an image that no longer carries it.
         (configured
-         |> UnixBootImage.withSoMaxConn None
+         |> UnixBootImage.tryWithSoMaxConn None
          |> Configured.expectOk SoMaxConnRefusal.describe
          |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.SoMaxConn
@@ -380,7 +380,7 @@ module TestUnixSystemInitial =
             let lowestFree =
                 Seq.initInfinite id |> Seq.find (fun fd -> not (Map.containsKey fd launch))
 
-            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created (readFd, _), _) -> readFd |> shouldEqual lowestFree
             | other -> failwith $"pipe2 did not make a pipe: %A{other}"
 

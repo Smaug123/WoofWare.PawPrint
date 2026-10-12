@@ -1273,7 +1273,7 @@ type FileDescriptorRegistry =
 /// `Bound` is answered `EMFILE`, `EINVAL` or `EBADF` by a process whose limit is
 /// `Bound` and succeeds for one whose limit is higher, so this kernel refuses
 /// it.
-type DescriptorLimitRefusal =
+type internal DescriptorLimitRefusal =
     {
         /// The lowest number the call could have given its descriptor.
         Descriptor : int
@@ -1282,10 +1282,13 @@ type DescriptorLimitRefusal =
     }
 
 [<RequireQualifiedAccess>]
-module DescriptorLimitRefusal =
+module internal DescriptorLimitRefusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : DescriptorLimitRefusal) : string =
         $"the call would put a descriptor at %d{refusal.Descriptor}, at or above %d{refusal.Bound}. This kernel assumes the process's RLIMIT_NOFILE soft limit is at least %d{refusal.Bound}, the default a process starts with, and models no higher one: a process whose limit is %d{refusal.Bound} gets EMFILE, EINVAL or EBADF here, and one whose limit is higher gets the descriptor."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (_ : DescriptorLimitRefusal) : RefusalKind = RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 type internal FileDescriptorDupError =

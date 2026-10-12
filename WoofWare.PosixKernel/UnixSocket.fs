@@ -50,71 +50,33 @@ type SockaddrCopyAdmission =
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
-///
-/// Open: a minor version may add a reason, so a client cannot match every one.
-/// It names the reasons it has something to add to through
-/// `SockaddrCopyRefusal.Reason`, and ends its match with a wildcard, where
-/// `SockaddrCopyRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type SockaddrCopyRefusal =
-    internal
-    /// See `SockaddrCopyRefusal.Reason.UnmodelledDomain`.
+type internal SockaddrCopyRefusal =
+    /// The descriptor is a socket in a domain whose addresses this kernel does
+    /// not model, so there is no address to read out of the caller's sockaddr
+    /// even if the call would otherwise succeed.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
-    /// See `SockaddrCopyRefusal.Reason.UnmodelledInet6Kind`.
+    /// The descriptor is an IPv6 socket of a kind other than a stream, whose
+    /// addresses this kernel does not model: it models an IPv6 socket only as
+    /// a TCP one talking IPv4 through v4-mapped addresses.
     | UnmodelledInet6Kind of socket : SocketId * kind : SocketKind
-    /// See `SockaddrCopyRefusal.Reason.DarwinShortInet6Sockaddr`.
+    /// An IPv6 socket on Darwin, and a length too short to reach the end of
+    /// `sin6_addr`. Darwin reads the address with the missing bytes as zero
+    /// rather than rejecting the length (measured: a v4-mapped loopback cut to
+    /// 23 bytes connects to `127.0.0.0`), and which lengths it rejects is not
+    /// measured.
     | DarwinShortInet6Sockaddr of socket : SocketId * declaredLength : uint32
-    /// See `SockaddrCopyRefusal.Reason.Buffer`.
+    /// The kernel copies the sockaddr in, and the buffer has no answer at that
+    /// step.
+    ///
+    /// A `BufferRefusal` rather than a case of its own, unlike `accept`'s
+    /// copy-*out* fault: nothing has been consumed by the time this copy
+    /// happens, so an unmapped buffer is an ordinary EFAULT and only the two
+    /// classifications a client cannot represent are left over.
     | Buffer of BufferRefusal
 
 [<RequireQualifiedAccess>]
-module SockaddrCopyRefusal =
-    /// The reasons this kernel refuses a syscall that copies a
-    /// `struct sockaddr` in, one partial pattern each. A match over them is
-    /// never complete: end it with a wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// The descriptor is a socket in a domain whose addresses this kernel
-        /// does not model, so there is no address to read out of the caller's
-        /// sockaddr even if the call would otherwise succeed. Gives the socket,
-        /// then the domain.
-        let (|UnmodelledDomain|_|) (refusal : SockaddrCopyRefusal) : (SocketId * SocketDomain) option =
-            match refusal with
-            | SockaddrCopyRefusal.UnmodelledDomain (socket, domain) -> Some (socket, domain)
-            | _ -> None
-
-        /// The descriptor is an IPv6 socket of a kind other than a stream,
-        /// whose addresses this kernel does not model: it models an IPv6 socket
-        /// only as a TCP one talking IPv4 through v4-mapped addresses. Gives
-        /// the socket, then the kind.
-        let (|UnmodelledInet6Kind|_|) (refusal : SockaddrCopyRefusal) : (SocketId * SocketKind) option =
-            match refusal with
-            | SockaddrCopyRefusal.UnmodelledInet6Kind (socket, kind) -> Some (socket, kind)
-            | _ -> None
-
-        /// An IPv6 socket on Darwin, and a length too short to reach the end of
-        /// `sin6_addr`. Darwin reads the address with the missing bytes as zero
-        /// rather than rejecting the length (measured: a v4-mapped loopback cut
-        /// to 23 bytes connects to `127.0.0.0`), and which lengths it rejects
-        /// is not measured. Gives the socket, then the length the caller
-        /// declared.
-        let (|DarwinShortInet6Sockaddr|_|) (refusal : SockaddrCopyRefusal) : (SocketId * uint32) option =
-            match refusal with
-            | SockaddrCopyRefusal.DarwinShortInet6Sockaddr (socket, declaredLength) -> Some (socket, declaredLength)
-            | _ -> None
-
-        /// The kernel copies the sockaddr in, and the buffer has no answer at
-        /// that step. Gives the `BufferRefusal`.
-        ///
-        /// A `BufferRefusal` rather than a case of its own, unlike `accept`'s
-        /// copy-*out* fault: nothing has been consumed by the time this copy
-        /// happens, so an unmapped buffer is an ordinary EFAULT and only the
-        /// two classifications a client cannot represent are left over.
-        let (|Buffer|_|) (refusal : SockaddrCopyRefusal) : BufferRefusal option =
-            match refusal with
-            | SockaddrCopyRefusal.Buffer refusal -> Some refusal
-            | _ -> None
-
+module internal SockaddrCopyRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point, which argument, and how a caller could
     /// have come by such a socket or such a buffer.
@@ -127,6 +89,14 @@ module SockaddrCopyRefusal =
             $"the descriptor is socket %O{socket}, an IPv6 %O{kind} socket. This kernel models an IPv6 socket only as a stream socket talking IPv4 through v4-mapped addresses; an IPv6 datagram socket's addresses are not modelled."
         | SockaddrCopyRefusal.DarwinShortInet6Sockaddr (socket, declaredLength) ->
             $"the descriptor is IPv6 socket %O{socket}, and the sockaddr is declared %d{declaredLength} bytes long, short of the 24 that reach the end of sin6_addr. Darwin reads such an address with its missing bytes as zero rather than rejecting the length, and which lengths it does reject is unmeasured."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SockaddrCopyRefusal) : RefusalKind =
+        match refusal with
+        | SockaddrCopyRefusal.UnmodelledDomain _ -> RefusalKind.Unmodelled
+        | SockaddrCopyRefusal.UnmodelledInet6Kind _ -> RefusalKind.Unmodelled
+        | SockaddrCopyRefusal.DarwinShortInet6Sockaddr _ -> RefusalKind.Unmodelled
+        | SockaddrCopyRefusal.Buffer _ -> RefusalKind.Unmodelled
 
 /// What a `bind(2)` answered.
 [<RequireQualifiedAccess>]
@@ -144,71 +114,34 @@ type BindAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `bind`.
-///
-/// Open: a minor version may add a reason, so a client cannot match every
-/// one. It names the reasons it has something to add to through
-/// `BindRefusal.Reason`, and ends its match with a wildcard, where
-/// `BindRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type BindRefusal =
-    internal
-    /// See `BindRefusal.Reason.Copy`.
+type internal BindRefusal =
+    /// The screens every sockaddr-taking call shares had no answer.
     | Copy of SockaddrCopyRefusal
-    /// See `BindRefusal.Reason.UnmodelledMulticast`.
+    /// The caller asked to bind a broadcast or multicast address, and the bind
+    /// would succeed.
+    ///
+    /// Refused rather than recorded: this library models no group membership
+    /// and no interface to receive or broadcast on, so nothing downstream could
+    /// honour the binding. Every bind of such an address that fails is answered
+    /// with its measured errno.
     | UnmodelledMulticast of socket : SocketId * address : Ipv4Address
-    /// See `BindRefusal.Reason.EphemeralPortsExhausted`.
+    /// The bind asked for any free port and every port in the ephemeral range is
+    /// taken.
+    ///
+    /// A real kernel reports `EADDRINUSE` here, but that has not been measured
+    /// under this kernel's own allocator and inventing it would be a guess.
     | EphemeralPortsExhausted of range : uint16 * uint16
-    /// See `BindRefusal.Reason.UnmodelledIpv6Address`.
+    /// An IPv6 socket asked to bind an address this kernel cannot hold for
+    /// it, and nothing judged before the address answers: a native IPv6
+    /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
+    /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard `::ffff:0.0.0.0`,
+    /// whose conflicts with other sockets Darwin decides differently from the
+    /// IPv4 wildcard's (measured). `address` is `sin6_addr`.
     | UnmodelledIpv6Address of socket : SocketId * address : Ipv6Address
 
 [<RequireQualifiedAccess>]
-module BindRefusal =
-    /// The reasons this kernel refuses a `bind`, one partial pattern each. A
-    /// match over them is never complete: end it with a wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// The screens every sockaddr-taking call shares had no answer, for
-        /// the reason given.
-        let (|Copy|_|) (refusal : BindRefusal) : SockaddrCopyRefusal option =
-            match refusal with
-            | BindRefusal.Copy refusal -> Some refusal
-            | _ -> None
-
-        /// The caller asked to bind a broadcast or multicast address, and the
-        /// bind would succeed. Gives the socket, then the address.
-        ///
-        /// Refused rather than recorded: this library models no group
-        /// membership and no interface to receive or broadcast on, so nothing
-        /// downstream could honour the binding. Every bind of such an address
-        /// that fails is answered with its measured errno.
-        let (|UnmodelledMulticast|_|) (refusal : BindRefusal) : (SocketId * Ipv4Address) option =
-            match refusal with
-            | BindRefusal.UnmodelledMulticast (socket, address) -> Some (socket, address)
-            | _ -> None
-
-        /// The bind asked for any free port and every port in the ephemeral
-        /// range is taken. Gives the range's lowest port, then its highest.
-        ///
-        /// A real kernel reports `EADDRINUSE` here, but that has not been
-        /// measured under this kernel's own allocator and inventing it would be
-        /// a guess.
-        let (|EphemeralPortsExhausted|_|) (refusal : BindRefusal) : (uint16 * uint16) option =
-            match refusal with
-            | BindRefusal.EphemeralPortsExhausted (low, high) -> Some (low, high)
-            | _ -> None
-
-        /// An IPv6 socket asked to bind an address this kernel cannot hold for
-        /// it, and nothing judged before the address answers: a native IPv6
-        /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
-        /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard
-        /// `::ffff:0.0.0.0`, whose conflicts with other sockets Darwin decides
-        /// differently from the IPv4 wildcard's (measured). Gives the socket,
-        /// then the address, which is `sin6_addr`.
-        let (|UnmodelledIpv6Address|_|) (refusal : BindRefusal) : (SocketId * Ipv6Address) option =
-            match refusal with
-            | BindRefusal.UnmodelledIpv6Address (socket, address) -> Some (socket, address)
-            | _ -> None
-
+module internal BindRefusal =
     /// What this kernel knows about why it cannot bind. The client supplies its
     /// own half -- which entry point asked, and which descriptor.
     let describe (refusal : BindRefusal) : string =
@@ -220,6 +153,14 @@ module BindRefusal =
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
         | BindRefusal.UnmodelledIpv6Address (socket, address) ->
             $"IPv6 socket %O{socket} asked to bind [%s{Ipv6Address.toString address}]. This kernel has no IPv6 transport, so it binds an IPv6 socket only to a specific v4-mapped address (::ffff:a.b.c.d). A native address needs IPv6, and the mapped wildcard ::ffff:0.0.0.0 (and ::, which also takes it) conflicts with other sockets by rules Darwin does not share with the IPv4 wildcard."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : BindRefusal) : RefusalKind =
+        match refusal with
+        | BindRefusal.Copy inner -> SockaddrCopyRefusal.kind inner
+        | BindRefusal.UnmodelledMulticast _ -> RefusalKind.Unmodelled
+        | BindRefusal.EphemeralPortsExhausted _ -> RefusalKind.Unmodelled
+        | BindRefusal.UnmodelledIpv6Address _ -> RefusalKind.Unmodelled
 
 /// What a `listen(2)` answered.
 [<RequireQualifiedAccess>]
@@ -233,72 +174,29 @@ type ListenAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `listen`.
-///
-/// Open: a minor version may add a reason, so a client cannot match every one.
-/// It names the reasons it has something to add to through
-/// `ListenRefusal.Reason`, and ends its match with a wildcard, where
-/// `ListenRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type ListenRefusal =
-    internal
-    /// See `ListenRefusal.Reason.UnmodelledDomain`.
+type internal ListenRefusal =
+    /// The descriptor is a socket in a domain whose addresses this kernel does
+    /// not model, so the implicit bind below has no address to give it.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
-    /// See `ListenRefusal.Reason.UnmeasuredKind`.
+    /// The descriptor is a socket of a kind whose `listen(2)` answer is
+    /// unmeasured: `SOCK_SEQPACKET` does accept connections, but that has not
+    /// been measured.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
-    /// See `ListenRefusal.Reason.UnmeasuredPhase`.
+    /// The descriptor is a stream socket in a phase whose `listen(2)` answer is
+    /// unmeasured -- plausibly `EISCONN` for a connected one.
     | UnmeasuredPhase of socket : SocketId * phase : SocketPhase
-    /// See `ListenRefusal.Reason.EphemeralPortsExhausted`.
+    /// The socket had no address, so this call binds it, and every port in the
+    /// ephemeral range is taken.
     | EphemeralPortsExhausted of range : uint16 * uint16
-    /// See `ListenRefusal.Reason.Ipv6Listener`.
+    /// An IPv6 socket. Measured, a listener with `IPV6_V6ONLY` off accepts
+    /// IPv4 connections and reports their peers v4-mapped, but this kernel
+    /// models no IPv6 listener: no accepted IPv6 socket, and no implicit bind
+    /// to `::`.
     | Ipv6Listener of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module ListenRefusal =
-    /// The reasons this kernel refuses a `listen`, one partial pattern each. A
-    /// match over them is never complete: end it with a wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// The descriptor is a socket in a domain whose addresses this kernel
-        /// does not model, so the implicit bind below has no address to give
-        /// it. Gives the socket, then the domain.
-        let (|UnmodelledDomain|_|) (refusal : ListenRefusal) : (SocketId * SocketDomain) option =
-            match refusal with
-            | ListenRefusal.UnmodelledDomain (socket, domain) -> Some (socket, domain)
-            | _ -> None
-
-        /// The descriptor is a socket of a kind whose `listen(2)` answer is
-        /// unmeasured: `SOCK_SEQPACKET` does accept connections, but that has
-        /// not been measured. Gives the socket, then the kind.
-        let (|UnmeasuredKind|_|) (refusal : ListenRefusal) : (SocketId * SocketKind) option =
-            match refusal with
-            | ListenRefusal.UnmeasuredKind (socket, kind) -> Some (socket, kind)
-            | _ -> None
-
-        /// The descriptor is a stream socket in a phase whose `listen(2)`
-        /// answer is unmeasured -- plausibly `EISCONN` for a connected one.
-        /// Gives the socket, then the phase.
-        let (|UnmeasuredPhase|_|) (refusal : ListenRefusal) : (SocketId * SocketPhase) option =
-            match refusal with
-            | ListenRefusal.UnmeasuredPhase (socket, phase) -> Some (socket, phase)
-            | _ -> None
-
-        /// The socket had no address, so this call binds it, and every port in
-        /// the ephemeral range is taken. Gives the range's lowest port, then
-        /// its highest.
-        let (|EphemeralPortsExhausted|_|) (refusal : ListenRefusal) : (uint16 * uint16) option =
-            match refusal with
-            | ListenRefusal.EphemeralPortsExhausted (low, high) -> Some (low, high)
-            | _ -> None
-
-        /// An IPv6 socket. Measured, a listener with `IPV6_V6ONLY` off accepts
-        /// IPv4 connections and reports their peers v4-mapped, but this kernel
-        /// models no IPv6 listener: no accepted IPv6 socket, and no implicit
-        /// bind to `::`. Gives the socket.
-        let (|Ipv6Listener|_|) (refusal : ListenRefusal) : SocketId option =
-            match refusal with
-            | ListenRefusal.Ipv6Listener socket -> Some socket
-            | _ -> None
-
+module internal ListenRefusal =
     /// What this kernel knows about why it will not listen. The client supplies
     /// its own half -- which entry point asked, and which descriptor.
     let describe (refusal : ListenRefusal) : string =
@@ -313,6 +211,15 @@ module ListenRefusal =
             $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
         | ListenRefusal.Ipv6Listener socket ->
             $"socket %O{socket} is an IPv6 socket, and this kernel models no IPv6 listener. A dual-mode listener's accepted sockets and the v4-mapped peers accept reports for them are measured but not modelled, and an unbound one would bind to ::, which takes IPv6 addresses this kernel has no transport for."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ListenRefusal) : RefusalKind =
+        match refusal with
+        | ListenRefusal.UnmodelledDomain _ -> RefusalKind.Unmodelled
+        | ListenRefusal.UnmeasuredKind _ -> RefusalKind.Unmodelled
+        | ListenRefusal.UnmeasuredPhase _ -> RefusalKind.Unmodelled
+        | ListenRefusal.EphemeralPortsExhausted _ -> RefusalKind.Unmodelled
+        | ListenRefusal.Ipv6Listener _ -> RefusalKind.Unmodelled
 
 /// What `getsockname(2)` reports about a socket's own address, or
 /// `getpeername(2)` about its peer's: the two share every rule past the choice
@@ -339,52 +246,21 @@ type GetSockNameAnswer =
     | Failed of error : UnixError * lengthOverwritten : int option
 
 /// Why this kernel will not answer a `getsockname` or a `getpeername`.
-///
-/// Open: a minor version may add a reason, so a client cannot match every one.
-/// It names the reasons it has something to add to through
-/// `GetSockNameRefusal.Reason`, and ends its match with a wildcard, where
-/// `GetSockNameRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type GetSockNameRefusal =
-    internal
-    /// See `GetSockNameRefusal.Reason.Buffer`.
+type internal GetSockNameRefusal =
+    /// The destination has no answer at the step the call reached.
     | Buffer of BufferRefusal
-    /// See `GetSockNameRefusal.Reason.UnmodelledDomain`.
+    /// A socket in an address family whose addresses this kernel does not
+    /// model: any such socket for `getsockname`, and a connected one for
+    /// `getpeername`. Not an errno: a real kernel in this family answers, and
+    /// every value this one could report would be invented.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
-    /// See `GetSockNameRefusal.Reason.UnmodelledInet6Kind`.
+    /// An IPv6 socket of a kind other than a stream, whose addresses this
+    /// kernel does not model.
     | UnmodelledInet6Kind of socket : SocketId * kind : SocketKind
 
 [<RequireQualifiedAccess>]
-module GetSockNameRefusal =
-    /// The reasons this kernel refuses a `getsockname` or a `getpeername`, one
-    /// partial pattern each. A match over them is never complete: end it with a
-    /// wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// The destination has no answer at the step the call reached. Gives
-        /// the `BufferRefusal`.
-        let (|Buffer|_|) (refusal : GetSockNameRefusal) : BufferRefusal option =
-            match refusal with
-            | GetSockNameRefusal.Buffer refusal -> Some refusal
-            | _ -> None
-
-        /// A socket in an address family whose addresses this kernel does not
-        /// model: any such socket for `getsockname`, and a connected one for
-        /// `getpeername`. Not an errno: a real kernel in this family answers,
-        /// and every value this one could report would be invented. Gives the
-        /// socket, then the domain.
-        let (|UnmodelledDomain|_|) (refusal : GetSockNameRefusal) : (SocketId * SocketDomain) option =
-            match refusal with
-            | GetSockNameRefusal.UnmodelledDomain (socket, domain) -> Some (socket, domain)
-            | _ -> None
-
-        /// An IPv6 socket of a kind other than a stream, whose addresses this
-        /// kernel does not model. Gives the socket, then the kind.
-        let (|UnmodelledInet6Kind|_|) (refusal : GetSockNameRefusal) : (SocketId * SocketKind) option =
-            match refusal with
-            | GetSockNameRefusal.UnmodelledInet6Kind (socket, kind) -> Some (socket, kind)
-            | _ -> None
-
+module internal GetSockNameRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point, which descriptor, and how a caller
     /// could have come by such a socket.
@@ -396,83 +272,50 @@ module GetSockNameRefusal =
         | GetSockNameRefusal.UnmodelledInet6Kind (socket, kind) ->
             $"the descriptor is socket %O{socket}, an IPv6 %O{kind} socket. This kernel models an IPv6 socket's address only for a stream socket talking IPv4 through v4-mapped addresses."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetSockNameRefusal) : RefusalKind =
+        match refusal with
+        | GetSockNameRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetSockNameRefusal.UnmodelledDomain _ -> RefusalKind.Unmodelled
+        | GetSockNameRefusal.UnmodelledInet6Kind _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `setsockopt(2)` or a `getsockopt(2)`.
-///
-/// Open: a minor version may add a reason, so a client cannot match every one.
-/// It names the reasons it has something to add to through
-/// `SocketOptionRefusal.Reason`, and ends its match with a wildcard, where
-/// `SocketOptionRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type SocketOptionRefusal =
-    internal
-    /// See `SocketOptionRefusal.Reason.UnmodelledOption`.
+type internal SocketOptionRefusal =
+    /// The `level` and `optionName` name an option this kernel does not model,
+    /// in the simulated platform's numbering.
+    ///
+    /// Not `ENOPROTOOPT`, which is a real kernel's answer for an option *it*
+    /// does not know. These are options a real kernel does know, or numbers this
+    /// library has not measured a real kernel's answer for.
     | UnmodelledOption of socket : SocketId * level : int * optionName : int
-    /// See `SocketOptionRefusal.Reason.Buffer`.
+    /// A buffer the call reaches has no answer at the step it is reached.
     | Buffer of BufferRefusal
-    /// See `SocketOptionRefusal.Reason.NegativeLingerTime`.
+    /// A Linux `SO_LINGER` set turning lingering on with a negative `l_linger`.
+    ///
+    /// Linux reads `l_linger` as unsigned, so a negative one is more than its
+    /// largest timeout, and it stores that largest timeout instead. What
+    /// `getsockopt` then reads back is that timeout divided by the kernel's
+    /// tick rate (`CONFIG_HZ`) and cut to an `int`, and the tick rate is a fact
+    /// of the kernel's build that this library does not model.
     | NegativeLingerTime of socket : SocketId * seconds : int
-    /// See `SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait`.
+    /// A Linux `SO_REUSEADDR` set changing the flag of a connected TCP socket
+    /// whose end is in `TIME_WAIT`: its FIN, made before the peer's had
+    /// arrived, has arrived, and so has the peer's.
+    ///
+    /// Linux copies the flag into the end's `TIME_WAIT` record as the end
+    /// enters it, and judges a bind of the endpoint by that copy, whether the
+    /// socket stays open or closes; a later change does not reach it
+    /// (measured, `bind-late-reuse.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger). This kernel judges such an
+    /// end by the socket's flag, which agrees only while it has not changed.
+    /// An explicitly bound Linux socket in `TIME_WAIT` leaves both the socket
+    /// and its `TIME_WAIT` record holding the port, and with this refusal
+    /// their flags agree; that is inferred from Linux's source, not measured.
     | LinuxReuseAddressInTimeWait of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module SocketOptionRefusal =
-    /// The reasons this kernel refuses a `setsockopt(2)` or a `getsockopt(2)`,
-    /// one partial pattern each. A match over them is never complete: end it
-    /// with a wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// The option's level and name ask for an option this kernel does not
-        /// model, in the simulated platform's numbering. Gives the socket, then
-        /// the level, then the option's name.
-        ///
-        /// Not `ENOPROTOOPT`, which is a real kernel's answer for an option
-        /// *it* does not know. These are options a real kernel does know, or
-        /// numbers this library has not measured a real kernel's answer for.
-        let (|UnmodelledOption|_|) (refusal : SocketOptionRefusal) : (SocketId * int * int) option =
-            match refusal with
-            | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) -> Some (socket, level, optionName)
-            | _ -> None
-
-        /// A buffer the call reaches has no answer at the step it is reached.
-        /// Gives the `BufferRefusal`.
-        let (|Buffer|_|) (refusal : SocketOptionRefusal) : BufferRefusal option =
-            match refusal with
-            | SocketOptionRefusal.Buffer refusal -> Some refusal
-            | _ -> None
-
-        /// A Linux `SO_LINGER` set turning lingering on with a negative
-        /// `l_linger`. Gives the socket, then `l_linger`, in seconds.
-        ///
-        /// Linux reads `l_linger` as unsigned, so a negative one is more than
-        /// its largest timeout, and it stores that largest timeout instead.
-        /// What `getsockopt` then reads back is that timeout divided by the
-        /// kernel's tick rate (`CONFIG_HZ`) and cut to an `int`, and the tick
-        /// rate is a fact of the kernel's build that this library does not
-        /// model.
-        let (|NegativeLingerTime|_|) (refusal : SocketOptionRefusal) : (SocketId * int) option =
-            match refusal with
-            | SocketOptionRefusal.NegativeLingerTime (socket, seconds) -> Some (socket, seconds)
-            | _ -> None
-
-        /// A Linux `SO_REUSEADDR` set changing the flag of a connected TCP
-        /// socket whose end is in `TIME_WAIT`: its FIN, made before the peer's
-        /// had arrived, has arrived, and so has the peer's. Gives the socket.
-        ///
-        /// Linux copies the flag into the end's `TIME_WAIT` record as the end
-        /// enters it, and judges a bind of the endpoint by that copy, whether
-        /// the socket stays open or closes; a later change does not reach it
-        /// (measured, `bind-late-reuse.c` in
-        /// docs/plans/2026-10-08-tcp-shutdown-linger). This kernel judges such
-        /// an end by the socket's flag, which agrees only while it has not
-        /// changed. An explicitly bound Linux socket in `TIME_WAIT` leaves both
-        /// the socket and its `TIME_WAIT` record holding the port, and with
-        /// this refusal their flags agree; that is inferred from Linux's
-        /// source, not measured.
-        let (|LinuxReuseAddressInTimeWait|_|) (refusal : SocketOptionRefusal) : SocketId option =
-            match refusal with
-            | SocketOptionRefusal.LinuxReuseAddressInTimeWait socket -> Some socket
-            | _ -> None
-
+module internal SocketOptionRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and which argument.
     let describe (refusal : SocketOptionRefusal) : string =
@@ -484,6 +327,14 @@ module SocketOptionRefusal =
             $"socket %O{socket} is one end of a TCP connection in TIME_WAIT, and the call would change its SO_REUSEADDR. Measured on Linux, a bind of the endpoint is judged by the flag the end had when it entered TIME_WAIT, whether the socket stays open or closes, and a later change does not reach it. This kernel does not keep that copy: it judges the end by the socket's flag, which agrees only while the flag is unchanged."
         | SocketOptionRefusal.NegativeLingerTime (socket, seconds) ->
             $"socket %O{socket} was asked to linger for %d{seconds} seconds. Linux reads l_linger as unsigned and stores its largest timeout for this, and what getsockopt(2) then reads back is that timeout over the kernel's tick rate, CONFIG_HZ, which this library does not model."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SocketOptionRefusal) : RefusalKind =
+        match refusal with
+        | SocketOptionRefusal.UnmodelledOption _ -> RefusalKind.Unmodelled
+        | SocketOptionRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | SocketOptionRefusal.NegativeLingerTime _ -> RefusalKind.Unmodelled
+        | SocketOptionRefusal.LinuxReuseAddressInTimeWait _ -> RefusalKind.Unmodelled
 
 /// Whether a `setsockopt(2)` reaches the point at which the kernel copies the
 /// option's value in, which is where a client that cannot always produce those
@@ -554,78 +405,34 @@ type GetSockOptAnswer =
 /// Distinct from an errno: each case is a request whose real answer depends on
 /// something this library does not model, or that names a socket it does not
 /// model. Each carries the caller's arguments as they were passed.
-///
-/// Open: a minor version may add a reason, so a client cannot match every one.
-/// It names the reasons it has something to add to through
-/// `SocketRefusal.Reason`, and ends its match with a wildcard, where
-/// `SocketRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
-type SocketRefusal =
-    internal
-    /// See `SocketRefusal.Reason.DescriptorLimit`.
+type internal SocketRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// See `SocketRefusal.Reason.UnmodelledDomain`.
+    /// A protocol family other than `AF_UNIX`, `AF_INET` and `AF_INET6` that
+    /// the simulated kernel has, or on Linux may have depending on how it was
+    /// built. This library models no socket in it.
     | UnmodelledDomain of domain : int
-    /// See `SocketRefusal.Reason.RawSocket`.
+    /// `SOCK_RAW` in an internet domain, or Linux's `SOCK_PACKET` under
+    /// `AF_INET`, which asks for a packet socket. This library models no raw
+    /// socket, and which of them a real kernel creates depends on the caller's
+    /// privilege.
     | RawSocket of domain : int * socketType : int * protocol : int
-    /// See `SocketRefusal.Reason.IcmpDatagram`.
+    /// An ICMP datagram socket: `IPPROTO_ICMP` under `AF_INET`, or
+    /// `IPPROTO_ICMPV6` under `AF_INET6`. This library does not model one.
+    ///
+    /// Darwin creates one for any caller, and Linux only for a caller whose
+    /// group the system's `net.ipv4.ping_group_range` setting admits.
     | IcmpDatagram of domain : int * protocol : int
-    /// See `SocketRefusal.Reason.BuildDependentProtocol`.
+    /// On Linux, a request whose answer depends on which protocols the kernel
+    /// was built with or has modules for: SCTP, MPTCP, SMC, L2TP and UDP-Lite.
+    /// Depending on that, a real kernel creates a socket this library does not
+    /// model, or refuses with one errno or another.
     | BuildDependentProtocol of domain : int * socketType : int * protocol : int
 
 [<RequireQualifiedAccess>]
-module SocketRefusal =
-    /// The reasons this kernel refuses a `socket(2)`, one partial pattern each.
-    /// A match over them is never complete: end it with a wildcard.
-    [<RequireQualifiedAccess>]
-    module Reason =
-        /// A descriptor the call would make lies at or above the bound this
-        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
-        /// `DescriptorLimitRefusal`.
-        let (|DescriptorLimit|_|) (refusal : SocketRefusal) : DescriptorLimitRefusal option =
-            match refusal with
-            | SocketRefusal.DescriptorLimit refusal -> Some refusal
-            | _ -> None
-
-        /// A protocol family other than `AF_UNIX`, `AF_INET` and `AF_INET6`
-        /// that the simulated kernel has, or on Linux may have depending on how
-        /// it was built. This library models no socket in it. Gives the domain.
-        let (|UnmodelledDomain|_|) (refusal : SocketRefusal) : int option =
-            match refusal with
-            | SocketRefusal.UnmodelledDomain domain -> Some domain
-            | _ -> None
-
-        /// `SOCK_RAW` in an internet domain, or Linux's `SOCK_PACKET` under
-        /// `AF_INET`, which asks for a packet socket. This library models no
-        /// raw socket, and which of them a real kernel creates depends on the
-        /// caller's privilege. Gives the domain, then the socket type, then the
-        /// protocol.
-        let (|RawSocket|_|) (refusal : SocketRefusal) : (int * int * int) option =
-            match refusal with
-            | SocketRefusal.RawSocket (domain, socketType, protocol) -> Some (domain, socketType, protocol)
-            | _ -> None
-
-        /// An ICMP datagram socket: `IPPROTO_ICMP` under `AF_INET`, or
-        /// `IPPROTO_ICMPV6` under `AF_INET6`. This library does not model one.
-        /// Gives the domain, then the protocol.
-        ///
-        /// Darwin creates one for any caller, and Linux only for a caller whose
-        /// group the system's `net.ipv4.ping_group_range` setting admits.
-        let (|IcmpDatagram|_|) (refusal : SocketRefusal) : (int * int) option =
-            match refusal with
-            | SocketRefusal.IcmpDatagram (domain, protocol) -> Some (domain, protocol)
-            | _ -> None
-
-        /// On Linux, a request whose answer depends on which protocols the
-        /// kernel was built with or has modules for: SCTP, MPTCP, SMC, L2TP and
-        /// UDP-Lite. Depending on that, a real kernel creates a socket this
-        /// library does not model, or refuses with one errno or another. Gives
-        /// the domain, then the socket type, then the protocol.
-        let (|BuildDependentProtocol|_|) (refusal : SocketRefusal) : (int * int * int) option =
-            match refusal with
-            | SocketRefusal.BuildDependentProtocol (domain, socketType, protocol) -> Some (domain, socketType, protocol)
-            | _ -> None
-
+module internal SocketRefusal =
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : SocketRefusal) : string =
@@ -639,6 +446,15 @@ module SocketRefusal =
             $"domain %d{domain}, protocol %d{protocol} asks for an ICMP datagram socket, which this kernel does not model. Darwin creates one for any caller; Linux creates one only for a group its net.ipv4.ping_group_range setting admits."
         | SocketRefusal.BuildDependentProtocol (domain, socketType, protocol) ->
             $"domain %d{domain}, type 0x%x{socketType}, protocol %d{protocol}: what Linux answers depends on which protocols the kernel was built with or has modules for (SCTP, MPTCP, SMC, L2TP, UDP-Lite), and this kernel models none of them."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SocketRefusal) : RefusalKind =
+        match refusal with
+        | SocketRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | SocketRefusal.UnmodelledDomain _ -> RefusalKind.Unmodelled
+        | SocketRefusal.RawSocket _ -> RefusalKind.Unmodelled
+        | SocketRefusal.IcmpDatagram _ -> RefusalKind.Unmodelled
+        | SocketRefusal.BuildDependentProtocol _ -> RefusalKind.Unmodelled
 
 /// What `socket(2)` decided, before any allocation.
 [<RequireQualifiedAccess>]
@@ -753,7 +569,7 @@ module UnixSocket =
     ///
     /// Changes nothing: everything a bind or connect does before the copy is a
     /// question.
-    let admitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : SockaddrCopySyscall)
         (fd : int)
         (destination : UserBuffer)
@@ -1222,7 +1038,7 @@ module UnixSocket =
     /// a datagram socket. Anything else is the errno the flavour answers, or a
     /// `SocketRefusal` where that answer depends on what this kernel does not
     /// model. A failure changes nothing.
-    let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (domain : int)
         (socketType : int)
         (protocol : int)
@@ -1756,7 +1572,7 @@ module UnixSocket =
     ///
     /// Answers where the socket ended up, which for a request of port 0 is a
     /// port this kernel chose.
-    let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryBind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
@@ -1764,7 +1580,7 @@ module UnixSocket =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        match admitSockaddrCopy SockaddrCopySyscall.Bind fd destination declaredLength system with
+        match tryAdmitSockaddrCopy SockaddrCopySyscall.Bind fd destination declaredLength system with
         | Error refusal -> Error (BindRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered error) ->
             requireCopied "UnixSocket.bind" 0 copied
@@ -1807,7 +1623,7 @@ module UnixSocket =
     ///
     /// A re-listen keeps the queue and updates the backlog, which is Linux's
     /// documented behaviour (`sk_max_ack_backlog` is simply re-assigned).
-    let listen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryListen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (backlog : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2017,7 +1833,7 @@ module UnixSocket =
     /// `socklen_t` it is, so no length is an error there.
     ///
     /// Changes nothing and returns no system: a `getsockname` reads.
-    let getsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
@@ -2083,7 +1899,7 @@ module UnixSocket =
     /// loopback handshake lands, which a deterministic kernel need not wait for.
     ///
     /// Changes nothing and returns no system: a `getpeername` reads.
-    let getpeername<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetpeername<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
@@ -2327,7 +2143,7 @@ module UnixSocket =
     ///
     /// Changes nothing: everything a `setsockopt` does before the copy is a
     /// question.
-    let admitSetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitSetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
         (optionName : int)
@@ -2499,7 +2315,7 @@ module UnixSocket =
     /// `QueuedConnection`). A Linux change of `SO_REUSEADDR` on a connected
     /// socket in `TIME_WAIT` is refused; see
     /// `SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait`.
-    let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal trySetsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
         (optionName : int)
@@ -2674,7 +2490,7 @@ module UnixSocket =
 
             Ok (SetSockOptAnswer.Set, system)
 
-        match admitSetSockOpt fd level optionName value optionLength system with
+        match tryAdmitSetSockOpt fd level optionName value optionLength system with
         | Error refusal ->
             neverRead "the call is refused before the copy"
             Error refusal
@@ -2700,7 +2516,7 @@ module UnixSocket =
     /// `level` and `optionName` are numbered as for `admitSetSockOpt`.
     ///
     /// Changes nothing.
-    let admitGetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryAdmitGetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
         (optionName : int)
@@ -2780,7 +2596,7 @@ module UnixSocket =
     ///   declaring a negative length.
     ///
     /// Reading any option but `SO_ERROR` changes nothing.
-    let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal tryGetsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
         (optionName : int)
@@ -2986,7 +2802,7 @@ module UnixSocket =
             | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
             | UserBuffer.Mapped -> Ok (GetSockOptAnswer.Reported (ImmutableArray.Create (encoded, 0, count)), system)
 
-        match admitGetSockOpt fd level optionName value length system with
+        match tryAdmitGetSockOpt fd level optionName value length system with
         | Error refusal ->
             lengthNeverRead "the call is refused before it would"
             Error refusal

@@ -66,7 +66,7 @@ module TestFileSystemType =
     /// configured with the mount `mount`.
     let private machineMounting (flavour : SimulatedUnixFlavour) (mount : EmulatedMount option) : UnixMachineState =
         (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
-         |> UnixBootImage.withMount mount
+         |> UnixBootImage.tryWithMount mount
          |> Configured.expectOk MountRefusal.describe
          |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
@@ -254,11 +254,11 @@ module TestFileSystemType =
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial platform
-            |> UnixBootImage.withMount (Some mount)
+            |> UnixBootImage.tryWithMount (Some mount)
             |> Configured.expectOk MountRefusal.describe
 
         match
-            UnixBootImage.withFileSystem
+            UnixBootImage.tryWithFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 tree
@@ -408,7 +408,7 @@ module TestFileSystemType =
         // would leave the other pair silently constructible.
         for flavour, fsType in everyIncoherentPair do
             UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
-            |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> UnixBootImage.tryWithMount (Some (EmulatedMount.defaultOf fsType))
             |> Result.map ignore<UnixBootImage<int, string>>
             |> shouldEqual (Error (MountRefusal.NotReportableUnder (fsType, flavour)))
 
@@ -570,7 +570,7 @@ module TestFileSystemType =
         let fd, system = openPath "/f" system
 
         let device =
-            match UnixPathResolution.fstat fd system with
+            match UnixPathResolution.tryFstat fd system with
             | Ok (FileStatusAnswer.Reported status) -> status.DeviceId
             | other -> failwith $"fstat: %A{other}"
 
@@ -650,7 +650,7 @@ module TestFileSystemType =
                 let parsed = UnixPath.parseOrFail context path
 
                 let viaStat =
-                    match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath parsed) system with
+                    match UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofPath parsed) system with
                     | Ok (FileStatusAnswer.Failed error) -> Some error
                     | Ok (FileStatusAnswer.Reported _) -> None
                     | Error refusal -> failwith $"test bug: stat refused: %s{StatRefusal.describe refusal}"

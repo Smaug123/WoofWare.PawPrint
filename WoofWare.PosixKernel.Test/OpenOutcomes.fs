@@ -31,7 +31,7 @@ module OpenOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        UnixNamespace.openPath system.Leader flags path mode system |> answered
+        UnixNamespace.tryOpenPath system.Leader flags path mode system |> answered
 
     /// `UnixNamespace.openat` by the process's leader, failing the test if the
     /// call sleeps.
@@ -43,4 +43,4 @@ module OpenOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        UnixNamespace.openat system.Leader dirfd path flags mode system |> answered
+        UnixNamespace.tryOpenat system.Leader dirfd path flags mode system |> answered
