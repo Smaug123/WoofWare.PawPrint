@@ -67,6 +67,10 @@ module TestReadme =
                 "Map"
                 "Set"
                 "ImmutableArray"
+                "ArgumentException"
+                "ArgumentOutOfRangeException"
+                "InvalidOperationException"
+                "PlatformNotSupportedException"
             ]
 
     /// What is wrong with the names `span` gives the library: a dotted name

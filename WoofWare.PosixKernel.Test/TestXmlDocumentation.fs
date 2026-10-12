@@ -205,5 +205,4 @@ module TestXmlDocumentation =
                             yield $"%s{id} mentions `%s{name}`"
             ]
 
-        System.IO.File.WriteAllLines ("/private/tmp/claude-501/-Users-patrick-Documents-GitHub-WoofWare-PawPrint/bdc6ffd7-28a6-4d7f-b0fc-3001179dcc31/scratchpad/unmodelled/offences.txt", offences)
         offences |> shouldEqual []
