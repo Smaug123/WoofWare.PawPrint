@@ -5141,7 +5141,9 @@ module TestImpureCases =
             )
 
         exn.Message |> shouldContainText "SystemNative_GetGroups"
-        exn.Message |> shouldContainText "GetGroupsRefusal.UnmeasuredGroupList"
+        exn.Message |> shouldContainText "UnixDescriptor.getgroups"
+        exn.Message |> shouldContainText "has not been measured"
+        exn.Message |> shouldContainText "File.GetAttributes"
 
     [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
@@ -5375,7 +5377,8 @@ module TestImpureCases =
             )
 
         exn.Message |> shouldContainText "SystemNative_Access"
-        exn.Message |> shouldContainText "AccessRefusal"
+        exn.Message |> shouldContainText "UnixPathResolution.accessWithPath"
+        exn.Message |> shouldContainText "KernelConfig.UserId"
         exn.Message |> shouldContainText "privileged caller"
 
     [<TestCaseSource(nameof unimplemented)>]

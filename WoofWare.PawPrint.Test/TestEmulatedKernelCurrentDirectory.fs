@@ -239,4 +239,4 @@ module TestEmulatedKernelCurrentDirectory =
         // it looking for a typo.
         let text = message (fun () -> seededAt "/outer/file" |> ignore<EmulatedKernel>)
 
-        text |> shouldContainText "not to a directory"
+        text |> shouldContainText "not a directory"

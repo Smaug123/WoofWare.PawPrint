@@ -1089,8 +1089,9 @@ module EmulatedKernel =
         with
         | :? UnmodelledException
         | :? System.ArgumentException as e ->
-            KernelRefusal.fail
-                $"%s{processKnobs}.CurrentDirectory, which must name a directory in %s{machineKnobs}.FileSystem"
+            KernelRefusal.failAdvising
+                $"%s{processKnobs}.CurrentDirectory"
+                $"%s{processKnobs}.CurrentDirectory must name a directory in %s{machineKnobs}.FileSystem."
                 e
 
     /// The kernel of the PawPrint process `system` is the POSIX half of, newly
@@ -2481,7 +2482,8 @@ module MachineConfig =
             UnixBootImage.withProcessorCount count image
         with
         | :? UnmodelledException
-        | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.ProcessorCount (configure at least 1)" e
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising $"%s{knobs}.ProcessorCount" "Configure at least 1." e
 
     let private withUserAddressLimit
         (knobs : string)
@@ -2496,10 +2498,10 @@ module MachineConfig =
         | :? System.ArgumentException as e ->
             let remedy =
                 match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
-                | SimulatedUnixFlavour.Darwin -> "leave it None"
-                | SimulatedUnixFlavour.Linux -> "pick an observed limit, or None for the platform's own"
+                | SimulatedUnixFlavour.Darwin -> "Leave it None."
+                | SimulatedUnixFlavour.Linux -> "Pick an observed limit, or None for the platform's own."
 
-            KernelRefusal.fail $"%s{knobs}.UserAddressLimit (%s{remedy})" e
+            KernelRefusal.failAdvising $"%s{knobs}.UserAddressLimit" remedy e
 
     let private withMount
         (knobs : string)
@@ -2514,8 +2516,9 @@ module MachineConfig =
         | :? System.ArgumentException as e ->
             let flavour = SimulatedUnixPlatform.flavour (UnixBootImage.platform image)
 
-            KernelRefusal.fail
-                $"%s{knobs}.Mount (pass None to take %O{flavour}'s own default, or pick a type that flavour mounts)"
+            KernelRefusal.failAdvising
+                $"%s{knobs}.Mount"
+                $"Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
                 e
 
     let private withEphemeralPortRange
@@ -2541,7 +2544,10 @@ module MachineConfig =
         with
         | :? UnmodelledException
         | :? System.ArgumentException as e ->
-            KernelRefusal.fail $"%s{knobs}.SoMaxConn (configure a positive value, or None for the flavour's default)" e
+            KernelRefusal.failAdvising
+                $"%s{knobs}.SoMaxConn"
+                "Configure a positive value, or None for the flavour's default."
+                e
 
     let private withTcpSendSpace
         (knobs : string)
@@ -2558,10 +2564,10 @@ module MachineConfig =
             // account says which bound the value is on the wrong side of.
             let remedy =
                 match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
-                | SimulatedUnixFlavour.Linux -> "pass None"
-                | SimulatedUnixFlavour.Darwin -> "configure a size within the bounds, or None for the default"
+                | SimulatedUnixFlavour.Linux -> "Pass None."
+                | SimulatedUnixFlavour.Darwin -> "Configure a size within the bounds, or None for the default."
 
-            KernelRefusal.fail $"%s{knobs}.TcpSendSpace (%s{remedy})" e
+            KernelRefusal.failAdvising $"%s{knobs}.TcpSendSpace" remedy e
 
     let private withTcpReceiveSpace
         (knobs : string)
@@ -2574,7 +2580,7 @@ module MachineConfig =
         with
         | :? UnmodelledException
         | :? System.ArgumentException as e ->
-            KernelRefusal.fail $"%s{knobs}.TcpReceiveSpace (configure another size, or None for the default)" e
+            KernelRefusal.failAdvising $"%s{knobs}.TcpReceiveSpace" "Configure another size, or None for the default." e
 
     let private withTcpSendSpaceMax
         (knobs : string)
@@ -2591,10 +2597,10 @@ module MachineConfig =
             // size that is not positive.
             let remedy =
                 match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
-                | SimulatedUnixFlavour.Darwin -> "pass None"
-                | SimulatedUnixFlavour.Linux -> "configure a positive size, or None for the default"
+                | SimulatedUnixFlavour.Darwin -> "Pass None."
+                | SimulatedUnixFlavour.Linux -> "Configure a positive size, or None for the default."
 
-            KernelRefusal.fail $"%s{knobs}.TcpSendSpaceMax (%s{remedy})" e
+            KernelRefusal.failAdvising $"%s{knobs}.TcpSendSpaceMax" remedy e
 
     let private withProtectedFiles
         (knobs : string)

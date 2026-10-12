@@ -1559,8 +1559,7 @@ module NativeSystemNative =
                 state
             else
 
-            match UnixDescriptor.fileClone destination source (system state) with
-            | error -> withErrnoOnly ctx error state
+            withErrnoOnly ctx (UnixDescriptor.fileClone destination source (system state)) state
 
         // 2. `SupportsCopyFileRange()`, cached in the shim's static for the
         // life of the process. The probe, `copy_file_range(-1, -1, 0)`, leaves
@@ -3101,9 +3100,6 @@ module NativeSystemNative =
                         e
 
             match cwd with
-            | answer ->
-
-            match answer with
             | GetCwdAnswer.Failed error ->
                 // Nothing is written here, and the buffer pointer is
                 // deliberately not resolved: a call that writes nothing cannot
@@ -6821,8 +6817,8 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: epoll_create1(EPOLL_CLOEXEC) answered %O{error}, which the kernel gives only for a flag other than EPOLL_CLOEXEC (this is an interpreter bug)."
                 | SimulatedUnixFlavour.Darwin ->
-                    match UnixKqueue.kqueue state.Kernel.System with
-                    | fd, system -> fd, state.MapKernel (EmulatedKernel.withUnix system)
+                    let fd, system = UnixKqueue.kqueue state.Kernel.System
+                    fd, state.MapKernel (EmulatedKernel.withUnix system)
 
             // `*port = fd`, as an `intptr_t`: eight bytes on every platform
             // PawPrint models, little-endian on both x64 and arm64. The C

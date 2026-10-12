@@ -146,9 +146,12 @@ module TestSocketCreation =
                 UnixSystem.initial platform
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-            match UnixSocket.socket domain socketType protocol system with
-            | Ok _ -> "Ok"
-            | Error error -> string<UnixError> error
+            try
+                match UnixSocket.socket domain socketType protocol system with
+                | Ok _ -> "Ok"
+                | Error error -> string<UnixError> error
+            with :? UnmodelledException ->
+                "Refused"
 
     let private actual (platform : SimulatedUnixPlatform) (row : MeasuredRow) : string =
         composed platform palAddressFamily.[row.Family] palSocketType.[row.Kind] palProtocolType.[row.Protocol]
@@ -491,18 +494,22 @@ module TestSocketCreation =
                         match SocketArgumentsPal.socketArguments platform family kind protocol with
                         | Error screen -> Some (UnixErrorPal.toPal (SocketArgumentScreen.error screen))
                         | Ok (domain, socketType, protocol) ->
-                            match
-                                UnixSocket.socket
-                                    domain
-                                    socketType
-                                    protocol
-                                    (UnixSystem.initial platform
-                                     |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                                    : UnixSystem<int, string>)
-                            with
-                            | Error error -> Some (UnixErrorPal.toPal error)
-                            | Ok _
-                            | Error _ -> None
+                            // A triple the kernel will not answer has no row to
+                            // compare with the host's.
+                            try
+                                match
+                                    UnixSocket.socket
+                                        domain
+                                        socketType
+                                        protocol
+                                        (UnixSystem.initial platform
+                                         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                                        : UnixSystem<int, string>)
+                                with
+                                | Error error -> Some (UnixErrorPal.toPal error)
+                                | Ok _ -> None
+                            with :? UnmodelledException ->
+                                None
 
                     match expected with
                     | None -> count, disagreements

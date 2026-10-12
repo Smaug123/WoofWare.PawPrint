@@ -816,8 +816,9 @@ module MultiProgram =
                     with
                     | :? UnmodelledException
                     | :? System.ArgumentException as e ->
-                        KernelRefusal.fail
-                            $"%s{knobs}: the machine will not start the process (%s{knobs}.CurrentDirectory must name a directory in the machine's filesystem)"
+                        KernelRefusal.failAdvising
+                            $"%s{knobs}: the machine will not start the process"
+                            $"%s{knobs}.CurrentDirectory must name a directory in the machine's filesystem."
                             e
 
                 pid, (index + 1, machine)

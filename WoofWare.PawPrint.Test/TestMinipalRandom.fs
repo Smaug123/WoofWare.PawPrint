@@ -414,7 +414,7 @@ module TestMinipalRandom =
         let thrown =
             Assert.Throws<exn> (fun () -> MinipalRandom.coreClrSecureRandomBytes "test" thread 4097 kernel |> ignore)
 
-        thrown.Message |> shouldContainText "signal pending"
+        thrown.Message |> shouldContainText "a signal is pending"
 
         // A page or less is answered whatever is pending.
         MinipalRandom.coreClrSecureRandomBytes "test" thread 4096 kernel

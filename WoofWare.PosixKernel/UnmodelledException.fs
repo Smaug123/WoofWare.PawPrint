@@ -18,8 +18,8 @@ type UnmodelledException internal (message : string) =
 /// Which exception a refusal is raised as at a public entry point. The
 /// question is whether a client that follows the documentation could have
 /// made the call: if it could, the model does not cover the call; if not, the
-/// call is the client's mistake, and the BCL's own exception for that mistake
-/// says so.
+/// call is the client's mistake, and .NET's own exception for that mistake says
+/// so.
 [<RequireQualifiedAccess>]
 type internal RefusalKind =
     /// The model does not cover what was asked: `UnmodelledException`.

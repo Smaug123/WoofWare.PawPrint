@@ -1492,7 +1492,9 @@ module TestSignalDispatch =
             |> fun state -> state.MapKernel (SignalFrames.leave dispatcher)
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
-        exn.Message |> shouldContainText "LeaderBlocks"
+
+        exn.Message
+        |> shouldContainText "the process's leader blocks it while another task does not"
 
     [<Test>]
     let ``poll refuses a dispatcher that is the leader`` () : unit =
