@@ -69,9 +69,15 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 [<Explicit>]
 module TestAspNetTwoProcess =
 
-    /// The handoff file's name, relative to each process's working directory: `/` under
-    /// PawPrint, and the oracle's scratch directory under the real runtime.
+    /// The handoff file's name, relative to each process's working directory: `workingDirectory`
+    /// under PawPrint, and the oracle's scratch directory under the real runtime.
     let private handoff : string = "server-address"
+
+    /// Both processes' working directory under PawPrint, which the machine's filesystem holds
+    /// empty. It is the server's content root, which its configuration's reload-on-change watcher
+    /// watches with every directory below it, so it must not be `/`: the watcher would list `/dev`,
+    /// whose listing the kernel refuses.
+    let private workingDirectory : string = "/app"
 
     /// The environment of both processes, on both sides. The real processes otherwise inherit
     /// the test host's environment, so every variable from which `HttpClient` reads a proxy is
@@ -202,6 +208,13 @@ module TestAspNetTwoProcess =
             KernelConfig.split
                 { KernelConfig.Default with
                     Environment = environment
+                    CurrentDirectory = AbsoluteUnixPath.parseOrFail "TestAspNetTwoProcess" workingDirectory
+                    FileSystem =
+                        Map.ofList
+                            [
+                                DirectoryEntryName.parseOrFail "TestAspNetTwoProcess" (workingDirectory.TrimStart '/'),
+                                SeedEntry.directory Map.empty
+                            ]
                 }
 
         let launch (name : string) (image : byte[]) : ProgramLaunch =
