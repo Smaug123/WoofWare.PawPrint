@@ -3402,6 +3402,10 @@ module UnixReadWrite =
         // The commit comes first, so the advance cannot overflow: a write that
         // would carry the offset past what the model can represent has already
         // been refused there.
+        match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+        | Error refusal -> Error (WriteRefusal.UnplacedChange refusal)
+        | Ok machine ->
+
         returns
             (WriteAnswer.Completed (int64 bytes.Length))
             (UnixSystemState.withFileDescriptors
@@ -3410,7 +3414,7 @@ module UnixReadWrite =
                     (offset + int64 bytes.Length)
                     (UnixSystemState.fileDescriptors system))
                 { system with
-                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
+                    Machine = machine
                 })
 
     /// `write`, with a refusal answered as the `Error` rather than raised.
@@ -4644,12 +4648,16 @@ module UnixReadWrite =
             Error (PWriteRefusal.UnmeasuredSetIdChange (inode, refusal))
         | Ok mutation ->
 
+        match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+        | Error refusal -> Error (PWriteRefusal.UnplacedChange refusal)
+        | Ok machine ->
+
         // The description is left exactly where it was — the whole of what
         // `pwrite` does differently from `write`, and measured on both flavours.
         Ok (
             WriteAnswer.Completed (int64 bytes.Length),
             { system with
-                Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
+                Machine = machine
             }
         )
 
@@ -4843,6 +4851,10 @@ module UnixReadWrite =
                 Error (CopyFileRangeRefusal.UnmeasuredSetIdChange (destinationInode, refusal))
             | Ok mutation ->
 
+            match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+            | Error refusal -> Error (CopyFileRangeRefusal.UnplacedChange refusal)
+            | Ok machine ->
+
             let registry =
                 registry
                 |> FileDescriptorRegistry.setOffset inFd (sourceOffset + int64 count)
@@ -4851,7 +4863,7 @@ module UnixReadWrite =
             Ok (
                 SyscallAnswer.Completed (int64 count),
                 { system with
-                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Written mutation system.Machine
+                    Machine = machine
                 }
                 |> UnixSystemState.withFileDescriptors registry
             )

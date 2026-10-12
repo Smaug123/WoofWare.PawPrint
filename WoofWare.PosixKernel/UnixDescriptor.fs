@@ -1086,14 +1086,13 @@ module UnixDescriptor =
                         )
                 }
 
-            Ok
+            UnixMachineState.tryCommitFileSystem (ChangeNotice.SetAttributes (through, set)) mutation system.Machine
+            |> Result.map (fun machine ->
                 { system with
-                    Machine =
-                        UnixMachineState.commitFileSystem
-                            (ChangeNotice.SetAttributes (through, set))
-                            mutation
-                            system.Machine
+                    Machine = machine
                 }
+            )
+            |> Result.mapError TruncationRefusal.UnplacedChange
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
         | Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal) ->

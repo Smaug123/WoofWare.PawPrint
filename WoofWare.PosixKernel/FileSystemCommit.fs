@@ -39,18 +39,19 @@ module internal CommittedFileSystem =
     /// (`InotifyDelivery`). `notice` says how the syscall reached what it
     /// changed.
     ///
-    /// Fails, changing nothing, where Linux would report a change to a watch
-    /// through a name this kernel does not keep: the name a descriptor was
-    /// opened through, and the name a removed directory had
-    /// (`InotifyDelivery.refuseUnplaced`). Where no watch asks for an event the
-    /// change raises, the change is committed.
+    /// Refused, changing nothing, where Linux would report a change to a
+    /// watch through a name this kernel does not keep: the name a descriptor
+    /// was opened through, and the name a removed directory had
+    /// (`UnplacedChangeRefusal`). Where no watch asks for an event the change
+    /// raises, the change is committed. A notice of `ChangeNotice.Names`, or
+    /// of a path that reached a named inode, is never refused.
     let commit
         (notice : ChangeNotice)
         (maxQueuedEvents : int)
         (mutation : VfsMutation)
         (openFiles : OpenFileTable)
         (committed : CommittedFileSystem)
-        : CommittedFileSystem * OpenFileTable
+        : Result<CommittedFileSystem * OpenFileTable, UnplacedChangeRefusal>
         =
         // By reference rather than by value: the graph a mutator was handed is
         // the very object this holds, and comparing two maps of every inode
@@ -62,10 +63,14 @@ module internal CommittedFileSystem =
         let notifications, unplaced, nextCookie =
             InotifyDelivery.notifications notice mutation committed.NextCookie
 
-        InotifyDelivery.refuseUnplaced (VfsMutation.after mutation) unplaced openFiles
+        match InotifyDelivery.unplacedRefusal (VfsMutation.after mutation) unplaced openFiles with
+        | Some refusal -> Error refusal
+        | None ->
 
-        {
-            Graph = VfsMutation.after mutation
-            NextCookie = nextCookie
-        },
-        InotifyDelivery.deliver maxQueuedEvents notifications openFiles
+        Ok (
+            {
+                Graph = VfsMutation.after mutation
+                NextCookie = nextCookie
+            },
+            InotifyDelivery.deliver maxQueuedEvents notifications openFiles
+        )

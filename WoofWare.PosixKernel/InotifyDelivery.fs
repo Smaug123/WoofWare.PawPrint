@@ -88,7 +88,8 @@ type internal InotifyNotification =
 
 /// Events Linux raises that this kernel cannot place, because it does not
 /// keep the name the change went through: `CommittedFileSystem.commit`
-/// refuses the change if a watch could hear of them.
+/// refuses the change if a watch could hear of them
+/// (`UnplacedChangeRefusal`).
 [<RequireQualifiedAccess>]
 type internal Unplaced =
     /// A change of `inode` through a descriptor, raising `events`: Linux
@@ -339,9 +340,10 @@ module internal InotifyDelivery =
 
             [], unplaced, nextCookie
 
-    /// Fails, naming the name this kernel does not keep, if some watch in
-    /// `openFiles` asks for an event of `unplaced` and could be one Linux
-    /// reports it to, in `graph`, the filesystem after the change.
+    /// The refusal of the change that raised `unplaced`, if some watch in
+    /// `openFiles` asks for an event of it and could be one Linux reports it
+    /// to, in `graph`, the filesystem after the change; the first such, in
+    /// `unplaced`'s order and then the order of the instances' IDs.
     ///
     /// For a change through a descriptor, that is a watch on the inode itself,
     /// or on the directory of the name the descriptor was opened through: for
@@ -352,8 +354,15 @@ module internal InotifyDelivery =
     /// and the root of a mounted filesystem are heard at their own watches
     /// alone. For a change of a removed directory through a path, it is a
     /// watch on its old parent.
-    let refuseUnplaced (graph : VirtualFileSystem) (unplaced : Unplaced list) (openFiles : OpenFileTable) : unit =
-        if not unplaced.IsEmpty then
+    let unplacedRefusal
+        (graph : VirtualFileSystem)
+        (unplaced : Unplaced list)
+        (openFiles : OpenFileTable)
+        : UnplacedChangeRefusal option
+        =
+        if unplaced.IsEmpty then
+            None
+        else
             let watches =
                 OpenFileTable.toSeq openFiles
                 |> Seq.collect (fun (instance, description) ->
@@ -380,7 +389,8 @@ module internal InotifyDelivery =
                 | Some content -> content.Entries |> Map.exists (fun _ bound -> bound = inode)
                 | None -> false
 
-            for unplaced in unplaced do
+            unplaced
+            |> List.tryPick (fun unplaced ->
                 match unplaced with
                 | Unplaced.ThroughDescriptor (inode, events, excludedWhenUnlinked) ->
                     let unnamed =
@@ -399,17 +409,18 @@ module internal InotifyDelivery =
                                        || not (excludedWhenUnlinked && watch.Mask.ExcludeUnlinked))
                            )
 
-                    match asking events |> List.tryFind (fun (_, _, watch) -> hears watch) with
-                    | None -> ()
-                    | Some (instance, wd, watch) ->
-                        failwith
-                            $"CommittedFileSystem.commit: a change to inode %O{inode} through a descriptor raises %A{Set.toList events}, which watch %O{wd} of the inotify instance %O{instance}, on inode %O{watch.Inode}, asks for and could be the watch Linux reports it to: the watch on the inode itself, or on the directory of the name the descriptor was opened through. This kernel does not record the name the descriptor was opened through, so it refuses the change rather than report it to the wrong watches."
+                    asking events
+                    |> List.tryFind (fun (_, _, watch) -> hears watch)
+                    |> Option.map (fun (instance, wd, watch) ->
+                        UnplacedChangeRefusal.DescriptorName (inode, events, instance, wd, watch.Inode)
+                    )
                 | Unplaced.AtOldParent (oldParent, events) ->
-                    match asking events |> List.tryFind (fun (_, _, watch) -> watch.Inode = oldParent) with
-                    | None -> ()
-                    | Some (instance, wd, _) ->
-                        failwith
-                            $"CommittedFileSystem.commit: a change through a path to a directory whose last name has gone raises %A{Set.toList events}, which Linux reports to watch %O{wd} of the inotify instance %O{instance}, on the directory it was last named in (inode %O{oldParent}), under the name it had there. This kernel does not keep that name, so it refuses the change rather than report it wrongly."
+                    asking events
+                    |> List.tryFind (fun (_, _, watch) -> watch.Inode = oldParent)
+                    |> Option.map (fun (instance, wd, _) ->
+                        UnplacedChangeRefusal.RemovedDirectoryName (oldParent, events, instance, wd)
+                    )
+            )
 
     /// `openFiles` with each of `notifications` queued, in order, on every
     /// inotify instance that watches its inode and asks for any of its events:

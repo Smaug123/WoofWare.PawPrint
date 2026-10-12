@@ -97,7 +97,7 @@ module internal InotifyAddWatchRefusal =
 /// A change to the filesystem, by any process, queues records on the instances
 /// watching it; a watched inode's own deletion and rename are not reported.
 /// A change made through a descriptor, or through "." to a directory `rmdir`
-/// removed, is refused, by an exception, where a watch could hear of it:
+/// removed, throws `UnmodelledException` where a watch could hear of it:
 /// Linux reports it through a name this kernel does not keep.
 [<RequireQualifiedAccess>]
 module UnixInotify =
