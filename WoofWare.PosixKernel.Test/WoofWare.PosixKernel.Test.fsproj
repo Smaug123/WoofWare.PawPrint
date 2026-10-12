@@ -98,7 +98,8 @@
     <Compile Include="LibraryNames.fs" />
     <Compile Include="TestXmlDocumentation.fs" />
     <Compile Include="TestReadme.fs" />
-    <Compile Include="TestOpenRefusals.fs" />
+    <Compile Include="TestOpenDefects.fs" />
+    <Compile Include="TestUnmodelledException.fs" />
     <Compile Include="UnionCaseOrder.fs" />
     <Compile Include="TestUnionCaseOrder.fs" />
     <Compile Include="RecordLabels.fs" />
