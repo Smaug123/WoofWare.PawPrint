@@ -82,6 +82,9 @@ module TestShutdownAgainstHost =
     [<DllImport("libc", EntryPoint = "pipe", SetLastError = true)>]
     extern int private hostPipe(int[] fds)
 
+    [<DllImport("libc", EntryPoint = "dup", SetLastError = true)>]
+    extern int private hostDup(int fd)
+
     [<DllImport("libc", EntryPoint = "epoll_create1", SetLastError = true)>]
     extern int private hostEpollCreate1(int flags)
 
@@ -990,6 +993,9 @@ module TestShutdownAgainstHost =
             Datagram : unit -> int
             /// A descriptor that names no socket.
             NotSocket : unit -> int
+            /// A number that names no descriptor, and that nothing else in the
+            /// process can take before the call that is passed it.
+            NamesNothing : unit -> int
             /// `bind` to the loopback address and port 0.
             BindAny : int -> unit
             Shutdown : int -> int -> ShutdownLine
@@ -1037,7 +1043,7 @@ module TestShutdownAgainstHost =
                 let n = w.NotSocket ()
                 prefixed $"U\tnot-socket\t%s{hn}\t" (w.Shutdown n how)
                 w.Close n
-                prefixed $"U\tclosed-fd\t%s{hn}\t" (w.Shutdown n how)
+                prefixed $"U\tclosed-fd\t%s{hn}\t" (w.Shutdown (w.NamesNothing ()) how)
             for _ in 1 .. 3 * 4 do
                 ShutdownLine.Elsewhere
             for how in [ 0 ; 1 ; 2 ] do
@@ -1164,6 +1170,11 @@ module TestShutdownAgainstHost =
                         hostClose fds.[1] |> ignore<int>
                         fds.[0]
                     | _ -> failwith "pipe failed"
+            // Any thread of the test host may open a descriptor, and so take a
+            // number this replay has just freed, so the closed-fd rows ask about
+            // INT_MAX, which no descriptor can ever have; `unallocatable-fd.c`
+            // measured that both flavours answer it as they do a freed slot.
+            NamesNothing = fun () -> Int32.MaxValue
             BindAny =
                 fun fd ->
                     let any = loopbackAt 0
@@ -1250,6 +1261,54 @@ module TestShutdownAgainstHost =
             sectionU (hostU flavour)
             |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour "U" withoutSigPipe
             |> shouldEqual []
+        )
+
+    /// The test host is one process, any of whose threads may open a
+    /// descriptor between two of section U's calls, and a new descriptor takes
+    /// the lowest free number. Section U's host replay must answer as measured
+    /// even when every number it closes is taken again at once.
+    [<Test>]
+    let ``section U's host replay answers as measured when each descriptor it closes is reopened at once`` () =
+        HostPlatform.onUnixHost (fun flavour ->
+            let own = Array.zeroCreate<int> 2
+
+            if hostPipe own <> 0 then
+                failwith $"pipe failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+            let held = ResizeArray<int> ()
+            let world = hostU flavour
+
+            // Fill free numbers up to the one just closed; a number past it
+            // means another thread took it first.
+            let reopen (closed : int) : unit =
+                let mutable copy = -1
+
+                while copy < closed do
+                    copy <- hostDup own.[0]
+
+                    if copy < 0 then
+                        failwith $"dup failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+                    held.Add copy
+
+            let disagreements =
+                try
+                    sectionU
+                        { world with
+                            Close =
+                                fun fd ->
+                                    world.Close fd
+                                    reopen fd
+                        }
+                    |> ShutdownProbe.disagreements ShutdownProbe.Probe.Shutdown flavour "U" withoutSigPipe
+                finally
+                    for fd in held do
+                        hostClose fd |> ignore<int>
+
+                    hostClose own.[0] |> ignore<int>
+                    hostClose own.[1] |> ignore<int>
+
+            disagreements |> shouldEqual []
         )
 
     // ------------------------------------------------------------------
@@ -1800,6 +1859,15 @@ module TestShutdownAgainstHost =
                     match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                     | Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
                         system <- kernelClose writeFd after
+                        readFd
+                    | other -> failwith $"pipe2: %A{other}"
+            // Nothing but this replay changes `system`, so a slot it frees
+            // stays free, and the closed-fd rows ask about one, as the probe's do.
+            NamesNothing =
+                fun () ->
+                    match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
+                    | Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
+                        system <- after |> kernelClose writeFd |> kernelClose readFd
                         readFd
                     | other -> failwith $"pipe2: %A{other}"
             BindAny = fun fd -> system <- kernelBind fd 0 system
