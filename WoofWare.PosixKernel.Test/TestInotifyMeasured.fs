@@ -1024,6 +1024,130 @@ module TestInotifyMeasured =
 
         actual @ permissions |> shouldEqual (rows instanceProbe "G" [])
 
+    /// A machine holding an instance, a regular file and an epoll instance,
+    /// each a descriptor `inotify_add_watch` may be handed, and a directory
+    /// `g` to watch.
+    let private screenMachine () : UnixSystem<int, string> * int * int * int =
+        let system = boot root [ "g", directory 0o777 [ "f", file 0o644 ] ]
+        let fd, system = init1 nonblock system
+
+        let regular, system =
+            match UnixNamespace.tryOpenPath 0 0 (PathArg.ofText "g/f") 0 system with
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), s) -> int fd, s
+            | other -> failwith $"%A{other}"
+
+        let epoll, system =
+            match UnixPoll.tryEpollCreate1 0 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"%A{other}"
+
+        system, fd, regular, epoll
+
+    /// The screen phase alone, for a call that must be over before the path.
+    let private screened (on : int) (mask : uint32) (system : UnixSystem<int, string>) : string =
+        match UnixInotify.tryInotifyAddWatchScreenPhase on mask system with
+        | Ok (InotifyAddWatchProgress.Answered answer) -> rc answer
+        | Ok (InotifyAddWatchProgress.NeedsPath _) ->
+            $"add(%d{on}, _, 0x%x{mask}) reached the path, where Linux answers without it"
+        | Error refusal -> failwith $"%A{refusal}"
+
+    [<Test>]
+    let ``sections G and M: the screen phase answers, without a path, every row Linux answers before reading one``
+        ()
+        : unit
+        =
+        let system, fd, regular, epoll = screenMachine ()
+
+        // The rows of `inotify-instance-probe.c` sections G and M, and
+        // `inotify-probe.c` section W, whose answer does not depend on the
+        // path: the probe's `null-path-mask-0` and `bad-fd-missing-path` show
+        // the mask and then the descriptor decided ahead of the path, and
+        // `regular-fd-missing-path` the descriptor's kind.
+        let measured (file : Lazy<(string * string * string) list>) (section : string) (case : string) =
+            let row = rows file section [] |> List.find (fun (c, _) -> c = case) |> snd
+            // Each row prints the call, then `=`, then `rc`; section M's print
+            // `rc` alone.
+            match row.LastIndexOf '=' with
+            | -1 -> row
+            | i -> row.Substring (i + 1)
+
+        let g = measured instanceProbe "G"
+        let m = measured instanceProbe "M"
+
+        [
+            "bad-fd-mask-0", screened 999 0u system, g "bad-fd-mask-0"
+            "bad-fd-add-and-create", screened 999 (create ||| maskAdd ||| maskCreate) system, g "bad-fd-add-and-create"
+            "add-and-create", screened fd (create ||| maskAdd ||| maskCreate) system, g "add-and-create"
+            "bad-fd-missing-path", screened 999 create system, g "bad-fd-missing-path"
+            "regular-fd-missing-path", screened regular create system, g "regular-fd-missing-path"
+            "regular-fd-mask-0", screened regular 0u system, g "regular-fd-mask-0"
+            "null-path-mask-0", screened fd 0u system, g "null-path-mask-0"
+            "missing-mask-0", screened fd 0u system, g "missing-mask-0"
+            "epoll-fd", screened epoll create system, g "epoll-fd"
+            "M 0x1000", screened fd 0x1000u system, m "0x1000"
+            "M 0x08000000", screened fd 0x08000000u system, m "0x08000000"
+            "M CREATE|0x1000", screened fd (create ||| 0x1000u) system, m "CREATE|0x1000"
+            "M CREATE|0x08000000", screened fd (create ||| 0x08000000u) system, m "CREATE|0x08000000"
+        ]
+        |> List.iter (fun (case, actual, expected) -> (case, actual) |> shouldEqual (case, expected))
+
+    [<Test>]
+    let ``the screen phase decides everything inotify_add_watch decides before the path`` () : unit =
+        let system, fd, regular, epoll = screenMachine ()
+
+        let masks =
+            [
+                yield 0u
+                for bit in 0..31 do
+                    yield 1u <<< bit
+                    yield create ||| (1u <<< bit)
+                yield create ||| maskAdd ||| maskCreate
+                // FileSystemWatcher's.
+                yield
+                    create
+                    ||| delete
+                    ||| modify
+                    ||| attrib
+                    ||| 0x40u
+                    ||| 0x80u
+                    ||| onlyDir
+                    ||| 0x04000000u
+                yield modelledEvents
+            ]
+
+        let unreadable = PathArgumentBytes.Unreadable
+        let readable = PathArg.ofText "g"
+
+        let mutable reachedPath = 0
+
+        for on in [ -1 ; 999 ; fd ; regular ; epoll ] do
+            for mask in masks do
+                match UnixInotify.tryInotifyAddWatchScreenPhase on mask system with
+                | Error refusal -> failwith $"add(%d{on}, _, 0x%x{mask}) refused: %A{refusal}"
+                | Ok (InotifyAddWatchProgress.Answered answer) ->
+                    // Over before the path: the one-shot call answers the
+                    // same whatever path it is handed, and changes nothing.
+                    for path in [ unreadable ; readable ] do
+                        match UnixInotify.tryInotifyAddWatch on path mask system with
+                        | Ok (composed, after) ->
+                            (on, mask, composed) |> shouldEqual (on, mask, answer)
+                            obj.ReferenceEquals (after, system) |> shouldEqual true
+                        | Error refusal -> failwith $"add(%d{on}, _, 0x%x{mask}) refused: %A{refusal}"
+                | Ok (InotifyAddWatchProgress.NeedsPath paused) ->
+                    reachedPath <- reachedPath + 1
+
+                    // Reached the copy-in, which is the first thing done
+                    // after the screens: an unreadable path is EFAULT.
+                    match UnixInotify.tryInotifyAddWatchWithPath unreadable paused with
+                    | Ok (answer, _) ->
+                        (on, mask, answer)
+                        |> shouldEqual (on, mask, SyscallAnswer.Failed UnixError.EFAULT)
+                    | Error refusal -> failwith $"add(%d{on}, NULL, 0x%x{mask}) refused: %A{refusal}"
+
+        // Only the instance's descriptor gets that far, and only with a mask
+        // Linux accepts: not vacuous.
+        (reachedPath > 0) |> shouldEqual true
+
     [<Test>]
     let ``section M: masks of flags and kernel bits`` () : unit =
         let masks =
