@@ -159,7 +159,7 @@ module TestReceiveSendMeasured =
             for row in rows flavour "O" do
                 match row with
                 | [ "p-fionread-after" ; count ] ->
-                    UnixDescriptor.bytesAvailable server UserBuffer.Mapped system
+                    UnixDescriptor.tryBytesAvailable server UserBuffer.Mapped system
                     |> shouldEqual (Ok (BytesAvailableAnswer.Reported (int count)))
                 | [ targetName ; bufferName ; length ; recvText ; sendText ; sigpipe ] ->
                     let where = $"%O{flavour} %s{targetName} %s{bufferName} %s{length}"
@@ -174,7 +174,7 @@ module TestReceiveSendMeasured =
                     sigpipe |> shouldEqual "sigpipe=0"
 
                     let received, after =
-                        match UnixReadWrite.recv 0 fd buffer (uint64 count) 0 system with
+                        match UnixReadWrite.tryRecv 0 fd buffer (uint64 count) 0 system with
                         | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                             Ok (int64 bytes.Length), after
                         | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) -> Error error, after

@@ -38,7 +38,7 @@ type GetRandomAnswer =
 
 /// Why this kernel will not answer a `getrandom`.
 [<RequireQualifiedAccess>]
-type GetRandomRefusal =
+type internal GetRandomRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The simulated kernel has no `getrandom` system call.
@@ -48,7 +48,7 @@ type GetRandomRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module GetRandomRefusal =
+module internal GetRandomRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetRandomRefusal) : string =
@@ -58,6 +58,13 @@ module GetRandomRefusal =
             $"the simulated kernel is %O{flavour}, which has no getrandom system call; getentropy(2) is how a process asks it for random bytes."
         | GetRandomRefusal.SignalAtPageBoundary count ->
             $"the request moves %d{count} bytes, more than a page, and a signal is pending that the calling task would take on its return to user mode. Linux's getrandom stops at the first page boundary once a signal is pending, short of the count, and this kernel answers no short getrandom."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetRandomRefusal) : RefusalKind =
+        match refusal with
+        | GetRandomRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetRandomRefusal.NoSuchSyscall _ -> RefusalKind.NotOnPlatform
+        | GetRandomRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
 
 /// What `getentropy(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -76,14 +83,14 @@ type GetEntropyAnswer =
 
 /// Why this kernel will not answer a `getentropy`.
 [<RequireQualifiedAccess>]
-type GetEntropyRefusal =
+type internal GetEntropyRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The simulated kernel has no `getentropy` system call.
     | NoSuchSyscall of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module GetEntropyRefusal =
+module internal GetEntropyRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and what it passed.
     let describe (refusal : GetEntropyRefusal) : string =
@@ -91,6 +98,12 @@ module GetEntropyRefusal =
         | GetEntropyRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetEntropyRefusal.NoSuchSyscall flavour ->
             $"the simulated kernel is %O{flavour}, which has no getentropy system call; getrandom(2) is how a process asks it for random bytes."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetEntropyRefusal) : RefusalKind =
+        match refusal with
+        | GetEntropyRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetEntropyRefusal.NoSuchSyscall _ -> RefusalKind.NotOnPlatform
 
 /// The syscalls that hand out bytes from the kernel's entropy pool.
 [<RequireQualifiedAccess>]
@@ -181,20 +194,8 @@ module UnixEntropy =
             )
         )
 
-    /// `getrandom(2)`: fill the caller's buffer with up to `count` bytes from
-    /// the entropy pool, and return how many.
-    ///
-    /// `flags` is the raw argument, any combination of `GetRandomFlags`. It is
-    /// EINVAL if it has any other bit set, or both `GetRandomFlags.Random` and
-    /// `GetRandomFlags.Insecure`, whatever the buffer and the count.
-    ///
-    /// Never blocks. Linux-only: under any other flavour the call is refused.
-    ///
-    /// `task` is the task making the call, which must be one of the process's.
-    /// A request that moves more than a page, by a task with a signal pending,
-    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
-    /// short at the first page boundary.
-    let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getRandom`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (buffer : UserBuffer)
         (count : uint64)
@@ -236,13 +237,35 @@ module UnixEntropy =
         | Ok (Error error) -> Ok (GetRandomAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetRandomAnswer.Completed draw, system)
 
-    /// `getentropy(2)`: fill all `length` bytes of the caller's buffer from the
-    /// entropy pool.
+    /// <summary>
+    /// `getrandom(2)`: fill the caller's buffer with up to `count` bytes from
+    /// the entropy pool, and return how many.
     ///
-    /// A `length` above `getEntropyMaxLength` is EINVAL, whatever the buffer.
+    /// `flags` is the raw argument, any combination of `GetRandomFlags`. It is
+    /// EINVAL if it has any other bit set, or both `GetRandomFlags.Random` and
+    /// `GetRandomFlags.Insecure`, whatever the buffer and the count.
     ///
-    /// Darwin-only: under any other flavour the call is refused.
-    let getEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Never blocks. Linux-only: under any other flavour the call is refused.
+    ///
+    /// `task` is the task making the call, which must be one of the process's.
+    /// A request that moves more than a page, by a task with a signal pending,
+    /// is refused: a real one stops
+    /// short at the first page boundary.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The simulated kernel has no `getrandom` system call.</exception>
+    let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (flags : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetRandomAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryGetRandom task buffer count flags system
+        |> Refusal.orRaise "UnixEntropy.getRandom" GetRandomRefusal.kind GetRandomRefusal.describe
+
+    /// `getEntropy`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (buffer : UserBuffer)
         (length : uint64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -267,3 +290,21 @@ module UnixEntropy =
                 $"UnixEntropy.getEntropy: a request of %d{count} bytes was cut short for a signal, which getentropy's limit of %d{getEntropyMaxLength} rules out (this is a bug in this library)."
         | Ok (Error error) -> Ok (GetEntropyAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetEntropyAnswer.Completed draw, system)
+
+    /// <summary>
+    /// `getentropy(2)`: fill all `length` bytes of the caller's buffer from the
+    /// entropy pool.
+    ///
+    /// A `length` above `getEntropyMaxLength` is EINVAL, whatever the buffer.
+    ///
+    /// Darwin-only: under any other flavour the call is refused.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The simulated kernel has no `getentropy` system call.</exception>
+    let getEntropy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (buffer : UserBuffer)
+        (length : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetEntropyAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryGetEntropy buffer length system
+        |> Refusal.orRaise "UnixEntropy.getEntropy" GetEntropyRefusal.kind GetEntropyRefusal.describe

@@ -102,39 +102,29 @@ let path (text : string) : PathArgumentBytes =
     | Ok bytes -> PathArgumentBytes.Bytes bytes
     | Error defect -> failwith $"not a path: %O{defect}"
 
-let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
-    match result with
-    | Ok value -> value
-    | Error refusal -> failwith (describe refusal)
-
 // A process on a Linux x86-64 machine, before anything has happened to it:
 // a filesystem holding nothing but /dev, and descriptors 0, 1 and 2 as pipes. It has one task,
 // which this client names 0, on logical processor 0, and runs as root.
 let system : UnixSystem<int, unit> =
     let launch =
         ProcessLaunch.create SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> orFail LaunchTableRefusal.describe
         |> ProcessLaunch.withCredentials (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
-        |> orFail CredentialsRefusal.describe
 
-    UnixSystem.initial SimulatedUnixPlatform.linuxX64
-    |> UnixBootImage.boot launch
-    |> orFail LaunchRefusal.describe
+    UnixSystem.initial SimulatedUnixPlatform.linuxX64 |> UnixBootImage.boot launch
 
 // mkdir(2) is mkdirat(2) from AT_FDCWD, in the flavour's own numbering.
 let atFdCwd : int = AtDirectory.atFdCwd SimulatedUnixFlavour.Linux
 
 let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
     match UnixSystem.step 0 (Syscall.MkDirAt (atFdCwd, path "/tmp", 0o755)) system with
-    | Error refusal -> failwith $"this kernel will not say what happens: %s{SyscallRefusal.describe refusal}"
-    | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed result), system) ->
+    | SyscallOutcome.Answered (SyscallAnswer.Completed result), system ->
         printfn "mkdir returned %d" result
         system
-    | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
+    | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
         let numbering = SimulatedUnixPlatform.rawErrnoNumbering (UnixSystem.platform system)
         printfn "mkdir failed with errno %d" (UnixError.toRawErrnoUnder numbering error)
         system
-    | Ok (outcome, _) -> failwith $"unexpected from mkdir: %A{outcome}"
+    | outcome, _ -> failwith $"unexpected from mkdir: %A{outcome}"
 
 system |> mkdir |> mkdir |> ignore
 
@@ -149,21 +139,16 @@ A machine boots with an empty filesystem, apart from the device filesystem the k
 `UnixBootImage.withFileSystem (createdAt : UnixTimestamp) (defaultOwner : InodeOwner) (seed : Map<DirectoryEntryName, SeedEntry>)` replaces it with the tree `seed` describes, created at `createdAt`.
 A `SeedEntry` is a file, a directory or a symbolic link, each with an optional owner: an entry that names none belongs to `defaultOwner`, and so does the root.
 `SeedEntry.file` and `SeedEntry.directory` give the modes a `umask 022` process would have created; the `SeedEntry.File` and `SeedEntry.Directory` cases take a mode and an owner of their own.
-It refuses (`FileSystemSeedFault`) a name the flavour could never have created, and anything at `/dev` but an empty directory.
+It throws `ArgumentException` for a name the flavour could never have created, and for anything at `/dev` but an empty directory.
 
 The filesystem's type is what `fstatfs(2)` reports for a file, and it changes a directory's `st_size` and where `lseek(2)` with `SEEK_END` lands on one.
 It is tmpfs on Linux and APFS on Darwin unless `UnixBootImage.withMount` says otherwise: `Some (EmulatedMount.defaultOf EmulatedFileSystemType.Nfs)`, for example, or `EmulatedMount.Tmpfs` and `EmulatedMount.Apfs` with their fields set.
-A type the flavour could not report is refused (`MountRefusal`).
+A type the flavour could not report is refused: on Linux, which has no APFS, with `ArgumentException`, and on Darwin, where a tmpfs has not been measured, with `UnmodelledException`.
 Path resolution keeps its flavour's limits whichever type is chosen.
 
 ```fsharp
 open System.Collections.Immutable
 open WoofWare.PosixKernel
-
-let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
-    match result with
-    | Ok value -> value
-    | Error refusal -> failwith (describe refusal)
 
 let platform = SimulatedUnixPlatform.linuxX64
 let name (text : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "seed" text
@@ -182,16 +167,12 @@ let root : InodeOwner = InodeOwner.ofProcess (Credentials.ofIds UserId.root (Gro
 let system : UnixSystem<int, unit> =
     let launch =
         ProcessLaunch.create platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> orFail LaunchTableRefusal.describe
 
     UnixSystem.initial platform
     |> UnixBootImage.withFileSystem UnixTimestamp.epoch root seed
-    |> orFail FileSystemSeedFault.describe
     // fstatfs(2) reports NFS rather than Linux's default, tmpfs.
     |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf EmulatedFileSystemType.Nfs))
-    |> orFail MountRefusal.describe
     |> UnixBootImage.boot launch
-    |> orFail LaunchRefusal.describe
 
 let path (text : string) : PathArgumentBytes =
     match UnixByteString.ofString text with
@@ -200,9 +181,9 @@ let path (text : string) : PathArgumentBytes =
 
 // Task 0, the process's leader, calls open("/etc/hostname", O_RDONLY), and read(fd, buf, 64).
 // O_RDONLY is 0 on every flavour.
-match UnixNamespace.openPath 0 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
+match UnixNamespace.openPath 0 0 (path "/etc/hostname") 0 system with
 | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
-    match UnixReadWrite.read 0 (int fd) UserBuffer.Mapped 64UL system |> orFail ReadRefusal.describe with
+    match UnixReadWrite.read 0 (int fd) UserBuffer.Mapped 64UL system with
     | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ ->
         printf "%s" (System.Text.Encoding.ASCII.GetString (bytes.AsSpan ()))
     | outcome, _ -> failwith $"unexpected read: %A{outcome}"
@@ -233,70 +214,68 @@ Where they do, the function says which it is, and the tables below mark it: (3) 
 
 A client replaying a record of raw system calls, such as an `strace` log, uses the (2) forms.
 
-### Answers and refusals
+### Answers, and what this library will not answer
 
-A syscall's result has two levels.
+A syscall answers what the kernel does: perhaps an errno (a `UnixError`), or the calling task asleep (see "Sleeping and waking"). Either way it comes with the system after the call; a failing call can still change the system, just as a real one can.
 
-* `Ok` is what the kernel does: it answers, perhaps with an errno (a `UnixError`), or the calling task sleeps (see "Sleeping and waking"). Either way it comes with the system after the call; a failing call can still change the system, just as a real one can.
-* `Error` is a refusal: this library will not say what the kernel does, usually because nobody has measured it on the platform being simulated, or because it is not modelled. A refusal says why, and carries no system. A client decides what a refusal means for it; retrying will not help.
-
-Four functions refuse nothing, and use `Error` for the errno instead: `UnixSignal.sigaction`, `UnixSignal.sigactionSyscall`, `UnixSignal.pthreadSigmask` and `UnixSignal.rtSigprocmask` answer `Result<_, UnixError>`, where `Error` is a failed call (an `EINVAL`, say) that the client reports to the process.
+A few functions answer a `Result` whose `Error` is an errno: those whose own failure is a value the client reports to the process, such as `UnixSocket.socket`, `UnixPoll.epollCreate1`, `UnixSignal.kill` and `UnixClock.clockGettime`, and the four that answer nothing else, `UnixSignal.sigaction`, `UnixSignal.sigactionSyscall`, `UnixSignal.pthreadSigmask` and `UnixSignal.rtSigprocmask`.
 A function that cannot fail, such as `UnixClock.gettimeofday`, answers without a `Result` at all.
+The errors of the parsers that build a value, such as `UnixByteString.ofString`'s, say what was wrong with the input.
 
-Every refusal type has a `describe`, which says in English what the library knows about why it refused, such as `ReadRefusal.describe` and `SyscallRefusal.describe`.
-The library does not know what the client called the value or which of its entry points made the call, so it names neither; the client does that.
-The errors of the parsers that build a value, such as `UnixByteString.ofString`'s, are not refusals, and say what was wrong with the input.
+Where this library will not say what the kernel does, the call throws `UnmodelledException`, and the docstrings say the call is refused.
+Nobody has measured what a real kernel does there, on the platform being simulated, or the model cannot hold what the answer needs.
+That is a feature request for this library, not a condition a client handles in normal operation, and retrying will not help.
 
-A refusal is a feature request, not an outcome a client handles in normal operation.
-The library cannot answer, either because its model of the domain is not complete (a behaviour nobody has measured or modelled yet) or because the client asked for something it cannot represent.
-Each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new reason to refuse, so the refusal types are open: their cases are not public, and a client can neither build a refusal nor match every reason one can have.
-Instead, a refusal type's module has a `Reason` module with one partial pattern per reason, such as `BindRefusal.Reason.UnmodelledMulticast`, which hands back the reason's fields in order.
-A client matches the reasons it has something to add to, such as how its own caller came to make the call, and ends the match with a wildcard, which is where `describe` belongs.
-The refusals of the socket calls are open in this way: `SocketRefusal`, `BindRefusal`, `ListenRefusal`, `AcceptRefusal`, `ConnectRefusal`, `ShutdownRefusal`, `GetSockNameRefusal`, `SocketOptionRefusal`, and `SockaddrCopyRefusal`, which a `BindRefusal` or a `ConnectRefusal` can carry, so that a client matches it nested, as `BindRefusal.Reason.Copy (SockaddrCopyRefusal.Reason.UnmodelledDomain (_, domain))`. Each other refusal type will hide its cases in the same way before 1.0, and until it does, its cases are public.
+* Any call may throw `UnmodelledException`, and a minor version may add or remove the places that do: each newly measured behaviour, such as a difference between Linux and Darwin, can bring a new one, and each newly modelled one removes one.
+* Its message is for a human, and has no stable structure. It names the function that threw and says what the library knows about why; it does not know what the client called the value, or which of the client's own entry points made the call, and the client adds those.
+* A throw leaves nothing behind. Every value this library takes is immutable, so a client may catch the exception and carry on from the state it passed in.
+
+A call that no client following the documentation could make throws the exception .NET uses for that mistake instead, and its docstring says so: `ArgumentException` or `ArgumentOutOfRangeException` for a value no machine of the flavour could have, such as a boot setter's contradictory setting; `InvalidOperationException` for a call made where the documentation rules it out, such as the exit of a task parked in a syscall; and `PlatformNotSupportedException` for a call the flavour does not have, such as `epoll_create1` on Darwin, which a client could have checked for first.
 
 ```fsharp
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
-    match result with
-    | Ok value -> value
-    | Error refusal -> failwith (describe refusal)
-
 let system : UnixSystem<int, unit> =
     let launch =
         ProcessLaunch.create SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> orFail LaunchTableRefusal.describe
 
-    UnixSystem.initial SimulatedUnixPlatform.linuxX64
-    |> UnixBootImage.boot launch
-    |> orFail LaunchRefusal.describe
+    UnixSystem.initial SimulatedUnixPlatform.linuxX64 |> UnixBootImage.boot launch
 
 // socket(AF_INET, SOCK_STREAM, 0), in Linux's numbering.
 let fd, socketSystem =
-    match UnixSocket.socket 2 1 0 system |> orFail SocketRefusal.describe with
+    match UnixSocket.socket 2 1 0 system with
     | Ok (fd, system) -> fd, system
     | Error error -> failwith $"socket failed with %O{error}"
 
-// bind to 224.0.0.1:5000, as Linux's struct sockaddr_in: the family in host order, then the
-// port and the address in network order.
-let multicast : ImmutableArray<byte> =
-    ImmutableArray.CreateRange [| 2uy ; 0uy ; 0x13uy ; 0x88uy ; 224uy ; 0uy ; 0uy ; 1uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy ; 0uy |]
+// Linux's struct sockaddr_in: the family in host order, then the port and the address in network order.
+let sockaddr (address : byte[]) : ImmutableArray<byte> =
+    ImmutableArray.CreateRange (Array.concat [ [| 2uy ; 0uy ; 0x13uy ; 0x88uy |] ; address ; Array.zeroCreate 8 ])
 
-match UnixSocket.bind fd UserBuffer.Mapped 16u multicast socketSystem with
-| Error (BindRefusal.Reason.UnmodelledMulticast (_, address)) ->
-    printfn "no multicast here, so no bind of %s" (Ipv4Address.toString address)
-| Error refusal -> failwith (BindRefusal.describe refusal)
-| Ok (answer, _) -> printfn "bind answered %O" answer
+// A bind to the multicast group 224.0.0.1 is not modelled: this library models no group membership.
+let multicast =
+    try
+        Some (UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 224uy ; 0uy ; 0uy ; 1uy |]) socketSystem)
+    with :? UnmodelledException ->
+        None
+
+printfn "multicast bind answered: %b" multicast.IsSome
+
+// The throw left socketSystem as it was, so the client carries on from it: bind 127.0.0.1:5000.
+match UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 127uy ; 0uy ; 0uy ; 1uy |]) socketSystem with
+| BindAnswer.Bound (SocketAddress.Inet endpoint), _ ->
+    printfn "bound %s:%d" (Ipv4Address.toString endpoint.Address) endpoint.Port
+| answer, _ -> failwith $"unexpected bind: %A{answer}"
 
 // Prints:
-// no multicast here, so no bind of 224.0.0.1
+// multicast bind answered: false
+// bound 127.0.0.1:5000
 ```
 
-A few types whose names end in "Refusal" are not refusals in this sense, and keep public cases: `BufferRefusal`, which classifies the client's own buffer; `Ipv4PrefixRefusal` and `SignalMaskRefusal`, the errors of parsers; and `DirectorySourceRefusal`, a flavour's rule.
+A few public types whose names end in "Refusal" or "Fault" are values a client holds rather than refusals: `BufferRefusal`, which classifies the client's own buffer; `Ipv4PrefixRefusal` and `SignalMaskRefusal`, the errors of parsers; `DirectorySourceRefusal` and `GetCwdDestinationFault`, flavours' rules; and `BindFault`, one of `bind(2)`'s checks.
 
-A setter of the machine's boot configuration or of a process's launch refuses the same way.
-Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal`, `FileSystemSeedFault` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+The setters of the machine's boot configuration and of a process's launch refuse the same way.
+A value this library has not measured or does not model throws `UnmodelledException`; one no machine of the flavour could have throws `ArgumentException` or `ArgumentOutOfRangeException`, naming the parameter.
 
 A call that a real kernel would not let happen at all is a bug in the client, and throws: a task making a syscall while it is asleep in another, a name that is no task, or `UnixScheduling.getcpu` of a task that is not running.
 A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is a bug in the client too, and throws.
@@ -305,12 +284,9 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 
 From version 1.0, adding a case to any union whose cases are public is a breaking change, and comes only in a major version.
 F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
-The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a reason to refuse.
+The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a place that throws `UnmodelledException` (see "Answers, and what this library will not answer"), which needs no new case.
 Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` and `WakePrimitive.FifoPartnerOpened`.
 Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
-
-An open refusal type's cases are not public (see "Answers and refusals"), so a client built against an older version meets a reason added since in its wildcard, and a minor version may add one.
-Removing a reason's pattern, or changing what it hands back, is breaking; a reason the library no longer produces keeps a pattern that never matches.
 
 The defects the `checkInvariants` functions report (`UnixSystemDefect`, `VirtualFileSystemDefect`, `FileDescriptorRegistryDefect` and `SimulatedMachineDefect`) are open too, and have no patterns at all.
 A defect is a bug in this library, and the thing to do with one is report it with its `describe`; no client needs to branch on which rule broke.
@@ -331,45 +307,45 @@ A `SyscallOutcome` is a `SyscallAnswer` (`SyscallOutcome.Answered`), the task as
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `dup(2)` | `UnixDescriptor.dup (fd : int)` | `Result<SyscallAnswer * UnixSystem, DescriptorLimitRefusal>` |
-| `dup2(2)` | `UnixDescriptor.dup2 (oldFd : int) (newFd : int)` | `Result<SyscallAnswer * UnixSystem, Dup2Refusal>` |
-| `dup3(2)` | `UnixDescriptor.dup3 (oldFd : int) (newFd : int) (flags : int)` | `Result<SyscallAnswer * UnixSystem, Dup3Refusal>` |
-| `fcntl(2)`: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` | `UnixDescriptor.fcntl (fd : int) (command : int) (argument : int)` | `Result<SyscallAnswer * UnixSystem, FcntlRefusal>` |
+| `dup(2)` | `UnixDescriptor.dup (fd : int)` | `SyscallAnswer * UnixSystem` |
+| `dup2(2)` | `UnixDescriptor.dup2 (oldFd : int) (newFd : int)` | `SyscallAnswer * UnixSystem` |
+| `dup3(2)` | `UnixDescriptor.dup3 (oldFd : int) (newFd : int) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `fcntl(2)`: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` | `UnixDescriptor.fcntl (fd : int) (command : int) (argument : int)` | `SyscallAnswer * UnixSystem` |
 | `fcntl(F_SETFL)` of `fcntl(F_GETFL)` with `O_NONBLOCK` changed | `UnixDescriptor.setNonBlocking (fd : int) (isNonBlocking : bool)` | `SetNonBlockingAnswer * UnixSystem` |
 | `O_NONBLOCK` in `fcntl(F_GETFL)` | `UnixDescriptor.isNonBlocking (fd : int)` | `bool option` |
-| `lseek(2)` | `UnixDescriptor.lseek (fd : int) (offset : int64) (whence : int)` | `Result<SyscallAnswer * UnixSystem, LSeekRefusal>` |
-| `flock(2)` | `UnixDescriptor.flock (task : 'Task) (fd : int) (operation : int)` | `Result<SyscallOutcome * UnixSystem, FLockRefusal>` |
-| `ftruncate(2)` | `UnixDescriptor.ftruncate (fd : int) (length : int64)` | `Result<SyscallAnswer * UnixSystem, TruncationRefusal>` |
-| `posix_fadvise(3)` | `UnixDescriptor.posixFadvise (fd : int) (offset : int64) (length : int64) (advice : int)` | `Result<FileAdviceAnswer, PosixFadviseRefusal>` |
-| `close(2)` | `UnixDescriptor.close (fd : int)` | `Result<SyscallAnswer * UnixSystem, CloseRefusal>` |
-| `ioctl(FIONREAD)` | `UnixDescriptor.bytesAvailable (fd : int) (destination : UserBuffer)` | `Result<BytesAvailableAnswer, BytesAvailableRefusal>` |
-| `ioctl(FICLONE)` | `UnixDescriptor.fileClone (destination : int) (source : int)` | `Result<UnixError, FileCloneRefusal>` |
+| `lseek(2)` | `UnixDescriptor.lseek (fd : int) (offset : int64) (whence : int)` | `SyscallAnswer * UnixSystem` |
+| `flock(2)` | `UnixDescriptor.flock (task : 'Task) (fd : int) (operation : int)` | `SyscallOutcome * UnixSystem` |
+| `ftruncate(2)` | `UnixDescriptor.ftruncate (fd : int) (length : int64)` | `SyscallAnswer * UnixSystem` |
+| `posix_fadvise(3)` | `UnixDescriptor.posixFadvise (fd : int) (offset : int64) (length : int64) (advice : int)` | `FileAdviceAnswer` |
+| `close(2)` | `UnixDescriptor.close (fd : int)` | `SyscallAnswer * UnixSystem` |
+| `ioctl(FIONREAD)` | `UnixDescriptor.bytesAvailable (fd : int) (destination : UserBuffer)` | `BytesAvailableAnswer` |
+| `ioctl(FICLONE)` | `UnixDescriptor.fileClone (destination : int) (source : int)` | `UnixError` |
 | `tcgetattr(3)`, `isatty(3)` | `UnixDescriptor.terminalAttributes (fd : int)` | `TerminalAttributesAnswer` |
 | `geteuid(2)` | `UnixDescriptor.effectiveUserId` | `UserId` |
 | `getegid(2)` | `UnixDescriptor.effectiveGroupId` | `GroupId` |
-| `getgroups(2)` | `UnixDescriptor.getgroups (destination : UserBuffer) (size : int)` | `Result<GetGroupsAnswer, GetGroupsRefusal>` |
+| `getgroups(2)` | `UnixDescriptor.getgroups (destination : UserBuffer) (size : int)` | `GetGroupsAnswer` |
 
 #### Paths and their files
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `stat(2)` (`SymlinkPolicy.Follow`), `lstat(2)` (`SymlinkPolicy.NoFollowFinal`) | `UnixPathResolution.stat (policy : SymlinkPolicy) (path : PathArgumentBytes)` | `Result<FileStatusAnswer, StatRefusal>` |
-| `fstat(2)` | `UnixPathResolution.fstat (fd : int)` | `Result<FileStatusAnswer, FStatRefusal>` |
-| `fstatat(2)` | `UnixPathResolution.fstatat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `Result<FileStatusAnswer, FStatAtRefusal>` |
-| `chmod(2)` | `UnixPathResolution.chmod (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, ChModRefusal>` |
-| `fchmod(2)` | `UnixPathResolution.fchmod (fd : int) (mode : int)` | `Result<SyscallAnswer * UnixSystem, FChModRefusal>` |
-| `fchmodat(2)` | `UnixPathResolution.fchmodat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `Result<SyscallAnswer * UnixSystem, FChModAtRefusal>` |
-| `chown(2)` | `UnixPathResolution.chown (path : PathArgumentBytes) (user : UserId option) (group : GroupId option)` | `Result<SyscallAnswer * UnixSystem, ChOwnRefusal>` |
-| `lchown(2)` | `UnixPathResolution.lchown (path : PathArgumentBytes) (user : UserId option) (group : GroupId option)` | `Result<SyscallAnswer * UnixSystem, ChOwnRefusal>` |
-| `fchown(2)` | `UnixPathResolution.fchown (fd : int) (user : UserId option) (group : GroupId option)` | `Result<SyscallAnswer * UnixSystem, FChOwnRefusal>` |
-| `fchownat(2)` | `UnixPathResolution.fchownat (dirfd : int) (path : PathArgumentBytes) (user : UserId option) (group : GroupId option) (flags : int)` | `Result<SyscallAnswer * UnixSystem, FChOwnAtRefusal>` |
-| `utimensat(2)`, and Linux's `futimens(3)` | `UnixPathResolution.utimensat (dirfd : int) (path : NullablePathArgument) (times : TimesArgument) (flags : int)` | `Result<SyscallAnswer * UnixSystem, UTimensAtRefusal>` |
-| `statfs(2)` | `UnixPathResolution.statfs (path : PathArgumentBytes)` | `Result<FileSystemStatisticsAnswer, PathRefusal>` |
+| `stat(2)` (`SymlinkPolicy.Follow`), `lstat(2)` (`SymlinkPolicy.NoFollowFinal`) | `UnixPathResolution.stat (policy : SymlinkPolicy) (path : PathArgumentBytes)` | `FileStatusAnswer` |
+| `fstat(2)` | `UnixPathResolution.fstat (fd : int)` | `FileStatusAnswer` |
+| `fstatat(2)` | `UnixPathResolution.fstatat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `FileStatusAnswer` |
+| `chmod(2)` | `UnixPathResolution.chmod (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer * UnixSystem` |
+| `fchmod(2)` | `UnixPathResolution.fchmod (fd : int) (mode : int)` | `SyscallAnswer * UnixSystem` |
+| `fchmodat(2)` | `UnixPathResolution.fchmodat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `chown(2)` | `UnixPathResolution.chown (path : PathArgumentBytes) (user : UserId option) (group : GroupId option)` | `SyscallAnswer * UnixSystem` |
+| `lchown(2)` | `UnixPathResolution.lchown (path : PathArgumentBytes) (user : UserId option) (group : GroupId option)` | `SyscallAnswer * UnixSystem` |
+| `fchown(2)` | `UnixPathResolution.fchown (fd : int) (user : UserId option) (group : GroupId option)` | `SyscallAnswer * UnixSystem` |
+| `fchownat(2)` | `UnixPathResolution.fchownat (dirfd : int) (path : PathArgumentBytes) (user : UserId option) (group : GroupId option) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `utimensat(2)`, and Linux's `futimens(3)` | `UnixPathResolution.utimensat (dirfd : int) (path : NullablePathArgument) (times : TimesArgument) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `statfs(2)` | `UnixPathResolution.statfs (path : PathArgumentBytes)` | `FileSystemStatisticsAnswer` |
 | `fstatfs(2)` | `UnixPathResolution.fstatfs (fd : int)` | `FileSystemStatisticsAnswer` |
-| `getcwd(3)` | `UnixPathResolution.getcwd (destination : UserBuffer) (capacity : uint64)` | `Result<GetCwdAnswer, GetCwdRefusal>` |
-| `chdir(2)` | `UnixPathResolution.chdir (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, PathRefusal>` |
-| `access(2)` | `UnixPathResolution.access (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer, AccessRefusal>` |
-| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `Result<SyscallAnswer, AccessRefusal>` |
+| `getcwd(3)` | `UnixPathResolution.getcwd (destination : UserBuffer) (capacity : uint64)` | `GetCwdAnswer` |
+| `chdir(2)` | `UnixPathResolution.chdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `access(2)` | `UnixPathResolution.access (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer` |
+| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `SyscallAnswer` |
 
 `UnixPathResolution.currentDirectoryPath` is the current directory's path, for a client that wants it without a buffer.
 
@@ -382,73 +358,73 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `open(2)` | `UnixNamespace.openPath (task : 'Task) (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
-| `openat(2)` | `UnixNamespace.openat (task : 'Task) (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
-| `readlink(2)` | `UnixNamespace.readlink (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
-| `readlinkat(2)` | `UnixNamespace.readlinkat (dirfd : int) (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
-| one entry of `getdents(2)` or `getdirentries(2)`, without its byte layout | `UnixNamespace.readDirectoryEntry (fd : int)` | `Result<ReadDirectoryAnswer * UnixSystem, ReadDirectoryRefusal>` |
-| `mkdir(2)` | `UnixNamespace.mkdir (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, PathRefusal>` |
-| `mkdirat(2)` | `UnixNamespace.mkdirat (dirfd : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, PathRefusal>` |
-| `mknod(2)`, regular files only | `UnixNamespace.mknod (path : PathArgumentBytes) (mode : int) (dev : uint32)` | `Result<SyscallAnswer * UnixSystem, MkNodRefusal>` |
-| `mknodat(2)`, regular files only | `UnixNamespace.mknodat (dirfd : int) (path : PathArgumentBytes) (mode : int) (dev : uint32)` | `Result<SyscallAnswer * UnixSystem, MkNodRefusal>` |
-| `unlink(2)` | `UnixNamespace.unlink (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, RemovalRefusal>` |
-| `rmdir(2)` | `UnixNamespace.rmdir (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, RemovalRefusal>` |
-| `unlinkat(2)` | `UnixNamespace.unlinkat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, UnlinkAtRefusal>` |
-| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes) (destination : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, RenameRefusal>` |
-| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, RenameRefusal>` |
-| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (source : PathArgumentBytes) (destination : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, CloneFileRefusal>` |
-| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes) (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, SymlinkRefusal>` |
-| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, SymlinkRefusal>` |
-| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
-| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
+| `open(2)` | `UnixNamespace.openPath (task : 'Task) (flags : int) (path : PathArgumentBytes) (mode : int)` | `SyscallOutcome * UnixSystem` |
+| `openat(2)` | `UnixNamespace.openat (task : 'Task) (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `SyscallOutcome * UnixSystem` |
+| `readlink(2)` | `UnixNamespace.readlink (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `ReadLinkAnswer` |
+| `readlinkat(2)` | `UnixNamespace.readlinkat (dirfd : int) (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `ReadLinkAnswer` |
+| one entry of `getdents(2)` or `getdirentries(2)`, without its byte layout | `UnixNamespace.readDirectoryEntry (fd : int)` | `ReadDirectoryAnswer * UnixSystem` |
+| `mkdir(2)` | `UnixNamespace.mkdir (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer * UnixSystem` |
+| `mkdirat(2)` | `UnixNamespace.mkdirat (dirfd : int) (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer * UnixSystem` |
+| `mknod(2)`, regular files only | `UnixNamespace.mknod (path : PathArgumentBytes) (mode : int) (dev : uint32)` | `SyscallAnswer * UnixSystem` |
+| `mknodat(2)`, regular files only | `UnixNamespace.mknodat (dirfd : int) (path : PathArgumentBytes) (mode : int) (dev : uint32)` | `SyscallAnswer * UnixSystem` |
+| `unlink(2)` | `UnixNamespace.unlink (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `rmdir(2)` | `UnixNamespace.rmdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `unlinkat(2)` | `UnixNamespace.unlinkat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes) (destination : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (source : PathArgumentBytes) (destination : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
+| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
 
 `UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
 Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
 
 An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`, or a FIFO (`InodeContent.Fifo`), which a directory entry reports as `DirectoryEntryKind.Fifo`.
-Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.Reason.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Fifo`.
+Nothing produces either yet: `mknod` of `S_IFSOCK` or `S_IFIFO`, and a Unix-domain `bind`, are refused.
 The cases exist so that a client's matches already handle them when pathname sockets and FIFOs arrive.
 
 #### Reading and writing
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `read(2)` | `UnixReadWrite.read (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `Result<ReadOutcome * UnixSystem, ReadRefusal>` |
-| `recv(2)` | `UnixReadWrite.recv (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `Result<ReadOutcome * UnixSystem, ReceiveRefusal>` |
-| `pread(2)` | `UnixReadWrite.pread (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `Result<ReadAnswer * UnixSystem, PReadRefusal>` |
-| `write(2)`, before the copy | `UnixReadWrite.admitWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `Result<WriteOutcome<WriteAdmission>, WriteRefusal>` |
-| `write(2)`, given the bytes | `UnixReadWrite.write (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>)` | `Result<WriteOutcome<WriteAnswer>, WriteRefusal>` |
-| `write(2)`, given the first bytes of a write that then sleeps | `UnixReadWrite.writeThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>)` | `Result<WriteOutcome<WriteAnswer>, WriteRefusal>` |
-| `send(2)`, before the copy | `UnixReadWrite.admitSend (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `Result<WriteOutcome<WriteAdmission>, SendRefusal>` |
-| `send(2)`, given the bytes | `UnixReadWrite.send (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (flags : int)` | `Result<WriteOutcome<WriteAnswer>, SendRefusal>` |
+| `read(2)` | `UnixReadWrite.read (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `ReadOutcome * UnixSystem` |
+| `recv(2)` | `UnixReadWrite.recv (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `ReadOutcome * UnixSystem` |
+| `pread(2)` | `UnixReadWrite.pread (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `ReadAnswer * UnixSystem` |
+| `write(2)`, before the copy | `UnixReadWrite.admitWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `WriteOutcome<WriteAdmission>` |
+| `write(2)`, given the bytes | `UnixReadWrite.write (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
+| `write(2)`, given the first bytes of a write that then sleeps | `UnixReadWrite.writeThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
+| `send(2)`, before the copy | `UnixReadWrite.admitSend (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `WriteOutcome<WriteAdmission>` |
+| `send(2)`, given the bytes | `UnixReadWrite.send (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
 | `send(2)`, given the first bytes of a send that then sleeps | `UnixReadWrite.sendThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
-| `pwrite(2)`, before the copy | `UnixReadWrite.admitPWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `Result<PWriteAdmission, PWriteRefusal>` |
-| `pwrite(2)`, given the bytes | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (offset : int64)` | `Result<WriteAnswer * UnixSystem, PWriteRefusal>` |
-| `copy_file_range(2)` | `UnixReadWrite.copyFileRange (inFd : int) (outFd : int) (length : uint64) (flags : int)` | `Result<SyscallAnswer * UnixSystem, CopyFileRangeRefusal>` |
-| `pipe2(2)`, and `pipe(2)` as `pipe2` with no flags | `UnixPipe.pipe2 (flags : int) (destination : UserBuffer)` | `Result<Pipe2Answer * UnixSystem, Pipe2Refusal>` |
+| `pwrite(2)`, before the copy | `UnixReadWrite.admitPWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `PWriteAdmission` |
+| `pwrite(2)`, given the bytes | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (offset : int64)` | `WriteAnswer * UnixSystem` |
+| `copy_file_range(2)` | `UnixReadWrite.copyFileRange (inFd : int) (outFd : int) (length : uint64) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `pipe2(2)`, and `pipe(2)` as `pipe2` with no flags | `UnixPipe.pipe2 (flags : int) (destination : UserBuffer)` | `Pipe2Answer * UnixSystem` |
 
 #### Sockets
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `socket(2)` | `UnixSocket.socket (domain : int) (socketType : int) (protocol : int)` | `Result<Result<int * UnixSystem, UnixError>, SocketRefusal>` |
-| `bind(2)` and `connect(2)`, before the copy | `UnixSocket.admitSockaddrCopy (syscall : SockaddrCopySyscall) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `Result<SockaddrCopyAdmission, SockaddrCopyRefusal>` |
-| `bind(2)`, given the bytes | `UnixSocket.bind (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `Result<BindAnswer * UnixSystem, BindRefusal>` |
-| `connect(2)`, given the bytes | `UnixConnection.connect (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `Result<ConnectOutcome * UnixSystem, ConnectRefusal>` |
-| `listen(2)` | `UnixSocket.listen (fd : int) (backlog : int)` | `Result<ListenAnswer * UnixSystem, ListenRefusal>` |
-| `accept(2)` | `UnixConnection.accept (task : 'Task) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `Result<AcceptOutcome * UnixSystem, AcceptRefusal>` |
-| `shutdown(2)` | `UnixConnection.shutdown (fd : int) (how : int)` | `Result<ShutdownAnswer * UnixSystem, ShutdownRefusal>` |
-| `getsockname(2)` | `UnixSocket.getsockname (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `Result<GetSockNameAnswer, GetSockNameRefusal>` |
-| `getpeername(2)` | `UnixSocket.getpeername (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `Result<GetSockNameAnswer, GetSockNameRefusal>` |
-| `setsockopt(2)`, before the copy | `UnixSocket.admitSetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `Result<SetSockOptAdmission, SocketOptionRefusal>` |
-| `setsockopt(2)`, given the bytes | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32) (supplied : ImmutableArray<byte> option)` | `Result<SetSockOptAnswer * UnixSystem, SocketOptionRefusal>` |
-| `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `Result<GetSockOptAdmission, SocketOptionRefusal>` |
-| `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `Result<GetSockOptAnswer * UnixSystem, SocketOptionRefusal>` |
+| `socket(2)` | `UnixSocket.socket (domain : int) (socketType : int) (protocol : int)` | `Result<int * UnixSystem, UnixError>` |
+| `bind(2)` and `connect(2)`, before the copy | `UnixSocket.admitSockaddrCopy (syscall : SockaddrCopySyscall) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `SockaddrCopyAdmission` |
+| `bind(2)`, given the bytes | `UnixSocket.bind (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `BindAnswer * UnixSystem` |
+| `connect(2)`, given the bytes | `UnixConnection.connect (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `ConnectOutcome * UnixSystem` |
+| `listen(2)` | `UnixSocket.listen (fd : int) (backlog : int)` | `ListenAnswer * UnixSystem` |
+| `accept(2)` | `UnixConnection.accept (task : 'Task) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `AcceptOutcome * UnixSystem` |
+| `shutdown(2)` | `UnixConnection.shutdown (fd : int) (how : int)` | `ShutdownAnswer * UnixSystem` |
+| `getsockname(2)` | `UnixSocket.getsockname (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
+| `getpeername(2)` | `UnixSocket.getpeername (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
+| `setsockopt(2)`, before the copy | `UnixSocket.admitSetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `SetSockOptAdmission` |
+| `setsockopt(2)`, given the bytes | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32) (supplied : ImmutableArray<byte> option)` | `SetSockOptAnswer * UnixSystem` |
+| `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `GetSockOptAdmission` |
+| `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `GetSockOptAnswer * UnixSystem` |
 
 An address crosses the syscall boundary as bytes, laid out as the platform's `struct sockaddr`: `bind` and `connect` take them, and `getsockname`, `getpeername` and `accept` answer them.
-Where the kernel hands out an address already decoded, in an answer, a refusal or a socket's `SocketPhase.DatagramPeer`, it is a `SocketAddress`: an `Ipv4Endpoint`, an `Ipv6Endpoint`, or a `UnixSocketName`, whose representation is hidden and which `UnixSocketName.view` reads as a path or a Linux abstract name (`UnixSocketNameView`).
+Where the kernel hands out an address already decoded, in an answer or a socket's `SocketPhase.DatagramPeer`, it is a `SocketAddress`: an `Ipv4Endpoint`, an `Ipv6Endpoint`, or a `UnixSocketName`, whose representation is hidden and which `UnixSocketName.view` reads as a path or a Linux abstract name (`UnixSocketNameView`).
 `BindAnswer.Bound` and `ListenAnswer.Listening` carry the address as `getsockname` would report it at once, and so in the socket's own family: a dual-mode IPv6 socket (`IPV6_V6ONLY` off) bound to an IPv4 address answers it v4-mapped, `::ffff:a.b.c.d`.
-This kernel's IPv6 sockets reach only IPv4 peers, through v4-mapped addresses, so a `ConnectRefusal` names the IPv4 endpoint the connect resolved, even from an IPv6 socket.
+This kernel's IPv6 sockets reach only IPv4 peers, through v4-mapped addresses, so a refused `connect` names the IPv4 endpoint it resolved, even from an IPv6 socket.
 It binds no Unix-domain socket yet, so nothing it hands out holds a `UnixSocketName`.
 A socket's own state, which `UnixSystem.socket` reads, keeps its local address in its domain's own types: `SocketAddressing.Inet` holds an IPv4 binding, `SocketAddressing.Inet6DualMode` a `DualModeBinding`, `SocketAddressing.Inet6V6Only` an IPv6 binding, and `SocketAddressing.Unix` a `UnixSocketName`, each as an option that is `None` while the socket is unbound. An IP binding is an `InetBinding` over the family's endpoint and address types, so an IPv4 socket cannot hold an IPv6 address.
 A dual-mode socket bound to an IPv4 address holds it as `DualModeBinding.Mapped`, the IPv4 transport, and presents it v4-mapped.
@@ -464,12 +440,12 @@ A connected TCP socket's `read` and `write` move bytes through its connection, w
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `poll(2)` | `UnixPoll.poll (task : 'Task) (entries : PollEntry list) (milliseconds : int)` | `Result<PollOutcome * UnixSystem, PollRefusal>` |
-| `epoll_create1(2)` | `UnixPoll.epollCreate1 (flags : int)` | `Result<Result<int * UnixSystem, UnixError>, EpollCreateRefusal>` |
-| `epoll_ctl(2)` | `UnixPoll.epollCtl (epfd : int) (op : int) (fd : int) (event : EpollEventArgument)` | `Result<EpollCtlAnswer * UnixSystem, EpollCtlRefusal>` |
-| `epoll_wait(2)` | `UnixPoll.epollWait (task : 'Task) (epfd : int) (maxEvents : int) (buffer : UserBuffer) (milliseconds : int)` | `Result<EpollWaitOutcome * UnixSystem, EpollWaitRefusal>` |
-| Darwin's `kqueue(2)` | `UnixKqueue.kqueue` | `Result<int * UnixSystem, KqueueRefusal>` |
-| Darwin's `kevent(2)` | `UnixKqueue.kevent (task : 'Task) (kq : int) (nchanges : int) (changes : Kevent list) (nevents : int) (eventlist : UserBuffer) (timeout : KeventTimeout)` | `Result<KeventOutcome * UnixSystem, KeventRefusal>` |
+| `poll(2)` | `UnixPoll.poll (task : 'Task) (entries : PollEntry list) (milliseconds : int)` | `PollOutcome * UnixSystem` |
+| `epoll_create1(2)` | `UnixPoll.epollCreate1 (flags : int)` | `Result<int * UnixSystem, UnixError>` |
+| `epoll_ctl(2)` | `UnixPoll.epollCtl (epfd : int) (op : int) (fd : int) (event : EpollEventArgument)` | `EpollCtlAnswer * UnixSystem` |
+| `epoll_wait(2)` | `UnixPoll.epollWait (task : 'Task) (epfd : int) (maxEvents : int) (buffer : UserBuffer) (milliseconds : int)` | `EpollWaitOutcome * UnixSystem` |
+| Darwin's `kqueue(2)` | `UnixKqueue.kqueue` | `int * UnixSystem` |
+| Darwin's `kevent(2)` | `UnixKqueue.kevent (task : 'Task) (kq : int) (nchanges : int) (changes : Kevent list) (nevents : int) (eventlist : UserBuffer) (timeout : KeventTimeout)` | `KeventOutcome * UnixSystem` |
 
 #### Watching the filesystem
 
@@ -479,31 +455,31 @@ An instance is an open file description, `OpenFileTarget.Inotify`, holding its w
 `poll(2)` and epoll report it readable while it holds a record, and `ioctl(FIONREAD)` (`UnixDescriptor.bytesAvailable`) reports the bytes it holds.
 Each user's instances and watches count against the machine's `InotifyLimits`, in every process.
 In this version no filesystem change is reported to a watch: the only records an instance queues are the `IN_IGNORED` of a watch `inotify_rm_watch` removes, and the `IN_Q_OVERFLOW` of a full queue.
-A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal`).
-Darwin has no inotify, and refuses every call.
+A watch asking for an event this kernel does not raise, `IN_ACCESS`, `IN_OPEN`, `IN_CLOSE_WRITE`, `IN_CLOSE_NOWRITE` or `IN_UNMOUNT`, or carrying `IN_ONESHOT`, is refused.
+Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `inotify_init1(2)` | `UnixInotify.inotifyInit1 (flags : int)` | `Result<Result<int * UnixSystem, UnixError>, InotifyRefusal>` |
-| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (path : PathArgumentBytes) (mask : uint32)` | `Result<SyscallAnswer * UnixSystem, InotifyAddWatchRefusal>` |
-| `inotify_rm_watch(2)` | `UnixInotify.inotifyRmWatch (fd : int) (wd : int)` | `Result<SyscallAnswer * UnixSystem, InotifyRefusal>` |
+| `inotify_init1(2)` | `UnixInotify.inotifyInit1 (flags : int)` | `Result<int * UnixSystem, UnixError>` |
+| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (path : PathArgumentBytes) (mask : uint32)` | `SyscallAnswer * UnixSystem` |
+| `inotify_rm_watch(2)` | `UnixInotify.inotifyRmWatch (fd : int) (wd : int)` | `SyscallAnswer * UnixSystem` |
 
 #### Signals
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<Result<KillOutcome, UnixError>, KillRefusal>` |
-| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<Result<KillOutcome, UnixError>, ThreadKillRefusal>` |
+| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<KillOutcome, UnixError>` |
+| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<KillOutcome, UnixError>` |
 | `sigaction(3)` | `UnixSignal.sigaction (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `sigaction(2)`: Linux's `rt_sigaction` | `UnixSignal.sigactionSyscall (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `pthread_sigmask(3)` | `UnixSignal.pthreadSigmask (task : 'Task) (how : int) (set : SignalMask option)` | `Result<SignalMask * UnixSystem, UnixError>` |
-| `sigprocmask(3)` on Linux, `sigprocmask(2)` on Darwin | `UnixSignal.sigprocmask (task : 'Task) (how : int) (set : SignalMask option)` | `Result<Result<SignalMask * UnixSystem, UnixError>, SigprocmaskRefusal>` |
+| `sigprocmask(3)` on Linux, `sigprocmask(2)` on Darwin | `UnixSignal.sigprocmask (task : 'Task) (how : int) (set : SignalMask option)` | `Result<SignalMask * UnixSystem, UnixError>` |
 | Linux's `rt_sigprocmask(2)` | `UnixSignal.rtSigprocmask (task : 'Task) (how : int) (set : SignalMask option) (sigsetSize : uint64)` | `Result<SignalMask * UnixSystem, UnixError>` |
 | `sigpending(2)` | `UnixSignal.sigpending (task : 'Task)` | `SignalMask` |
-| `sigsuspend(2)` | `UnixSignal.sigsuspend (task : 'Task) (mask : SignalMask)` | `Result<SigsuspendOutcome * UnixSystem, SigsuspendRefusal>` |
-| Linux's `rt_sigsuspend(2)` | `UnixSignal.rtSigsuspend (task : 'Task) (mask : SignalMask) (sigsetSize : uint64)` | `Result<SigsuspendOutcome * UnixSystem, SigsuspendRefusal>` |
-| `pause(2)` | `UnixSignal.pause (task : 'Task)` | `Result<SigsuspendOutcome * UnixSystem, SigsuspendRefusal>` |
-| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `Result<ReturnToUserOutcome, SignalReceiverRefusal>` |
+| `sigsuspend(2)` | `UnixSignal.sigsuspend (task : 'Task) (mask : SignalMask)` | `SigsuspendOutcome * UnixSystem` |
+| Linux's `rt_sigsuspend(2)` | `UnixSignal.rtSigsuspend (task : 'Task) (mask : SignalMask) (sigsetSize : uint64)` | `SigsuspendOutcome * UnixSystem` |
+| `pause(2)` | `UnixSignal.pause (task : 'Task)` | `SigsuspendOutcome * UnixSystem` |
+| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `ReturnToUserOutcome` |
 | `sigreturn(2)` | `UnixSignal.sigreturn (task : 'Task) (frame : HandlerFrameId)` | `UnixSystem` |
 
 A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`, `SignalMask.ofSignals`), because Darwin keeps a bit that names no signal.
@@ -514,23 +490,23 @@ A signal number is raw, under the process's own numbering: `Signal.toRawSignoUnd
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `clock_gettime(2)` | `UnixClock.clockGettime (clockId : int)` | `Result<Result<UnixTimestamp, UnixError>, ClockGettimeRefusal>` |
+| `clock_gettime(2)` | `UnixClock.clockGettime (clockId : int)` | `Result<UnixTimestamp, UnixError>` |
 | `gettimeofday(2)` | `UnixClock.gettimeofday` | `UnixTimestamp` |
-| Linux's `getrandom(2)` | `UnixEntropy.getRandom (task : 'Task) (buffer : UserBuffer) (count : uint64) (flags : uint32)` | `Result<GetRandomAnswer * UnixSystem, GetRandomRefusal>` |
-| Darwin's `getentropy(2)` | `UnixEntropy.getEntropy (buffer : UserBuffer) (length : uint64)` | `Result<GetEntropyAnswer * UnixSystem, GetEntropyRefusal>` |
+| Linux's `getrandom(2)` | `UnixEntropy.getRandom (task : 'Task) (buffer : UserBuffer) (count : uint64) (flags : uint32)` | `GetRandomAnswer * UnixSystem` |
+| Darwin's `getentropy(2)` | `UnixEntropy.getEntropy (buffer : UserBuffer) (length : uint64)` | `GetEntropyAnswer * UnixSystem` |
 | `getpid(2)` | `UnixSystem.processId` | `ProcessId` |
 | `umask(2)` | `UnixSystem.umask (mask : int)` | `PermissionBits * UnixSystem` |
-| `getresuid(2)` | `UnixCredentials.getresuid (real : UserBuffer) (effective : UserBuffer) (saved : UserBuffer)` | `Result<GetIdsAnswer<UserId>, GetIdsRefusal>` |
-| `getresgid(2)` | `UnixCredentials.getresgid (real : UserBuffer) (effective : UserBuffer) (saved : UserBuffer)` | `Result<GetIdsAnswer<GroupId>, GetIdsRefusal>` |
-| `setresuid(2)` | `UnixCredentials.setresuid (real : UserId option) (effective : UserId option) (saved : UserId option)` | `Result<SyscallAnswer * UnixSystem, SetIdsRefusal>` |
-| `setresgid(2)` | `UnixCredentials.setresgid (real : GroupId option) (effective : GroupId option) (saved : GroupId option)` | `Result<SyscallAnswer * UnixSystem, SetIdsRefusal>` |
-| `setgroups(2)` | `UnixCredentials.setgroups (size : int) (words : GroupListWords)` | `Result<SyscallAnswer * UnixSystem, SetGroupsRefusal>` |
-| `clone(2)` with `CLONE_THREAD`, as `pthread_create(3)` makes it | `UnixTaskLifecycle.spawn (parent : 'Task) (child : 'Task) (cpu : CpuId)` | `Result<SpawnAnswer * UnixSystem, SpawnRefusal>` |
-| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `Result<TaskOutcome, ThreadExitRefusal>` |
+| `getresuid(2)` | `UnixCredentials.getresuid (real : UserBuffer) (effective : UserBuffer) (saved : UserBuffer)` | `GetIdsAnswer<UserId>` |
+| `getresgid(2)` | `UnixCredentials.getresgid (real : UserBuffer) (effective : UserBuffer) (saved : UserBuffer)` | `GetIdsAnswer<GroupId>` |
+| `setresuid(2)` | `UnixCredentials.setresuid (real : UserId option) (effective : UserId option) (saved : UserId option)` | `SyscallAnswer * UnixSystem` |
+| `setresgid(2)` | `UnixCredentials.setresgid (real : GroupId option) (effective : GroupId option) (saved : GroupId option)` | `SyscallAnswer * UnixSystem` |
+| `setgroups(2)` | `UnixCredentials.setgroups (size : int) (words : GroupListWords)` | `SyscallAnswer * UnixSystem` |
+| `clone(2)` with `CLONE_THREAD`, as `pthread_create(3)` makes it | `UnixTaskLifecycle.spawn (parent : 'Task) (child : 'Task) (cpu : CpuId)` | `SpawnAnswer * UnixSystem` |
+| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `TaskOutcome` |
 | `exit_group(2)`, as `exit(3)` and `_exit(2)` make it | `UnixTaskLifecycle.exitGroup (task : 'Task) (status : int)` | `EndedProcess` |
 | the client's report that a task runs on a processor | `UnixScheduling.dispatch (task : 'Task) (cpu : CpuId)` | `UnixSystem` |
 | where a task is running | `UnixScheduling.runningOn (task : 'Task)` | `CpuId option` |
-| Linux's `getcpu(2)` | `UnixScheduling.getcpu (task : 'Task)` | `Result<GetCpuAnswer, GetCpuRefusal>` |
+| Linux's `getcpu(2)` | `UnixScheduling.getcpu (task : 'Task)` | `GetCpuAnswer` |
 
 `UnixEntropy.getRandomMaxTransfer` is the most one `getrandom` moves.
 `gettid(2)` is `UnixTaskState.osThreadId` of the task, and `getuid(2)` and `getgid(2)` are fields of `UnixSystem.credentials` (`Credentials.RealUser`, `Credentials.RealGroup`).
@@ -554,7 +530,7 @@ A client that holds every argument already, such as a replayer, uses the one-sho
 
 #### One entry point
 
-`UnixSystem.step (task : 'Task) (call : Syscall)` reaches some of the syscalls through one function, as cases of the `Syscall` type, for a client that wants to log, replay or generate them; it answers `Result<SyscallOutcome * UnixSystem, SyscallRefusal>`.
+`UnixSystem.step (task : 'Task) (call : Syscall)` reaches some of the syscalls through one function, as cases of the `Syscall` type, for a client that wants to log, replay or generate them; it answers `SyscallOutcome * UnixSystem`.
 Only the calls with a `Syscall` case are reachable through it, from `dup` and `fcntl` to `setgroups`, `inotify_init1` and `inotify_rm_watch`: each answers a `SyscallOutcome`, which is one integer, an errno, or a sleep.
 Many calls are not there, `open`, `socket`, `bind`, `connect`, `kill` and `sigaction` among them, and are reached only through their own functions.
 
@@ -568,7 +544,7 @@ A process alone on its machine is held to both in full. Of a view a `SimulatedMa
 Each table's own rules are checked apart from these: `FileDescriptorRegistry.checkInvariants` of `UnixSystem.fileDescriptors` for the descriptor table and the open file descriptions it names, and `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) (UnixSystem.fileSystem system)` for the filesystem.
 A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, a kqueue records the process that owns it, whose descriptor numbers its registrations name, and each kqueue registration records the socket it is attached to.
 
-Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `RLIMIT_NOFILE` a process of the flavour starts with (1024 on Linux, 256 on Darwin): the library assumes the process's limit is at least that, and refuses a call that would put a descriptor at or above it (`DescriptorLimitRefusal`), whose answer would depend on the limit.
+Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `RLIMIT_NOFILE` a process of the flavour starts with (1024 on Linux, 256 on Darwin): the library assumes the process's limit is at least that, and refuses a call that would put a descriptor at or above it, whose answer would depend on the limit.
 
 ## Moving bytes
 
@@ -643,44 +619,36 @@ This client makes a pipe, parks a second task on reading it, wakes it with a wri
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
-    match result with
-    | Ok value -> value
-    | Error refusal -> failwith (describe refusal)
-
 let platform = SimulatedUnixPlatform.linuxX64
 
 let booted : UnixSystem<int, unit> =
     let launch =
         ProcessLaunch.create platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> orFail LaunchTableRefusal.describe
 
-    UnixSystem.initial platform
-    |> UnixBootImage.boot launch
-    |> orFail LaunchRefusal.describe
+    UnixSystem.initial platform |> UnixBootImage.boot launch
 
 // Every call ends with the calling task's return to user mode, where it takes
 // its signals. This client installs no handler, so it expects none to run.
 let resume (task : int) (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
-    match UnixSignal.onReturnToUser task system |> orFail SignalReceiverRefusal.describe with
+    match UnixSignal.onReturnToUser task system with
     | ReturnToUserOutcome.Resumes system -> system
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pipe2(fds, 0) by task 0. UserBuffer.Mapped: the array for the two descriptors is writable.
 let readFd, writeFd, piped =
-    match UnixPipe.pipe2 0 UserBuffer.Mapped booted |> orFail Pipe2Refusal.describe with
+    match UnixPipe.pipe2 0 UserBuffer.Mapped booted with
     | Pipe2Answer.Created (readFd, writeFd), system -> readFd, writeFd, resume 0 system
     | answer, _ -> failwith $"unexpected from pipe2: %A{answer}"
 
 // Task 0 starts a thread, which this client names 1, on processor 0.
 let spawned =
-    match UnixTaskLifecycle.spawn 0 1 (CpuId 0) piped |> orFail SpawnRefusal.describe with
+    match UnixTaskLifecycle.spawn 0 1 (CpuId 0) piped with
     | SpawnAnswer.Spawned _, system -> resume 0 system
     | answer, _ -> failwith $"unexpected from spawn: %A{answer}"
 
 // Task 1 reads the empty pipe, and sleeps. The client holds it asleep.
 let asleep, parked =
-    match UnixReadWrite.read 1 readFd UserBuffer.Mapped 64UL spawned |> orFail ReadRefusal.describe with
+    match UnixReadWrite.read 1 readFd UserBuffer.Mapped 64UL spawned with
     | ReadOutcome.WouldBlock _, system -> Set.singleton 1, system
     | outcome, _ -> failwith $"expected the read to sleep: %A{outcome}"
 
@@ -689,12 +657,9 @@ let asleep, parked =
 let written =
     let payload = "hello"B
 
-    match
-        UnixReadWrite.admitWrite 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked
-        |> orFail WriteRefusal.describe
-    with
+    match UnixReadWrite.admitWrite 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked with
     | WriteOutcome.Returns (WriteAdmission.Transfer count, system) ->
-        match UnixReadWrite.write 0 writeFd (ImmutableArray.Create (payload, 0, count)) system |> orFail WriteRefusal.describe with
+        match UnixReadWrite.write 0 writeFd (ImmutableArray.Create (payload, 0, count)) system with
         | WriteOutcome.Returns (WriteAnswer.Completed n, system) ->
             printfn "task 0 wrote %d bytes" n
             resume 0 system
@@ -705,7 +670,7 @@ let written =
 let woken =
     match UnixWait.wakes asleep written with
     | [ 1, _ ] ->
-        match UnixReadWrite.finishRead 1 written |> orFail ReadRefusal.describe with
+        match UnixReadWrite.finishRead 1 written with
         | ReadOutcome.Answered (ReadAnswer.Completed bytes), system ->
             printfn "task 1 read %s" (System.Text.Encoding.ASCII.GetString (bytes.AsSpan ()))
             resume 1 system
@@ -714,15 +679,15 @@ let woken =
 
 // Task 1 exits, and then task 0 calls exit_group(3), which ends the process.
 let ended =
-    match UnixTaskLifecycle.exitThread 1 0 woken |> orFail ThreadExitRefusal.describe with
+    match UnixTaskLifecycle.exitThread 1 0 woken with
     | TaskOutcome.Continues system -> UnixTaskLifecycle.exitGroup 0 3 system
     | other -> failwith $"task 0 is still running, so expected the process to continue: %A{other}"
 
 // The client ends the process on its machine, which closes its descriptors.
-match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended with
-| Ok (termination, _) ->
-    printfn "the process ended: shell status %d" (ProcessTermination.shellStatus (SimulatedUnixPlatform.signalNumbering platform) termination)
-| Error refusal -> failwith (ProcessEndRefusal.describe refusal)
+let termination, _ =
+    SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended
+
+printfn "the process ended: shell status %d" (ProcessTermination.shellStatus (SimulatedUnixPlatform.signalNumbering platform) termination)
 
 // Prints:
 // task 0 wrote 5 bytes
@@ -736,10 +701,10 @@ match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine
 `kill` of another process, or of a process group, is refused.
 A signal the process ignores, and a `SIGCONT` at its default, which has nothing to resume, are discarded as they are sent, unless the task they are aimed at blocks them: for a signal sent to the process, that is the leader under Linux and every task under Darwin. So such a signal never wakes a sleeping call.
 One sent while blocked stays pending, and is discarded as a task takes it.
-Under Linux, `kill` of such a signal that the leader blocks while another task does not is refused (`SignalReceiverRefusal.LeaderBlocks`), as a caught one is: Linux would queue it for that other task, and this library delivers a process's signals to its leader only.
+Under Linux, `kill` of such a signal that the leader blocks while another task does not is refused, as a caught one is: Linux would queue it for that other task, and this library delivers a process's signals to its leader only.
 `UnixSignal.sigaction` installs a `SignalDisposition`: `SignalDisposition.Default`, `SignalDisposition.Ignore`, or `SignalDisposition.Catch` of a `SignalCatch`, made with `SignalCatch.ofHandler`, which holds the client's `'Handler`.
 
-`UnixSignal.sigprocmask` changes every task's mask on Darwin, as Darwin's does, and refuses (`SigprocmaskRefusal`) a call that would unblock a signal pending for a task other than the caller: Darwin was measured neither to wake that task for it nor always to deliver it as the task next returns to user mode, both of which this library would do.
+`UnixSignal.sigprocmask` changes every task's mask on Darwin, as Darwin's does, and refuses a call that would unblock a signal pending for a task other than the caller: Darwin was measured neither to wake that task for it nor always to deliver it as the task next returns to user mode, both of which this library would do.
 `UnixSignal.sigsuspend` replaces a task's mask until a signal ends the call, and keeps the mask it replaced in the signal state (`SignalState.maskToRestore`) rather than in the park, because the call's answer comes before the task's return to user mode, which is what restores it: the first handler frame that return pushes saves the mask from before the call.
 
 ### The return to user mode
@@ -764,25 +729,17 @@ This client blocks `SIGTERM`, sends it to itself, and dies of it as it unblocks 
 ```fsharp
 open WoofWare.PosixKernel
 
-let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
-    match result with
-    | Ok value -> value
-    | Error refusal -> failwith (describe refusal)
-
 let platform = SimulatedUnixPlatform.linuxX64
 let numbering = SimulatedUnixPlatform.signalNumbering platform
 
 let booted : UnixSystem<int, unit> =
     let launch =
         ProcessLaunch.create platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> orFail LaunchTableRefusal.describe
 
-    UnixSystem.initial platform
-    |> UnixBootImage.boot launch
-    |> orFail LaunchRefusal.describe
+    UnixSystem.initial platform |> UnixBootImage.boot launch
 
 let returnToUser (system : UnixSystem<int, unit>) : ReturnToUserOutcome<int, unit> =
-    UnixSignal.onReturnToUser 0 system |> orFail SignalReceiverRefusal.describe
+    UnixSignal.onReturnToUser 0 system
 
 let resumed (outcome : ReturnToUserOutcome<int, unit>) : UnixSystem<int, unit> =
     match outcome with
@@ -790,7 +747,7 @@ let resumed (outcome : ReturnToUserOutcome<int, unit>) : UnixSystem<int, unit> =
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pthread_sigmask(how, {SIGTERM}, NULL), with `how` under Linux's numbering:
-// SIG_BLOCK is 0 and SIG_UNBLOCK 1. Its Error is an errno, not a refusal.
+// SIG_BLOCK is 0 and SIG_UNBLOCK 1. Its Error is an errno.
 let sigterm = SignalMask.ofSignals numbering (Set.singleton Signal.SIGTERM)
 
 let mask (how : int) (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
@@ -805,7 +762,7 @@ let pending =
     let pid = ProcessId.toInt32 (UnixSystem.processId blocked)
     let signo = Signal.toRawSignoUnder numbering Signal.SIGTERM
 
-    match UnixSignal.kill pid signo blocked |> orFail KillRefusal.describe with
+    match UnixSignal.kill pid signo blocked with
     | Ok (KillOutcome.ProcessContinues system) -> system |> returnToUser |> resumed
     | Ok outcome -> failwith $"unexpected kill: %A{outcome}"
     | Error errno -> failwith $"kill failed: %O{errno}"
@@ -814,11 +771,11 @@ let pending =
 // default action ends the process.
 match pending |> mask 1 |> returnToUser with
 | ReturnToUserOutcome.ProcessEnded ended ->
-    match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended with
-    | Ok (termination, _) ->
-        printfn "%A" termination
-        printfn "shell status %d" (ProcessTermination.shellStatus numbering termination)
-    | Error refusal -> failwith (ProcessEndRefusal.describe refusal)
+    let termination, _ =
+        SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended
+
+    printfn "%A" termination
+    printfn "shell status %d" (ProcessTermination.shellStatus numbering termination)
 | other -> failwith $"expected SIGTERM to end the process: %A{other}"
 
 // Prints:
@@ -830,7 +787,7 @@ match pending |> mask 1 |> returnToUser with
 
 `UnixTaskLifecycle.spawn parent child cpu` starts a task the client names `child`, on processor `cpu`, with a copy of `parent`'s signal mask, and answers its thread ID, an `OsThreadId` (`SpawnAnswer.Spawned`).
 `UnixTaskLifecycle.exitThread task status` ends one task, and answers `TaskOutcome.Continues` with the process carrying on, or `TaskOutcome.ProcessEnded` if it was the last.
-It refuses (`ThreadExitRefusal`) a task parked in a syscall, the process's leader while any other task lives, and, on Darwin, the process's last task: a Darwin client ends a process with `exitGroup`, never by its last thread exiting.
+It throws `InvalidOperationException` for a task parked in a syscall, and refuses the process's leader while any other task lives and, on Darwin, the process's last task: a Darwin client ends a process with `exitGroup`, never by its last thread exiting.
 `UnixTaskLifecycle.exitGroup task status` ends every task at once, parked ones included.
 
 A call that ends the process answers an `EndedProcess` instead of a system: `exitGroup`, an `exitThread` of the last task, a `kill`, `pthreadKill` or write whose signal killed it, and a return to user mode that takes such a signal.
@@ -839,7 +796,7 @@ A call that ends the process answers an `EndedProcess` instead of a system: `exi
 Only such a call makes one, and `SimulatedMachine.endProcess` takes nothing else.
 
 `SimulatedMachine.endProcess ended machine` ends the process on the machine: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, resetting the clients left in its listeners' accept queues, whichever process holds them, and letting its locks, pipes, listeners and event queues go, and removes the process.
-It refuses (`ProcessEndRefusal`) where a close would: so far, the last close of a connected socket whose `SO_LINGER` would make it reset the connection or wait.
+It refuses where a close would: so far, the last close of a connected socket whose `SO_LINGER` would make it reset the connection or wait.
 A process alone on its machine is ended on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
 
 ## Several processes
@@ -1041,7 +998,7 @@ The file also records the order of each union's cases: F# numbers the cases of a
 A second test fails if a union has lost or reordered cases, or has gained a case anywhere but at its end, since the version the file records.
 Code built against the recorded version would then misread the cases it already knew, which an appended case does not make it do.
 From 1.0 an appended case is a major version too (see "Unions that gain cases" above), and the first test already fails on one.
-It also fails if a union whose cases the file records as public no longer has public cases, which is expected when a refusal union becomes an open refusal type (see "Answers and refusals"), or when a union is deleted or renamed.
+It also fails if a union whose cases the file records as public no longer has public cases, which is expected when a union becomes internal, or is deleted or renamed.
 Before 1.0 such a change may still be made deliberately, by the same command.
 
 A third test fails if a public record that the file does not list, or a field that a listed record has gained, uses a field label that another listed record already has.

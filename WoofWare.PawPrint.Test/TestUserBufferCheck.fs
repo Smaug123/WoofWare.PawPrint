@@ -142,24 +142,13 @@ module TestUserBufferCheck =
 
     // ------------------------------------------------- the platforms' answers
 
-    let private configuredOn
-        (platform : SimulatedUnixPlatform)
-        (limit : uint64)
-        : Result<EmulatedKernel, UserAddressLimitRefusal>
-        =
+    let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
         let image = EmulatedKernel.image platform StandardStreamsConfig.piped
 
-        UnixBootImage.withUserAddressLimit limit image.Machine
-        |> Result.map (fun machine ->
-            EmulatedKernel.boot
-                { image with
-                    Machine = machine
-                }
-        )
-
-    let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        configuredOn platform limit
-        |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{UserAddressLimitRefusal.describe refusal}")
+        EmulatedKernel.boot
+            { image with
+                Machine = UnixBootImage.withUserAddressLimit limit image.Machine
+            }
 
     /// macOS performs no up-front check at all: measured, every address at
     /// every size reads 0 from a descriptor with nothing to transfer. So a
@@ -171,10 +160,15 @@ module TestUserBufferCheck =
             (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped).System
         |> shouldEqual UserBufferCheck.AtCopyTime
 
+        // No Darwin machine has the setting, so setting it is a contradiction.
         for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
-            configuredOn SimulatedUnixPlatform.macOsArm64 limit
-            |> Result.map ignore<EmulatedKernel>
-            |> shouldEqual (Error (UserAddressLimitRefusal.NoUpFrontScreen SimulatedUnixFlavour.Darwin))
+            let refused =
+                Assert.Throws<ArgumentException> (fun () ->
+                    kernelOn SimulatedUnixPlatform.macOsArm64 limit |> ignore<EmulatedKernel>
+                )
+
+            refused.Message
+            |> shouldContainText "screens no buffer before performing an operation"
 
     /// The limit is the *machine's*, not the flavour's: the same Linux platform
     /// screens at whichever address space its host was configured with, among
@@ -213,17 +207,20 @@ module TestUserBufferCheck =
                 ObservedUserAddressLimit.X64FourLevelPaging,
                 Some SimulatedUnixArchitecture.X64
             ] do
-            configuredOn platform limit
-            |> Result.map ignore<EmulatedKernel>
-            |> shouldEqual (
-                Error (
-                    UserAddressLimitRefusal.NotObservedOn (
-                        limit,
-                        SimulatedUnixPlatform.architecture platform,
-                        observedOn
-                    )
+            // Unobserved rather than contradictory: a machine may have such a
+            // limit, and nobody has seen one.
+            let refused =
+                Assert.Throws<UnmodelledException> (fun () -> kernelOn platform limit |> ignore<EmulatedKernel>)
+
+            match observedOn with
+            | Some observedOn ->
+                refused.Message
+                |> shouldContainText $"is the TASK_SIZE_MAX of an %O{observedOn} machine"
+            | None ->
+                refused.Message
+                |> shouldContainText (
+                    $"no %O{SimulatedUnixPlatform.architecture platform} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}"
                 )
-            )
 
     /// A host configuration that says nothing about the limit gets its
     /// platform's own, so changing only the platform never pairs one

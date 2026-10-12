@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 /// One of the filesystems a Linux kernel keeps for objects that are not on any
 /// mount, which `fstatfs(2)` reports for a descriptor naming such an object.
 [<RequireQualifiedAccess>]
-type PseudoFileSystem =
+type internal PseudoFileSystem =
     /// `pipefs`, where both ends of a pipe live.
     | Pipe
     /// `sockfs`, where every socket lives.
@@ -14,22 +14,27 @@ type PseudoFileSystem =
 
 /// Why this kernel does not state a filesystem's block size and name limit.
 [<RequireQualifiedAccess>]
-type GeometryRefusal =
+type internal GeometryRefusal =
     /// The filesystem is an NFS mount, whose block size and name limit come
     /// from the server and the mount's negotiation with it.
     | Nfs
 
 [<RequireQualifiedAccess>]
-module GeometryRefusal =
+module internal GeometryRefusal =
     /// Human-readable description.
     let describe (refusal : GeometryRefusal) : string =
         match refusal with
         | GeometryRefusal.Nfs ->
             "the filesystem is an NFS mount, whose block size and name limit are whatever the server and the mount's negotiation with it decided, which nothing in this machine determines."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GeometryRefusal) : RefusalKind =
+        match refusal with
+        | GeometryRefusal.Nfs -> RefusalKind.Unmodelled
+
 /// Why this kernel does not state a filesystem's block and file counts.
 [<RequireQualifiedAccess>]
-type CapacityRefusal =
+type internal CapacityRefusal =
     /// The filesystem is an APFS volume, whose counts are those of the whole
     /// container it shares with other volumes.
     | Apfs
@@ -41,7 +46,7 @@ type CapacityRefusal =
     | DeviceFileSystem
 
 [<RequireQualifiedAccess>]
-module CapacityRefusal =
+module internal CapacityRefusal =
     /// Human-readable description.
     let describe (refusal : CapacityRefusal) : string =
         match refusal with
@@ -52,9 +57,16 @@ module CapacityRefusal =
         | CapacityRefusal.DeviceFileSystem ->
             "the filesystem is the device filesystem. Its free-file count is its inode limit less every node a real one holds, and this kernel's holds only the nodes of the devices it has drivers for; its block counts are a share of the machine's memory, which this machine does not describe."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : CapacityRefusal) : RefusalKind =
+        match refusal with
+        | CapacityRefusal.Apfs -> RefusalKind.Unmodelled
+        | CapacityRefusal.Nfs -> RefusalKind.Unmodelled
+        | CapacityRefusal.DeviceFileSystem -> RefusalKind.Unmodelled
+
 /// Why this kernel does not state a filesystem's `f_fsid`.
 [<RequireQualifiedAccess>]
-type FileSystemIdRefusal =
+type internal FileSystemIdRefusal =
     /// The descriptor names an object on one of Linux's internal
     /// filesystems, whose `f_fsid` is a device number the kernel assigned
     /// when it booted.
@@ -63,7 +75,7 @@ type FileSystemIdRefusal =
     | Nfs
 
 [<RequireQualifiedAccess>]
-module FileSystemIdRefusal =
+module internal FileSystemIdRefusal =
     /// Human-readable description.
     let describe (refusal : FileSystemIdRefusal) : string =
         match refusal with
@@ -71,20 +83,31 @@ module FileSystemIdRefusal =
             $"the descriptor names an object on Linux's internal %O{fileSystem} filesystem, whose f_fsid is the device number the kernel gave that filesystem at boot. It differs between kernel images (pipefs is 0xc on one measured 6.18.5 aarch64 kernel and 0xf on a 6.12.107 x86-64 one), so this kernel will not state one."
         | FileSystemIdRefusal.Nfs -> "the filesystem is an NFS mount, whose f_fsid has not been measured."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FileSystemIdRefusal) : RefusalKind =
+        match refusal with
+        | FileSystemIdRefusal.PseudoFileSystemDevice _ -> RefusalKind.Unmodelled
+        | FileSystemIdRefusal.Nfs -> RefusalKind.Unmodelled
+
 /// Why this kernel does not state what a filesystem's mount options and
 /// mount-point fields are.
 [<RequireQualifiedAccess>]
-type MountFieldsRefusal =
+type internal MountFieldsRefusal =
     /// The filesystem is an NFS mount, whose options have not been measured.
     | Nfs
 
 [<RequireQualifiedAccess>]
-module MountFieldsRefusal =
+module internal MountFieldsRefusal =
     /// Human-readable description.
     let describe (refusal : MountFieldsRefusal) : string =
         match refusal with
         | MountFieldsRefusal.Nfs ->
             "the filesystem is an NFS mount, whose mount options and mount-point fields have not been measured."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : MountFieldsRefusal) : RefusalKind =
+        match refusal with
+        | MountFieldsRefusal.Nfs -> RefusalKind.Unmodelled
 
 /// The block and file counts `statfs(2)` reports, the same five on both
 /// flavours.
@@ -127,21 +150,48 @@ type LinuxFileSystemGeometry =
         NameLengthLimit : int64
     }
 
-/// Linux's `struct statfs`, with each group of fields this kernel may decline
-/// to state as a result of its own. `f_spare` is not carried: it is 0.
+/// Linux's `struct statfs`, in groups of fields. This kernel may decline to
+/// state a group, and reading such a group throws `UnmodelledException`.
+/// `f_spare` is not carried: it is 0.
 type LinuxFileSystemStatistics =
-    {
-        /// `f_type`: the filesystem's magic number.
-        Type : int64
-        /// `f_bsize`, `f_frsize` and `f_namelen`.
-        Geometry : Result<LinuxFileSystemGeometry, GeometryRefusal>
-        /// `f_blocks`, `f_bfree`, `f_bavail`, `f_files` and `f_ffree`.
-        Capacity : Result<FileSystemCapacity, CapacityRefusal>
-        /// `f_fsid`.
-        FileSystemId : Result<FileSystemId, FileSystemIdRefusal>
-        /// `f_flags`: the `ST_*` bits, in Linux's numbering.
-        Flags : Result<int64, MountFieldsRefusal>
-    }
+    internal
+        {
+            TypeValue : int64
+            GeometryResult : Result<LinuxFileSystemGeometry, GeometryRefusal>
+            CapacityResult : Result<FileSystemCapacity, CapacityRefusal>
+            FileSystemIdResult : Result<FileSystemId, FileSystemIdRefusal>
+            FlagsResult : Result<int64, MountFieldsRefusal>
+        }
+
+    /// `f_type`: the filesystem's magic number.
+    member this.Type : int64 = this.TypeValue
+
+    /// `f_bsize`, `f_frsize` and `f_namelen`. Throws `UnmodelledException`
+    /// where this kernel does not state them.
+    member this.Geometry : LinuxFileSystemGeometry =
+        this.GeometryResult
+        |> Refusal.orRaise "LinuxFileSystemStatistics.Geometry" GeometryRefusal.kind GeometryRefusal.describe
+
+    /// `f_blocks`, `f_bfree`, `f_bavail`, `f_files` and `f_ffree`. Throws
+    /// `UnmodelledException` where this kernel does not state them.
+    member this.Capacity : FileSystemCapacity =
+        this.CapacityResult
+        |> Refusal.orRaise "LinuxFileSystemStatistics.Capacity" CapacityRefusal.kind CapacityRefusal.describe
+
+    /// `f_fsid`. Throws `UnmodelledException` where this kernel does not state
+    /// it.
+    member this.FileSystemId : FileSystemId =
+        this.FileSystemIdResult
+        |> Refusal.orRaise
+            "LinuxFileSystemStatistics.FileSystemId"
+            FileSystemIdRefusal.kind
+            FileSystemIdRefusal.describe
+
+    /// `f_flags`: the `ST_*` bits, in Linux's numbering. Throws
+    /// `UnmodelledException` where this kernel does not state them.
+    member this.Flags : int64 =
+        this.FlagsResult
+        |> Refusal.orRaise "LinuxFileSystemStatistics.Flags" MountFieldsRefusal.kind MountFieldsRefusal.describe
 
 /// The sizes Darwin's `statfs(2)` reports.
 type DarwinFileSystemGeometry =
@@ -171,25 +221,54 @@ type DarwinMountFields =
         MountedFrom : UnixByteString
     }
 
-/// Darwin's `struct statfs`, with each group of fields this kernel may decline
-/// to state as a result of its own. `f_reserved` is not carried: it is 0.
+/// Darwin's `struct statfs`, in groups of fields. This kernel may decline to
+/// state a group, and reading such a group throws `UnmodelledException`.
+/// `f_reserved` is not carried: it is 0.
 type DarwinFileSystemStatistics =
-    {
-        /// `f_type`: the number the kernel gave the filesystem when it
-        /// registered it.
-        Type : uint32
-        /// `f_fstypename`.
-        TypeName : UnixByteString
-        /// `f_bsize` and `f_iosize`.
-        Geometry : Result<DarwinFileSystemGeometry, GeometryRefusal>
-        /// `f_blocks`, `f_bfree`, `f_bavail`, `f_files` and `f_ffree`.
-        Capacity : Result<FileSystemCapacity, CapacityRefusal>
-        /// `f_fsid`.
-        FileSystemId : Result<FileSystemId, FileSystemIdRefusal>
-        /// `f_owner`, `f_flags`, `f_flags_ext`, `f_fssubtype`, `f_mntonname`
-        /// and `f_mntfromname`.
-        Mount : Result<DarwinMountFields, MountFieldsRefusal>
-    }
+    internal
+        {
+            TypeValue : uint32
+            TypeNameValue : UnixByteString
+            GeometryResult : Result<DarwinFileSystemGeometry, GeometryRefusal>
+            CapacityResult : Result<FileSystemCapacity, CapacityRefusal>
+            FileSystemIdResult : Result<FileSystemId, FileSystemIdRefusal>
+            MountResult : Result<DarwinMountFields, MountFieldsRefusal>
+        }
+
+    /// `f_type`: the number the kernel gave the filesystem when it registered
+    /// it.
+    member this.Type : uint32 = this.TypeValue
+
+    /// `f_fstypename`.
+    member this.TypeName : UnixByteString = this.TypeNameValue
+
+    /// `f_bsize` and `f_iosize`. Throws `UnmodelledException` where this
+    /// kernel does not state them.
+    member this.Geometry : DarwinFileSystemGeometry =
+        this.GeometryResult
+        |> Refusal.orRaise "DarwinFileSystemStatistics.Geometry" GeometryRefusal.kind GeometryRefusal.describe
+
+    /// `f_blocks`, `f_bfree`, `f_bavail`, `f_files` and `f_ffree`. Throws
+    /// `UnmodelledException` where this kernel does not state them.
+    member this.Capacity : FileSystemCapacity =
+        this.CapacityResult
+        |> Refusal.orRaise "DarwinFileSystemStatistics.Capacity" CapacityRefusal.kind CapacityRefusal.describe
+
+    /// `f_fsid`. Throws `UnmodelledException` where this kernel does not state
+    /// it.
+    member this.FileSystemId : FileSystemId =
+        this.FileSystemIdResult
+        |> Refusal.orRaise
+            "DarwinFileSystemStatistics.FileSystemId"
+            FileSystemIdRefusal.kind
+            FileSystemIdRefusal.describe
+
+    /// `f_owner`, `f_flags`, `f_flags_ext`, `f_fssubtype`, `f_mntonname` and
+    /// `f_mntfromname`. Throws `UnmodelledException` where this kernel does
+    /// not state them.
+    member this.Mount : DarwinMountFields =
+        this.MountResult
+        |> Refusal.orRaise "DarwinFileSystemStatistics.Mount" MountFieldsRefusal.kind MountFieldsRefusal.describe
 
 /// What a successful `statfs(2)` or `fstatfs(2)` reports, in the flavour's own
 /// struct.
@@ -255,9 +334,9 @@ module FileSystemStatistics =
             // `docs/plans/2026-08-23-posix-kernel-extraction/statfs-fields.c`.
             FileSystemStatistics.Linux
                 {
-                    Type = fType
+                    TypeValue = fType
                     // `f_bsize` is the page size, and `f_frsize` equals it.
-                    Geometry =
+                    GeometryResult =
                         Ok
                             {
                                 BlockSize = pageSize
@@ -267,38 +346,38 @@ module FileSystemStatistics =
                     // This filesystem never refuses a write for space, which is
                     // a tmpfs with no limits, and such a tmpfs reports every
                     // count as 0 however full it is.
-                    Capacity = Ok FileSystemCapacity.unlimited
-                    FileSystemId = Ok tmpfs.FileSystemId
+                    CapacityResult = Ok FileSystemCapacity.unlimited
+                    FileSystemIdResult = Ok tmpfs.FileSystemId
                     // `ST_VALID` is on every mount. `ST_NOATIME` because nothing
                     // in this kernel moves an access time, which is what a
                     // `noatime` mount does; tmpfs's own default is `relatime`,
                     // which this kernel does not implement.
-                    Flags = Ok (linuxValid ||| linuxNoAccessTime)
+                    FlagsResult = Ok (linuxValid ||| linuxNoAccessTime)
                 }
         | FileSystemTypeFields.Darwin (fType, name), EmulatedMount.Apfs apfs ->
             // Measured 2026-09-26 on Darwin 27.0.0, nine APFS volumes in three
             // containers; the table is in the header of `statfs-fields.c`.
             FileSystemStatistics.Darwin
                 {
-                    Type = fType
-                    TypeName = name
-                    Geometry =
+                    TypeValue = fType
+                    TypeNameValue = name
+                    GeometryResult =
                         Ok
                             {
                                 BlockSize = 4096u
                                 IoSize = apfs.IoSize
                             }
-                    Capacity = Error CapacityRefusal.Apfs
+                    CapacityResult = Error CapacityRefusal.Apfs
                     // Darwin's `f_fsid` is the volume's `st_dev` and its type
                     // number, measured on every volume. The `st_dev` is the one
                     // `stat(2)` reports for every inode here.
-                    FileSystemId =
+                    FileSystemIdResult =
                         Ok
                             {
                                 First = int32 VirtualFileSystem.deviceId
                                 Second = int32 fType
                             }
-                    Mount =
+                    MountResult =
                         Ok
                             {
                                 Owner = apfs.Owner
@@ -326,21 +405,21 @@ module FileSystemStatistics =
         | FileSystemTypeFields.Linux fType, EmulatedMount.Nfs ->
             FileSystemStatistics.Linux
                 {
-                    Type = fType
-                    Geometry = Error GeometryRefusal.Nfs
-                    Capacity = Error CapacityRefusal.Nfs
-                    FileSystemId = Error FileSystemIdRefusal.Nfs
-                    Flags = Error MountFieldsRefusal.Nfs
+                    TypeValue = fType
+                    GeometryResult = Error GeometryRefusal.Nfs
+                    CapacityResult = Error CapacityRefusal.Nfs
+                    FileSystemIdResult = Error FileSystemIdRefusal.Nfs
+                    FlagsResult = Error MountFieldsRefusal.Nfs
                 }
         | FileSystemTypeFields.Darwin (fType, name), EmulatedMount.Nfs ->
             FileSystemStatistics.Darwin
                 {
-                    Type = fType
-                    TypeName = name
-                    Geometry = Error GeometryRefusal.Nfs
-                    Capacity = Error CapacityRefusal.Nfs
-                    FileSystemId = Error FileSystemIdRefusal.Nfs
-                    Mount = Error MountFieldsRefusal.Nfs
+                    TypeValue = fType
+                    TypeNameValue = name
+                    GeometryResult = Error GeometryRefusal.Nfs
+                    CapacityResult = Error CapacityRefusal.Nfs
+                    FileSystemIdResult = Error FileSystemIdRefusal.Nfs
+                    MountResult = Error MountFieldsRefusal.Nfs
                 }
         | FileSystemTypeFields.Linux _, EmulatedMount.Apfs _
         | FileSystemTypeFields.Darwin _, EmulatedMount.Tmpfs _ ->
@@ -374,17 +453,17 @@ module FileSystemStatistics =
         // limit, through a node and through `/dev` alike.
         FileSystemStatistics.Linux
             {
-                Type = 0x01021994L
-                Geometry =
+                TypeValue = 0x01021994L
+                GeometryResult =
                     Ok
                         {
                             BlockSize = pageSize
                             FragmentSize = pageSize
                             NameLengthLimit = 255L
                         }
-                Capacity = Error CapacityRefusal.DeviceFileSystem
-                FileSystemId = Ok devtmpfs.FileSystemId
-                Flags = Ok devtmpfs.Flags
+                CapacityResult = Error CapacityRefusal.DeviceFileSystem
+                FileSystemIdResult = Ok devtmpfs.FileSystemId
+                FlagsResult = Ok devtmpfs.Flags
             }
 
     /// Throws unless a kernel of this platform could have this mount (see
@@ -442,19 +521,19 @@ module FileSystemStatistics =
                 // the fsid is a fact of the filesystem's type.
                 FileSystemStatistics.Linux
                     {
-                        Type = magic
-                        Geometry =
+                        TypeValue = magic
+                        GeometryResult =
                             Ok
                                 {
                                     BlockSize = pageSize
                                     FragmentSize = pageSize
                                     NameLengthLimit = 255L
                                 }
-                        Capacity = Ok FileSystemCapacity.unlimited
-                        FileSystemId = Error (FileSystemIdRefusal.PseudoFileSystemDevice fileSystem)
+                        CapacityResult = Ok FileSystemCapacity.unlimited
+                        FileSystemIdResult = Error (FileSystemIdRefusal.PseudoFileSystemDevice fileSystem)
                         // No options: these filesystems are mounted by the
                         // kernel, not by anybody's `mount(2)`.
-                        Flags = Ok linuxValid
+                        FlagsResult = Ok linuxValid
                     }
                 |> FileSystemStatisticsAnswer.Reported
 

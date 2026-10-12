@@ -52,7 +52,7 @@ module DualModeProbe =
         SimulatedUnixPlatform.internetV6AddressFamily libc.Platform
 
     let private socket (libc : Libc) (domain : int) : int =
-        match UnixSocket.socket domain sockStream ipProtoTcp libc.System with
+        match UnixSocket.trySocket domain sockStream ipProtoTcp libc.System with
         | Ok (Ok (fd, system)) ->
             libc.System <- system
             fd
@@ -65,11 +65,11 @@ module DualModeProbe =
         let length = uint32 bytes.Length
 
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped length libc.System with
+            match UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped length libc.System with
             | Result.Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create<byte> (bytes, 0, count))
             | _ -> None
 
-        match UnixSocket.setsockopt fd level name UserBuffer.Mapped length supplied libc.System with
+        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied libc.System with
         | Result.Ok (SetSockOptAnswer.Set, system) ->
             libc.System <- system
             Answer.Ok
@@ -83,11 +83,11 @@ module DualModeProbe =
 
     let private getInt (libc : Libc) (fd : int) (level : int) (name : int) : Answer * int =
         let read =
-            match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped libc.System with
+            match UnixSocket.tryAdmitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped libc.System with
             | Result.Ok GetSockOptAdmission.ReadLength -> Some 4u
             | _ -> None
 
-        match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
+        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
         | Result.Ok (GetSockOptAnswer.Reported bytes, system) ->
             libc.System <- system
             Answer.Ok, SimulatedUnixPlatform.decodeCInt libc.Platform bytes 0
@@ -169,7 +169,7 @@ module DualModeProbe =
         | Result.Error refusal -> Answer.Refused (ConnectRefusal.describe refusal)
 
     let private listen (libc : Libc) (fd : int) (backlog : int) : Answer =
-        match UnixSocket.listen fd backlog libc.System with
+        match UnixSocket.tryListen fd backlog libc.System with
         | Result.Ok (ListenAnswer.Listening _, system) ->
             libc.System <- system
             Answer.Ok
@@ -179,7 +179,7 @@ module DualModeProbe =
         | Result.Error refusal -> Answer.Refused (ListenRefusal.describe refusal)
 
     let private close (libc : Libc) (fd : int) : unit =
-        match UnixDescriptor.close fd libc.System with
+        match UnixDescriptor.tryClose fd libc.System with
         | Result.Ok (_, system) -> libc.System <- system
         | Result.Error refusal -> failwith $"DualModeProbe: close(%d{fd}) was refused: %A{refusal}"
 
@@ -192,7 +192,7 @@ module DualModeProbe =
     /// A non-blocking accept, as every accept in the probe is by the time the
     /// listener has nothing queued: the new descriptor, or the errno.
     let private accept (libc : Libc) (fd : int) (cell : uint32) : Result<int * ImmutableArray<byte> * int, Answer> =
-        match UnixConnection.accept 0 fd UserBuffer.Mapped cell libc.System with
+        match UnixConnection.tryAccept 0 fd UserBuffer.Mapped cell libc.System with
         | Result.Ok (AcceptOutcome.Accepted (accepted, copied, reported), system) ->
             libc.System <- system
             Result.Ok (accepted, copied, reported)
@@ -306,8 +306,8 @@ module DualModeProbe =
 
         output.AppendLine () |> ignore
 
-    let private getsockname = UnixSocket.getsockname<int, string>
-    let private getpeername = UnixSocket.getpeername<int, string>
+    let private getsockname = UnixSocket.tryGetsockname<int, string>
+    let private getpeername = UnixSocket.tryGetpeername<int, string>
 
     let private line (output : StringBuilder) (label : string) (answer : Answer) : unit =
         output.AppendLine ($"%s{label} -> %s{en answer}") |> ignore
@@ -369,7 +369,7 @@ module DualModeProbe =
     /// A one-byte `write` of `'x'`, as `transfer` prints it: the count, or the
     /// errno.
     let private writeByte (libc : Libc) (fd : int) : string =
-        match UnixReadWrite.write 0 fd (ImmutableArray.Create<byte> (byte 'x')) libc.System with
+        match UnixReadWrite.tryWrite 0 fd (ImmutableArray.Create<byte> (byte 'x')) libc.System with
         | Result.Ok (WriteOutcome.Returns (answer, system))
         | Result.Ok (WriteOutcome.ReturnsRaising (answer, _, system)) ->
             libc.System <- system
@@ -382,7 +382,7 @@ module DualModeProbe =
 
     /// A one-byte `read`, as `transfer` prints it: the count, or the errno.
     let private readByte (libc : Libc) (fd : int) : string =
-        match UnixReadWrite.read 0 fd UserBuffer.Mapped 1UL libc.System with
+        match UnixReadWrite.tryRead 0 fd UserBuffer.Mapped 1UL libc.System with
         | Result.Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
             libc.System <- system
             $"%d{bytes.Length}"
@@ -394,7 +394,7 @@ module DualModeProbe =
 
     /// `close`, which the model may refuse; the probe prints nothing for it.
     let private tryClose (libc : Libc) (fd : int) : bool =
-        match UnixDescriptor.close fd libc.System with
+        match UnixDescriptor.tryClose fd libc.System with
         | Result.Ok (_, system) ->
             libc.System <- system
             true
@@ -458,7 +458,7 @@ module DualModeProbe =
             |> ignore
 
             let wrote =
-                match UnixReadWrite.write 0 s (ImmutableArray.Create<byte> (byte 'x')) libc.System with
+                match UnixReadWrite.tryWrite 0 s (ImmutableArray.Create<byte> (byte 'x')) libc.System with
                 | Result.Ok (WriteOutcome.Returns (WriteAnswer.Completed count, system)) ->
                     libc.System <- system
                     $"%d{count}"
@@ -466,7 +466,7 @@ module DualModeProbe =
                 | Result.Ok other -> failwith $"DualModeProbe: write answered %A{other}"
 
             let read =
-                match UnixReadWrite.read 0 srv UserBuffer.Mapped 1UL libc.System with
+                match UnixReadWrite.tryRead 0 srv UserBuffer.Mapped 1UL libc.System with
                 | Result.Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
                     libc.System <- system
                     $"%d{bytes.Length} '%c{char bytes.[0]}'"

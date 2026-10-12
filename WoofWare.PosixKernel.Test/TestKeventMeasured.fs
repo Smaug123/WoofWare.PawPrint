@@ -47,7 +47,7 @@ module TestKeventMeasured =
             : unit
             =
             match
-                UnixKqueue.kevent
+                UnixKqueue.tryKevent
                     1
                     kq
                     nchanges
@@ -920,7 +920,7 @@ module TestKeventMeasured =
             s.Register k l read addClear 1UL
 
             s.Step (fun system ->
-                match UnixKqueue.kevent 2 k 0 [] 4 UserBuffer.Mapped KeventTimeout.Null system with
+                match UnixKqueue.tryKevent 2 k 0 [] 4 UserBuffer.Mapped KeventTimeout.Null system with
                 | Ok (KeventOutcome.WouldBlock _, parked) -> parked
                 | other -> failwith $"expected the sleeper to park, got %A{other}"
             )
@@ -928,7 +928,7 @@ module TestKeventMeasured =
             s.Step (KeventWorld.close k)
 
             s.Step (fun system ->
-                match UnixKqueue.finishKevent 2 system with
+                match UnixKqueue.tryFinishKevent 2 system with
                 | Ok (KeventOutcome.Failed UnixError.EBADF, finished) -> finished
                 | other -> failwith $"expected the sleeper to fail with EBADF, got %A{other}"
             )
@@ -1164,7 +1164,7 @@ module TestKeventMeasured =
         let kq, system = KeventWorld.kqueue system
 
         match
-            UnixKqueue.kevent
+            UnixKqueue.tryKevent
                 4
                 kq
                 2

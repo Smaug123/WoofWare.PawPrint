@@ -170,7 +170,7 @@ module SimulatedMachineDefect =
 
 /// Why `SimulatedMachine.launch` will not start a process.
 [<RequireQualifiedAccess>]
-type ProcessCreationRefusal =
+type internal ProcessCreationRefusal =
     /// The launch itself is refused; see `LaunchRefusal`.
     | Launch of LaunchRefusal
     /// On Linux, every ID the machine would hand out, from 300 up to its
@@ -186,7 +186,7 @@ type ProcessCreationRefusal =
     | DarwinThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
-module ProcessCreationRefusal =
+module internal ProcessCreationRefusal =
     /// What this library knows about why it would not start the process, for
     /// a client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessCreationRefusal) : string =
@@ -199,10 +199,18 @@ module ProcessCreationRefusal =
         | ProcessCreationRefusal.DarwinThreadIdCounterExhausted ->
             "the machine's thread ID counter has reached the top of its 64-bit range, so the new process's leader would take an ID beyond it; what Darwin does then has not been measured."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessCreationRefusal) : RefusalKind =
+        match refusal with
+        | ProcessCreationRefusal.Launch inner -> LaunchRefusal.kind inner
+        | ProcessCreationRefusal.NoFreeProcessId -> RefusalKind.Unmodelled
+        | ProcessCreationRefusal.DarwinPidMaxReached _ -> RefusalKind.Unmodelled
+        | ProcessCreationRefusal.DarwinThreadIdCounterExhausted -> RefusalKind.Unmodelled
+
 /// Why `SimulatedMachine.endProcess` will not end a process: what closing
 /// its descriptors would do has not been measured.
 [<RequireQualifiedAccess>]
-type ProcessEndRefusal =
+type internal ProcessEndRefusal =
     /// Closing the process's descriptors releases an open file description
     /// this library will not release (`DescriptionReleaseRefusal`): so far,
     /// the last reference to a connected socket whose `SO_LINGER` would make
@@ -210,13 +218,18 @@ type ProcessEndRefusal =
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
-module ProcessEndRefusal =
+module internal ProcessEndRefusal =
     /// What this library knows about why it will not end the process, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : ProcessEndRefusal) : string =
         match refusal with
         | ProcessEndRefusal.Release refusal ->
             $"the process's end closes its descriptors, and %s{DescriptionReleaseRefusal.describe refusal}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ProcessEndRefusal) : RefusalKind =
+        match refusal with
+        | ProcessEndRefusal.Release inner -> DescriptionReleaseRefusal.kind inner
 
 /// Moving between a `SimulatedMachine` and the views of it its processes'
 /// syscalls are made in.
@@ -269,18 +282,8 @@ module SimulatedMachine =
                     }
         }
 
-    /// Start a new process on the machine, as `launch` describes it: the
-    /// process ID the kernel chose for it, and the machine with it on.
-    ///
-    /// On Linux the process's ID is its leader's thread ID, the next the
-    /// machine's thread ID counter hands out, so it is no live process's or
-    /// thread's. On Darwin it is the next from a process ID counter of its own,
-    /// which started one past the first process's ID, and the leader's thread
-    /// ID is the next from the 64-bit thread ID counter.
-    ///
-    /// Refuses a launch `LaunchRefusal` describes, and a machine with no
-    /// process ID left to hand out.
-    let launch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `launch`, with a refusal answered as the `Error` rather than raised.
+    let internal tryLaunch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (launch : ProcessLaunch<'Task>)
         (machine : SimulatedMachine<'Task, 'Handler>)
         : Result<ProcessId * SimulatedMachine<'Task, 'Handler>, ProcessCreationRefusal>
@@ -353,6 +356,29 @@ module SimulatedMachine =
                             machine.Processes
                 }
             )
+
+    /// <summary>
+    /// Start a new process on the machine, as `launch` describes it: the
+    /// process ID the kernel chose for it, and the machine with it on.
+    ///
+    /// On Linux the process's ID is its leader's thread ID, the next the
+    /// machine's thread ID counter hands out, so it is no live process's or
+    /// thread's. On Darwin it is the next from a process ID counter of its own,
+    /// which started one past the first process's ID, and the leader's thread
+    /// ID is the next from the 64-bit thread ID counter.
+    ///
+    /// Refuses a launch `UnixBootImage.boot` would refuse, and a machine with
+    /// no process ID left to hand out.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentException">The path does not resolve in the seeded filesystem at all. Carries what the walk answered. The walk refused the path as too long. Distinguished from `DoesNotResolve` because the directory may well be present: it is a *length* that is unusable, and the remedy is to shorten something rather than to go looking for a missing directory.  Which length is deliberately not said, because the walk does not say: `ENAMETOOLONG` is one errno covering a component past this flavour's `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a symbolic link whose expansion would carry the whole path past `PATH_MAX`. A real kernel conflates them too. Splitting the case would need the path walk to report which limit it hit, which every other caller of the walk would pay for.  Carries the flavour so that a fault which outlives the call still says whose limits were in force -- 255 CJK characters name a directory a Darwin process can start in and a Linux one cannot, and only Darwin re-checks a splice at all. The path resolves, to something that is not a directory. The launch puts its leader on the logical processor `cpu`, and the machine has `processorCount`, numbered from 0, which do not include it. Contradictory: no kernel runs a task on a processor it does not have.</exception>
+    /// <exception cref="T:System.InvalidOperationException">The launch was described for the platform `launch`, and the machine is `machine`: the description was checked against the wrong platform's rules.</exception>
+    let launch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (launch : ProcessLaunch<'Task>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : ProcessId * SimulatedMachine<'Task, 'Handler>
+        =
+        tryLaunch launch machine
+        |> Refusal.orRaise "SimulatedMachine.launch" ProcessCreationRefusal.kind ProcessCreationRefusal.describe
 
     /// The process ID of every process on the machine.
     let processIds<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -490,11 +516,9 @@ module SimulatedMachine =
             result, unfocus view machine
         )
 
-    /// `UnixSystem.step` of `call`, made by `task` of the process `processId`.
-    /// A refused call changes nothing, and answers `machine` itself, so a view
-    /// focused from it can still be written back. `None` if no process on the
-    /// machine has that ID.
-    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `step`, with a refusal answered as the `Error` rather than raised. A
+    /// refused call changes nothing, and answers `machine` itself.
+    let internal tryStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (processId : ProcessId)
         (task : 'Task)
         (call : Syscall)
@@ -503,40 +527,33 @@ module SimulatedMachine =
         =
         focus processId machine
         |> Option.map (fun view ->
-            match UnixSystem.step task call view with
+            match UnixSystem.tryStep task call view with
             | Ok (outcome, view) -> Ok outcome, unfocus view machine
             | Error refusal -> Error refusal, machine
         )
 
-    /// End the process `ended` is on `machine`, as the call that ended it left
-    /// it (`UnixTaskLifecycle.exitGroup`, the last thread's exit, or a signal
-    /// whose default ends the process): how it ended, and the machine without
-    /// it.
-    ///
-    /// What a real kernel does at exit, where another process can see it.
-    /// The process's tasks are gone already, and with
-    /// them the holds their calls in flight had; any description only those
-    /// calls held, or that the call which ended the process let go of as it
-    /// returned, is released now. Then every descriptor of the process is
-    /// closed, in the order each flavour measurably closes them
-    /// (`exit-close-order.c`, Linux 6.18.5 and Darwin 27.0.0, which a peer
-    /// watching several connections sees as the order of their FINs): Linux
-    /// drops the descriptors lowest first and then releases what that let go
-    /// of, the last first; Darwin drops them highest first, releasing each as
-    /// it goes. Each release does everything a `close(2)` of the last
-    /// descriptor onto the description does: a connected peer gets its FIN,
-    /// a lock is let go of, a pipe end closes, an epoll instance or a kqueue
-    /// goes, a listener goes and resets each client still in its accept
-    /// queue, whichever process holds it, and every registration made through
-    /// the descriptor goes with it. The process ID, thread IDs and current
-    /// directory are let go of with the tasks.
-    ///
-    /// Refuses (`ProcessEndRefusal`) where a close would be refused. The
-    /// machine is then as it was.
-    ///
-    /// Fails loudly, as `unfocus` does, if the view the process ended in
-    /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.
-    let endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// <summary>
+    /// `UnixSystem.step` of `call`, made by `task` of the process `processId`:
+    /// what the call did, and the machine after it. `None` if no process on the
+    /// machine has that ID.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The machine's flavour has no such call, as `UnixSystem.step` says.</exception>
+    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (processId : ProcessId)
+        (task : 'Task)
+        (call : Syscall)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : (SyscallOutcome * SimulatedMachine<'Task, 'Handler>) option
+        =
+        tryStep processId task call machine
+        |> Option.map (fun (result, machine) ->
+            result
+            |> Refusal.orRaise "SimulatedMachine.step" SyscallRefusal.kind SyscallRefusal.describe,
+            machine
+        )
+
+    /// `endProcess`, with a refusal answered as the `Error` rather than raised.
+    let internal tryEndProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (ended : EndedProcess<'Task, 'Handler>)
         (machine : SimulatedMachine<'Task, 'Handler>)
         : Result<ProcessTermination * SimulatedMachine<'Task, 'Handler>, ProcessEndRefusal>
@@ -651,6 +668,41 @@ module SimulatedMachine =
                     Processes = Map.remove processId machine.Processes
                 }
             )
+
+    /// End the process `ended` is on `machine`, as the call that ended it left
+    /// it (`UnixTaskLifecycle.exitGroup`, the last thread's exit, or a signal
+    /// whose default ends the process): how it ended, and the machine without
+    /// it.
+    ///
+    /// What a real kernel does at exit, where another process can see it.
+    /// The process's tasks are gone already, and with
+    /// them the holds their calls in flight had; any description only those
+    /// calls held, or that the call which ended the process let go of as it
+    /// returned, is released now. Then every descriptor of the process is
+    /// closed, in the order each flavour measurably closes them
+    /// (`exit-close-order.c`, Linux 6.18.5 and Darwin 27.0.0, which a peer
+    /// watching several connections sees as the order of their FINs): Linux
+    /// drops the descriptors lowest first and then releases what that let go
+    /// of, the last first; Darwin drops them highest first, releasing each as
+    /// it goes. Each release does everything a `close(2)` of the last
+    /// descriptor onto the description does: a connected peer gets its FIN,
+    /// a lock is let go of, a pipe end closes, an epoll instance or a kqueue
+    /// goes, a listener goes and resets each client still in its accept
+    /// queue, whichever process holds it, and every registration made through
+    /// the descriptor goes with it. The process ID, thread IDs and current
+    /// directory are let go of with the tasks.
+    ///
+    /// Refuses where a close would be refused.
+    ///
+    /// Fails loudly, as `unfocus` does, if the view the process ended in
+    /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.
+    let endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (ended : EndedProcess<'Task, 'Handler>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : ProcessTermination * SimulatedMachine<'Task, 'Handler>
+        =
+        tryEndProcess ended machine
+        |> Refusal.orRaise "SimulatedMachine.endProcess" ProcessEndRefusal.kind ProcessEndRefusal.describe
 
     /// The tasks `asleep` names that the machine wakes now, each with its
     /// process and the primitives of its wake condition which hold, in the

@@ -40,9 +40,6 @@ module NativeLibcFile =
             | SyscallAnswer.Failed error, system -> returning -1 (NativeSystemNative.withErrno ctx error system state)
             | SyscallAnswer.Completed _, system -> returning 0 (NativeSystemNative.withAnswered system state)
 
-        let refused (refusal : CloneFileRefusal) : NativeHandlerResult option =
-            failwith $"%s{operation}: %s{CloneFileRefusal.describe refusal}"
-
         match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> returning -1 (NativeSystemNative.withErrnoOnly ctx UnixError.ENOTSUP state)
         | SimulatedUnixFlavour.Darwin ->
@@ -52,23 +49,19 @@ module NativeLibcFile =
         // Each pathname is read out of guest memory only when the kernel
         // reaches its copy-in: flags it refuses are answered without either.
         match UnixNamespace.cloneFileFlagsPhase flags state.Kernel.System with
-        | Error refusal -> refused refusal
-        | Ok (CloneFileScreen.Answered (answer, system)) -> answered (answer, system)
-        | Ok (CloneFileScreen.NeedsSource screened) ->
+        | CloneFileScreen.Answered (answer, system) -> answered (answer, system)
+        | CloneFileScreen.NeedsSource screened ->
 
         let source =
             NativeSystemNative.pathArgumentBytes ctx operation "src" instruction.Arguments.[0] state
 
         match UnixNamespace.cloneFileSourcePhase source screened with
-        | Error refusal -> refused refusal
-        | Ok (CloneFileProgress.Answered (answer, system)) -> answered (answer, system)
-        | Ok (CloneFileProgress.NeedsDestination paused) ->
+        | CloneFileProgress.Answered (answer, system) -> answered (answer, system)
+        | CloneFileProgress.NeedsDestination paused ->
             let destination =
                 NativeSystemNative.pathArgumentBytes ctx operation "dst" instruction.Arguments.[1] state
 
-            match UnixNamespace.cloneFileWithDestination destination paused with
-            | Error refusal -> refused refusal
-            | Ok outcome -> answered outcome
+            UnixNamespace.cloneFileWithDestination destination paused |> answered
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State

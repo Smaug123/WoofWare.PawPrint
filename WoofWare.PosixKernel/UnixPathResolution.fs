@@ -86,7 +86,7 @@ type FileStatus =
 
 /// Why this kernel refused to report a `struct stat` for a path.
 [<RequireQualifiedAccess>]
-type StatRefusal =
+type internal StatRefusal =
     /// The path names a directory on an NFS mount. Its `st_size` and its
     /// `st_nlink` are what the NFS server's GETATTR reports, and nothing in
     /// this machine determines them.
@@ -99,7 +99,7 @@ type StatRefusal =
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
-module StatRefusal =
+module internal StatRefusal =
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic.
     let describe (refusal : StatRefusal) : string =
@@ -110,6 +110,13 @@ module StatRefusal =
             $"inode %O{inode} is the root of the device filesystem. Its st_size and st_nlink count every node and subdirectory a real one holds, and this kernel's holds only the nodes of the devices it has drivers for, so it will not state them."
         | StatRefusal.Path refusal -> PathRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : StatRefusal) : RefusalKind =
+        match refusal with
+        | StatRefusal.NfsDirectorySize _ -> RefusalKind.Unmodelled
+        | StatRefusal.DeviceFileSystemRoot _ -> RefusalKind.Unmodelled
+        | StatRefusal.Path inner -> PathRefusal.kind inner
+
 /// <summary>
 /// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
 /// </summary>
@@ -118,7 +125,7 @@ module StatRefusal =
 /// an answer to <c>fstat</c>.
 /// </remarks>
 [<RequireQualifiedAccess>]
-type FStatRefusal =
+type internal FStatRefusal =
     /// <summary>
     /// An end of a pipe that the process was launched with, rather than one it made.
     /// </summary>
@@ -154,7 +161,7 @@ type FStatRefusal =
     | DeviceFileSystemRoot of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
-module FStatRefusal =
+module internal FStatRefusal =
     /// <summary>Human-readable description.</summary>
     let describe (refusal : FStatRefusal) : string =
         match refusal with
@@ -167,9 +174,18 @@ module FStatRefusal =
         | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
         | FStatRefusal.DeviceFileSystemRoot inode -> StatRefusal.describe (StatRefusal.DeviceFileSystemRoot inode)
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FStatRefusal) : RefusalKind =
+        match refusal with
+        | FStatRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
+        | FStatRefusal.EventQueue -> RefusalKind.Unmodelled
+        | FStatRefusal.Socket _ -> RefusalKind.Unmodelled
+        | FStatRefusal.NfsDirectorySize _ -> RefusalKind.Unmodelled
+        | FStatRefusal.DeviceFileSystemRoot _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `fstatat(2)`.
 [<RequireQualifiedAccess>]
-type FStatAtRefusal =
+type internal FStatAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
     /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
@@ -184,7 +200,7 @@ type FStatAtRefusal =
     | Descriptor of FStatRefusal
 
 [<RequireQualifiedAccess>]
-module FStatAtRefusal =
+module internal FStatAtRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FStatAtRefusal) : string =
@@ -196,10 +212,18 @@ module FStatAtRefusal =
         | FStatAtRefusal.Stat refusal -> StatRefusal.describe refusal
         | FStatAtRefusal.Descriptor refusal -> FStatRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FStatAtRefusal) : RefusalKind =
+        match refusal with
+        | FStatAtRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | FStatAtRefusal.UnreadableEmptyPath -> RefusalKind.Unmodelled
+        | FStatAtRefusal.Stat inner -> StatRefusal.kind inner
+        | FStatAtRefusal.Descriptor inner -> FStatRefusal.kind inner
+
 /// Why this kernel will not answer a `chmod(2)`, or an `fchmodat(2)` that
 /// walks its path.
 [<RequireQualifiedAccess>]
-type ChModRefusal =
+type internal ChModRefusal =
     /// What the mode change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
@@ -207,7 +231,7 @@ type ChModRefusal =
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
-module ChModRefusal =
+module internal ChModRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : ChModRefusal) : string =
@@ -216,9 +240,15 @@ module ChModRefusal =
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ChModRefusal) : RefusalKind =
+        match refusal with
+        | ChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
+        | ChModRefusal.Path inner -> PathRefusal.kind inner
+
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
-type FChModRefusal =
+type internal FChModRefusal =
     /// What the mode change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
@@ -232,7 +262,7 @@ type FChModRefusal =
     | Socket of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module FChModRefusal =
+module internal FChModRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptor.
     let describe (refusal : FChModRefusal) : string =
@@ -244,9 +274,16 @@ module FChModRefusal =
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FChModRefusal) : RefusalKind =
+        match refusal with
+        | FChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
+        | FChModRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
+        | FChModRefusal.Socket _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `fchmodat(2)`.
 [<RequireQualifiedAccess>]
-type FChModAtRefusal =
+type internal FChModAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
     /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
@@ -257,7 +294,7 @@ type FChModAtRefusal =
     | Descriptor of FChModRefusal
 
 [<RequireQualifiedAccess>]
-module FChModAtRefusal =
+module internal FChModAtRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FChModAtRefusal) : string =
@@ -267,10 +304,17 @@ module FChModAtRefusal =
         | FChModAtRefusal.ChMod refusal -> ChModRefusal.describe refusal
         | FChModAtRefusal.Descriptor refusal -> FChModRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FChModAtRefusal) : RefusalKind =
+        match refusal with
+        | FChModAtRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | FChModAtRefusal.ChMod inner -> ChModRefusal.kind inner
+        | FChModAtRefusal.Descriptor inner -> FChModRefusal.kind inner
+
 /// Why this kernel will not answer a `chown(2)` or `lchown(2)`, or an
 /// `fchownat(2)` that walks its path.
 [<RequireQualifiedAccess>]
-type ChOwnRefusal =
+type internal ChOwnRefusal =
     /// What the owner change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
@@ -278,7 +322,7 @@ type ChOwnRefusal =
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
-module ChOwnRefusal =
+module internal ChOwnRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : ChOwnRefusal) : string =
@@ -287,9 +331,15 @@ module ChOwnRefusal =
             $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
         | ChOwnRefusal.Path refusal -> PathRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ChOwnRefusal) : RefusalKind =
+        match refusal with
+        | ChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
+        | ChOwnRefusal.Path inner -> PathRefusal.kind inner
+
 /// Why this kernel will not answer an `fchown(2)`.
 [<RequireQualifiedAccess>]
-type FChOwnRefusal =
+type internal FChOwnRefusal =
     /// What the owner change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
@@ -303,7 +353,7 @@ type FChOwnRefusal =
     | Socket of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module FChOwnRefusal =
+module internal FChOwnRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptor.
     let describe (refusal : FChOwnRefusal) : string =
@@ -315,9 +365,16 @@ module FChOwnRefusal =
         | FChOwnRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FChOwnRefusal) : RefusalKind =
+        match refusal with
+        | FChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
+        | FChOwnRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
+        | FChOwnRefusal.Socket _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `fchownat(2)`.
 [<RequireQualifiedAccess>]
-type FChOwnAtRefusal =
+type internal FChOwnAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
     /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
@@ -329,7 +386,7 @@ type FChOwnAtRefusal =
     | Descriptor of FChOwnRefusal
 
 [<RequireQualifiedAccess>]
-module FChOwnAtRefusal =
+module internal FChOwnAtRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : FChOwnAtRefusal) : string =
@@ -339,9 +396,16 @@ module FChOwnAtRefusal =
         | FChOwnAtRefusal.ChOwn refusal -> ChOwnRefusal.describe refusal
         | FChOwnAtRefusal.Descriptor refusal -> FChOwnRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FChOwnAtRefusal) : RefusalKind =
+        match refusal with
+        | FChOwnAtRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | FChOwnAtRefusal.ChOwn inner -> ChOwnRefusal.kind inner
+        | FChOwnAtRefusal.Descriptor inner -> FChOwnRefusal.kind inner
+
 /// Why this kernel will not answer a `utimensat(2)`.
 [<RequireQualifiedAccess>]
-type UTimensAtRefusal =
+type internal UTimensAtRefusal =
     /// The flag word carries flags the flavour reads and this library does
     /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
@@ -371,7 +435,7 @@ type UTimensAtRefusal =
     | UnmeasuredSymlinkWrite of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
-module UTimensAtRefusal =
+module internal UTimensAtRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : UTimensAtRefusal) : string =
@@ -391,6 +455,18 @@ module UTimensAtRefusal =
             $"a privileged caller would set the times of inode %O{inode}, which it does not own, on Darwin; this was measured only for an unprivileged caller."
         | UTimensAtRefusal.UnmeasuredSymlinkWrite inode ->
             $"AT_SYMLINK_NOFOLLOW reached symbolic link %O{inode}, which the caller does not own but may write, with both times now. Measured on Darwin 27.0, another user's link answers EPERM where a file answers EACCES, and whether write permission on a link lets a non-owner set its times to now, as it does for a file, is unmeasured."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : UTimensAtRefusal) : RefusalKind =
+        match refusal with
+        | UTimensAtRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnreadableTimes -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.Path inner -> PathRefusal.kind inner
+        | UTimensAtRefusal.Socket _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnmeasuredSymlinkWrite _ -> RefusalKind.Unmodelled
 
 /// <summary>
 /// What <c>fstat(2)</c> reported.
@@ -430,7 +506,7 @@ type GetCwdAnswer =
 
 /// Why this kernel will not answer a `getcwd`.
 [<RequireQualifiedAccess>]
-type GetCwdRefusal =
+type internal GetCwdRefusal =
     /// The buffer has no answer at the step this `getcwd` reached — which is
     /// always the copy, never a screen: measured, neither flavour checks the
     /// destination's address before comparing sizes, so `getcwd(high, 1)` is
@@ -450,7 +526,7 @@ type GetCwdRefusal =
     | FatalToTheProcess
 
 [<RequireQualifiedAccess>]
-module GetCwdRefusal =
+module internal GetCwdRefusal =
     /// What this kernel knows about why it cannot answer a `getcwd`. The client
     /// supplies its own half — which entry point, and what the destination
     /// actually was, neither of which this library ever saw.
@@ -459,6 +535,12 @@ module GetCwdRefusal =
         | GetCwdRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetCwdRefusal.FatalToTheProcess ->
             "the destination names no storage this caller can write, and this platform's `getcwd(3)` assembles the path with stores executed in the caller's own context rather than copying from the kernel. Measured against a `PROT_READ` page: Darwin dies on a signal (SIGSEGV unmapped, SIGBUS read-only) where Linux answers EFAULT. It can die that way on calls that would otherwise report ERANGE or ENOENT, because it stores before it decides -- so this is reported for any capacity of two or more, which over-refuses the cells where the real call answers without storing. A dead process is not an errno, and guessing which cell this is would answer one for a call that really dies."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetCwdRefusal) : RefusalKind =
+        match refusal with
+        | GetCwdRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetCwdRefusal.FatalToTheProcess -> RefusalKind.Unmodelled
 
 /// An `access(2)` or `faccessat(2)` whose mode and flag words this kernel has
 /// screened and accepted, paused at the point where it copies its path in.
@@ -857,6 +939,17 @@ module UnixPathResolution =
             failwith
                 $"UnixPathResolution.stat: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
+    /// `stat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryStat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<FileStatusAnswer, StatRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (FileStatusAnswer.Failed error)
+        | Ok path -> statParsed AtDirectory.CurrentDirectory policy path system
+
     /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
     /// the two differing only in whether a symbolic link in the final position
     /// is followed. Each is `fstatat` from `AT_FDCWD`, with
@@ -867,7 +960,7 @@ module UnixPathResolution =
     ///
     /// Refuses for a directory on an NFS mount and for the device filesystem's
     /// root, whose size and link count this kernel cannot state, and for a
-    /// path this kernel will not resolve; see `StatRefusal`. The three
+    /// path this kernel will not resolve. The three
     /// descriptor kinds `fstat` also refuses for are unreachable from here:
     /// every inode a path resolves to is one this filesystem holds, since a
     /// name for an inode-free object cannot be created in it.
@@ -878,29 +971,13 @@ module UnixPathResolution =
         (policy : SymlinkPolicy)
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<FileStatusAnswer, StatRefusal>
+        : FileStatusAnswer
         =
-        match copyIn path system with
-        | Error error -> Ok (FileStatusAnswer.Failed error)
-        | Ok path -> statParsed AtDirectory.CurrentDirectory policy path system
+        tryStat policy path system
+        |> Refusal.orRaise "UnixPathResolution.stat" StatRefusal.kind StatRefusal.describe
 
-    /// `fstat(2)`: report the status of the inode `fd` names.
-    ///
-    /// Changes nothing and returns no system, which is not merely today's
-    /// implementation: a real `fstat` records no access, and neither does this
-    /// one, so there is nothing for a caller to write back.
-    ///
-    /// An end of a pipe the process made reports `S_IFIFO`, and each flavour's
-    /// own permission bits, size, timestamps and identity: see `PipeInodes`,
-    /// `PipeTimes` and `UnixBootImage.withPipeDevice`.
-    ///
-    /// Refuses for a descriptor this kernel holds no inode for — an event
-    /// queue, a socket — and for an end of a pipe the process was launched with,
-    /// whose owner and timestamps are the launcher's. That is a limit of the
-    /// model rather than an absent kernel answer; see `FStatRefusal`. Also
-    /// refuses for a directory on an NFS mount and for the device filesystem's
-    /// root, as `stat` does.
-    let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `fstat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatusAnswer, FStatRefusal>
@@ -1002,31 +1079,32 @@ module UnixPathResolution =
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
 
-    /// `fstatat(2)`: report the status of the inode `path` names, starting
-    /// from `dirfd` if it is relative; `stat(2)` and `lstat(2)` are this from
-    /// the current directory.
+    /// `fstat(2)`: report the status of the inode `fd` names.
     ///
-    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
-    /// word is screened before anything else: Linux accepts
-    /// `AT_SYMLINK_NOFOLLOW` (0x100) and `AT_EMPTY_PATH` (0x1000), and Darwin
-    /// `AT_SYMLINK_NOFOLLOW` (0x20); each answers EINVAL for any other flag,
-    /// except those it accepts and this library does not model, which are
-    /// refused. `path` is the argument's bytes, copied in next. A relative path
-    /// then starts where `dirfd` says, as every `*at` call's does, and resolves
-    /// as `stat`'s does.
+    /// Changes nothing and returns no system, which is not merely today's
+    /// implementation: a real `fstat` records no access, and neither does this
+    /// one, so there is nothing for a caller to write back.
     ///
-    /// Under Linux's `AT_EMPTY_PATH` an empty path names what `dirfd` names,
-    /// whatever kind of descriptor it is, and the call reports exactly what
-    /// `fstat` would of it, or what `stat` would of the current directory for
-    /// `AT_FDCWD`. A path that is not empty is resolved as if the flag were
-    /// absent.
+    /// An end of a pipe the process made reports `S_IFIFO`, and each flavour's
+    /// own permission bits, size, timestamps and identity: see `PipeInodes`,
+    /// `PipeTimes` and `UnixBootImage.withPipeDevice`.
     ///
-    /// Changes nothing and returns no system, as `stat` and `fstat` do not.
-    ///
-    /// Refuses the flags this library does not model, a pathname this
-    /// kernel cannot read under `AT_EMPTY_PATH`, and whatever `stat` or
-    /// `fstat` refuses of what the call reaches; see `FStatAtRefusal`.
-    let fstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Refuses for a descriptor this kernel holds no inode for — an event
+    /// queue, a socket — and for an end of a pipe the process was launched with,
+    /// whose owner and timestamps are the launcher's. That is a limit of the
+    /// model rather than an absent kernel answer. Also
+    /// refuses for a directory on an NFS mount and for the device filesystem's
+    /// root, as `stat` does.
+    let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileStatusAnswer
+        =
+        tryFstat fd system
+        |> Refusal.orRaise "UnixPathResolution.fstat" FStatRefusal.kind FStatRefusal.describe
+
+    /// `fstatat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
         (flags : int)
@@ -1058,7 +1136,7 @@ module UnixPathResolution =
         // empty answers as it does without the flag.
         match arguments.EmptyPath, directory with
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
-            fstat fd system |> Result.mapError FStatAtRefusal.Descriptor
+            tryFstat fd system |> Result.mapError FStatAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
             let cwd = system.Process.CurrentDirectoryInode
 
@@ -1072,6 +1150,40 @@ module UnixPathResolution =
         | EmptyPathMeaning.Walked, _ ->
             statParsed directory arguments.FinalSymlink path system
             |> Result.mapError FStatAtRefusal.Stat
+
+    /// `fstatat(2)`: report the status of the inode `path` names, starting
+    /// from `dirfd` if it is relative; `stat(2)` and `lstat(2)` are this from
+    /// the current directory.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
+    /// word is screened before anything else: Linux accepts
+    /// `AT_SYMLINK_NOFOLLOW` (0x100) and `AT_EMPTY_PATH` (0x1000), and Darwin
+    /// `AT_SYMLINK_NOFOLLOW` (0x20); each answers EINVAL for any other flag,
+    /// except those it accepts and this library does not model, which are
+    /// refused. `path` is the argument's bytes, copied in next. A relative path
+    /// then starts where `dirfd` says, as every `*at` call's does, and resolves
+    /// as `stat`'s does.
+    ///
+    /// Under Linux's `AT_EMPTY_PATH` an empty path names what `dirfd` names,
+    /// whatever kind of descriptor it is, and the call reports exactly what
+    /// `fstat` would of it, or what `stat` would of the current directory for
+    /// `AT_FDCWD`. A path that is not empty is resolved as if the flag were
+    /// absent.
+    ///
+    /// Changes nothing and returns no system, as `stat` and `fstat` do not.
+    ///
+    /// Refuses the flags this library does not model, a pathname this
+    /// kernel cannot read under `AT_EMPTY_PATH`, and whatever `stat` or
+    /// `fstat` refuses of what the call reaches.
+    let fstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileStatusAnswer
+        =
+        tryFstatat dirfd path flags system
+        |> Refusal.orRaise "UnixPathResolution.fstatat" FStatAtRefusal.kind FStatAtRefusal.describe
 
     /// What `chmod` and `fchmod` do once they have reached `inode`, which is a
     /// regular file, a device, a directory, or a symbolic link on a flavour
@@ -1158,6 +1270,17 @@ module UnixPathResolution =
         else
             Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
 
+    /// `chmod`, with a refusal answered as the `Error` rather than raised.
+    let internal tryChmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChModRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> chmodParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path mode system
+
     /// `chmod(2)`: change the mode of the inode `path` names. This is
     /// `fchmodat` from `AT_FDCWD` with no flags.
     ///
@@ -1171,8 +1294,7 @@ module UnixPathResolution =
     /// changes and a dangling link is ENOENT. Every other failure but EPERM is
     /// the path resolution's own.
     ///
-    /// Refuses where the mode change has not been measured for this caller; see
-    /// `ChModRefusal`.
+    /// Refuses where the mode change has not been measured for this caller.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -1180,21 +1302,13 @@ module UnixPathResolution =
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChModRefusal>
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> chmodParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path mode system
+        tryChmod path mode system
+        |> Refusal.orRaise "UnixPathResolution.chmod" ChModRefusal.kind ChModRefusal.describe
 
-    /// `fchmod(2)`: change the mode of the inode `fd` names.
-    ///
-    /// `mode` is the raw mode word, as for `chmod`. The descriptor's access mode
-    /// plays no part: a descriptor open only for reading will do.
-    ///
-    /// A descriptor naming something other than a regular file or a directory
-    /// answers as its flavour does, which on Linux can be a refusal; see
-    /// `FChModRefusal`.
-    let fchmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `fchmod`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFchmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1270,6 +1384,23 @@ module UnixPathResolution =
                         }
                 }
             )
+
+    /// `fchmod(2)`: change the mode of the inode `fd` names.
+    ///
+    /// `mode` is the raw mode word, as for `chmod`. The descriptor's access mode
+    /// plays no part: a descriptor open only for reading will do.
+    ///
+    /// A descriptor naming something other than a regular file or a directory
+    /// answers as its flavour does, which on Linux can be a refusal: a socket
+    /// or an end of a launched pipe, whose mode this kernel does not hold.
+    let fchmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryFchmod fd mode system
+        |> Refusal.orRaise "UnixPathResolution.fchmod" FChModRefusal.kind FChModRefusal.describe
 
     /// What `chown`, `lchown` and `fchown` do once they have reached `inode`,
     /// which is an inode of any kind this filesystem holds: EPERM changing
@@ -1375,6 +1506,18 @@ module UnixPathResolution =
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
 
+    /// `chown`, with a refusal answered as the `Error` rather than raised.
+    let internal tryChown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path user group system
+
     /// `chown(2)`: change the owner and group of the inode `path` names. This
     /// is `fchownat` from `AT_FDCWD` with no flags.
     ///
@@ -1387,8 +1530,7 @@ module UnixPathResolution =
     /// the path resolution's own, and comes first: a path through a directory
     /// the caller may not search is EACCES whatever it asks.
     ///
-    /// Refuses where the change has not been measured for this caller; see
-    /// `ChOwnRefusal`.
+    /// Refuses where the change has not been measured for this caller.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -1397,11 +1539,22 @@ module UnixPathResolution =
         (user : UserId option)
         (group : GroupId option)
         (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryChown path user group system
+        |> Refusal.orRaise "UnixPathResolution.chown" ChOwnRefusal.kind ChOwnRefusal.describe
+
+    /// `lchown`, with a refusal answered as the `Error` rather than raised.
+    let internal tryLchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
         =
         match copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path user group system
+        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path user group system
 
     /// `lchown(2)`: change the owner and group of the inode `path` names,
     /// without following a symbolic link in the final position, so a link
@@ -1419,21 +1572,13 @@ module UnixPathResolution =
         (user : UserId option)
         (group : GroupId option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path user group system
+        tryLchown path user group system
+        |> Refusal.orRaise "UnixPathResolution.lchown" ChOwnRefusal.kind ChOwnRefusal.describe
 
-    /// `fchown(2)`: change the owner and group of the inode `fd` names.
-    ///
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`, as for `chown`. The descriptor's
-    /// access mode plays no part: a descriptor open only for reading will do.
-    ///
-    /// A descriptor naming something other than a regular file or a directory
-    /// answers as its flavour does, which on Linux can be a refusal; see
-    /// `FChOwnRefusal`.
-    let fchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `fchown`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (user : UserId option)
         (group : GroupId option)
@@ -1520,6 +1665,64 @@ module UnixPathResolution =
                 }
             )
 
+    /// `fchown(2)`: change the owner and group of the inode `fd` names.
+    ///
+    /// `None` is `(uid_t)-1` or `(gid_t)-1`, as for `chown`. The descriptor's
+    /// access mode plays no part: a descriptor open only for reading will do.
+    ///
+    /// A descriptor naming something other than a regular file or a directory
+    /// answers as its flavour does, which on Linux can be a refusal: a socket
+    /// or an end of a launched pipe, whose owner this kernel does not hold.
+    let fchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryFchown fd user group system
+        |> Refusal.orRaise "UnixPathResolution.fchown" FChOwnRefusal.kind FChOwnRefusal.describe
+
+    /// `fchmodat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFchmodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChModAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match AttributeChangeRules.screen flavour flags with
+        | AttributeChangeScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
+        | AttributeChangeScreen.Unmodelled flags -> Error (FChModAtRefusal.UnmodelledFlags flags)
+        | AttributeChangeScreen.Screened arguments ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        // Measured by `chmod-chown-at.c` (EMPTY) on Linux 6.18.5, as root and
+        // as uid 1000: under AT_EMPTY_PATH, NULL is EFAULT, and the empty path
+        // answers and changes exactly what fchmod of the descriptor does (or
+        // chmod of "." for AT_FDCWD), for every kind of descriptor -- pipes,
+        // sockets, epoll, /dev/null, unlinked files, removed directories, one
+        // root opened on the caller's behalf -- AT_SYMLINK_NOFOLLOW or not.
+        // EMPTYPATH: a path that is not empty answers as it does without it.
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        match arguments.EmptyPath, directory with
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
+            tryFchmod fd mode system |> Result.mapError FChModAtRefusal.Descriptor
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
+            changeModeOf system.Process.CurrentDirectoryInode mode system
+            |> Result.mapError (ChModRefusal.UnmeasuredModeChange >> FChModAtRefusal.ChMod)
+        | EmptyPathMeaning.NamesStartingPoint, _
+        | EmptyPathMeaning.Walked, _ ->
+            chmodParsed directory arguments.FinalSymlink path mode system
+            |> Result.mapError FChModAtRefusal.ChMod
+
     /// `fchmodat(2)`: change the mode of the inode `path` names, starting
     /// from `dirfd` if it is relative; `chmod(2)` is this from the current
     /// directory with no flags.
@@ -1552,66 +1755,20 @@ module UnixPathResolution =
     /// absent.
     ///
     /// Refuses the flags the screen does not model, and whatever `chmod` or
-    /// `fchmod` refuses of what the call reaches; see `FChModAtRefusal`.
+    /// `fchmod` refuses of what the call reaches.
     let fchmodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
         (mode : int)
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChModAtRefusal>
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        tryFchmodat dirfd path mode flags system
+        |> Refusal.orRaise "UnixPathResolution.fchmodat" FChModAtRefusal.kind FChModAtRefusal.describe
 
-        match AttributeChangeRules.screen flavour flags with
-        | AttributeChangeScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
-        | AttributeChangeScreen.Unmodelled flags -> Error (FChModAtRefusal.UnmodelledFlags flags)
-        | AttributeChangeScreen.Screened arguments ->
-
-        let directory = AtDirectory.decode flavour dirfd
-
-        // Measured by `chmod-chown-at.c` (EMPTY) on Linux 6.18.5, as root and
-        // as uid 1000: under AT_EMPTY_PATH, NULL is EFAULT, and the empty path
-        // answers and changes exactly what fchmod of the descriptor does (or
-        // chmod of "." for AT_FDCWD), for every kind of descriptor -- pipes,
-        // sockets, epoll, /dev/null, unlinked files, removed directories, one
-        // root opened on the caller's behalf -- AT_SYMLINK_NOFOLLOW or not.
-        // EMPTYPATH: a path that is not empty answers as it does without it.
-        match copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path ->
-
-        match arguments.EmptyPath, directory with
-        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
-            fchmod fd mode system |> Result.mapError FChModAtRefusal.Descriptor
-        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            changeModeOf system.Process.CurrentDirectoryInode mode system
-            |> Result.mapError (ChModRefusal.UnmeasuredModeChange >> FChModAtRefusal.ChMod)
-        | EmptyPathMeaning.NamesStartingPoint, _
-        | EmptyPathMeaning.Walked, _ ->
-            chmodParsed directory arguments.FinalSymlink path mode system
-            |> Result.mapError FChModAtRefusal.ChMod
-
-    /// `fchownat(2)`: change the owner and group of the inode `path` names,
-    /// starting from `dirfd` if it is relative; `chown(2)` is this from the
-    /// current directory with no flags, and `lchown(2)` with
-    /// `AT_SYMLINK_NOFOLLOW`.
-    ///
-    /// `dirfd` and `flags` are raw, in this platform's own numbering, and
-    /// screened as `fchmodat`'s are. `None` is `(uid_t)-1` or `(gid_t)-1`, as
-    /// for `chown`. A relative path starts where `dirfd` says, and the inode
-    /// it names changes as under `chown`, or under `lchown` with
-    /// `AT_SYMLINK_NOFOLLOW`.
-    ///
-    /// Under Linux's `AT_EMPTY_PATH` the empty path is `fchown(2)` of
-    /// `dirfd`, whatever kind of descriptor it is, or `chown` of the current
-    /// directory for `AT_FDCWD`; an unreadable pathname is EFAULT, NULL
-    /// included. A path that is not empty is resolved as if the flag were
-    /// absent.
-    ///
-    /// Refuses the flags the screen does not model, and whatever `chown` or
-    /// `fchown` refuses of what the call reaches; see `FChOwnAtRefusal`.
-    let fchownat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `fchownat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFchownat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
         (user : UserId option)
@@ -1637,7 +1794,7 @@ module UnixPathResolution =
 
         match arguments.EmptyPath, directory with
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
-            fchown fd user group system |> Result.mapError FChOwnAtRefusal.Descriptor
+            tryFchown fd user group system |> Result.mapError FChOwnAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
             changeOwnerOf system.Process.CurrentDirectoryInode user group system
             |> Result.mapError (ChOwnRefusal.UnmeasuredOwnerChange >> FChOwnAtRefusal.ChOwn)
@@ -1645,6 +1802,37 @@ module UnixPathResolution =
         | EmptyPathMeaning.Walked, _ ->
             chownParsed directory arguments.FinalSymlink path user group system
             |> Result.mapError FChOwnAtRefusal.ChOwn
+
+    /// `fchownat(2)`: change the owner and group of the inode `path` names,
+    /// starting from `dirfd` if it is relative; `chown(2)` is this from the
+    /// current directory with no flags, and `lchown(2)` with
+    /// `AT_SYMLINK_NOFOLLOW`.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering, and
+    /// screened as `fchmodat`'s are. `None` is `(uid_t)-1` or `(gid_t)-1`, as
+    /// for `chown`. A relative path starts where `dirfd` says, and the inode
+    /// it names changes as under `chown`, or under `lchown` with
+    /// `AT_SYMLINK_NOFOLLOW`.
+    ///
+    /// Under Linux's `AT_EMPTY_PATH` the empty path is `fchown(2)` of
+    /// `dirfd`, whatever kind of descriptor it is, or `chown` of the current
+    /// directory for `AT_FDCWD`; an unreadable pathname is EFAULT, NULL
+    /// included. A path that is not empty is resolved as if the flag were
+    /// absent.
+    ///
+    /// Refuses the flags the screen does not model, and whatever `chown` or
+    /// `fchown` refuses of what the call reaches.
+    let fchownat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryFchownat dirfd path user group flags system
+        |> Refusal.orRaise "UnixPathResolution.fchownat" FChOwnAtRefusal.kind FChOwnAtRefusal.describe
 
     /// What `utimensat(2)` does once it has found the object whose times it
     /// sets: Linux's EINVAL for a nanosecond field it does not accept, then
@@ -1898,48 +2086,8 @@ module UnixPathResolution =
         | Error (PathFailure.Refused refusal) -> Error (UTimensAtRefusal.Path refusal)
         | Ok inode -> setTimesOf (OpenFileObject.File inode) access modification system
 
-    /// `utimensat(2)`: set the access and modification times of the object
-    /// `path` names, starting from `dirfd` if it is relative.
-    ///
-    /// `dirfd` and `flags` are raw, in this platform's own numbering, and
-    /// `times` holds the fields the caller stored, which the flavour reads as
-    /// `UTIME_NOW` (Linux 0x3FFFFFFF, Darwin -1), `UTIME_OMIT` (Linux
-    /// 0x3FFFFFFE, Darwin -2), or a time. A null `times` is both times now.
-    /// `TimestampChangeRules.rangeOf` says what a time beyond a filesystem's
-    /// range stores.
-    ///
-    /// On both flavours the owner may set any times, and a caller who may
-    /// write the object may set both to now. Linux lets a privileged caller
-    /// do anything, and answers EACCES where only both times now were asked
-    /// and EPERM otherwise. Darwin answers EACCES, or EPERM for a symbolic
-    /// link. Linux moves the status-change time whatever was asked, and
-    /// never the birth time. Darwin moves the status-change time only with
-    /// the modification time, and a modification time earlier than the birth
-    /// time pulls the birth time back to it, unless it is before the epoch.
-    ///
-    /// On Linux, in this order: an unreadable `times` is EFAULT; both times
-    /// `UTIME_OMIT` is success at once, whatever else the call is given; a
-    /// null `path` with a descriptor rather than `AT_FDCWD` sets the times of
-    /// what the descriptor names, as `futimens(2)` does, with EINVAL for any
-    /// flag and EBADF for a descriptor not held; otherwise the flag word is
-    /// screened (EINVAL for any bit but `AT_SYMLINK_NOFOLLOW`, 0x100, and
-    /// `AT_EMPTY_PATH`, 0x1000), the path copied in (a null
-    /// one is EFAULT), and a relative path started where `dirfd` says, as
-    /// every `*at` call's is. Under `AT_EMPTY_PATH` the empty path names what
-    /// `dirfd` names, or the current directory for `AT_FDCWD`. Once the
-    /// object is found, a nanosecond field outside `[0, 1e9)` that is neither
-    /// marker is EINVAL, then the permission check answers.
-    ///
-    /// On Darwin, whose `utimensat` is its libc's: the libc reads the times
-    /// itself, so an unreadable `times` is refused (`UnreadableTimes`); no
-    /// flag bit is rejected; a null `path` is EFAULT; the path is walked even
-    /// when both times are `UTIME_OMIT`, which then succeeds changing nothing
-    /// without any permission check.
-    ///
-    /// Refuses the flags the screen does not model, a socket's times, an end
-    /// of a pipe the process was launched with, a time on an NFS mount, and
-    /// what Darwin's rules leave unmeasured; see `UTimensAtRefusal`.
-    let utimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `utimensat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryUtimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : NullablePathArgument)
         (times : TimesArgument)
@@ -1984,6 +2132,58 @@ module UnixPathResolution =
         | NullablePathArgument.Null, AtDirectory.CurrentDirectory
         | NullablePathArgument.NotNull _, _ -> utimensatWalked directory path access modification flags system
 
+    /// `utimensat(2)`: set the access and modification times of the object
+    /// `path` names, starting from `dirfd` if it is relative.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering, and
+    /// `times` holds the fields the caller stored, which the flavour reads as
+    /// `UTIME_NOW` (Linux 0x3FFFFFFF, Darwin -1), `UTIME_OMIT` (Linux
+    /// 0x3FFFFFFE, Darwin -2), or a time. A null `times` is both times now.
+    /// `TimestampChangeRules.rangeOf` says what a time beyond a filesystem's
+    /// range stores.
+    ///
+    /// On both flavours the owner may set any times, and a caller who may
+    /// write the object may set both to now. Linux lets a privileged caller
+    /// do anything, and answers EACCES where only both times now were asked
+    /// and EPERM otherwise. Darwin answers EACCES, or EPERM for a symbolic
+    /// link. Linux moves the status-change time whatever was asked, and
+    /// never the birth time. Darwin moves the status-change time only with
+    /// the modification time, and a modification time earlier than the birth
+    /// time pulls the birth time back to it, unless it is before the epoch.
+    ///
+    /// On Linux, in this order: an unreadable `times` is EFAULT; both times
+    /// `UTIME_OMIT` is success at once, whatever else the call is given; a
+    /// null `path` with a descriptor rather than `AT_FDCWD` sets the times of
+    /// what the descriptor names, as `futimens(2)` does, with EINVAL for any
+    /// flag and EBADF for a descriptor not held; otherwise the flag word is
+    /// screened (EINVAL for any bit but `AT_SYMLINK_NOFOLLOW`, 0x100, and
+    /// `AT_EMPTY_PATH`, 0x1000), the path copied in (a null
+    /// one is EFAULT), and a relative path started where `dirfd` says, as
+    /// every `*at` call's is. Under `AT_EMPTY_PATH` the empty path names what
+    /// `dirfd` names, or the current directory for `AT_FDCWD`. Once the
+    /// object is found, a nanosecond field outside `[0, 1e9)` that is neither
+    /// marker is EINVAL, then the permission check answers.
+    ///
+    /// On Darwin, whose `utimensat` is its libc's: the libc reads the times
+    /// itself, so an unreadable `times` is refused (`UnreadableTimes`); no
+    /// flag bit is rejected; a null `path` is EFAULT; the path is walked even
+    /// when both times are `UTIME_OMIT`, which then succeeds changing nothing
+    /// without any permission check.
+    ///
+    /// Refuses the flags the screen does not model, a socket's times, an end
+    /// of a pipe the process was launched with, a time on an NFS mount, and
+    /// what Darwin's rules leave unmeasured.
+    let utimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : NullablePathArgument)
+        (times : TimesArgument)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryUtimensat dirfd path times flags system
+        |> Refusal.orRaise "UnixPathResolution.utimensat" UTimensAtRefusal.kind UTimensAtRefusal.describe
+
     /// What `statfs(2)` reports for the filesystem `inode` is on.
     let private statisticsOfInode<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
@@ -2010,19 +2210,8 @@ module UnixPathResolution =
         | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok inode -> Ok (statisticsOfInode inode system)
 
-    /// `statfs(2)`: report the filesystem the inode `path` names is on.
-    ///
-    /// A symbolic link in the final position is followed, as `statfs` always
-    /// does, so a dangling link is ENOENT. Every failure is the path
-    /// resolution's own, as for `stat(2)`.
-    ///
-    /// Changes nothing and returns no system. Refuses a path this kernel will
-    /// not resolve (see `PathRefusal`), and throws for a machine whose platform
-    /// and mount do not describe one machine, whatever the path.
-    ///
-    /// `path` is the argument's bytes, copied in before anything else: EFAULT
-    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
-    let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `statfs`, with a refusal answered as the `Error` rather than raised.
+    let internal tryStatfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileSystemStatisticsAnswer, PathRefusal>
@@ -2032,6 +2221,26 @@ module UnixPathResolution =
         match copyIn path system with
         | Error error -> Ok (FileSystemStatisticsAnswer.Failed error)
         | Ok path -> statfsParsed path system
+
+    /// `statfs(2)`: report the filesystem the inode `path` names is on.
+    ///
+    /// A symbolic link in the final position is followed, as `statfs` always
+    /// does, so a dangling link is ENOENT. Every failure is the path
+    /// resolution's own, as for `stat(2)`.
+    ///
+    /// Changes nothing and returns no system. Refuses a path this kernel will
+    /// not resolve, and throws for a machine whose platform
+    /// and mount do not describe one machine, whatever the path.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileSystemStatisticsAnswer
+        =
+        tryStatfs path system
+        |> Refusal.orRaise "UnixPathResolution.statfs" PathRefusal.kind PathRefusal.describe
 
     /// `fstatfs(2)`: report the filesystem the object `fd` names is on.
     ///
@@ -2074,22 +2283,8 @@ module UnixPathResolution =
         // Measured on both flavours; see docs/probes/chdir.
         VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem
 
-    /// <summary>
-    /// <c>getcwd(3)</c>: report the current directory's path into the caller's buffer.
-    /// </summary>
-    /// <remarks>
-    /// This has no side-effects on the kernel.
-    /// </remarks>
-    /// <param name="destination">
-    /// Where the kernel writes the result.
-    /// </param>
-    /// <param name="capacity">
-    /// The caller's buffer size, as the <c>size_t</c> it is.
-    /// </param>
-    /// <param name="system">
-    /// The state of the kernel we're reading data out of.
-    /// </param>
-    let getcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getcwd`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : UserBuffer)
         (capacity : uint64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2191,6 +2386,30 @@ module UnixPathResolution =
         else
             transfer (GetCwdAnswer.Reported terminated)
 
+    /// <summary>
+    /// <c>getcwd(3)</c>: report the current directory's path into the caller's buffer.
+    /// </summary>
+    /// <remarks>
+    /// This has no side-effects on the kernel.
+    /// </remarks>
+    /// <param name="destination">
+    /// Where the kernel writes the result.
+    /// </param>
+    /// <param name="capacity">
+    /// The caller's buffer size, as the <c>size_t</c> it is.
+    /// </param>
+    /// <param name="system">
+    /// The state of the kernel we're reading data out of.
+    /// </param>
+    let getcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : UserBuffer)
+        (capacity : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetCwdAnswer
+        =
+        tryGetcwd destination capacity system
+        |> Refusal.orRaise "UnixPathResolution.getcwd" GetCwdRefusal.kind GetCwdRefusal.describe
+
     /// `chdir`, of a path this kernel has already copied in.
     let internal chdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
@@ -2285,16 +2504,8 @@ module UnixPathResolution =
         // for the run.
         Ok (SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved)
 
-    /// <summary>
-    /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
-    /// </summary>
-    /// <remarks>
-    /// <c>path</c> is the argument's bytes, copied in before anything else: <c>EFAULT</c> if they
-    /// were unreadable, <c>ENAMETOOLONG</c> if they run past <c>PATH_MAX</c>.
-    ///
-    /// Refuses a path this kernel will not resolve; see <c>PathRefusal</c>.
-    /// </remarks>
-    let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `chdir`, with a refusal answered as the `Error` rather than raised.
+    let internal tryChdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
@@ -2302,6 +2513,23 @@ module UnixPathResolution =
         match copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok path -> chdirParsed path system
+
+    /// <summary>
+    /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>path</c> is the argument's bytes, copied in before anything else: <c>EFAULT</c> if they
+    /// were unreadable, <c>ENAMETOOLONG</c> if they run past <c>PATH_MAX</c>.
+    ///
+    /// Refuses a path this kernel will not resolve.
+    /// </remarks>
+    let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryChdir path system
+        |> Refusal.orRaise "UnixPathResolution.chdir" PathRefusal.kind PathRefusal.describe
 
     // The order of every step of `access` and `faccessat` is measured by
     // `access-rules.c`, on Linux 6.18.5 and Darwin 27.0: the mode and flag
@@ -2332,6 +2560,19 @@ module UnixPathResolution =
                     }
             )
 
+    /// `faccessatScreenPhase`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFaccessatScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
+        =
+        let directory =
+            AtDirectory.decode (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
+
+        screenFrom directory mode flags system
+
     /// <summary>
     /// The first half of <c>faccessat(2)</c>: screen its raw <c>mode</c> and <c>flags</c>,
     /// and decode its raw <c>dirfd</c>, before the path is read.
@@ -2348,12 +2589,18 @@ module UnixPathResolution =
         (mode : int)
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
+        : AccessProgress<'Task, 'Handler>
+        =
+        tryFaccessatScreenPhase dirfd mode flags system
+        |> Refusal.orRaise "UnixPathResolution.faccessatScreenPhase" AccessRefusal.kind AccessRefusal.describe
+
+    /// `accessScreenPhase`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAccessScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
         =
-        let directory =
-            AtDirectory.decode (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
-
-        screenFrom directory mode flags system
+        screenFrom AtDirectory.CurrentDirectory mode 0 system
 
     /// The first half of <c>access(2)</c>, as <c>faccessatScreenPhase</c> is of
     /// <c>faccessat</c>: <c>access</c> is <c>faccessat</c> from the current directory with
@@ -2361,18 +2608,13 @@ module UnixPathResolution =
     let accessScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
+        : AccessProgress<'Task, 'Handler>
         =
-        screenFrom AtDirectory.CurrentDirectory mode 0 system
+        tryAccessScreenPhase mode system
+        |> Refusal.orRaise "UnixPathResolution.accessScreenPhase" AccessRefusal.kind AccessRefusal.describe
 
-    /// <summary>
-    /// The second half of <c>access(2)</c> or <c>faccessat(2)</c>: copy in <c>path</c>, and
-    /// answer the call <c>paused</c> describes.
-    /// </summary>
-    /// <remarks>
-    /// See <c>faccessat</c> for what it answers and refuses.
-    /// </remarks>
-    let accessWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `accessWithPath`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAccessWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (paused : PausedAccess<'Task, 'Handler>)
         : Result<SyscallAnswer, AccessRefusal>
@@ -2451,6 +2693,35 @@ module UnixPathResolution =
         | Ok false -> Ok (SyscallAnswer.Completed 0L)
 
     /// <summary>
+    /// The second half of <c>access(2)</c> or <c>faccessat(2)</c>: copy in <c>path</c>, and
+    /// answer the call <c>paused</c> describes.
+    /// </summary>
+    /// <remarks>
+    /// See <c>faccessat</c> for what it answers and refuses.
+    /// </remarks>
+    let accessWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedAccess<'Task, 'Handler>)
+        : SyscallAnswer
+        =
+        tryAccessWithPath path paused
+        |> Refusal.orRaise "UnixPathResolution.accessWithPath" AccessRefusal.kind AccessRefusal.describe
+
+    /// `faccessat`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFaccessat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer, AccessRefusal>
+        =
+        match tryFaccessatScreenPhase dirfd mode flags system with
+        | Error refusal -> Error refusal
+        | Ok (AccessProgress.Answered answer) -> Ok answer
+        | Ok (AccessProgress.NeedsPath paused) -> tryAccessWithPath path paused
+
+    /// <summary>
     /// <c>faccessat(2)</c>: whether the calling process may do what <c>mode</c> asks of
     /// the inode <c>path</c> names, starting from <c>dirfd</c> if the path is relative.
     /// </summary>
@@ -2481,7 +2752,7 @@ module UnixPathResolution =
     /// Refuses Darwin's extended rights and the flags Darwin accepts without this library
     /// modelling them, a privileged caller's execute question under a flavour where that is
     /// unmeasured, and Linux's <c>AT_EMPTY_PATH</c> with a <c>dirfd</c> naming a pipe, a socket
-    /// or an event queue; see <c>AccessRefusal</c>.
+    /// or an event queue.
     /// </remarks>
     let faccessat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
@@ -2489,12 +2760,22 @@ module UnixPathResolution =
         (mode : int)
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer
+        =
+        tryFaccessat dirfd path mode flags system
+        |> Refusal.orRaise "UnixPathResolution.faccessat" AccessRefusal.kind AccessRefusal.describe
+
+    /// `access`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAccess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer, AccessRefusal>
         =
-        match faccessatScreenPhase dirfd mode flags system with
+        match tryAccessScreenPhase mode system with
         | Error refusal -> Error refusal
         | Ok (AccessProgress.Answered answer) -> Ok answer
-        | Ok (AccessProgress.NeedsPath paused) -> accessWithPath path paused
+        | Ok (AccessProgress.NeedsPath paused) -> tryAccessWithPath path paused
 
     /// <c>access(2)</c>: <c>faccessat</c> from the current directory with no flags, so
     /// checking with the process's real user and group. Measured on both, the two agree on
@@ -2503,9 +2784,7 @@ module UnixPathResolution =
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer, AccessRefusal>
+        : SyscallAnswer
         =
-        match accessScreenPhase mode system with
-        | Error refusal -> Error refusal
-        | Ok (AccessProgress.Answered answer) -> Ok answer
-        | Ok (AccessProgress.NeedsPath paused) -> accessWithPath path paused
+        tryAccess path mode system
+        |> Refusal.orRaise "UnixPathResolution.access" AccessRefusal.kind AccessRefusal.describe

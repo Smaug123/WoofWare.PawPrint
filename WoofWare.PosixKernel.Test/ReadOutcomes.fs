@@ -5,7 +5,7 @@ open WoofWare.PosixKernel
 /// `UnixReadWrite.read` for a test about what a read answers rather than about
 /// whether it sleeps.
 [<RequireQualifiedAccess>]
-module ReadOutcomes =
+module internal ReadOutcomes =
 
     /// `UnixReadWrite.read` by the process's leader, failing the test if the
     /// call sleeps.
@@ -16,7 +16,7 @@ module ReadOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, ReadRefusal>
         =
-        UnixReadWrite.read system.Leader fd buffer count system
+        UnixReadWrite.tryRead system.Leader fd buffer count system
         |> Result.map (fun (outcome, after) ->
             match outcome with
             | ReadOutcome.Answered answer -> answer, after

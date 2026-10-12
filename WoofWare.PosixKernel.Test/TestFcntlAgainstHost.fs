@@ -165,7 +165,7 @@ module TestFcntlAgainstHost =
                         | None -> failwith $"the model makes no %s{kind}"
                         | Some (fd, system) ->
 
-                        match UnixDescriptor.fcntl fd FcntlWorld.SetFl word system with
+                        match UnixDescriptor.tryFcntl fd FcntlWorld.SetFl word system with
                         | Error (FcntlRefusal.UnmodelledStatusFlags _) -> ()
                         | Error refusal -> failwith $"%s{kind} bit %d{bit}: %s{FcntlRefusal.describe refusal}"
                         | Ok (answer, system) ->

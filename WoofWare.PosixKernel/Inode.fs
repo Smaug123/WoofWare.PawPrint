@@ -199,9 +199,8 @@ type InodeContent =
     /// A socket special file: what `stat(2)` reports as `S_IFSOCK`, which a
     /// pathname `bind(2)` of a Unix-domain socket makes.
     ///
-    /// Nothing in this version makes one: `mknodat` of `S_IFSOCK` answers
-    /// `MkNodRefusal.Socket`, and a Unix-domain `bind` answers
-    /// `SockaddrCopyRefusal.Reason.UnmodelledDomain`.
+    /// Nothing in this version makes one: `mknodat` of `S_IFSOCK` is refused,
+    /// and so is a Unix-domain `bind`.
     | Socket of permissions : PermissionBits
     /// A FIFO special file, or named pipe: what `stat(2)` reports as
     /// `S_IFIFO`, which `mkfifo` or `mknod(2)` of `S_IFIFO` makes.
@@ -209,8 +208,7 @@ type InodeContent =
     /// The bytes in transit are not part of the content: they live only while
     /// some end of the FIFO is open, and go at the last close.
     ///
-    /// Nothing in this version makes one: `mknodat` of `S_IFIFO` answers
-    /// `MkNodRefusal.Fifo`.
+    /// Nothing in this version makes one: `mknodat` of `S_IFIFO` is refused.
     | Fifo of permissions : PermissionBits
 
 [<RequireQualifiedAccess>]

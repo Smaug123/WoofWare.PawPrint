@@ -31,7 +31,7 @@ module internal Machines =
         let pids, machine =
             (([ UnixSystem.processId first ], SimulatedMachine.ofSystem first), [ 2..count ])
             ||> List.fold (fun (pids, machine) _ ->
-                match SimulatedMachine.launch (launchOn platform) machine with
+                match SimulatedMachine.tryLaunch (launchOn platform) machine with
                 | Ok (pid, machine) -> pids @ [ pid ], machine
                 | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
             )

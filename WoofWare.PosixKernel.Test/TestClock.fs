@@ -80,7 +80,7 @@ module TestClock =
         : UnixSystem<int, string>
         =
         imageOn flavour
-        |> UnixBootImage.withBootTime bootTime
+        |> UnixBootImage.tryWithBootTime bootTime
         |> Configured.expectOk BootTimeRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.advanceClock sinceBoot
@@ -257,7 +257,7 @@ module TestClock =
                     Ok ()
 
             for flavour in flavours do
-                match UnixBootImage.withBootTime timestamp (imageOn flavour) with
+                match UnixBootImage.tryWithBootTime timestamp (imageOn flavour) with
                 | Ok image ->
                     expected |> shouldEqual (Ok ())
 
@@ -270,7 +270,7 @@ module TestClock =
     [<Test>]
     let ``withBootTime's boundaries`` () : unit =
         let outcome (flavour : SimulatedUnixFlavour) (seconds : int64) (nanos : int) : Result<unit, BootTimeRefusal> =
-            UnixBootImage.withBootTime (UnixTimestamp.createOrFail "TestClock" seconds nanos) (imageOn flavour)
+            UnixBootImage.tryWithBootTime (UnixTimestamp.createOrFail "TestClock" seconds nanos) (imageOn flavour)
             |> Result.map ignore<UnixBootImage<int, string>>
 
         let latest = UnixMachineState.maxBootTimeSeconds
@@ -310,7 +310,7 @@ module TestClock =
             let timestamp = UnixTimestamp.createOrFail "TestClock" seconds nanos
 
             let outcome (flavour : SimulatedUnixFlavour) : Result<UnixTimestamp, BootTimeRefusal> =
-                UnixBootImage.withBootTime timestamp (imageOn flavour)
+                UnixBootImage.tryWithBootTime timestamp (imageOn flavour)
                 |> Result.map (fun image ->
                     (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.BootTime
                 )
@@ -406,7 +406,7 @@ module TestClock =
 
     /// Classify an answer by which of the two clocks it read.
     let private classify (system : UnixSystem<int, string>) (clockId : int) : Outcome =
-        match UnixClock.clockGettime clockId system with
+        match UnixClock.tryClockGettime clockId system with
         | Error _ -> Outcome.Refused
         | Ok (Error UnixError.EINVAL) -> Outcome.Invalid
         | Ok (Error other) -> failwith $"clock id %d{clockId} failed with %O{other}, which no measured kernel does"
@@ -453,7 +453,7 @@ module TestClock =
     let ``each refusal names the id it was asked about`` () : unit =
         for flavour in flavours do
             for clockId in sweptIds do
-                match UnixClock.clockGettime clockId (telling flavour) with
+                match UnixClock.tryClockGettime clockId (telling flavour) with
                 | Error refusal ->
                     let named =
                         match refusal with
@@ -501,7 +501,7 @@ module TestClock =
                 | Outcome.Refused -> false
             )
             |> List.forall (fun clockId ->
-                match UnixClock.clockGettime clockId system with
+                match UnixClock.tryClockGettime clockId system with
                 | Ok (Ok reading) -> exactNanoseconds reading = expectedReading flavour clockId bootTime up
                 | other -> failwith $"%O{flavour} clock id %d{clockId} should have answered, got %A{other}"
             )
@@ -515,7 +515,9 @@ module TestClock =
         let system =
             systemWith SimulatedUnixFlavour.Darwin (UnixTimestamp.ofSeconds 10L) 1_000_999L
 
-        match UnixClock.clockGettime 0 system, UnixClock.clockGettime 6 system, UnixClock.clockGettime 8 system with
+        match
+            UnixClock.tryClockGettime 0 system, UnixClock.tryClockGettime 6 system, UnixClock.tryClockGettime 8 system
+        with
         | Ok (Ok realtime), Ok (Ok monotonic), Ok (Ok uptime) ->
             realtime |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 10L 1_000_000)
             monotonic |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 0L 1_000_000)

@@ -87,7 +87,7 @@ module TestPthreadKill =
             ]
 
     let private answer (system : UnixSystem<int, string>) (target : int) (signo : int) : string =
-        match UnixSignal.pthreadKill target signo system with
+        match UnixSignal.tryPthreadKill target signo system with
         | Ok (Ok _) -> "OK"
         | Ok (Error errno) -> $"%O{errno}"
         | Error refusal -> $"refused %O{refusal}"
@@ -167,7 +167,7 @@ module TestPthreadKill =
 
                     HandlerFrames.enterIn "h" task mask system
 
-            match UnixSignal.pthreadKill target signo system, sendable flavour signo with
+            match UnixSignal.tryPthreadKill target signo system, sendable flavour signo with
             | Ok (Error errno), false -> errno |> shouldEqual UnixError.EINVAL
             | Ok (Ok outcome), true ->
                 let expected =
@@ -236,7 +236,7 @@ module TestPthreadKill =
             if rounds > 100 then
                 failwith $"%O{task} was still being given signals after 100 returns"
 
-            match UnixSignal.onReturnToUser task system with
+            match UnixSignal.tryOnReturnToUser task system with
             | Error refusal -> failwith $"onReturnToUser %O{task} refused: %O{refusal}"
             | Ok (ReturnToUserOutcome.Resumes system) -> count, system
             | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
@@ -322,7 +322,7 @@ module TestPthreadKill =
                         systemOn flavour
                         |> withWorker
                         |> catchIn signal
-                        |> UnixSignal.pthreadKill raiser signo
+                        |> UnixSignal.tryPthreadKill raiser signo
                         |> continues $"%O{flavour} raise %d{signo} on %d{raiser}"
 
                     let atBystander, raised = drain signal bystander raised
@@ -350,7 +350,7 @@ module TestPthreadKill =
                         |> withWorker
                         |> catchIn signal
                         |> blocking signal raiser
-                        |> UnixSignal.pthreadKill raiser signo
+                        |> UnixSignal.tryPthreadKill raiser signo
                         |> continues $"%O{flavour} raise %d{signo} on %d{raiser}"
 
                     let atBystander, raised = drain signal bystander raised
@@ -444,12 +444,12 @@ module TestPthreadKill =
                     let send (system : UnixSystem<int, string>) (target : int option) =
                         match target with
                         | None ->
-                            match UnixSignal.kill (self system) signo system with
+                            match UnixSignal.tryKill (self system) signo system with
                             | Ok (Ok (KillOutcome.ProcessContinues system)) -> Ok system
                             | Error (KillRefusal.Receiver refusal) -> Error refusal
                             | other -> failwith $"kill: %O{other}"
                         | Some task ->
-                            match UnixSignal.pthreadKill task signo system with
+                            match UnixSignal.tryPthreadKill task signo system with
                             | Ok (Ok (KillOutcome.ProcessContinues system)) -> Ok system
                             | Error (ThreadKillRefusal.Receiver refusal) -> Error refusal
                             | other -> failwith $"pthread_kill: %O{other}"
@@ -492,7 +492,7 @@ module TestPthreadKill =
             system
             |> catchIn signal
             |> blocking signal leader
-            |> fun system -> UnixSignal.kill (self system) signo system
+            |> fun system -> UnixSignal.tryKill (self system) signo system
             |> continues "kill"
             |> leave leader
             |> fun system ->
@@ -505,7 +505,7 @@ module TestPthreadKill =
 
         let system = systemOn SimulatedUnixFlavour.Darwin |> pendingOnProcess Signal.SIGTERM
 
-        match UnixSignal.pthreadKill leader 15 system with
+        match UnixSignal.tryPthreadKill leader 15 system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGTERM, false))
@@ -523,10 +523,12 @@ module TestPthreadKill =
             let system = systemOn flavour
             let sigcont = Signal.toRawSignoUnder (numberingOf flavour) Signal.SIGCONT
 
-            let sent = UnixSignal.kill (self system) sigcont system |> continues "kill SIGCONT"
+            let sent =
+                UnixSignal.tryKill (self system) sigcont system |> continues "kill SIGCONT"
+
             SignalState.pending sent.Process.Signals |> shouldEqual []
 
-            UnixSignal.pthreadKill leader sigcont sent
+            UnixSignal.tryPthreadKill leader sigcont sent
             |> continues "raise SIGCONT"
             |> fun system -> SignalState.pending system.Process.Signals
             |> shouldEqual []
@@ -540,9 +542,10 @@ module TestPthreadKill =
         let sigcont =
             Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Darwin) Signal.SIGCONT
 
-        let sent = UnixSignal.kill (self darwin) sigcont darwin |> continues "kill SIGCONT"
+        let sent =
+            UnixSignal.tryKill (self darwin) sigcont darwin |> continues "kill SIGCONT"
 
-        UnixSignal.pthreadKill leader sigcont sent
+        UnixSignal.tryPthreadKill leader sigcont sent
         |> shouldEqual (
             Error (ThreadKillRefusal.Receiver (SignalReceiverRefusal.PendingForProcessAndLeader Signal.SIGCONT))
         )
@@ -553,9 +556,9 @@ module TestPthreadKill =
         let sigcont =
             Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Linux) Signal.SIGCONT
 
-        let sent = UnixSignal.kill (self linux) sigcont linux |> continues "kill SIGCONT"
+        let sent = UnixSignal.tryKill (self linux) sigcont linux |> continues "kill SIGCONT"
 
-        UnixSignal.pthreadKill leader sigcont sent
+        UnixSignal.tryPthreadKill leader sigcont sent
         |> continues "raise SIGCONT"
         |> fun system -> SignalState.pending system.Process.Signals |> List.length
         |> shouldEqual 2
@@ -566,12 +569,12 @@ module TestPthreadKill =
             let init =
                 systemOnWith (Launched.processId (ProcessId.parseOrFail "test" 1)) flavour
 
-            UnixSignal.pthreadKill leader 15 init
+            UnixSignal.tryPthreadKill leader 15 init
             |> shouldEqual (Error ThreadKillRefusal.InitProcess)
 
     [<Test>]
     let ``pthread_kill of a task the process does not have fails loudly`` () : unit =
         for flavour in flavours do
             for signo in [ 0 ; -1 ; 15 ] do
-                Assert.Throws<exn> (fun () -> UnixSignal.pthreadKill worker signo (systemOn flavour) |> ignore<_>)
+                Assert.Throws<exn> (fun () -> UnixSignal.tryPthreadKill worker signo (systemOn flavour) |> ignore<_>)
                 |> ignore<exn>

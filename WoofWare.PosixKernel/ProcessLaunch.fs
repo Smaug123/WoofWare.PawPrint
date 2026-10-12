@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// Why `ProcessLaunch.create` refuses a launch table.
 [<RequireQualifiedAccess>]
-type LaunchTableRefusal =
+type internal LaunchTableRefusal =
     /// The table names a negative descriptor, which no process has.
     /// Contradictory.
     | NegativeDescriptor of fd : int
@@ -12,7 +12,7 @@ type LaunchTableRefusal =
     | AtOrAboveBound of fd : int * bound : int
 
 [<RequireQualifiedAccess>]
-module LaunchTableRefusal =
+module internal LaunchTableRefusal =
     /// What this library knows about why it refused the table, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : LaunchTableRefusal) : string =
@@ -22,9 +22,15 @@ module LaunchTableRefusal =
         | LaunchTableRefusal.AtOrAboveBound (fd, bound) ->
             $"the launch table names descriptor %d{fd}, at or above the bound %d{bound} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : LaunchTableRefusal) : RefusalKind =
+        match refusal with
+        | LaunchTableRefusal.NegativeDescriptor _ -> RefusalKind.OutOfRange "streams"
+        | LaunchTableRefusal.AtOrAboveBound _ -> RefusalKind.Unmodelled
+
 /// Why `ProcessLaunch.withCredentials` refuses credentials.
 [<RequireQualifiedAccess>]
-type CredentialsRefusal =
+type internal CredentialsRefusal =
     /// More supplementary groups than the `limit` a process can hold on
     /// `flavour` (`SimulatedUnixPlatform.supplementaryGroupLimit`): `setgroups(2)`
     /// answers EINVAL above `NGROUPS_MAX`. Contradictory.
@@ -36,7 +42,7 @@ type CredentialsRefusal =
     | IdsDifferOnDarwin of credentials : Credentials
 
 [<RequireQualifiedAccess>]
-module CredentialsRefusal =
+module internal CredentialsRefusal =
     /// What this library knows about why it refused the credentials, for a
     /// client composing a diagnostic that names its own knob.
     let describe (refusal : CredentialsRefusal) : string =
@@ -46,16 +52,22 @@ module CredentialsRefusal =
         | CredentialsRefusal.IdsDifferOnDarwin credentials ->
             $"the credentials %O{credentials} have real, effective and saved IDs that differ, which this library does not model on Darwin: which of them a Darwin kernel consults has not been measured. Give all three the same user ID and the same group ID."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : CredentialsRefusal) : RefusalKind =
+        match refusal with
+        | CredentialsRefusal.TooManySupplementaryGroups _ -> RefusalKind.Contradictory "credentials"
+        | CredentialsRefusal.IdsDifferOnDarwin _ -> RefusalKind.Unmodelled
+
 /// Why `ProcessLaunch.withUmask` refuses a mask.
 [<RequireQualifiedAccess>]
-type UmaskRefusal =
+type internal UmaskRefusal =
     /// The mask holds a bit `flavour`'s `umask(2)` never stores: it keeps only
     /// `stored` (`SimulatedUnixPlatform.umaskStoredBits`). No parent could
     /// have left such a mask. Contradictory.
     | BitsNotStored of umask : PermissionBits * stored : PermissionBits * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module UmaskRefusal =
+module internal UmaskRefusal =
     /// What this library knows about why it refused the mask, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : UmaskRefusal) : string =
@@ -63,10 +75,15 @@ module UmaskRefusal =
         | UmaskRefusal.BitsNotStored (umask, stored, flavour) ->
             $"the mask 0o%04o{PermissionBits.toInt umask} holds a bit %O{flavour}'s umask(2) never stores (it keeps only 0o%04o{PermissionBits.toInt stored}), so no process there could have it."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : UmaskRefusal) : RefusalKind =
+        match refusal with
+        | UmaskRefusal.BitsNotStored _ -> RefusalKind.Contradictory "umask"
+
 /// Why a process cannot be launched onto a machine as its `ProcessLaunch`
 /// describes it.
 [<RequireQualifiedAccess>]
-type LaunchRefusal =
+type internal LaunchRefusal =
     /// The launch was described for the platform `launch`, and the machine is
     /// `machine`: the description was checked against the wrong platform's
     /// rules.
@@ -79,7 +96,7 @@ type LaunchRefusal =
     | LeaderCpuBeyondMachine of cpu : CpuId * processorCount : int
 
 [<RequireQualifiedAccess>]
-module LaunchRefusal =
+module internal LaunchRefusal =
     /// What this library knows about why it refused the launch, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : LaunchRefusal) : string =
@@ -91,15 +108,22 @@ module LaunchRefusal =
 
             match fault with
             | CurrentDirectoryFault.DoesNotResolve error ->
-                $"the process cannot start in \"%s{described}\", which does not resolve in the machine's filesystem (%O{error})."
+                $"the process cannot start in \"%s{described}\", which does not resolve in the machine's filesystem (%O{error}). A process cannot be started in a directory that does not exist; make the filesystem contain it."
             | CurrentDirectoryFault.TooLong flavour ->
-                $"%O{flavour} refuses \"%s{described}\" as too long: a component is past NAME_MAX, or, on Darwin, a symbolic link it goes through expands past PATH_MAX."
+                $"%O{flavour} refuses \"%s{described}\" as too long: a component is past NAME_MAX, or, on Darwin, a symbolic link it goes through expands past PATH_MAX. Shorten the component, or that link's target."
             | CurrentDirectoryFault.NotADirectory ->
-                $"the process cannot start in \"%s{described}\", which resolves to something that is not a directory."
+                $"the process cannot start in \"%s{described}\", which resolves to something that is not a directory. Start it in a directory the filesystem holds."
             | CurrentDirectoryFault.Path refusal ->
                 $"the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal}"
         | LaunchRefusal.LeaderCpuBeyondMachine (cpu, processorCount) ->
             $"the launch puts its leader on %O{cpu}, but the machine has %d{processorCount} logical processors, numbered from 0."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : LaunchRefusal) : RefusalKind =
+        match refusal with
+        | LaunchRefusal.NotOfPlatform _ -> RefusalKind.Misuse
+        | LaunchRefusal.CurrentDirectory (_, inner) -> CurrentDirectoryFault.kind inner
+        | LaunchRefusal.LeaderCpuBeyondMachine _ -> RefusalKind.Contradictory "launch"
 
 /// How a process starts: everything about a process that is fixed before its
 /// first instruction, as its launcher sets it up before `exec`. Both the first
@@ -136,28 +160,8 @@ type ProcessLaunch<'Task when 'Task : comparison> =
 [<RequireQualifiedAccess>]
 module ProcessLaunch =
 
-    /// A process on `platform` with the descriptors `streams` open, and one
-    /// task, `leader`, on the logical processor `leaderCpu`; otherwise as a
-    /// default process of the platform's flavour starts: in the root, with
-    /// `UnixSystem.defaultCredentials`, `UnixSystem.defaultUmask`, no
-    /// environment, no executable path (`UnixSystem.defaultProcessPath`) and
-    /// `UnixSystem.defaultCoreDumps`.
-    ///
-    /// Each entry of `streams` is a descriptor the launcher set up before the
-    /// process started, at that number: a pipe end of its own, whose other end
-    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
-    /// are made, in descriptor order, when the process is launched.
-    ///
-    /// The leader starts blocking no signal. A real process starts with the
-    /// mask its parent's thread had when it called `execve(2)`, which keeps the
-    /// mask; a client launching a process that inherits one sets it with
-    /// `UnixSignal.pthreadSigmask` and `SIG_SETMASK` before the leader runs its
-    /// first instruction, as inherited ignores are installed with
-    /// `UnixSignal.sigaction`.
-    ///
-    /// Refuses a table naming a negative descriptor, or one at or above the
-    /// bound (`SimulatedUnixPlatform.descriptorBound`).
-    let create<'Task when 'Task : comparison>
+    /// `create`, with a refusal answered as the `Error` rather than raised.
+    let internal tryCreate<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
         (streams : Map<int, LaunchDescriptor>)
         (leader : 'Task)
@@ -197,6 +201,40 @@ module ProcessLaunch =
                     CurrentDirectory = UnixSystem.defaultCurrentDirectory
                 }
 
+    /// <summary>
+    /// A process on `platform` with the descriptors `streams` open, and one
+    /// task, `leader`, on the logical processor `leaderCpu`; otherwise as a
+    /// default process of the platform's flavour starts: in the root, with
+    /// `UnixSystem.defaultCredentials`, `UnixSystem.defaultUmask`, no
+    /// environment, no executable path (`UnixSystem.defaultProcessPath`) and
+    /// `UnixSystem.defaultCoreDumps`.
+    ///
+    /// Each entry of `streams` is a descriptor the launcher set up before the
+    /// process started, at that number: a pipe end of its own, whose other end
+    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
+    /// are made, in descriptor order, when the process is launched.
+    ///
+    /// The leader starts blocking no signal. A real process starts with the
+    /// mask its parent's thread had when it called `execve(2)`, which keeps the
+    /// mask; a client launching a process that inherits one sets it with
+    /// `UnixSignal.pthreadSigmask` and `SIG_SETMASK` before the leader runs its
+    /// first instruction, as inherited ignores are installed with
+    /// `UnixSignal.sigaction`.
+    ///
+    /// Refuses a table naming a negative descriptor, or one at or above the
+    /// bound (`SimulatedUnixPlatform.descriptorBound`).
+    /// </summary>
+    /// <exception cref="T:System.ArgumentOutOfRangeException">The table names a negative descriptor, which no process has. Contradictory.</exception>
+    let create<'Task when 'Task : comparison>
+        (platform : SimulatedUnixPlatform)
+        (streams : Map<int, LaunchDescriptor>)
+        (leader : 'Task)
+        (leaderCpu : CpuId)
+        : ProcessLaunch<'Task>
+        =
+        tryCreate platform streams leader leaderCpu
+        |> Refusal.orRaise "ProcessLaunch.create" LaunchTableRefusal.kind LaunchTableRefusal.describe
+
     /// The platform the launch was described for, whose rules its setters
     /// check against.
     let platform<'Task when 'Task : comparison> (launch : ProcessLaunch<'Task>) : SimulatedUnixPlatform =
@@ -205,15 +243,8 @@ module ProcessLaunch =
     /// The process's first task.
     let leader<'Task when 'Task : comparison> (launch : ProcessLaunch<'Task>) : 'Task = launch.Leader
 
-    /// Set who the process is.
-    ///
-    /// Refuses more supplementary groups than the platform's
-    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
-    /// could hold. On Darwin it also refuses credentials whose real, effective
-    /// and saved IDs are not all the same: which of them a Darwin kernel
-    /// consults has not been measured, so this library does not model such a
-    /// process there.
-    let withCredentials<'Task when 'Task : comparison>
+    /// `withCredentials`, with a refusal answered as the `Error` rather than raised.
+    let internal tryWithCredentials<'Task when 'Task : comparison>
         (credentials : Credentials)
         (launch : ProcessLaunch<'Task>)
         : Result<ProcessLaunch<'Task>, CredentialsRefusal>
@@ -242,14 +273,27 @@ module ProcessLaunch =
                     Credentials = credentials
                 }
 
-    /// Set the file-mode creation mask the process starts with: the one its
-    /// parent left it, which it can read and replace with `umask`.
+    /// <summary>
+    /// Set who the process is.
     ///
-    /// Refuses a mask with a bit the platform's `umask(2)` never stores
-    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
-    /// parent could have left such a mask, so it names a process that cannot
-    /// exist.
-    let withUmask<'Task when 'Task : comparison>
+    /// Refuses more supplementary groups than the platform's
+    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
+    /// could hold. On Darwin it also refuses credentials whose real, effective
+    /// and saved IDs are not all the same: which of them a Darwin kernel
+    /// consults has not been measured, so this library does not model such a
+    /// process there.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentException">More supplementary groups than the `limit` a process can hold on `flavour` (`SimulatedUnixPlatform.supplementaryGroupLimit`): `setgroups(2)` answers EINVAL above `NGROUPS_MAX`. Contradictory.</exception>
+    let withCredentials<'Task when 'Task : comparison>
+        (credentials : Credentials)
+        (launch : ProcessLaunch<'Task>)
+        : ProcessLaunch<'Task>
+        =
+        tryWithCredentials credentials launch
+        |> Refusal.orRaise "ProcessLaunch.withCredentials" CredentialsRefusal.kind CredentialsRefusal.describe
+
+    /// `withUmask`, with a refusal answered as the `Error` rather than raised.
+    let internal tryWithUmask<'Task when 'Task : comparison>
         (umask : PermissionBits)
         (launch : ProcessLaunch<'Task>)
         : Result<ProcessLaunch<'Task>, UmaskRefusal>
@@ -264,6 +308,24 @@ module ProcessLaunch =
                 { launch with
                     Umask = umask
                 }
+
+    /// <summary>
+    /// Set the file-mode creation mask the process starts with: the one its
+    /// parent left it, which it can read and replace with `umask`.
+    ///
+    /// Refuses a mask with a bit the platform's `umask(2)` never stores
+    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
+    /// parent could have left such a mask, so it names a process that cannot
+    /// exist.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentException">The mask holds a bit `flavour`'s `umask(2)` never stores: it keeps only `stored` (`SimulatedUnixPlatform.umaskStoredBits`). No parent could have left such a mask. Contradictory.</exception>
+    let withUmask<'Task when 'Task : comparison>
+        (umask : PermissionBits)
+        (launch : ProcessLaunch<'Task>)
+        : ProcessLaunch<'Task>
+        =
+        tryWithUmask umask launch
+        |> Refusal.orRaise "ProcessLaunch.withUmask" UmaskRefusal.kind UmaskRefusal.describe
 
     /// Set the environment the process was started with, replacing whatever
     /// it held. The entries are kept in the order given, duplicates and all,

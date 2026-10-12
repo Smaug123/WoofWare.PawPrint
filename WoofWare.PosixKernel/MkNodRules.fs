@@ -76,7 +76,7 @@ type internal MkNodNode =
 
 /// Why this kernel will not answer a `mknod(2)` or `mknodat(2)`.
 [<RequireQualifiedAccess>]
-type MkNodRefusal =
+type internal MkNodRefusal =
     /// This kernel will not resolve the pathname.
     | Path of refusal : PathRefusal
     /// The call would make a FIFO, which this library does not model. On
@@ -101,7 +101,7 @@ type MkNodRefusal =
     | UnmeasuredPrivilegedCaller
 
 [<RequireQualifiedAccess>]
-module MkNodRefusal =
+module internal MkNodRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which pathname.
     let describe (refusal : MkNodRefusal) : string =
@@ -115,6 +115,16 @@ module MkNodRefusal =
             $"the call would make a block device node for device 0x%x{dev}, which this library does not model."
         | MkNodRefusal.UnmeasuredPrivilegedCaller ->
             "a privileged caller on Darwin asked mknod for a type other than a FIFO, which has not been measured."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : MkNodRefusal) : RefusalKind =
+        match refusal with
+        | MkNodRefusal.Path inner -> PathRefusal.kind inner
+        | MkNodRefusal.Fifo -> RefusalKind.Unmodelled
+        | MkNodRefusal.Socket -> RefusalKind.Unmodelled
+        | MkNodRefusal.CharacterDevice _ -> RefusalKind.Unmodelled
+        | MkNodRefusal.BlockDevice _ -> RefusalKind.Unmodelled
+        | MkNodRefusal.UnmeasuredPrivilegedCaller -> RefusalKind.Unmodelled
 
 /// What a `mknod(2)` does before it reads its path.
 [<RequireQualifiedAccess>]

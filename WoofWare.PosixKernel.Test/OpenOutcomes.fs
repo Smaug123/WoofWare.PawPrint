@@ -5,7 +5,7 @@ open WoofWare.PosixKernel
 /// `UnixNamespace.openPath` and `UnixNamespace.openat` for a test about what
 /// an open answers rather than about whether it sleeps.
 [<RequireQualifiedAccess>]
-module OpenOutcomes =
+module internal OpenOutcomes =
 
     /// An open's result as the answer it returned, failing the test if the
     /// call slept or restarted. Nothing in this version makes a FIFO, the one
@@ -31,7 +31,7 @@ module OpenOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        UnixNamespace.openPath system.Leader flags path mode system |> answered
+        UnixNamespace.tryOpenPath system.Leader flags path mode system |> answered
 
     /// `UnixNamespace.openat` by the process's leader, failing the test if the
     /// call sleeps.
@@ -43,4 +43,4 @@ module OpenOutcomes =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        UnixNamespace.openat system.Leader dirfd path flags mode system |> answered
+        UnixNamespace.tryOpenat system.Leader dirfd path flags mode system |> answered

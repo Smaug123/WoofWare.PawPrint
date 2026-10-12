@@ -206,7 +206,7 @@ module TestCredentials =
                 |> shouldEqual credentials
             else
                 Launched.launch SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> ProcessLaunch.withCredentials credentials
+                |> ProcessLaunch.tryWithCredentials credentials
                 |> Result.map ignore
                 |> shouldEqual (Error (CredentialsRefusal.IdsDifferOnDarwin credentials))
 
@@ -247,7 +247,7 @@ module TestCredentials =
 
         for variant in variants do
             Launched.launch SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> ProcessLaunch.withCredentials variant
+            |> ProcessLaunch.tryWithCredentials variant
             |> Result.map ignore
             |> shouldEqual (Error (CredentialsRefusal.IdsDifferOnDarwin variant))
 
@@ -283,7 +283,7 @@ module TestCredentials =
         let aboveLimit = Credentials.ofIds (uid 1000u) (gid 1000u) (groups (limit + 1))
 
         Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> ProcessLaunch.withCredentials aboveLimit
+        |> ProcessLaunch.tryWithCredentials aboveLimit
         |> Result.map ignore
         |> shouldEqual (
             Error (

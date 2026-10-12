@@ -901,7 +901,7 @@ module TestVirtualFileSystemAgainstHost =
             |> Launched.restand
 
         match
-            UnixNamespace.readlink
+            UnixNamespace.tryReadlink
                 (PathArg.ofPath (UnixPath.parseOrFail "test" relative))
                 UserBuffer.Mapped
                 capacity
@@ -2848,7 +2848,9 @@ module TestVirtualFileSystemAgainstHost =
             let modelSaid =
                 let bytes (path : string) = PathArg.ofText path
 
-                match UnixNamespace.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
+                match
+                    UnixNamespace.tryRename (bytes source) (bytes destination) (renameModelSystem (buildModel ()))
+                with
                 | Ok (SyscallAnswer.Completed 0L, _) -> RenameRefusal.Succeeded
                 | Ok (SyscallAnswer.Failed error, _) -> RenameRefusal.Refused (hostErrno error)
                 | other -> failwith $"the model answered %A{other}, which no row here expects"

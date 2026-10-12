@@ -54,7 +54,7 @@ module TestPipe =
         | SimulatedUnixFlavour.Darwin -> 0x4
 
     let private pipeOrFail (flags : int) (system : UnixSystem<int, string>) : (int * int) * UnixSystem<int, string> =
-        match UnixPipe.pipe2 flags UserBuffer.Mapped system with
+        match UnixPipe.tryPipe2 flags UserBuffer.Mapped system with
         | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
         | other -> failwith $"pipe2 0x%x{flags} did not make a pipe: %A{other}"
 
@@ -126,7 +126,7 @@ module TestPipe =
         | Ok result -> result
 
     let private fstatOrFail (fd : int) (system : UnixSystem<int, string>) : FileStatus =
-        match UnixPathResolution.fstat fd system with
+        match UnixPathResolution.tryFstat fd system with
         | Ok (FileStatusAnswer.Reported status) -> status
         | other -> failwith $"fstat of fd %d{fd}: %A{other}"
 
@@ -301,7 +301,7 @@ module TestPipe =
             let bare =
                 (systemOn platform, [ 0 ; 1 ; 2 ])
                 ||> List.fold (fun system fd ->
-                    match UnixDescriptor.close fd system with
+                    match UnixDescriptor.tryClose fd system with
                     | Ok (_, system) -> system
                     | Error refusal -> failwith $"%A{refusal}"
                 )
@@ -353,7 +353,7 @@ module TestPipe =
                     let mutable transferred = None
 
                     let actual : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal> =
-                        match UnixReadWrite.admitWrite system.Leader fd buffer (uint64 count) system with
+                        match UnixReadWrite.tryAdmitWrite system.Leader fd buffer (uint64 count) system with
                         | Error refusal -> Error refusal
                         | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
                             Ok (WriteOutcome.Returns (answer, after))
@@ -366,12 +366,17 @@ module TestPipe =
                             failwith $"%s{where}: a write that never slept restarted: %A{other}"
                         | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
                             transferred <- Some n
-                            UnixReadWrite.write system.Leader fd (payload reference.Offered n) admitted
+                            UnixReadWrite.tryWrite system.Leader fd (payload reference.Offered n) admitted
                         | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
                             transferred <- Some n
                             total |> shouldEqual count
 
-                            UnixReadWrite.writeThenSleep system.Leader fd total (payload reference.Offered n) admitted
+                            UnixReadWrite.tryWriteThenSleep
+                                system.Leader
+                                fd
+                                total
+                                (payload reference.Offered n)
+                                admitted
                         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _))
                         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
                             failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"
@@ -506,7 +511,7 @@ module TestPipe =
                         else
                             UserBuffer.Unmapped 8UL
 
-                    let actual = UnixReadWrite.read system.Leader fd buffer (uint64 count) system
+                    let actual = UnixReadWrite.tryRead system.Leader fd buffer (uint64 count) system
 
                     match Map.tryFind fd reference.Fds with
                     | None
@@ -612,7 +617,7 @@ module TestPipe =
 
                     system <- after
                 | PipeOp.Close fd ->
-                    match UnixDescriptor.close fd system, Map.tryFind fd reference.Fds with
+                    match UnixDescriptor.tryClose fd system, Map.tryFind fd reference.Fds with
                     | Ok (SyscallAnswer.Failed UnixError.EBADF, _), None -> ()
                     | Ok (SyscallAnswer.Completed 0L, after), Some _ ->
                         reference <-
@@ -646,7 +651,7 @@ module TestPipe =
 
                     LinuxReadiness.ofDescription id system |> shouldEqual expected
                 | PipeOp.BytesAvailable fd ->
-                    let actual = UnixDescriptor.bytesAvailable fd UserBuffer.Mapped system
+                    let actual = UnixDescriptor.tryBytesAvailable fd UserBuffer.Mapped system
 
                     match Map.tryFind fd reference.Fds with
                     | None -> actual |> shouldEqual (Ok (BytesAvailableAnswer.Failed UnixError.EBADF))
@@ -660,7 +665,7 @@ module TestPipe =
                 | PipeOp.FStat fd ->
                     match Map.tryFind fd reference.Fds with
                     | None ->
-                        UnixPathResolution.fstat fd system
+                        UnixPathResolution.tryFstat fd system
                         |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.EBADF))
                     | Some (pipeEnd, _) ->
                         let status = fstatOrFail fd system
@@ -739,7 +744,7 @@ module TestPipe =
                 let flags = 1 <<< bit
                 let initial = systemOn platform
 
-                match singleBitAnswer platform bit, UnixPipe.pipe2 flags UserBuffer.Mapped initial with
+                match singleBitAnswer platform bit, UnixPipe.tryPipe2 flags UserBuffer.Mapped initial with
                 | Ok None, Ok (Pipe2Answer.Failed UnixError.EINVAL, after) -> after |> shouldEqual initial
                 | Ok (Some nonBlocking), Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
                     (readFd, writeFd) |> shouldEqual (3, 4)
@@ -757,7 +762,7 @@ module TestPipe =
                 [ 0..31 ]
                 |> List.exists (fun bit -> flags &&& (1 <<< bit) <> 0 && singleBitAnswer platform bit = Ok None)
 
-            match UnixPipe.pipe2 flags UserBuffer.Mapped (systemOn platform) with
+            match UnixPipe.tryPipe2 flags UserBuffer.Mapped (systemOn platform) with
             | Ok (Pipe2Answer.Failed UnixError.EINVAL, _) when rejected -> ()
             | Ok (Pipe2Answer.Created _, _)
             | Error _ when not rejected -> ()
@@ -780,23 +785,23 @@ module TestPipe =
     let ``pipe2 through a bad destination: EFAULT on Linux, leaving nothing behind, and refused on Darwin`` () : unit =
         let linux = systemOn SimulatedUnixPlatform.linuxArm64
 
-        UnixPipe.pipe2 0 (UserBuffer.Unmapped 8UL) linux
+        UnixPipe.tryPipe2 0 (UserBuffer.Unmapped 8UL) linux
         |> shouldEqual (Ok (Pipe2Answer.Failed UnixError.EFAULT, linux))
 
         // The flags first, on both: measured, an invalid flag word is EINVAL
         // through NULL as through a good array.
-        UnixPipe.pipe2 1 (UserBuffer.Unmapped 0UL) linux
+        UnixPipe.tryPipe2 1 (UserBuffer.Unmapped 0UL) linux
         |> shouldEqual (Ok (Pipe2Answer.Failed UnixError.EINVAL, linux))
 
         let darwin = systemOn SimulatedUnixPlatform.macOsArm64
 
-        UnixPipe.pipe2 0 (UserBuffer.Unmapped 0UL) darwin
+        UnixPipe.tryPipe2 0 (UserBuffer.Unmapped 0UL) darwin
         |> shouldEqual (Error Pipe2Refusal.FatalToTheProcess)
 
-        UnixPipe.pipe2 1 (UserBuffer.Unmapped 0UL) darwin
+        UnixPipe.tryPipe2 1 (UserBuffer.Unmapped 0UL) darwin
         |> shouldEqual (Ok (Pipe2Answer.Failed UnixError.EINVAL, darwin))
 
-        UnixPipe.pipe2 0 UserBuffer.Opaque linux
+        UnixPipe.tryPipe2 0 UserBuffer.Opaque linux
         |> shouldEqual (Error (Pipe2Refusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
     [<Test>]
@@ -806,7 +811,7 @@ module TestPipe =
             (r, w) |> shouldEqual (3, 4)
 
             let system =
-                match UnixDescriptor.close r system with
+                match UnixDescriptor.tryClose r system with
                 | Ok (_, system) -> system
                 | Error refusal -> failwith $"%A{refusal}"
 
@@ -885,7 +890,7 @@ module TestPipe =
 
         // Once the read end has gone, the write end reports nothing held.
         let system =
-            match UnixDescriptor.close r system with
+            match UnixDescriptor.tryClose r system with
             | Ok (_, system) -> system
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -998,7 +1003,7 @@ module TestPipe =
                                 let system = UnixDescriptor.setNonBlocking w nonBlocking system |> snd
 
                                 let system =
-                                    match UnixDescriptor.close r system with
+                                    match UnixDescriptor.tryClose r system with
                                     | Ok (_, system) -> system
                                     | Error refusal -> failwith $"%A{refusal}"
                                     |> withSigPipe disposition
@@ -1042,17 +1047,17 @@ module TestPipe =
         for platform in platforms do
             let (r, w), system = pipeOrFail 0 (systemOn platform)
 
-            match UnixReadWrite.read system.Leader r UserBuffer.Mapped 10UL system with
+            match UnixReadWrite.tryRead system.Leader r UserBuffer.Mapped 10UL system with
             | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
             // A NULL buffer is not consulted before the read sleeps.
-            match UnixReadWrite.read system.Leader r (UserBuffer.Unmapped 0UL) 10UL system with
+            match UnixReadWrite.tryRead system.Leader r (UserBuffer.Unmapped 0UL) 10UL system with
             | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
             let system =
-                match UnixDescriptor.close w system with
+                match UnixDescriptor.tryClose w system with
                 | Ok (_, system) -> system
                 | Error refusal -> failwith $"%A{refusal}"
 
@@ -1083,7 +1088,7 @@ module TestPipe =
 
             for fd in [ r ; w ] do
                 for whence in 0..4 do
-                    match UnixDescriptor.lseek fd 0L whence system with
+                    match UnixDescriptor.tryLseek fd 0L whence system with
                     | Ok (SyscallAnswer.Failed UnixError.ESPIPE, _) -> ()
                     | other -> failwith $"%O{platform}: lseek(%d{fd}, 0, %d{whence}): %A{other}"
 
@@ -1093,15 +1098,15 @@ module TestPipe =
                     | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
                     | SimulatedUnixFlavour.Darwin -> UnixError.ESPIPE
 
-                match UnixDescriptor.lseek fd 0L 99 system with
+                match UnixDescriptor.tryLseek fd 0L 99 system with
                 | Ok (SyscallAnswer.Failed error, _) -> error |> shouldEqual expected
                 | other -> failwith $"%O{platform}: %A{other}"
 
-                match UnixDescriptor.ftruncate fd 0L system with
+                match UnixDescriptor.tryFtruncate fd 0L system with
                 | Ok (SyscallAnswer.Failed UnixError.EINVAL, _) -> ()
                 | other -> failwith $"%O{platform}: %A{other}"
 
-                match UnixNamespace.readDirectoryEntry fd system with
+                match UnixNamespace.tryReadDirectoryEntry fd system with
                 | Ok (ReadDirectoryAnswer.Failed error, _) ->
                     error
                     |> shouldEqual (
@@ -1124,13 +1129,13 @@ module TestPipe =
             PReadUnchanged.pread w UserBuffer.Mapped 1UL 0L system
             |> shouldEqual (Ok (ReadAnswer.Failed tie))
 
-            match UnixReadWrite.admitPWrite 0 r UserBuffer.Mapped 1UL 0L system with
+            match UnixReadWrite.tryAdmitPWrite 0 r UserBuffer.Mapped 1UL 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
             | other -> failwith $"%O{platform}: %A{other}"
 
             match flavour with
             | SimulatedUnixFlavour.Linux ->
-                UnixDescriptor.posixFadvise r 0L 0L 0 system
+                UnixDescriptor.tryPosixFadvise r 0L 0L 0 system
                 |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.ESPIPE))
             | SimulatedUnixFlavour.Darwin -> ()
 
@@ -1146,7 +1151,7 @@ module TestPipe =
         let (r2, _), system = pipeOrFail 0 system
 
         let flockOf fd system =
-            match UnixDescriptor.flock task fd lockExNb system with
+            match UnixDescriptor.tryFlock task fd lockExNb system with
             | Ok (SyscallOutcome.Answered answer, system) -> answer, system
             | other -> failwith $"%A{other}"
 
@@ -1159,7 +1164,7 @@ module TestPipe =
 
         let (r, _), darwin = pipeOrFail 0 (systemOn SimulatedUnixPlatform.macOsArm64)
 
-        match UnixDescriptor.flock task r lockExNb darwin with
+        match UnixDescriptor.tryFlock task r lockExNb darwin with
         | Error (FLockRefusal.DarwinPipe _) -> ()
         | other -> failwith $"%A{other}"
 
@@ -1186,21 +1191,21 @@ module TestPipe =
             let (r, w), system = pipeOrFail 0 (systemOn platform)
             let _, system = writeOrFail w (payload 0 5) system
 
-            UnixDescriptor.bytesAvailable 99 (UserBuffer.Unmapped 8UL) system
+            UnixDescriptor.tryBytesAvailable 99 (UserBuffer.Unmapped 8UL) system
             |> shouldEqual (Ok (BytesAvailableAnswer.Failed UnixError.EBADF))
 
             for fd in [ r ; w ] do
-                UnixDescriptor.bytesAvailable fd (UserBuffer.Unmapped 0UL) system
+                UnixDescriptor.tryBytesAvailable fd (UserBuffer.Unmapped 0UL) system
                 |> shouldEqual (Ok (BytesAvailableAnswer.Failed UnixError.EFAULT))
 
             // The launched standard streams are pipes too, and empty.
-            UnixDescriptor.bytesAvailable 1 UserBuffer.Mapped system
+            UnixDescriptor.tryBytesAvailable 1 UserBuffer.Mapped system
             |> shouldEqual (Ok (BytesAvailableAnswer.Reported 0))
 
             let socketFd, system =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-            match UnixDescriptor.bytesAvailable socketFd UserBuffer.Mapped system with
+            match UnixDescriptor.tryBytesAvailable socketFd UserBuffer.Mapped system with
             | Error (BytesAvailableRefusal.UnmodelledTarget fd) when fd = socketFd -> ()
             | other -> failwith $"%A{other}"
 
@@ -1211,7 +1216,7 @@ module TestPipe =
             let _, system = writeOrFail w (payload 0 5) system
 
             let system =
-                match UnixDescriptor.close r system with
+                match UnixDescriptor.tryClose r system with
                 | Ok (_, system) -> system
                 | Error refusal -> failwith $"%A{refusal}"
 
@@ -1220,7 +1225,7 @@ module TestPipe =
                 | SimulatedUnixFlavour.Linux -> 5
                 | SimulatedUnixFlavour.Darwin -> 0
 
-            UnixDescriptor.bytesAvailable w UserBuffer.Mapped system
+            UnixDescriptor.tryBytesAvailable w UserBuffer.Mapped system
             |> shouldEqual (Ok (BytesAvailableAnswer.Reported expected))
 
     [<Test>]
@@ -1239,7 +1244,7 @@ module TestPipe =
             answer 99 system |> shouldEqual UnixError.EBADF
 
             let socket domain kind system =
-                match UnixSocket.socket domain kind 0 system with
+                match UnixSocket.trySocket domain kind 0 system with
                 | Ok (Ok (fd, system)) -> fd, system
                 | other -> failwith $"%A{other}"
 
@@ -1275,7 +1280,7 @@ module TestPipe =
         (level r full, level w full) |> shouldEqual (0x41u, 0u)
 
         let closeOrFail fd system =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (_, system) -> system
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -1289,22 +1294,22 @@ module TestPipe =
         let (r, w), system = pipeOrFail 0 (systemOn SimulatedUnixPlatform.linuxX64)
 
         let epoll, system =
-            match UnixPoll.epollCreate1 0 system with
+            match UnixPoll.tryEpollCreate1 0 system with
             | Ok (Ok (epoll, system)) -> epoll, system
             | other -> failwith $"%A{other}"
 
         let edge = EpollEvents.In ||| EpollEvents.EdgeTriggered
 
         for fd in [ r ; w ] do
-            match UnixPoll.epollCtl epoll 1 fd (EpollEventArgument.Readable (edge, 0UL)) system with
+            match UnixPoll.tryEpollCtl epoll 1 fd (EpollEventArgument.Readable (edge, 0UL)) system with
             | Error (EpollCtlRefusal.PipeTarget refused) -> refused |> shouldEqual fd
             | other -> failwith $"%A{other}"
 
-            match UnixPoll.epollCtl epoll 2 fd (EpollEventArgument.Readable (edge, 0UL)) system with
+            match UnixPoll.tryEpollCtl epoll 2 fd (EpollEventArgument.Readable (edge, 0UL)) system with
             | Ok (EpollCtlAnswer.Failed EpollCtlError.NotRegistered, _) -> ()
             | other -> failwith $"%A{other}"
 
-            match UnixPoll.epollWait 1 fd 1 UserBuffer.Mapped 0 (Tasks.ensure 1 system) with
+            match UnixPoll.tryEpollWait 1 fd 1 UserBuffer.Mapped 0 (Tasks.ensure 1 system) with
             | Ok (EpollWaitOutcome.Failed UnixError.EINVAL, _) -> ()
             | other -> failwith $"%A{other}"
 
@@ -1316,7 +1321,7 @@ module TestPipe =
             let (r, w), system = pipeOrFail 0 (systemOn platform)
 
             let closeOrFail fd system =
-                match UnixDescriptor.close fd system with
+                match UnixDescriptor.tryClose fd system with
                 | Ok (SyscallAnswer.Completed _, system) -> system
                 | other -> failwith $"%A{other}"
 
@@ -1328,7 +1333,7 @@ module TestPipe =
             let system = closeOrFail w system
 
             // The dup holds the write end open: an empty read is not end of file.
-            match UnixReadWrite.read system.Leader r UserBuffer.Mapped 1UL system with
+            match UnixReadWrite.tryRead system.Leader r UserBuffer.Mapped 1UL system with
             | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%A{other}"
 
@@ -1522,13 +1527,13 @@ module TestPipe =
         defectsOf forged
         |> shouldEqual [ UnixSystemDefect.PipeDeviceNotOfFlavour (5L, SimulatedUnixFlavour.Darwin) ]
 
-        UnixBootImage.withPipeDevice (Some 5L) (imageOn SimulatedUnixPlatform.macOsArm64)
+        UnixBootImage.tryWithPipeDevice (Some 5L) (imageOn SimulatedUnixPlatform.macOsArm64)
         |> Result.map ignore<UnixBootImage<int, string>>
         |> shouldEqual (Error (PipeDeviceRefusal.DarwinReportsZero 5L))
 
         let pipeDeviceBootedWith (device : int64 option) : int64 =
             (imageOn SimulatedUnixPlatform.linuxX64
-             |> UnixBootImage.withPipeDevice device
+             |> UnixBootImage.tryWithPipeDevice device
              |> Configured.expectOk PipeDeviceRefusal.describe
              |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                 .Machine.PipeDevice

@@ -78,7 +78,7 @@ type KeventTimeout =
 
 /// Why this kernel will not answer a `kqueue(2)`.
 [<RequireQualifiedAccess>]
-type KqueueRefusal =
+type internal KqueueRefusal =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -86,7 +86,7 @@ type KqueueRefusal =
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module KqueueRefusal =
+module internal KqueueRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : KqueueRefusal) : string =
@@ -94,6 +94,12 @@ module KqueueRefusal =
         | KqueueRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | KqueueRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and kqueue exists on Darwin only."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : KqueueRefusal) : RefusalKind =
+        match refusal with
+        | KqueueRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | KqueueRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
 
 /// What became of a `kevent(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -134,7 +140,7 @@ type KeventOutcome =
 
 /// Why this kernel will not answer a `kevent(2)`.
 [<RequireQualifiedAccess>]
-type KeventRefusal =
+type internal KeventRefusal =
     /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// The changelist holds this change, whose flags are not one of the
@@ -187,7 +193,7 @@ type KeventRefusal =
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
-module KeventRefusal =
+module internal KeventRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it actually passed.
     let describe (refusal : KeventRefusal) : string =
@@ -217,17 +223,29 @@ module KeventRefusal =
             $"a task asleep in kevent on kqueue %O{kqueue} has both reached its deadline (0 events) and an event to report. Darwin answers whichever of the two reached the sleeping task first, and this kernel does not record which did."
         | KeventRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : KeventRefusal) : RefusalKind =
+        match refusal with
+        | KeventRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | KeventRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledFilter _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledFilterParameters _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledTarget _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmodelledSocket _ -> RefusalKind.Unmodelled
+        | KeventRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | KeventRefusal.UnmeasuredCopyOutFault _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DeadlineBeyondClock _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DrainBesideDeadline _ -> RefusalKind.Unmodelled
+        | KeventRefusal.DrainBesideEvents _ -> RefusalKind.Unmodelled
+        | KeventRefusal.EventsBesideDeadline _ -> RefusalKind.Unmodelled
+        | KeventRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+
 /// Darwin's kqueue: `kqueue(2)`, and `kevent(2)`.
 [<RequireQualifiedAccess>]
 module UnixKqueue =
 
-    /// `kqueue(2)`: create a kqueue, owned by the calling process
-    /// (`KqueueState.Owner`), and a descriptor onto it, the lowest one not in
-    /// use. The description is blocking, and the descriptor has `FD_CLOEXEC`
-    /// and `FD_CLOFORK`.
-    ///
-    /// Under the Linux flavour every call is refused: Linux has no kqueue.
-    let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `kqueue`, with a refusal answered as the `Error` rather than raised.
+    let internal tryKqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Result<int * UnixSystem<'Task, 'Handler>, KqueueRefusal>
         =
@@ -261,6 +279,22 @@ module UnixKqueue =
                     registry
 
         Ok (fd, UnixSystemState.withFileDescriptors registry system)
+
+    /// <summary>
+    /// `kqueue(2)`: create a kqueue, owned by the calling process
+    /// (`KqueueState.Owner`), and a descriptor onto it, the lowest one not in
+    /// use. The description is blocking, and the descriptor has `FD_CLOEXEC`
+    /// and `FD_CLOFORK`.
+    ///
+    /// Under the Linux flavour every call is refused: Linux has no kqueue.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Darwin-flavoured, and only Darwin has kqueue.</exception>
+    let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int * UnixSystem<'Task, 'Handler>
+        =
+        tryKqueue system
+        |> Refusal.orRaise "UnixKqueue.kqueue" KqueueRefusal.kind KqueueRefusal.describe
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
 
@@ -557,55 +591,8 @@ module UnixKqueue =
             Ok (ChangelistOutcome.Failed (UnixError.EFAULT, echoed, system))
         | other -> other
 
-    /// `kevent(2)`, made by `task` through the descriptor `kq`, with a
-    /// changelist of `nchanges` entries and room for `nevents` events in
-    /// `eventlist`.
-    ///
-    /// `changes` is what the copy-in finds at the changelist, from its start:
-    /// every one of the `nchanges` entries when all are readable, and fewer
-    /// when one is not, the next entry being the first that cannot be read.
-    /// It is never longer than `nchanges`, and is empty when `nchanges` is zero
-    /// or less, since then no entry is read.
-    ///
-    /// The argument checks come first, in Darwin's order: `EFAULT` for an
-    /// unreadable timeout and `EINVAL` for a timeout whose `tv_sec` is below 0
-    /// or above `INT32_MAX`, or whose `tv_nsec` is below 0 or above
-    /// 1000000000; then `EBADF` for a descriptor that is not open or is not a
-    /// kqueue. Such a failure changes nothing.
-    ///
-    /// Then the changes are applied in order. `EV_ADD` registers a filter on
-    /// the socket the change's descriptor names, or, of a pair already
-    /// registered, replaces its `udata`; `EV_DELETE` removes one. A change with
-    /// `EV_RECEIPT`, or one that fails, is echoed into the eventlist while it
-    /// has room (`KeventOutcome.Echoed`); a failure with no room left ends the
-    /// call with its errno, a change the copy-in could not read with `EFAULT`,
-    /// and an echo into an `Unmapped` eventlist with `EFAULT` too, and either
-    /// way the changes before it stay applied and the entries echoed before it
-    /// stay written (`KeventOutcome.FailedAfterEchoing`). A call that echoes
-    /// anything returns at once with no events.
-    ///
-    /// Otherwise an `nevents` of zero or less returns no events at once; a
-    /// kqueue a close has drained (see `KqueueState.Drained`) fails with
-    /// `EBADF`; and otherwise the call reports up to `nevents` events. It walks
-    /// the kqueue's queue in order, reading each registration's filter again:
-    /// one no longer ready leaves the queue and reports nothing, and one that
-    /// reports leaves it if it was added with `EV_CLEAR` and otherwise goes
-    /// back to the tail; entries the walk did not reach stay queued in order.
-    /// With nothing to report, a timeout of zero returns
-    /// no events at once; a positive one parks `task` until an event is
-    /// reportable or that much time has passed on the machine's monotonic
-    /// clock, and a null one parks it until an event is reportable. A parked
-    /// wait is finished with `finishKevent`.
-    ///
-    /// Every waiter on one kqueue is woken by an event to report and by the
-    /// close that drains it, and a deadline or a signal is each waiter's own.
-    ///
-    /// Refused are a change this library does not apply (see `KeventRefusal`),
-    /// a copy of events to an eventlist that is not `Mapped`, and an echo into
-    /// an `Opaque` or `Addressless` one.
-    /// `task` must not already be parked. Under the Linux flavour every call
-    /// is refused: Linux has no kqueue.
-    let kevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `kevent`, with a refusal answered as the `Error` rather than raised.
+    let internal tryKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (kq : int)
         (nchanges : int)
@@ -718,6 +705,71 @@ module UnixKqueue =
         else
             park (Some (now + duration))
 
+    /// <summary>
+    /// `kevent(2)`, made by `task` through the descriptor `kq`, with a
+    /// changelist of `nchanges` entries and room for `nevents` events in
+    /// `eventlist`.
+    ///
+    /// `changes` is what the copy-in finds at the changelist, from its start:
+    /// every one of the `nchanges` entries when all are readable, and fewer
+    /// when one is not, the next entry being the first that cannot be read.
+    /// It is never longer than `nchanges`, and is empty when `nchanges` is zero
+    /// or less, since then no entry is read.
+    ///
+    /// The argument checks come first, in Darwin's order: `EFAULT` for an
+    /// unreadable timeout and `EINVAL` for a timeout whose `tv_sec` is below 0
+    /// or above `INT32_MAX`, or whose `tv_nsec` is below 0 or above
+    /// 1000000000; then `EBADF` for a descriptor that is not open or is not a
+    /// kqueue. Such a failure changes nothing.
+    ///
+    /// Then the changes are applied in order. `EV_ADD` registers a filter on
+    /// the socket the change's descriptor names, or, of a pair already
+    /// registered, replaces its `udata`; `EV_DELETE` removes one. A change with
+    /// `EV_RECEIPT`, or one that fails, is echoed into the eventlist while it
+    /// has room (`KeventOutcome.Echoed`); a failure with no room left ends the
+    /// call with its errno, a change the copy-in could not read with `EFAULT`,
+    /// and an echo into an `Unmapped` eventlist with `EFAULT` too, and either
+    /// way the changes before it stay applied and the entries echoed before it
+    /// stay written (`KeventOutcome.FailedAfterEchoing`). A call that echoes
+    /// anything returns at once with no events.
+    ///
+    /// Otherwise an `nevents` of zero or less returns no events at once; a
+    /// kqueue a close has drained (see `KqueueState.Drained`) fails with
+    /// `EBADF`; and otherwise the call reports up to `nevents` events. It walks
+    /// the kqueue's queue in order, reading each registration's filter again:
+    /// one no longer ready leaves the queue and reports nothing, and one that
+    /// reports leaves it if it was added with `EV_CLEAR` and otherwise goes
+    /// back to the tail; entries the walk did not reach stay queued in order.
+    /// With nothing to report, a timeout of zero returns
+    /// no events at once; a positive one parks `task` until an event is
+    /// reportable or that much time has passed on the machine's monotonic
+    /// clock, and a null one parks it until an event is reportable. A parked
+    /// wait is finished with `finishKevent`.
+    ///
+    /// Every waiter on one kqueue is woken by an event to report and by the
+    /// close that drains it, and a deadline or a signal is each waiter's own.
+    ///
+    /// Refused are a change this library does not apply,
+    /// a copy of events to an eventlist that is not `Mapped`, and an echo into
+    /// an `Opaque` or `Addressless` one.
+    /// `task` must not already be parked. Under the Linux flavour every call
+    /// is refused: Linux has no kqueue.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Darwin-flavoured, and only Darwin has kqueue.</exception>
+    let kevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (kq : int)
+        (nchanges : int)
+        (changes : Kevent list)
+        (nevents : int)
+        (eventlist : UserBuffer)
+        (timeout : KeventTimeout)
+        (system : UnixSystem<'Task, 'Handler>)
+        : KeventOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryKevent task kq nchanges changes nevents eventlist timeout system
+        |> Refusal.orRaise "UnixKqueue.kevent" KeventRefusal.kind KeventRefusal.describe
+
     let private finishKeventHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -787,6 +839,26 @@ module UnixKqueue =
             let parkedAgain = ParkedSyscall.Kevent parked
             Ok (KeventOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain swept)
 
+    /// `finishKevent`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFinishKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<KeventOutcome * UnixSystem<'Task, 'Handler>, KeventRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // A drain ends the wait while the kqueue may have no descriptor left
+        // (`kqueue-kevent.c` section E1), and the call's reference to it goes
+        // as it returns.
+        finishKeventHolding task system
+        |> Result.map (fun (outcome, after) ->
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixKqueue.finishKevent" held after
+        )
+
+    /// <summary>
     /// Finish the `kevent` wait `task` is parked in, as a woken real wait does.
     ///
     /// Answers `EBADF` when a close has drained the kqueue; the events it has to
@@ -804,20 +876,12 @@ module UnixKqueue =
     /// with; see `kevent` for the eventlists that refuses.
     ///
     /// `task` must be parked in a `kevent`.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Darwin-flavoured, and only Darwin has kqueue.</exception>
     let finishKevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<KeventOutcome * UnixSystem<'Task, 'Handler>, KeventRefusal>
+        : KeventOutcome * UnixSystem<'Task, 'Handler>
         =
-        let held =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some parked -> ParkedSyscall.descriptions parked
-            | None -> []
-
-        // A drain ends the wait while the kqueue may have no descriptor left
-        // (`kqueue-kevent.c` section E1), and the call's reference to it goes
-        // as it returns.
-        finishKeventHolding task system
-        |> Result.map (fun (outcome, after) ->
-            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixKqueue.finishKevent" held after
-        )
+        tryFinishKevent task system
+        |> Refusal.orRaise "UnixKqueue.finishKevent" KeventRefusal.kind KeventRefusal.describe

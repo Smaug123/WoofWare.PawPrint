@@ -157,7 +157,7 @@ module TestBootImage =
         |> shouldEqual []
 
     [<Test>]
-    let ``a process starts only from a launch, by boot or by SimulatedMachine.launch`` () : unit =
+    let ``a process starts only from a launch, by boot or by SimulatedMachine.tryLaunch`` () : unit =
         let takes (definition : Type) (m : MethodInfo) : bool =
             m.GetParameters ()
             |> Array.exists (fun p -> isGenericOf definition p.ParameterType)

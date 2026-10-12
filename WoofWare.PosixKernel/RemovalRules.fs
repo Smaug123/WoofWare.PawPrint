@@ -8,7 +8,7 @@ namespace WoofWare.PosixKernel
 /// replace, and how the caller stands towards that entry, which it owns
 /// neither of.
 [<RequireQualifiedAccess>]
-type StickyRefusal =
+type internal StickyRefusal =
     /// A privileged caller, on Darwin. Whether Darwin's sticky rule exempts
     /// root has not been measured: that needs root and a second user.
     | DarwinPrivilegedCaller of directory : InodeNumber * entry : InodeNumber * standing : Standing
@@ -20,7 +20,7 @@ type StickyRefusal =
 
 /// Why this kernel will not answer an `unlink(2)` or an `rmdir(2)`.
 [<RequireQualifiedAccess>]
-type RemovalRefusal =
+type internal RemovalRefusal =
     /// Darwin's sticky rule has not been measured for this caller.
     | Sticky of StickyRefusal
     /// This kernel will not resolve the path.
@@ -36,7 +36,7 @@ type RemovalRefusal =
     | MountPoint of mountRoot : InodeNumber
 
 [<RequireQualifiedAccess>]
-module StickyRefusal =
+module internal StickyRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which paths.
     let describe (refusal : StickyRefusal) : string =
@@ -46,8 +46,14 @@ module StickyRefusal =
         | StickyRefusal.DarwinDirectoryDisplacingDirectory (directory, entry, standing) ->
             $"a directory would displace the directory %O{entry} in the sticky directory %O{directory}, and the caller, standing %A{standing} towards %O{entry}, owns neither of them. Darwin consults the displaced directory's own write bit there rather than its parent's, and whether it consults the sticky bit at all has not been measured."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : StickyRefusal) : RefusalKind =
+        match refusal with
+        | StickyRefusal.DarwinPrivilegedCaller _ -> RefusalKind.Unmodelled
+        | StickyRefusal.DarwinDirectoryDisplacingDirectory _ -> RefusalKind.Unmodelled
+
 [<RequireQualifiedAccess>]
-module RemovalRefusal =
+module internal RemovalRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : RemovalRefusal) : string =
@@ -58,6 +64,14 @@ module RemovalRefusal =
             $"the path names inode %O{mountRoot}, the root of a mounted filesystem, in a sticky directory. Whether the sticky rule lets the caller remove the name depends on the covered directory's owner, which this kernel does not hold."
         | RemovalRefusal.DeviceFileSystem (directory, name) ->
             $"the call would remove \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : RemovalRefusal) : RefusalKind =
+        match refusal with
+        | RemovalRefusal.Sticky inner -> StickyRefusal.kind inner
+        | RemovalRefusal.Path inner -> PathRefusal.kind inner
+        | RemovalRefusal.DeviceFileSystem _ -> RefusalKind.Unmodelled
+        | RemovalRefusal.MountPoint _ -> RefusalKind.Unmodelled
 
 /// Which removal an `unlinkat(2)` makes, as its flag word says.
 [<RequireQualifiedAccess>]
@@ -80,7 +94,7 @@ type internal UnlinkAtScreen =
 
 /// Why this kernel will not answer an `unlinkat(2)`.
 [<RequireQualifiedAccess>]
-type UnlinkAtRefusal =
+type internal UnlinkAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
     /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
@@ -88,7 +102,7 @@ type UnlinkAtRefusal =
     | Removal of RemovalRefusal
 
 [<RequireQualifiedAccess>]
-module UnlinkAtRefusal =
+module internal UnlinkAtRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : UnlinkAtRefusal) : string =
@@ -96,6 +110,12 @@ module UnlinkAtRefusal =
         | UnlinkAtRefusal.UnmodelledFlags flags ->
             $"the flag word 0x%x{flags} carries a flag Darwin accepts and this library does not model: 0x100, AT_SYMLINK_NOFOLLOW_ANY (0x800), 0x1000, AT_RESOLVE_BENEATH (0x2000), AT_NODELETEBUSY (0x4000) or AT_UNIQUE (0x8000)."
         | UnlinkAtRefusal.Removal refusal -> RemovalRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : UnlinkAtRefusal) : RefusalKind =
+        match refusal with
+        | UnlinkAtRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | UnlinkAtRefusal.Removal inner -> RemovalRefusal.kind inner
 
 [<RequireQualifiedAccess>]
 module UnlinkAtRules =

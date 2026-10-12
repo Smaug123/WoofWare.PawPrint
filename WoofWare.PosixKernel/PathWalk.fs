@@ -109,7 +109,7 @@ type internal FinalNavigation =
 
 /// Why this kernel will not say what a path resolves to.
 [<RequireQualifiedAccess>]
-type PathRefusal =
+type internal PathRefusal =
     /// The walk reached `mountRoot`, the root of a filesystem this kernel does
     /// not model: Darwin's devfs.
     | UnmodelledFileSystem of mountRoot : InodeNumber * fileSystem : MountedFileSystem
@@ -132,7 +132,7 @@ type PathRefusal =
     | ProtectedSymlinkCacheDependent of directory : InodeNumber * link : InodeNumber * traversal : int * limit : int
 
 [<RequireQualifiedAccess>]
-module PathRefusal =
+module internal PathRefusal =
     /// What this kernel knows about why it cannot answer, for a client
     /// composing a diagnostic.
     let describe (refusal : PathRefusal) : string =
@@ -146,10 +146,18 @@ module PathRefusal =
         | PathRefusal.ProtectedSymlinkCacheDependent (directory, link, traversal, limit) ->
             $"fs.protected_symlinks forbids following the symbolic link at inode %O{link}, in the sticky world-writable directory at inode %O{directory}, and that link is traversal %d{traversal} of the %d{limit} the walk may make. That far down a chain of links, Linux answers EACCES or ELOOP according to the state of its dentry cache, which this kernel does not model."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PathRefusal) : RefusalKind =
+        match refusal with
+        | PathRefusal.UnmodelledFileSystem _ -> RefusalKind.Unmodelled
+        | PathRefusal.UnmodelledDeviceName _ -> RefusalKind.Unmodelled
+        | PathRefusal.UnmodelledStartingObject _ -> RefusalKind.Unmodelled
+        | PathRefusal.ProtectedSymlinkCacheDependent _ -> RefusalKind.Unmodelled
+
 /// How a path resolution failed: with the errno a real kernel answers, or with
 /// a refusal of this one's.
 [<RequireQualifiedAccess>]
-type PathFailure =
+type internal PathFailure =
     /// The syscall answers this errno.
     | Errno of UnixError
     /// This kernel will not answer.
@@ -1043,13 +1051,9 @@ module PathWalk =
         resolve limits credentials symlinkProtection startDirectory policy path vfs
         |> Result.bind (existingOf >> Result.mapError PathFailure.Errno)
 
-    /// The inode `path` names in `vfs`, walked from its root as a process with
-    /// `credentials` would walk it: the inode `stat` would describe, or why
-    /// the walk fails. A relative `path` is taken relative to the root.
-    ///
-    /// Answers for every input: the root is a directory of `vfs`, which is
-    /// where every walk starts.
-    let resolveExistingFromRoot
+    /// `resolveExistingFromRoot`, with a refusal answered as the `Error`
+    /// rather than raised.
+    let internal tryResolveExistingFromRoot
         (limits : PathLimits)
         (credentials : Credentials)
         (symlinkProtection : SymlinkProtection)
@@ -1059,5 +1063,29 @@ module PathWalk =
         : Result<InodeNumber, PathFailure>
         =
         resolveExisting limits credentials symlinkProtection (VirtualFileSystem.root vfs) policy path vfs
+
+    /// The inode `path` names in `vfs`, walked from its root as a process with
+    /// `credentials` would walk it: the inode `stat` would describe, or the
+    /// errno the walk fails with. A relative `path` is taken relative to the
+    /// root.
+    let resolveExistingFromRoot
+        (limits : PathLimits)
+        (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (vfs : VirtualFileSystem)
+        : Result<InodeNumber, UnixError>
+        =
+        match tryResolveExistingFromRoot limits credentials symlinkProtection policy path vfs with
+        | Ok inode -> Ok inode
+        | Error (PathFailure.Errno error) -> Error error
+        | Error (PathFailure.Refused refusal) ->
+            raise (
+                Refusal.exceptionOf
+                    "PathWalk.resolveExistingFromRoot"
+                    (PathRefusal.kind refusal)
+                    (PathRefusal.describe refusal)
+            )
 
 // ------------------------------------------------------------ inspection

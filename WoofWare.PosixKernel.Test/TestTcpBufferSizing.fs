@@ -161,7 +161,7 @@ module TestTcpBufferSizing =
         let darwin = UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
 
         let admitted (value : int) : bool =
-            match darwin |> UnixBootImage.withTcpReceiveSpace (Some value) with
+            match darwin |> UnixBootImage.tryWithTcpReceiveSpace (Some value) with
             | Ok image ->
                 (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.TcpReceiveSpace
                 |> shouldEqual value
@@ -204,37 +204,37 @@ module TestTcpBufferSizing =
         |> shouldEqual 131072
 
         (linux
-         |> UnixBootImage.withTcpReceiveSpace (Some 1)
+         |> UnixBootImage.tryWithTcpReceiveSpace (Some 1)
          |> Configured.expectOk TcpReceiveSpaceRefusal.describe
          |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpReceiveSpace
         |> shouldEqual 1
 
         (linux
-         |> UnixBootImage.withTcpSendSpaceMax (Some 65536)
+         |> UnixBootImage.tryWithTcpSendSpaceMax (Some 65536)
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
          |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpSendSpaceMax
         |> shouldEqual 65536
 
         (linux
-         |> UnixBootImage.withTcpSendSpaceMax (Some 65536)
+         |> UnixBootImage.tryWithTcpSendSpaceMax (Some 65536)
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
-         |> UnixBootImage.withTcpSendSpaceMax None
+         |> UnixBootImage.tryWithTcpSendSpaceMax None
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
          |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpSendSpaceMax
         |> shouldEqual 4194304
 
-        match UnixBootImage.withTcpReceiveSpace (Some 0) linux with
+        match UnixBootImage.tryWithTcpReceiveSpace (Some 0) linux with
         | Error refusal -> refusal |> shouldEqual (TcpReceiveSpaceRefusal.NotPositive 0)
         | Ok _ -> failwith "a non-positive Linux receive space was admitted"
 
-        match UnixBootImage.withTcpSendSpaceMax (Some 0) linux with
+        match UnixBootImage.tryWithTcpSendSpaceMax (Some 0) linux with
         | Error refusal -> refusal |> shouldEqual (TcpSendSpaceMaxRefusal.NotPositive 0)
         | Ok _ -> failwith "a non-positive Linux send-space maximum was admitted"
 
-        match UnixBootImage.withTcpSendSpaceMax (Some 4194304) darwin with
+        match UnixBootImage.tryWithTcpSendSpaceMax (Some 4194304) darwin with
         | Error refusal ->
             refusal
             |> shouldEqual (TcpSendSpaceMaxRefusal.NotReadOn (SimulatedUnixFlavour.Darwin, 4194304))

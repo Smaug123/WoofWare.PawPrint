@@ -17,6 +17,5 @@ module KernelSyscall =
     /// guest; an errno comes back, because that is an answer.
     let close (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, UnixError> =
         match UnixDescriptor.close fd kernel.System with
-        | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
-        | Ok (SyscallAnswer.Failed error, _) -> Error error
-        | Ok (SyscallAnswer.Completed _, system) -> Ok (EmulatedKernel.withUnix system kernel)
+        | SyscallAnswer.Failed error, _ -> Error error
+        | SyscallAnswer.Completed _, system -> Ok (EmulatedKernel.withUnix system kernel)

@@ -95,7 +95,7 @@ module SocketEventsPal =
         (newEvents : int)
         (data : uint64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<EpollCtlAnswer * UnixSystem<'Task, 'Handler>, EpollCtlRefusal>
+        : EpollCtlAnswer * UnixSystem<'Task, 'Handler>
         =
         let events = toEpollEvents newEvents ||| EpollEvents.EdgeTriggered
 

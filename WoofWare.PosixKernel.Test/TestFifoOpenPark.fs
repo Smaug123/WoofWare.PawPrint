@@ -100,7 +100,7 @@ module TestFifoOpenPark =
             |> shouldEqual [ UnixSystemDefect.ReservedPark (task, parked) ]
 
             let closed =
-                match UnixDescriptor.close 0 asleep with
+                match UnixDescriptor.tryClose 0 asleep with
                 | Ok (SyscallAnswer.Completed 0L, closed) -> closed
                 | other -> failwith $"closing fd 0 under %O{flavour}: %A{other}"
 

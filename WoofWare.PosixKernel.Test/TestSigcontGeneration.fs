@@ -117,7 +117,7 @@ module TestSigcontGeneration =
     /// past a SIGCONT the kernel discards.
     let rec private returns (task : int) : Step =
         fun r ->
-            match UnixSignal.onReturnToUser task r.System with
+            match UnixSignal.tryOnReturnToUser task r.System with
             | Error refusal -> Error (Stop.Receiver refusal)
             | Ok (ReturnToUserOutcome.Resumes system) -> Ok (withSystem system r)
             | Ok (ReturnToUserOutcome.ContinueDiscarded (_, system)) -> returns task (withSystem system r)
@@ -167,7 +167,7 @@ module TestSigcontGeneration =
 
     let private spawnSecond : Step =
         fun r ->
-            match UnixTaskLifecycle.spawn main second (CpuId 0) r.System with
+            match UnixTaskLifecycle.trySpawn main second (CpuId 0) r.System with
             | Ok (SpawnAnswer.Spawned _, system) -> (returns main >=> returns second) (withSystem system r)
             | other -> failwith $"spawn: %A{other}"
 
@@ -190,12 +190,12 @@ module TestSigcontGeneration =
                 | Route.Process ->
                     let pid = ProcessId.toInt32 (UnixSystem.processId r.System)
 
-                    match UnixSignal.kill pid (signo r signal) r.System with
+                    match UnixSignal.tryKill pid (signo r signal) r.System with
                     | Error (KillRefusal.Receiver refusal) -> Error (Stop.Receiver refusal)
                     | Error other -> Error (Stop.Other $"kill: %A{other}")
                     | Ok outcome -> Ok outcome
                 | Route.Task target ->
-                    match UnixSignal.pthreadKill target (signo r signal) r.System with
+                    match UnixSignal.tryPthreadKill target (signo r signal) r.System with
                     | Error (ThreadKillRefusal.Receiver refusal) -> Error (Stop.Receiver refusal)
                     | Error other -> Error (Stop.Other $"pthread_kill: %A{other}")
                     | Ok outcome -> Ok outcome
@@ -343,7 +343,7 @@ module TestSigcontGeneration =
             | _ ->
 
             if row.InSigsuspend then
-                match UnixSignal.finishSigsuspend row.Sleeper r.System with
+                match UnixSignal.tryFinishSigsuspend row.Sleeper r.System with
                 | Error (SigsuspendRefusal.Receiver refusal) -> Error (Stop.Receiver refusal)
                 | Error other -> Error (Stop.Other $"finishSigsuspend: %A{other}")
                 | Ok (SigsuspendOutcome.Failed UnixError.EINTR, system) ->
@@ -351,7 +351,7 @@ module TestSigcontGeneration =
                 | Ok (SigsuspendOutcome.WouldBlock _, system) -> Ok (withSystem system r)
                 | Ok other -> failwith $"finishSigsuspend: %A{other}"
             else
-                match UnixPoll.finishPoll row.Sleeper r.System with
+                match UnixPoll.tryFinishPoll row.Sleeper r.System with
                 | Error (PollRefusal.Interruption (SyscallInterruptionRefusal.Receiver refusal)) ->
                     Error (Stop.Receiver refusal)
                 | Error other -> Error (Stop.Other $"finishPoll: %A{other}")
@@ -365,12 +365,12 @@ module TestSigcontGeneration =
     let private sleeps (row : SleepRow) : Step =
         fun r ->
             if row.InSigsuspend then
-                match UnixSignal.sigsuspend row.Sleeper (signals [] r) r.System with
+                match UnixSignal.trySigsuspend row.Sleeper (signals [] r) r.System with
                 | Ok (SigsuspendOutcome.WouldBlock _, system) -> Ok (withSystem system r)
                 | Error (SigsuspendRefusal.Receiver refusal) -> Error (Stop.Receiver refusal)
                 | other -> failwith $"sigsuspend did not sleep: %A{other}"
             else
-                match UnixPoll.poll row.Sleeper [] 300 r.System with
+                match UnixPoll.tryPoll row.Sleeper [] 300 r.System with
                 | Ok (PollOutcome.WouldBlock _, system) -> Ok (withSystem system r)
                 | other -> failwith $"poll did not sleep: %A{other}"
 
@@ -684,7 +684,7 @@ module TestSigcontGeneration =
 
                 let pid = ProcessId.toInt32 (UnixSystem.processId r.System)
 
-                match UnixSignal.kill pid (signo r Signal.SIGSTOP) r.System with
+                match UnixSignal.tryKill pid (signo r Signal.SIGSTOP) r.System with
                 | Ok (Ok (KillOutcome.ProcessStopped (Signal.SIGSTOP, system))) -> system
                 | other -> failwith $"SIGSTOP: %A{other}"
             )

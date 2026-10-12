@@ -42,7 +42,7 @@ module TestSocketBinding =
     /// The machine of a system booted with the ephemeral port range `range`.
     let private machineWithPortRange (range : uint16 * uint16) : UnixMachineState =
         (initialImage
-         |> UnixBootImage.withEphemeralPortRange range
+         |> UnixBootImage.tryWithEphemeralPortRange range
          |> Configured.expectOk EphemeralPortRangeRefusal.describe
          |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
@@ -489,7 +489,7 @@ module TestSocketBinding =
     let ``an empty or zero-based ephemeral range is refused`` () : unit =
         let refusal (low : uint16) (high : uint16) : Result<unit, EphemeralPortRangeRefusal> =
             initialImage
-            |> UnixBootImage.withEphemeralPortRange (low, high)
+            |> UnixBootImage.tryWithEphemeralPortRange (low, high)
             |> Result.map ignore<UnixBootImage<int, string>>
 
         refusal 0us 100us

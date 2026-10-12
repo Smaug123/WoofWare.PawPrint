@@ -60,7 +60,7 @@ module TestUnixTaskLifecycle =
             }
 
     let private exitOrFail (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixTaskLifecycle.exitThread task 0 system with
+        match UnixTaskLifecycle.tryExitThread task 0 system with
         | Ok (TaskOutcome.Continues system) -> system
         | Ok (TaskOutcome.ProcessEnded ended) ->
             failwith $"expected the process to carry on, but it ended: %O{ended.Termination}"
@@ -163,7 +163,7 @@ module TestUnixTaskLifecycle =
                 | Some park -> park
                 | None -> failwith "expected task 2 to be parked"
 
-            UnixTaskLifecycle.exitThread 2 0 system
+            UnixTaskLifecycle.tryExitThread 2 0 system
             |> shouldEqual (Error (ThreadExitRefusal.Parked (2, park)))
 
     /// The leader and one other task, which leaves, so that what follows is about
@@ -195,7 +195,7 @@ module TestUnixTaskLifecycle =
             let system = lastTaskStanding platform
 
             for status, kept in [ 0, 0 ; 5, 5 ; 256, 0 ; 263, 7 ; -1, 255 ; System.Int32.MinValue, 0 ] do
-                match UnixTaskLifecycle.exitThread 0 status system with
+                match UnixTaskLifecycle.tryExitThread 0 status system with
                 | Ok (TaskOutcome.ProcessEnded ended) ->
                     match ended.Termination with
                     | ProcessTermination.Exited exitStatus ->
@@ -213,7 +213,7 @@ module TestUnixTaskLifecycle =
 
     [<Test>]
     let ``on Darwin the last task's exit is refused`` () : unit =
-        UnixTaskLifecycle.exitThread 0 0 (lastTaskStanding SimulatedUnixPlatform.macOsArm64)
+        UnixTaskLifecycle.tryExitThread 0 0 (lastTaskStanding SimulatedUnixPlatform.macOsArm64)
         |> shouldEqual (Error (ThreadExitRefusal.LastTaskOnDarwin 0))
 
     [<Test>]
@@ -225,17 +225,17 @@ module TestUnixTaskLifecycle =
             let system, _ = world platform
             let system = system |> withTask 1 |> withTask 2
 
-            UnixTaskLifecycle.exitThread 0 0 system
+            UnixTaskLifecycle.tryExitThread 0 0 system
             |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers 0))
 
             let system = system |> exitOrFail 1
 
-            UnixTaskLifecycle.exitThread 0 0 system
+            UnixTaskLifecycle.tryExitThread 0 0 system
             |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers 0))
 
             let system = system |> exitOrFail 2
 
-            match SimulatedUnixPlatform.flavour platform, UnixTaskLifecycle.exitThread 0 0 system with
+            match SimulatedUnixPlatform.flavour platform, UnixTaskLifecycle.tryExitThread 0 0 system with
             | SimulatedUnixFlavour.Linux, Ok (TaskOutcome.ProcessEnded _) -> ()
             | SimulatedUnixFlavour.Darwin, Error (ThreadExitRefusal.LastTaskOnDarwin 0) -> ()
             | flavour, other ->
@@ -249,7 +249,7 @@ module TestUnixTaskLifecycle =
             let system = system |> withTask 1 |> UnixWait.park 0 (flockOn queue)
             let park = UnixTaskTable.parkOf 0 system.Tasks |> Option.get
 
-            UnixTaskLifecycle.exitThread 0 0 system
+            UnixTaskLifecycle.tryExitThread 0 0 system
             |> shouldEqual (Error (ThreadExitRefusal.Parked (0, park)))
 
     [<Test>]
@@ -325,7 +325,7 @@ module TestUnixTaskLifecycle =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixTaskLifecycle.exitThread 3 0 system
+                UnixTaskLifecycle.tryExitThread 3 0 system
                 |> ignore<Result<TaskOutcome<int, string>, ThreadExitRefusal<int>>>
             )
 
@@ -494,7 +494,7 @@ module TestUnixTaskLifecycle =
                     live parent && not (Set.contains parent model.Parked) && not (live child)
                     ->
                     let after =
-                        match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
+                        match UnixTaskLifecycle.trySpawn parent child (CpuId 0) system with
                         | Ok (SpawnAnswer.Spawned _, after) -> after
                         | Ok (SpawnAnswer.Failed error, _) ->
                             failwith $"spawning %d{child} from %d{parent} failed with %O{error}"
@@ -596,7 +596,7 @@ module TestUnixTaskLifecycle =
 
                     system, model
                 | Op.Exit (task, status) when live task ->
-                    let result = UnixTaskLifecycle.exitThread task status system
+                    let result = UnixTaskLifecycle.tryExitThread task status system
 
                     if Set.contains task model.Parked then
                         let park = UnixTaskTable.parkOf task system.Tasks |> Option.get

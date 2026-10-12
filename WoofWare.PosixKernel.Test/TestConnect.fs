@@ -117,7 +117,7 @@ module TestConnect =
         (system : UnixSystem<int, string>)
         : SockaddrCopyAdmission
         =
-        match UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination declaredLength system with
+        match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd destination declaredLength system with
         | Ok admission -> admission
         | Error refusal -> failwith $"expected an admission, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
 
@@ -177,7 +177,7 @@ module TestConnect =
 
         let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 16u system
+        UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 16u system
         |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, SocketDomain.Unix)))
 
         // An IPv6 datagram socket's addresses are not modelled either.
@@ -189,7 +189,7 @@ module TestConnect =
 
         let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 28u system
+        UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 28u system
         |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledInet6Kind (SocketId 0L, SocketKind.Datagram)))
 
     /// `connectSocket` skips the descriptor screens, but not the domain's: a
@@ -372,7 +372,7 @@ module TestConnect =
         for destination, expected in rows do
             let fd, system = client platform
 
-            UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination 16u system
+            UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd destination 16u system
             |> shouldEqual (Error (SockaddrCopyRefusal.Buffer expected))
 
     /// The length verdict precedes the buffer: a length the copy helper rejects
@@ -406,7 +406,7 @@ module TestConnect =
         for passed in [ 0 ; 2 ; 8 ; 15 ; 17 ] do
             let e =
                 Assert.Throws<exn> (fun () ->
-                    UnixConnection.connect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
+                    UnixConnection.tryConnect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
                     |> ignore<_>
                 )
 
@@ -416,7 +416,7 @@ module TestConnect =
     /// so a caller that never asked is not punished for it.
     [<TestCaseSource(nameof platforms)>]
     let ``connect repeats the admission's answers`` (platform : SimulatedUnixPlatform) : unit =
-        UnixConnection.connect 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
+        UnixConnection.tryConnect 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
         |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EBADF, systemOn platform))
 
     // ------------------------------------------------------------------
@@ -538,7 +538,7 @@ module TestConnect =
                 (SocketId 0L)
                 holder
                 (systemOnWith
-                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                    (UnixBootImage.tryWithEphemeralPortRange (40000us, 40000us)
                      >> Configured.expectOk EphemeralPortRangeRefusal.describe)
                     platform)
 
@@ -554,7 +554,7 @@ module TestConnect =
     let ``a copy refusal is carried as a connect refusal`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = client platform
 
-        match UnixConnection.connect fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
+        match UnixConnection.tryConnect fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
         | Error (ConnectRefusal.Copy _) -> ()
         | other -> failwith $"expected a copy refusal, got %A{other}"
 
@@ -620,7 +620,7 @@ module TestConnect =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let option = SimulatedUnixPlatform.reuseAddressOption platform
 
-            match UnixSocket.setsockopt fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system with
+            match UnixSocket.trySetsockopt fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system with
             | Ok (SetSockOptAnswer.Set, system) -> fd, system
             | other -> failwith $"setsockopt answered %A{other}"
 

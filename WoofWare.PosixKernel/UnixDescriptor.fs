@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// simulated platform. Linux numbers `SEEK_DATA` 3 and `SEEK_HOLE` 4; Darwin
 /// transposes them, which is why the raw number alone names no operation.
 [<RequireQualifiedAccess>]
-type SeekExtension =
+type internal SeekExtension =
     | SeekData
     | SeekHole
 
@@ -23,7 +23,7 @@ type private SeekEndBasis =
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
 [<RequireQualifiedAccess>]
-type LSeekRefusal =
+type internal LSeekRefusal =
     /// `SEEK_DATA` or `SEEK_HOLE` on a seekable file.
     | Sparseness of whence : int * meaning : SeekExtension
     /// `SEEK_END` on a directory whose size this kernel cannot state: one on an
@@ -38,7 +38,7 @@ type LSeekRefusal =
     | DirectoryPosition of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
-module LSeekRefusal =
+module internal LSeekRefusal =
     /// What this kernel knows about why it cannot answer, for a client composing
     /// a diagnostic. The client supplies its own half — which entry point, which
     /// descriptor — because those are things it decoded and this library never
@@ -57,6 +57,13 @@ module LSeekRefusal =
         | LSeekRefusal.DirectoryPosition inode ->
             $"inode %O{inode} is a directory that this description has read part of the way through, and SEEK_CUR asks where it is. A real kernel answers with its own filesystem's resumption cookie (the next entry's offset on tmpfs; a sequence number and an entry count on APFS), which is not a number this kernel's position corresponds to. SEEK_CUR is answered at the start of a directory, and after a SEEK_SET or SEEK_END moved the description."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : LSeekRefusal) : RefusalKind =
+        match refusal with
+        | LSeekRefusal.Sparseness _ -> RefusalKind.Unmodelled
+        | LSeekRefusal.DirectoryEnd _ -> RefusalKind.Unmodelled
+        | LSeekRefusal.DirectoryPosition _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `flock`.
 ///
 /// Every case but `Interruption` is a measured divergence between the two
@@ -65,7 +72,7 @@ module LSeekRefusal =
 /// and named in each case's description — but because what they leave the
 /// *lock state* as is not, which is what a model would have to commit to.
 [<RequireQualifiedAccess>]
-type FLockRefusal =
+type internal FLockRefusal =
     /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
     | DarwinMalformedOperation of operation : int
     /// A pipe.
@@ -83,7 +90,7 @@ type FLockRefusal =
     | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
-module FLockRefusal =
+module internal FLockRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half — which entry point, and which of its callers could have
     /// reached it.
@@ -101,21 +108,36 @@ module FLockRefusal =
             "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
         | FLockRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FLockRefusal) : RefusalKind =
+        match refusal with
+        | FLockRefusal.DarwinMalformedOperation _ -> RefusalKind.Unmodelled
+        | FLockRefusal.DarwinPipe _ -> RefusalKind.Unmodelled
+        | FLockRefusal.DarwinKqueue -> RefusalKind.Unmodelled
+        | FLockRefusal.DarwinSocket _ -> RefusalKind.Unmodelled
+        | FLockRefusal.DarwinConversion -> RefusalKind.Unmodelled
+        | FLockRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+
 /// Why this kernel will not answer a `posix_fadvise(2)`.
 [<RequireQualifiedAccess>]
-type PosixFadviseRefusal =
+type internal PosixFadviseRefusal =
     /// The simulated platform's libc has no `posix_fadvise`
     /// (`SimulatedUnixPlatform.providesPosixFadvise` is `false`), so no program
     /// could have made the call and there is no answer to give.
     | NotProvided
 
 [<RequireQualifiedAccess>]
-module PosixFadviseRefusal =
+module internal PosixFadviseRefusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : PosixFadviseRefusal) : string =
         match refusal with
         | PosixFadviseRefusal.NotProvided ->
             "the simulated platform's C library has no posix_fadvise, so no program could have made the call and there is no answer to give."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PosixFadviseRefusal) : RefusalKind =
+        match refusal with
+        | PosixFadviseRefusal.NotProvided -> RefusalKind.NotOnPlatform
 
 /// What `posix_fadvise(2)` answered.
 ///
@@ -133,7 +155,7 @@ type FileAdviceAnswer =
 
 /// Why this kernel will not commit a truncation.
 [<RequireQualifiedAccess>]
-type TruncationRefusal =
+type internal TruncationRefusal =
     /// Longer than this kernel can represent. A real filesystem answers without
     /// difficulty — measured on ext4 and APFS alike, `ftruncate` to three
     /// gigabytes succeeds and leaves a sparse file — so this is a limit of the
@@ -145,7 +167,7 @@ type TruncationRefusal =
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
-module TruncationRefusal =
+module internal TruncationRefusal =
     let describe (refusal : TruncationRefusal) : string =
         match refusal with
         | TruncationRefusal.ExceedsRepresentableLength (inode, length) ->
@@ -153,11 +175,17 @@ module TruncationRefusal =
         | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"truncating inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : TruncationRefusal) : RefusalKind =
+        match refusal with
+        | TruncationRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | TruncationRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+
 /// Why a Darwin close that ends a sleeping pipe `write` cannot be answered: the
 /// write raises `SIGPIPE` for the process as it returns, before the close does,
 /// and what that signal does is something a close has no way to report.
 [<RequireQualifiedAccess>]
-type EndedWriteSignalRefusal =
+type internal EndedWriteSignalRefusal =
     /// `SIGPIPE`'s disposition is the default, so the signal ends the process.
     | TerminatesProcess
     /// The process is process ID 1, and what an init process does with a
@@ -167,7 +195,7 @@ type EndedWriteSignalRefusal =
     | Receiver of SignalReceiverRefusal
 
 [<RequireQualifiedAccess>]
-module EndedWriteSignalRefusal =
+module internal EndedWriteSignalRefusal =
     /// What this kernel knows about why it cannot say what the `SIGPIPE`
     /// that the ended write raises does.
     let describe (refusal : EndedWriteSignalRefusal) : string =
@@ -178,6 +206,13 @@ module EndedWriteSignalRefusal =
             "the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
         | EndedWriteSignalRefusal.Receiver refusal ->
             $"which task would take the signal is not modelled: %s{SignalReceiverRefusal.describe refusal}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : EndedWriteSignalRefusal) : RefusalKind =
+        match refusal with
+        | EndedWriteSignalRefusal.TerminatesProcess -> RefusalKind.Unmodelled
+        | EndedWriteSignalRefusal.InitProcess -> RefusalKind.Unmodelled
+        | EndedWriteSignalRefusal.Receiver inner -> SignalReceiverRefusal.kind inner
 
 /// Why this kernel will not close a descriptor.
 ///
@@ -193,7 +228,7 @@ module EndedWriteSignalRefusal =
 /// is modelled, so it is served; the Darwin cases here are the ones this
 /// kernel does not model.
 [<RequireQualifiedAccess>]
-type CloseRefusal<'Task> =
+type internal CloseRefusal<'Task> =
     /// Releasing the description destroys an object in a state this kernel
     /// has not measured.
     | Release of DescriptionReleaseRefusal
@@ -244,7 +279,7 @@ type CloseRefusal<'Task> =
     | LingeringCloseDeferredToCall of socket : SocketId * task : 'Task
 
 [<RequireQualifiedAccess>]
-module CloseRefusal =
+module internal CloseRefusal =
     /// What this kernel knows about why it cannot close the descriptor. The
     /// client supplies its own half — which entry point, which descriptor
     /// number, and what it would have to build to lift the refusal.
@@ -261,6 +296,16 @@ module CloseRefusal =
         | CloseRefusal.LingeringCloseDeferredToCall (socket, task) ->
             $"the descriptor is the last one onto connected socket %O{socket}, whose SO_LINGER is on, and task %O{task} is in a call that still holds it. Measured on Linux (tcp-blocking.c sections R-close and W-close), the close answers 0 and the socket is closed when that call returns. Under SO_LINGER that close would be abortive (a time of zero) or would wait for unsent bytes (a positive time), which this kernel refuses in some states, and the call can change the state before it returns; this kernel models no refusal at a call's return, nor a close deferred to one under SO_LINGER."
         | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : CloseRefusal<'Task>) : RefusalKind =
+        match refusal with
+        | CloseRefusal.Release inner -> DescriptionReleaseRefusal.kind inner
+        | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ -> RefusalKind.Unmodelled
+        | CloseRefusal.PolledDescriptor _ -> RefusalKind.Unmodelled
+        | CloseRefusal.DarwinWokenTransfer _ -> RefusalKind.Unmodelled
+        | CloseRefusal.DarwinEndedWriteSignal (_, inner) -> EndedWriteSignalRefusal.kind inner
+        | CloseRefusal.LingeringCloseDeferredToCall _ -> RefusalKind.Unmodelled
 
 /// A status flag the flavour's `fcntl(F_SETFL)` would set, and this kernel
 /// does not model.
@@ -287,7 +332,7 @@ module UnmodelledStatusFlag =
 
 /// Why this kernel will not answer an `fcntl(2)`.
 [<RequireQualifiedAccess>]
-type FcntlRefusal =
+type internal FcntlRefusal =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -299,7 +344,7 @@ type FcntlRefusal =
     | UnmodelledStatusFlags of word : int * flags : UnmodelledStatusFlag list
 
 [<RequireQualifiedAccess>]
-module FcntlRefusal =
+module internal FcntlRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : FcntlRefusal) : string =
@@ -311,9 +356,16 @@ module FcntlRefusal =
             let names = flags |> List.map UnmodelledStatusFlag.name |> String.concat ", "
             $"F_SETFL with 0x%x{word} would set %s{names}, which change what later reads and writes on the description do (or, for O_NOATIME and O_DIRECT, answer EPERM or EINVAL depending on the file's owner and filesystem), and this kernel models none of that."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FcntlRefusal) : RefusalKind =
+        match refusal with
+        | FcntlRefusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | FcntlRefusal.UnmodelledCommand _ -> RefusalKind.Unmodelled
+        | FcntlRefusal.UnmodelledStatusFlags _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `dup2(2)`.
 [<RequireQualifiedAccess>]
-type Dup2Refusal<'Task> =
+type internal Dup2Refusal<'Task> =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -323,7 +375,7 @@ type Dup2Refusal<'Task> =
     | ClosingTarget of refusal : CloseRefusal<'Task>
 
 [<RequireQualifiedAccess>]
-module Dup2Refusal =
+module internal Dup2Refusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup2Refusal<'Task>) : string =
         match refusal with
@@ -331,9 +383,15 @@ module Dup2Refusal =
         | Dup2Refusal.ClosingTarget refusal ->
             $"the target descriptor is open, and dup2 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : Dup2Refusal<'Task>) : RefusalKind =
+        match refusal with
+        | Dup2Refusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | Dup2Refusal.ClosingTarget inner -> CloseRefusal.kind inner
+
 /// Why this kernel will not answer a `dup3(2)`.
 [<RequireQualifiedAccess>]
-type Dup3Refusal<'Task> =
+type internal Dup3Refusal<'Task> =
     /// A descriptor the call would make lies at or above the bound this kernel
     /// assumes the process's `RLIMIT_NOFILE` reaches.
     | DescriptorLimit of DescriptorLimitRefusal
@@ -343,7 +401,7 @@ type Dup3Refusal<'Task> =
     | ClosingTarget of refusal : CloseRefusal<'Task>
 
 [<RequireQualifiedAccess>]
-module Dup3Refusal =
+module internal Dup3Refusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup3Refusal<'Task>) : string =
         match refusal with
@@ -352,6 +410,13 @@ module Dup3Refusal =
             $"this kernel is %O{flavour}-flavoured, and only Linux has dup3; no program could have made the call."
         | Dup3Refusal.ClosingTarget refusal ->
             $"the target descriptor is open, and dup3 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : Dup3Refusal<'Task>) : RefusalKind =
+        match refusal with
+        | Dup3Refusal.DescriptorLimit _ -> RefusalKind.Unmodelled
+        | Dup3Refusal.NotProvided _ -> RefusalKind.NotOnPlatform
+        | Dup3Refusal.ClosingTarget inner -> CloseRefusal.kind inner
 
 /// What a change to a descriptor's `O_NONBLOCK` answered.
 ///
@@ -377,7 +442,7 @@ type BytesAvailableAnswer =
 
 /// Why this kernel will not answer an `ioctl(FIONREAD)`.
 [<RequireQualifiedAccess>]
-type BytesAvailableRefusal =
+type internal BytesAvailableRefusal =
     /// The destination has no answer at the copy.
     | Buffer of BufferRefusal
     /// The descriptor `fd` names something other than a pipe or a connected
@@ -385,7 +450,7 @@ type BytesAvailableRefusal =
     | UnmodelledTarget of fd : int
 
 [<RequireQualifiedAccess>]
-module BytesAvailableRefusal =
+module internal BytesAvailableRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point asked.
     let describe (refusal : BytesAvailableRefusal) : string =
@@ -393,6 +458,12 @@ module BytesAvailableRefusal =
         | BytesAvailableRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | BytesAvailableRefusal.UnmodelledTarget fd ->
             $"fd %d{fd} is neither an end of a pipe nor a connected TCP socket, and FIONREAD is answered here for those only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll instance is EINVAL and a kqueue ENOTTY. Model the kind before answering."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : BytesAvailableRefusal) : RefusalKind =
+        match refusal with
+        | BytesAvailableRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | BytesAvailableRefusal.UnmodelledTarget _ -> RefusalKind.Unmodelled
 
 /// What `tcgetattr(3)` answered, which is also what `isatty(3)` answers: it is
 /// `tcgetattr` with the answer reduced to 1 or 0 and the errno left as it was.
@@ -419,7 +490,7 @@ type GetGroupsAnswer =
 
 /// Why this kernel will not answer a `getgroups(2)`.
 [<RequireQualifiedAccess>]
-type GetGroupsRefusal =
+type internal GetGroupsRefusal =
     /// The buffer has no answer at the copy, which is the only step that
     /// reads it.
     | Buffer of BufferRefusal
@@ -428,7 +499,7 @@ type GetGroupsRefusal =
     | UnmeasuredGroupList of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module GetGroupsRefusal =
+module internal GetGroupsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and what the buffer was.
     let describe (refusal : GetGroupsRefusal) : string =
@@ -437,9 +508,15 @@ module GetGroupsRefusal =
         | GetGroupsRefusal.UnmeasuredGroupList flavour ->
             $"which groups %O{flavour}'s getgroups(2) reports for these credentials has not been measured. It depends on what setgroups(2) does with the list it is given, and setting that needs root. A login process reports its effective group first and the rest unsorted, which fits both of two rules (the effective group added in front of the supplementary groups, or a list that already began with it reported as given), and the two disagree about every other list."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetGroupsRefusal) : RefusalKind =
+        match refusal with
+        | GetGroupsRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | GetGroupsRefusal.UnmeasuredGroupList _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer an `ioctl(2)` of `FICLONE`.
 [<RequireQualifiedAccess>]
-type FileCloneRefusal =
+type internal FileCloneRefusal =
     /// This kernel is not Linux-flavoured, and `FICLONE` is a Linux request.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// Both descriptors name regular files on a mount of this type, whose
@@ -447,7 +524,7 @@ type FileCloneRefusal =
     | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
 
 [<RequireQualifiedAccess>]
-module FileCloneRefusal =
+module internal FileCloneRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which descriptors.
     let describe (refusal : FileCloneRefusal) : string =
@@ -456,6 +533,12 @@ module FileCloneRefusal =
             $"this kernel is %O{flavour}-flavoured, and FICLONE is a Linux ioctl request."
         | FileCloneRefusal.UnmeasuredFileSystem fileSystem ->
             $"both descriptors name regular files on a %O{fileSystem} mount. Whether a clone request succeeds there depends on the filesystem (tmpfs answers EOPNOTSUPP; Btrfs and XFS share the source's extents), and this filesystem's answer has not been measured."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FileCloneRefusal) : RefusalKind =
+        match refusal with
+        | FileCloneRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | FileCloneRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
 
 /// Which filesystem an open object lives on, for a call that refuses to work
 /// across two.
@@ -540,11 +623,8 @@ module UnixDescriptor =
         =
         system.Process.Credentials.EffectiveGroup
 
-    /// `getgroups(2)`: the process's groups, into `destination`, which has room
-    /// for `size` of them.
-    ///
-    /// Changes nothing, so it returns no system.
-    let getgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getgroups`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : UserBuffer)
         (size : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -588,12 +668,21 @@ module UnixDescriptor =
         | UserBuffer.Opaque -> Error (GetGroupsRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (GetGroupsRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
 
-    /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
-    /// open file description. EBADF is its only failure, and comes first: a
-    /// descriptor that is not open is EBADF even when the new one would reach
-    /// the bound (`SimulatedUnixPlatform.descriptorBound`), which is otherwise
-    /// refused.
-    let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getgroups(2)`: the process's groups, into `destination`, which has room
+    /// for `size` of them.
+    ///
+    /// Changes nothing, so it returns no system.
+    let getgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : UserBuffer)
+        (size : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetGroupsAnswer
+        =
+        tryGetgroups destination size system
+        |> Refusal.orRaise "UnixDescriptor.getgroups" GetGroupsRefusal.kind GetGroupsRefusal.describe
+
+    /// `dup`, with a refusal answered as the `Error` rather than raised.
+    let internal tryDup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, DescriptorLimitRefusal>
@@ -618,14 +707,21 @@ module UnixDescriptor =
             failwith
                 $"UnixDescriptor.dup: fd %d{fd} was open a moment ago and is not now (this is a bug in this library)."
 
-    /// `lseek(2)`: move `fd`'s file offset and report where it lands.
-    ///
-    /// On a directory, the position is where the next read of its entries
-    /// resumes, and offset 0 rewinds to the first of them.
-    ///
-    /// Refuses the inputs whose answer this kernel cannot state; see
-    /// `LSeekRefusal`.
-    let lseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
+    /// open file description. EBADF is its only failure, and comes first: a
+    /// descriptor that is not open is EBADF even when the new one would reach
+    /// the bound (`SimulatedUnixPlatform.descriptorBound`), which is otherwise
+    /// refused.
+    let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryDup fd system
+        |> Refusal.orRaise "UnixDescriptor.dup" DescriptorLimitRefusal.kind DescriptorLimitRefusal.describe
+
+    /// `lseek`, with a refusal answered as the `Error` rather than raised.
+    let internal tryLseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
         (whence : int)
@@ -921,6 +1017,24 @@ module UnixDescriptor =
 
         Ok (SyscallAnswer.Completed position, UnixSystemState.withFileDescriptors registry system)
 
+    /// `lseek(2)`: move `fd`'s file offset and report where it lands.
+    ///
+    /// On a directory, the position is where the next read of its entries
+    /// resumes, and offset 0 rewinds to the first of them.
+    ///
+    /// Refuses the inputs whose answer this kernel cannot state: `SEEK_DATA`
+    /// and `SEEK_HOLE`, `SEEK_END` on a directory whose size it cannot state,
+    /// and `SEEK_CUR` on a directory read part of the way through.
+    let lseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (offset : int64)
+        (whence : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryLseek fd offset whence system
+        |> Refusal.orRaise "UnixDescriptor.lseek" LSeekRefusal.kind LSeekRefusal.describe
+
     /// Commit a truncation of the regular file `inode` to `length`, together with
     /// the `mtime`, `ctime` and set-ID bits it moves.
     ///
@@ -953,9 +1067,8 @@ module UnixDescriptor =
         | Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal) ->
             Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal))
 
-    /// `ftruncate(2)`: set a regular file's length through a descriptor open for
-    /// writing.
-    let ftruncate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `ftruncate`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFtruncate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (length : int64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1033,28 +1146,19 @@ module UnixDescriptor =
                     system
         )
 
-    /// `posix_fadvise(2)`: tell the kernel how a region of `fd` will be read.
-    ///
-    /// `advice` is the platform's raw `POSIX_FADV_*` number. Linux accepts 0
-    /// (`NORMAL`) to 5 (`NOREUSE`) on x86-64 and aarch64 alike, and answers any
-    /// other value EINVAL, but only once the descriptor has been screened: a
-    /// closed descriptor is EBADF and a pipe ESPIPE whatever the advice.
-    ///
-    /// Refused where the platform's libc has no such call (Darwin): no program
-    /// could have made it.
-    ///
-    /// A pure hint: this kernel models no readahead, so a `Completed` answer
-    /// leaves the system exactly as it arrived. That is why no system comes
-    /// back.
-    ///
-    /// The rows this implements are measured on Linux 6.18.5 aarch64 by
-    /// `docs/probes/fadvise/fadvise.py`. The path they exercise
-    /// (`ksys_fadvise64_64` and `generic_fadvise`) is architecture-independent,
-    /// and the advice numbering is `<linux/fadvise.h>`'s on both; x86-64 is not
-    /// separately measured. Two rows contradict what "not seekable" would
-    /// predict: a socket and an epoll instance both succeed, and only a pipe
-    /// answers ESPIPE.
-    let posixFadvise<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `ftruncate(2)`: set a regular file's length through a descriptor open for
+    /// writing.
+    let ftruncate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (length : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryFtruncate fd length system
+        |> Refusal.orRaise "UnixDescriptor.ftruncate" TruncationRefusal.kind TruncationRefusal.describe
+
+    /// `posixFadvise`, with a refusal answered as the `Error` rather than raised.
+    let internal tryPosixFadvise<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
         (length : int64)
@@ -1104,6 +1208,41 @@ module UnixDescriptor =
         else
             Ok FileAdviceAnswer.Completed
 
+    /// <summary>
+    /// `posix_fadvise(2)`: tell the kernel how a region of `fd` will be read.
+    ///
+    /// `advice` is the platform's raw `POSIX_FADV_*` number. Linux accepts 0
+    /// (`NORMAL`) to 5 (`NOREUSE`) on x86-64 and aarch64 alike, and answers any
+    /// other value EINVAL, but only once the descriptor has been screened: a
+    /// closed descriptor is EBADF and a pipe ESPIPE whatever the advice.
+    ///
+    /// Refused where the platform's libc has no such call (Darwin): no program
+    /// could have made it.
+    ///
+    /// A pure hint: this kernel models no readahead, so a `Completed` answer
+    /// leaves the system exactly as it arrived. That is why no system comes
+    /// back.
+    ///
+    /// The rows this implements are measured on Linux 6.18.5 aarch64 by
+    /// `docs/probes/fadvise/fadvise.py`. The path they exercise
+    /// (`ksys_fadvise64_64` and `generic_fadvise`) is architecture-independent,
+    /// and the advice numbering is `&lt;linux/fadvise.h&gt;`'s on both; x86-64 is not
+    /// separately measured. Two rows contradict what "not seekable" would
+    /// predict: a socket and an epoll instance both succeed, and only a pipe
+    /// answers ESPIPE.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The simulated platform's libc has no `posix_fadvise` (`SimulatedUnixPlatform.providesPosixFadvise` is `false`), so no program could have made the call and there is no answer to give.</exception>
+    let posixFadvise<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (offset : int64)
+        (length : int64)
+        (advice : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileAdviceAnswer
+        =
+        tryPosixFadvise fd offset length advice system
+        |> Refusal.orRaise "UnixDescriptor.posixFadvise" PosixFadviseRefusal.kind PosixFadviseRefusal.describe
+
     /// Record on the description `id` that an `flock` lock has been granted to
     /// it, under the flavour that reports that (`OpenFileStatus.Flocked`).
     ///
@@ -1129,22 +1268,8 @@ module UnixDescriptor =
                 )
                 openFiles
 
-    /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
-    /// `fd`'s open file description.
-    ///
-    /// Models Linux's rules and refuses under Darwin rather than guessing, for
-    /// each of the divergences `FLockRefusal` names.
-    ///
-    /// A blocking acquisition that another description's lock stands in the way
-    /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
-    /// have slept in — which is not the system the call arrived with, because
-    /// the caller's own old lock has already gone — and that system records
-    /// `task` as parked on the lock. The record is what `close` reads to refuse
-    /// destroying the description, and what `flockAcquire` finishes from once
-    /// the condition holds. `task` must be registered in `Tasks`, and must not
-    /// already be parked: a task blocks in one syscall at a time, and a parked
-    /// `flock` is finished through `flockAcquire`, never re-issued.
-    let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `flock`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (operation : int)
@@ -1311,42 +1436,34 @@ module UnixDescriptor =
             Ok (SyscallOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked advanced)
         | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
 
-    /// Finish the `flock` acquisition `task` parked in, against the open file
-    /// description its park record names.
+    /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
+    /// `fd`'s open file description.
     ///
-    /// From the record rather than by re-issuing `flock` with the descriptor
-    /// the call was made through, and not as a convenience: descriptor numbers
-    /// are allocated lowest-free and reused as soon as they are freed, so a
-    /// `close` of that number elsewhere can leave it naming a different object
-    /// by the time the lock frees. A real kernel has no such hazard: the
-    /// sleeping call holds the file, and the park holds the description, which
-    /// outlives its last descriptor until this call returns and goes then,
-    /// taking with it any lock it was granted. `task` must be parked in an
-    /// `flock`.
+    /// Models Linux's rules and refuses under Darwin rather than guessing, for
+    /// each measured divergence: a malformed operation, a pipe, a kqueue, a
+    /// socket, and an acquisition by a description that already holds a lock.
     ///
-    /// A grant clears the park record. `WouldBlock`, with the same condition
-    /// and the task re-parked on the same record behind every other park, is
-    /// the answer when the lock has been taken since the waiter was woken. That is the ordinary case rather than
-    /// an edge one: a release wakes every waiter and they race, so all but one
-    /// of them find it gone.
-    ///
-    /// When the lock cannot be granted and a signal with a handler is pending
-    /// for the task, the signal ends the call: `Restarts` if every handler that
-    /// runs was installed with `SA_RESTART`, and `Answered (Failed EINTR)` if
-    /// none was. Either clears the park, and a conversion's old lock stays
-    /// dropped, as it is while the call sleeps.
-    ///
-    /// Most of what `flock` screens is not re-screened, because a screen over
-    /// facts that cannot change is spent: the operation bits were validated
-    /// before the park, and this signature makes a malformed resume
-    /// unrepresentable; the Darwin refusals for a pipe, a socket and a kqueue
-    /// are about the description's object kind, which never changes.
-    /// `DarwinConversion` is the exception, because it screens *mutable* state —
-    /// while this task held nothing, another through a `dup` of its descriptor
-    /// could have taken a lock on this same description, which Darwin serves as
-    /// a first acquisition, and the resume is then the conversion whose
-    /// keep-versus-drop divergence is unmeasured.
-    let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A blocking acquisition that another description's lock stands in the way
+    /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
+    /// have slept in — which is not the system the call arrived with, because
+    /// the caller's own old lock has already gone — and that system records
+    /// `task` as parked on the lock. The record is what `close` reads to refuse
+    /// destroying the description, and what `flockAcquire` finishes from once
+    /// the condition holds. `task` must be registered in `Tasks`, and must not
+    /// already be parked: a task blocks in one syscall at a time, and a parked
+    /// `flock` is finished through `flockAcquire`, never re-issued.
+    let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (operation : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryFlock task fd operation system
+        |> Refusal.orRaise "UnixDescriptor.flock" FLockRefusal.kind FLockRefusal.describe
+
+    /// `flockAcquire`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFlockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
@@ -1444,21 +1561,51 @@ module UnixDescriptor =
             | Error refusal -> Error (FLockRefusal.Interruption refusal)
             | Ok () -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), finished ())
 
-    /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end or
-    /// connected TCP socket `fd` names could take now, written into the
-    /// caller's `int` at `destination`.
+    /// Finish the `flock` acquisition `task` parked in, against the open file
+    /// description its park record names.
     ///
-    /// On Linux both ends of a pipe report the bytes the pipe holds, even once
-    /// the read end has closed; on Darwin the read end reports them and the
-    /// write end reports 0. A connected socket reports what waits in its
-    /// receive buffer. EBADF for a descriptor that is not open, whatever the
-    /// destination; EFAULT for an unmapped destination, whatever is held. A
-    /// device answers its driver's errno whatever the destination
-    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
-    /// descriptor.
+    /// From the record rather than by re-issuing `flock` with the descriptor
+    /// the call was made through, and not as a convenience: descriptor numbers
+    /// are allocated lowest-free and reused as soon as they are freed, so a
+    /// `close` of that number elsewhere can leave it naming a different object
+    /// by the time the lock frees. A real kernel has no such hazard: the
+    /// sleeping call holds the file, and the park holds the description, which
+    /// outlives its last descriptor until this call returns and goes then,
+    /// taking with it any lock it was granted. `task` must be parked in an
+    /// `flock`.
     ///
-    /// Changes nothing.
-    let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A grant clears the park record. `WouldBlock`, with the same condition
+    /// and the task re-parked on the same record behind every other park, is
+    /// the answer when the lock has been taken since the waiter was woken. That is the ordinary case rather than
+    /// an edge one: a release wakes every waiter and they race, so all but one
+    /// of them find it gone.
+    ///
+    /// When the lock cannot be granted and a signal with a handler is pending
+    /// for the task, the signal ends the call: `Restarts` if every handler that
+    /// runs was installed with `SA_RESTART`, and `Answered (Failed EINTR)` if
+    /// none was. Either clears the park, and a conversion's old lock stays
+    /// dropped, as it is while the call sleeps.
+    ///
+    /// Most of what `flock` screens is not re-screened, because a screen over
+    /// facts that cannot change is spent: the operation bits were validated
+    /// before the park, and this signature makes a malformed resume
+    /// unrepresentable; the Darwin refusals for a pipe, a socket and a kqueue
+    /// are about the description's object kind, which never changes.
+    /// `DarwinConversion` is the exception, because it screens *mutable* state —
+    /// while this task held nothing, another through a `dup` of its descriptor
+    /// could have taken a lock on this same description, which Darwin serves as
+    /// a first acquisition, and the resume is then the conversion whose
+    /// keep-versus-drop divergence is unmeasured.
+    let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryFlockAcquire task system
+        |> Refusal.orRaise "UnixDescriptor.flockAcquire" FLockRefusal.kind FLockRefusal.describe
+
+    /// `bytesAvailable`, with a refusal answered as the `Error` rather than raised.
+    let internal tryBytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1531,16 +1678,31 @@ module UnixDescriptor =
         | UserBuffer.Addressless -> Error (BytesAvailableRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (BytesAvailableAnswer.Reported count)
 
-    /// `ioctl(destination, FICLONE, source)`: make the file `destination` names
-    /// share the contents of the file `source` names.
+    /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end or
+    /// connected TCP socket `fd` names could take now, written into the
+    /// caller's `int` at `destination`.
     ///
-    /// No filesystem this kernel answers for can share contents, so the answer
-    /// is always an errno: EBADF for a descriptor the process does not hold,
-    /// EXDEV for two objects on different filesystems, EISDIR if either is a
-    /// directory, EINVAL if either is not a regular file, EBADF for a
-    /// destination not open for writing or a source not open for reading, and
-    /// otherwise EOPNOTSUPP on a tmpfs. Changes nothing.
-    let fileClone<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// On Linux both ends of a pipe report the bytes the pipe holds, even once
+    /// the read end has closed; on Darwin the read end reports them and the
+    /// write end reports 0. A connected socket reports what waits in its
+    /// receive buffer. EBADF for a descriptor that is not open, whatever the
+    /// destination; EFAULT for an unmapped destination, whatever is held. A
+    /// device answers its driver's errno whatever the destination
+    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
+    /// descriptor.
+    ///
+    /// Changes nothing.
+    let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : BytesAvailableAnswer
+        =
+        tryBytesAvailable fd destination system
+        |> Refusal.orRaise "UnixDescriptor.bytesAvailable" BytesAvailableRefusal.kind BytesAvailableRefusal.describe
+
+    /// `fileClone`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFileClone<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : int)
         (source : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1632,6 +1794,27 @@ module UnixDescriptor =
         | EmulatedFileSystemType.Apfs
         | EmulatedFileSystemType.Nfs as fileSystem -> Error (FileCloneRefusal.UnmeasuredFileSystem fileSystem)
 
+    /// <summary>
+    /// `ioctl(destination, FICLONE, source)`: make the file `destination` names
+    /// share the contents of the file `source` names.
+    ///
+    /// No filesystem this kernel answers for can share contents, so the answer
+    /// is always an errno: EBADF for a descriptor the process does not hold,
+    /// EXDEV for two objects on different filesystems, EISDIR if either is a
+    /// directory, EINVAL if either is not a regular file, EBADF for a
+    /// destination not open for writing or a source not open for reading, and
+    /// otherwise EOPNOTSUPP on a tmpfs. Changes nothing.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Linux-flavoured, and `FICLONE` is a Linux request.</exception>
+    let fileClone<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : int)
+        (source : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixError
+        =
+        tryFileClone destination source system
+        |> Refusal.orRaise "UnixDescriptor.fileClone" FileCloneRefusal.kind FileCloneRefusal.describe
+
     /// `tcgetattr(3)`, and so `isatty(3)`: whether `fd` is a terminal. None of
     /// the objects this kernel models is one, so the answer is always the errno
     /// saying why not, which depends on the object and the flavour.
@@ -1682,50 +1865,8 @@ module UnixDescriptor =
     // socket table is the machine's rather than the process's, whether an
     // inode is still named is a question about the filesystem, and what a
     // sleeping call holds is the task table's.
-    /// `close(2)`: drop `fd` from the process's table, together with the
-    /// description it named if nothing references that any more, and the kernel
-    /// objects the description was the last reference to — the socket, the
-    /// connections nothing else references, the pipe, and the inode whose last
-    /// name had already gone.
-    ///
-    /// A description is referenced by every descriptor naming it and by every
-    /// syscall in flight that holds it (`ParkedSyscall.descriptions`), as a
-    /// real kernel holds a file for a call that sleeps on it. So under Linux a
-    /// close under a sleeping call is served, and the call sleeps on: the
-    /// description goes when the call returns, which is when its finishing call
-    /// releases it. That is refused for a connected socket whose `SO_LINGER`
-    /// is on (`CloseRefusal.LingeringCloseDeferredToCall`), whose close this
-    /// kernel may refuse when the call returns. Under Darwin a close of the
-    /// descriptor a `kevent` sleeps through is served too, and drains the
-    /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
-    /// the kqueue; the kqueue goes as the last of them returns, if no
-    /// descriptor names it by then.
-    ///
-    /// Under Darwin a close of the descriptor a sleeping pipe `read` or `write`
-    /// was made through ends every such call made through it, and none made
-    /// through another descriptor: the read with end of file, the write with
-    /// `EPIPE` and `SIGPIPE`, whatever it had put in. A sleeping `read` or
-    /// `write` of a connected socket is ended alike, with `EBADF`, whatever it
-    /// had taken, and no signal. A close of the
-    /// descriptor a sleeping `accept` was made through ends every accept asleep
-    /// on the listener, through any descriptor, with `ECONNABORTED`, and drains
-    /// the listener (`ListenState.Drained`). Darwin's close returns only once
-    /// such a call has, so an ended call holds nothing from the close on
-    /// (`SleepTarget.EndedByClose`): the description goes at the close if no
-    /// descriptor names it, the pipe's timestamps move as the call's return
-    /// moves them, an ended write's `SIGPIPE` is generated for the process
-    /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
-    /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
-    /// already woken is refused (`CloseRefusal.DarwinWokenTransfer`).
-    ///
-    /// Every kqueue registration made through `fd` goes with it, in each kqueue
-    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
-    /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
-    /// then reports nothing.
-    ///
-    /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
-    /// to answer at all.
-    let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `close`, with a refusal answered as the `Error` rather than raised.
+    let internal tryClose<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
@@ -2274,6 +2415,55 @@ module UnixDescriptor =
         | Error refusal -> Error (CloseRefusal.Release refusal)
         | Ok released -> Ok (SyscallAnswer.Completed 0L, released)
 
+    /// `close(2)`: drop `fd` from the process's table, together with the
+    /// description it named if nothing references that any more, and the kernel
+    /// objects the description was the last reference to — the socket, the
+    /// connections nothing else references, the pipe, and the inode whose last
+    /// name had already gone.
+    ///
+    /// A description is referenced by every descriptor naming it and by every
+    /// syscall in flight that holds it (`ParkedSyscall.descriptions`), as a
+    /// real kernel holds a file for a call that sleeps on it. So under Linux a
+    /// close under a sleeping call is served, and the call sleeps on: the
+    /// description goes when the call returns, which is when its finishing call
+    /// releases it. That is refused for a connected socket whose `SO_LINGER`
+    /// is on, whose close this kernel may refuse when the call returns. Under Darwin a close of the
+    /// descriptor a `kevent` sleeps through is served too, and drains the
+    /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
+    /// the kqueue; the kqueue goes as the last of them returns, if no
+    /// descriptor names it by then.
+    ///
+    /// Under Darwin a close of the descriptor a sleeping pipe `read` or `write`
+    /// was made through ends every such call made through it, and none made
+    /// through another descriptor: the read with end of file, the write with
+    /// `EPIPE` and `SIGPIPE`, whatever it had put in. A sleeping `read` or
+    /// `write` of a connected socket is ended alike, with `EBADF`, whatever it
+    /// had taken, and no signal. A close of the
+    /// descriptor a sleeping `accept` was made through ends every accept asleep
+    /// on the listener, through any descriptor, with `ECONNABORTED`, and drains
+    /// the listener (`ListenState.Drained`). Darwin's close returns only once
+    /// such a call has, so an ended call holds nothing from the close on
+    /// (`SleepTarget.EndedByClose`): the description goes at the close if no
+    /// descriptor names it, the pipe's timestamps move as the call's return
+    /// moves them, an ended write's `SIGPIPE` is generated for the process
+    /// (refused where that would end the process),
+    /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
+    /// already woken is refused.
+    ///
+    /// Every kqueue registration made through `fd` goes with it, in each kqueue
+    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
+    /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
+    /// then reports nothing.
+    ///
+    /// EBADF is its only errno.
+    let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryClose fd system
+        |> Refusal.orRaise "UnixDescriptor.close" CloseRefusal.kind CloseRefusal.describe
+
     /// What an `fcntl(2)` command number names, among the commands modelled.
     [<RequireQualifiedAccess>]
     type private FcntlCommand =
@@ -2360,43 +2550,8 @@ module UnixDescriptor =
         =
         UnixSystemState.withFileDescriptors registry system
 
-    /// `fcntl(fd, command, argument)`, for the commands that manage
-    /// descriptors and status flags: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
-    /// `F_SETFD`, `F_GETFL` and `F_SETFL`.
-    ///
-    /// `command` and `argument` are raw, as a caller of the flavour's libc
-    /// passes them, in its `<fcntl.h>` numbering: Linux's `F_DUPFD_CLOEXEC` is
-    /// 1030 and Darwin's 67, and the status flags are numbered as `open(2)`'s.
-    ///
-    /// A descriptor that is not open is `EBADF`, whatever the command. Then:
-    ///
-    /// - `F_GETFL` answers the access mode and the status flags of the
-    ///   description: `O_NONBLOCK`, `O_SYNC` and `O_DSYNC` on both flavours;
-    ///   on Linux, `O_DIRECTORY` and `O_NOFOLLOW` as `open(2)` was given them,
-    ///   and `O_LARGEFILE` for every description `open(2)` made; on Darwin, its
-    ///   own `0x10000` once the description has been written through
-    ///   (`OpenFileStatus.Written`) and `0x4000` once a lock has been granted
-    ///   to it (`OpenFileStatus.Flocked`).
-    /// - `F_SETFL` sets `O_NONBLOCK` from `argument`, and on Darwin `O_SYNC`
-    ///   and `O_DSYNC` too, and ignores every other bit the flavour does not
-    ///   change, the access mode included; so a word `F_GETFL` reported may be
-    ///   given back. A word that would set `O_APPEND` or `O_ASYNC`, or Linux's
-    ///   `O_DIRECT` or `O_NOATIME`, is refused (`FcntlRefusal.UnmodelledStatusFlags`).
-    ///   On a Darwin kqueue the flags are stored and the call answers `ENOTTY`.
-    /// - `F_GETFD` answers the descriptor's `FD_CLOEXEC` (1), and on Darwin its
-    ///   `FD_CLOFORK` (2); `F_SETFD` sets them from those bits of `argument`
-    ///   and ignores the rest.
-    /// - `F_DUPFD` makes the lowest descriptor not in use at or above
-    ///   `argument` name the same description, with neither descriptor flag;
-    ///   `F_DUPFD_CLOEXEC` gives it `FD_CLOEXEC`. A negative `argument` is
-    ///   `EINVAL`.
-    ///
-    /// An `F_DUPFD` whose descriptor would lie at or above the bound
-    /// (`SimulatedUnixPlatform.descriptorBound`) is refused
-    /// (`FcntlRefusal.DescriptorLimit`), after `EBADF` and a negative
-    /// argument's `EINVAL`. Every other command is refused
-    /// (`FcntlRefusal.UnmodelledCommand`).
-    let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `fcntl`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (command : int)
         (argument : int)
@@ -2535,6 +2690,50 @@ module UnixDescriptor =
                     $"UnixDescriptor.fcntl: no descriptor at or above %d{argument} is free, though one below the bound was a moment ago (this is a bug in this library)."
             | Some (newFd, registry) -> Ok (SyscallAnswer.Completed (int64 newFd), withRegistry registry system)
 
+    /// `fcntl(fd, command, argument)`, for the commands that manage
+    /// descriptors and status flags: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
+    /// `F_SETFD`, `F_GETFL` and `F_SETFL`.
+    ///
+    /// `command` and `argument` are raw, as a caller of the flavour's libc
+    /// passes them, in its `<fcntl.h>` numbering: Linux's `F_DUPFD_CLOEXEC` is
+    /// 1030 and Darwin's 67, and the status flags are numbered as `open(2)`'s.
+    ///
+    /// A descriptor that is not open is `EBADF`, whatever the command. Then:
+    ///
+    /// - `F_GETFL` answers the access mode and the status flags of the
+    ///   description: `O_NONBLOCK`, `O_SYNC` and `O_DSYNC` on both flavours;
+    ///   on Linux, `O_DIRECTORY` and `O_NOFOLLOW` as `open(2)` was given them,
+    ///   and `O_LARGEFILE` for every description `open(2)` made; on Darwin, its
+    ///   own `0x10000` once the description has been written through
+    ///   (`OpenFileStatus.Written`) and `0x4000` once a lock has been granted
+    ///   to it (`OpenFileStatus.Flocked`).
+    /// - `F_SETFL` sets `O_NONBLOCK` from `argument`, and on Darwin `O_SYNC`
+    ///   and `O_DSYNC` too, and ignores every other bit the flavour does not
+    ///   change, the access mode included; so a word `F_GETFL` reported may be
+    ///   given back. A word that would set `O_APPEND` or `O_ASYNC`, or Linux's
+    ///   `O_DIRECT` or `O_NOATIME`, is refused.
+    ///   On a Darwin kqueue the flags are stored and the call answers `ENOTTY`.
+    /// - `F_GETFD` answers the descriptor's `FD_CLOEXEC` (1), and on Darwin its
+    ///   `FD_CLOFORK` (2); `F_SETFD` sets them from those bits of `argument`
+    ///   and ignores the rest.
+    /// - `F_DUPFD` makes the lowest descriptor not in use at or above
+    ///   `argument` name the same description, with neither descriptor flag;
+    ///   `F_DUPFD_CLOEXEC` gives it `FD_CLOEXEC`. A negative `argument` is
+    ///   `EINVAL`.
+    ///
+    /// An `F_DUPFD` whose descriptor would lie at or above the bound
+    /// (`SimulatedUnixPlatform.descriptorBound`) is refused, after `EBADF` and
+    /// a negative argument's `EINVAL`. Every other command is refused.
+    let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (command : int)
+        (argument : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryFcntl fd command argument system
+        |> Refusal.orRaise "UnixDescriptor.fcntl" FcntlRefusal.kind FcntlRefusal.describe
+
     /// `dup2` and `dup3` once the screens peculiar to `dup3` have passed: make
     /// `newFd` name the description `oldFd` names, with `flags`, closing it
     /// first if it is open.
@@ -2576,7 +2775,7 @@ module UnixDescriptor =
             match FileDescriptorRegistry.tryFindId newFd registry with
             | None -> Ok system
             | Some _ ->
-                match close newFd system with
+                match tryClose newFd system with
                 | Error refusal -> Error (Dup2Refusal.ClosingTarget refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> Ok system
                 | Ok (SyscallAnswer.Failed error, _) ->
@@ -2591,20 +2790,8 @@ module UnixDescriptor =
                 system
         )
 
-    /// `dup2(2)`: make `newFd` name the open file description `oldFd` names,
-    /// with neither descriptor flag, and answer `newFd`.
-    ///
-    /// A negative `newFd`, or an `oldFd` that is not open, is `EBADF`, and
-    /// changes nothing. `dup2(fd, fd)` of an open `fd` answers `fd` and changes
-    /// nothing, its flags included. An open `newFd` is closed first as
-    /// `close(2)` closes it, with everything that does to the description it
-    /// named and to calls asleep through it, and is refused where `close` is
-    /// (`Dup2Refusal.ClosingTarget`); so is one naming the same description as
-    /// `oldFd`, whose flags the `dup2` then clears.
-    ///
-    /// A `newFd` at or above the bound (`SimulatedUnixPlatform.descriptorBound`)
-    /// is refused (`Dup2Refusal.DescriptorLimit`), after the `EBADF`s.
-    let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `dup2`, with a refusal answered as the `Error` rather than raised.
+    let internal tryDup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2612,15 +2799,30 @@ module UnixDescriptor =
         =
         duplicateOnto oldFd newFd DescriptorFlags.none system
 
-    /// `dup3(2)`: `dup2`, but `flags` may carry `O_CLOEXEC` in Linux's
-    /// numbering, which gives `newFd` `FD_CLOEXEC`, and `oldFd` and `newFd`
-    /// must differ.
+    /// `dup2(2)`: make `newFd` name the open file description `oldFd` names,
+    /// with neither descriptor flag, and answer `newFd`.
     ///
-    /// Any other bit in `flags` is `EINVAL`, ahead of everything; then the same
-    /// descriptor on both sides is `EINVAL`, open or not; then `dup2`'s
-    /// answers and refusals. Refused under the Darwin flavour, which has no
-    /// `dup3`.
-    let dup3<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A negative `newFd`, or an `oldFd` that is not open, is `EBADF`, and
+    /// changes nothing. `dup2(fd, fd)` of an open `fd` answers `fd` and changes
+    /// nothing, its flags included. An open `newFd` is closed first as
+    /// `close(2)` closes it, with everything that does to the description it
+    /// named and to calls asleep through it, and is refused where `close` is;
+    /// so is one naming the same description as
+    /// `oldFd`, whose flags the `dup2` then clears.
+    ///
+    /// A `newFd` at or above the bound (`SimulatedUnixPlatform.descriptorBound`)
+    /// is refused, after the `EBADF`s.
+    let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldFd : int)
+        (newFd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryDup2 oldFd newFd system
+        |> Refusal.orRaise "UnixDescriptor.dup2" Dup2Refusal.kind Dup2Refusal.describe
+
+    /// `dup3`, with a refusal answered as the `Error` rather than raised.
+    let internal tryDup3<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)
         (flags : int)
@@ -2651,6 +2853,27 @@ module UnixDescriptor =
             | Dup2Refusal.DescriptorLimit refusal -> Dup3Refusal.DescriptorLimit refusal
         )
 
+    /// <summary>
+    /// `dup3(2)`: `dup2`, but `flags` may carry `O_CLOEXEC` in Linux's
+    /// numbering, which gives `newFd` `FD_CLOEXEC`, and `oldFd` and `newFd`
+    /// must differ.
+    ///
+    /// Any other bit in `flags` is `EINVAL`, ahead of everything; then the same
+    /// descriptor on both sides is `EINVAL`, open or not; then `dup2`'s
+    /// answers and refusals. Refused under the Darwin flavour, which has no
+    /// `dup3`.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The flavour has no `dup3`.</exception>
+    let dup3<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldFd : int)
+        (newFd : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryDup3 oldFd newFd flags system
+        |> Refusal.orRaise "UnixDescriptor.dup3" Dup3Refusal.kind Dup3Refusal.describe
+
     /// Set or clear `O_NONBLOCK` on the open file description `fd` names, as
     /// `fcntl(fd, F_GETFL)` and then `fcntl(fd, F_SETFL, word)` with the bit
     /// changed do; the flag is shared with every descriptor naming the
@@ -2675,7 +2898,7 @@ module UnixDescriptor =
                 failwith
                     $"UnixDescriptor.setNonBlocking: %s{operation} on fd %d{fd} was refused (%s{FcntlRefusal.describe refusal}), but it carries only what F_GETFL reported (this is a bug in this library)."
 
-        match unrefused "F_GETFL" (fcntl fd FcntlNumbering.GetStatusFlags 0 system) with
+        match unrefused "F_GETFL" (tryFcntl fd FcntlNumbering.GetStatusFlags 0 system) with
         | SyscallAnswer.Failed error, system -> SetNonBlockingAnswer.Failed error, system
         | SyscallAnswer.Completed word, system ->
 
@@ -2685,7 +2908,7 @@ module UnixDescriptor =
             else
                 int word &&& ~~~bit
 
-        match unrefused "F_SETFL" (fcntl fd FcntlNumbering.SetStatusFlags word system) with
+        match unrefused "F_SETFL" (tryFcntl fd FcntlNumbering.SetStatusFlags word system) with
         | SyscallAnswer.Completed _, system -> SetNonBlockingAnswer.Set, system
         | SyscallAnswer.Failed error, system -> SetNonBlockingAnswer.Failed error, system
 
@@ -2699,7 +2922,7 @@ module UnixDescriptor =
         =
         let bit = nonBlockingBit (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
 
-        match fcntl fd FcntlNumbering.GetStatusFlags 0 system with
+        match tryFcntl fd FcntlNumbering.GetStatusFlags 0 system with
         | Ok (SyscallAnswer.Completed word, _) -> Some (int word &&& bit <> 0)
         | Ok (SyscallAnswer.Failed UnixError.EBADF, _) -> None
         | Ok (SyscallAnswer.Failed error, _) ->

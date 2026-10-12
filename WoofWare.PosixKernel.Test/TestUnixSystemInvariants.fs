@@ -260,7 +260,7 @@ module TestUnixSystemInvariants =
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withFileSystem epoch Owners.linuxDefault seed
+            |> UnixBootImage.tryWithFileSystem epoch Owners.linuxDefault seed
         with
         | Ok image ->
             (Launched.bootWith
@@ -883,7 +883,7 @@ module TestUnixSystemInvariants =
 
     let private spawned (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         match
-            UnixTaskLifecycle.spawn
+            UnixTaskLifecycle.trySpawn
                 0
                 1
                 (CpuId 0)

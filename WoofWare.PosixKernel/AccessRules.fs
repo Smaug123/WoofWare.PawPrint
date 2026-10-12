@@ -66,7 +66,7 @@ type internal AccessArguments =
 
 /// Why this kernel will not answer an `access(2)` or `faccessat(2)`.
 [<RequireQualifiedAccess>]
-type AccessRefusal =
+type internal AccessRefusal =
     /// The flag word carries flags this kernel accepts but whose meaning this
     /// library does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
     /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000). `flags` is the
@@ -82,7 +82,7 @@ type AccessRefusal =
     | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
-module AccessRefusal =
+module internal AccessRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which path.
     let describe (refusal : AccessRefusal) : string =
@@ -94,6 +94,14 @@ module AccessRefusal =
         | AccessRefusal.UnmeasuredExecution (inode, refusal) ->
             $"executing inode %O{inode}: %s{ExecutionRefusal.describe refusal}"
         | AccessRefusal.Path refusal -> PathRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : AccessRefusal) : RefusalKind =
+        match refusal with
+        | AccessRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | AccessRefusal.ExtendedRights _ -> RefusalKind.Unmodelled
+        | AccessRefusal.UnmeasuredExecution (_, inner) -> ExecutionRefusal.kind inner
+        | AccessRefusal.Path inner -> PathRefusal.kind inner
 
 /// What screening `faccessat(2)`'s mode word and flag word came to.
 [<RequireQualifiedAccess>]

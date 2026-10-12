@@ -288,13 +288,13 @@ module TestSockOptAgainstHost =
         (system : UnixSystem<int, string>)
         =
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name (userBuffer buffer) length system with
+            match UnixSocket.tryAdmitSetSockOpt fd level name (userBuffer buffer) length system with
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | Ok SetSockOptAdmission.NoCopy
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.setsockopt fd level name (userBuffer buffer) length supplied system
+        UnixSocket.trySetsockopt fd level name (userBuffer buffer) length supplied system
 
     /// What a read through real buffers of the option's size answers, on the
     /// host: the errno, and the bytes and length on success.
@@ -322,11 +322,11 @@ module TestSockOptAgainstHost =
         let platform = system.Machine.UnixPlatform
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped system with
+            match UnixSocket.tryAdmitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped system with
             | Ok GetSockOptAdmission.ReadLength -> Some 8u
             | _ -> None
 
-        match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported copied, _) -> 0, Seq.toArray copied
         | Ok (GetSockOptAnswer.Failed (error, _), _) -> errnoOf platform error, [||]
         | Error refusal -> failwith $"reading the model back was refused: %s{SocketOptionRefusal.describe refusal}"
@@ -499,7 +499,7 @@ module TestSockOptAgainstHost =
 
                         let read =
                             match
-                                UnixSocket.admitGetSockOpt
+                                UnixSocket.tryAdmitGetSockOpt
                                     modelFd
                                     level
                                     name
@@ -521,7 +521,7 @@ module TestSockOptAgainstHost =
 
                         let model =
                             match
-                                UnixSocket.getsockopt
+                                UnixSocket.tryGetsockopt
                                     modelFd
                                     level
                                     name

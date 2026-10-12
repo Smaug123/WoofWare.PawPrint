@@ -115,7 +115,7 @@ module TestSockaddrDecoding =
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let listen (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-            match UnixSocket.listen fd 8 system with
+            match UnixSocket.tryListen fd 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"setUp: listen answered %O{other}"
 
@@ -294,10 +294,10 @@ module TestSockaddrDecoding =
             let fd, system = setUp case.Platform case.Socket case.Closed
 
             let throughBytes =
-                UnixSocket.bind fd case.Buffer case.Length (copied SockaddrCopySyscall.Bind fd case system) system
+                UnixSocket.tryBind fd case.Buffer case.Length (copied SockaddrCopySyscall.Bind fd case system) system
 
             let throughOracle =
-                match UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Bind fd case.Buffer case.Length system with
+                match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Bind fd case.Buffer case.Length system with
                 | Error refusal -> Error (BindRefusal.Copy refusal)
                 | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
                 | Ok (SockaddrCopyAdmission.Transfer length) ->
@@ -313,7 +313,7 @@ module TestSockaddrDecoding =
             let fd, system = setUp case.Platform case.Socket case.Closed
 
             let throughBytes =
-                UnixConnection.connect
+                UnixConnection.tryConnect
                     fd
                     case.Buffer
                     case.Length
@@ -321,7 +321,7 @@ module TestSockaddrDecoding =
                     system
 
             let throughOracle =
-                match UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd case.Buffer case.Length system with
+                match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd case.Buffer case.Length system with
                 | Error refusal -> Error (ConnectRefusal.Copy refusal)
                 | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
                 | Ok (SockaddrCopyAdmission.Transfer length) ->
@@ -415,26 +415,26 @@ module TestSockaddrDecoding =
 
             for passed in [ 15 ; 17 ; 0 ] do
                 (fun () ->
-                    UnixSocket.bind fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
+                    UnixSocket.tryBind fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
                     |> ignore
                 )
                 |> shouldFail
 
                 (fun () ->
-                    UnixConnection.connect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
+                    UnixConnection.tryConnect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
                     |> ignore
                 )
                 |> shouldFail
 
             // A call the admission answers copies nothing, so it takes nothing.
             (fun () ->
-                UnixSocket.bind 99 UserBuffer.Mapped 16u (CopyIn.prefix blob 16) system
+                UnixSocket.tryBind 99 UserBuffer.Mapped 16u (CopyIn.prefix blob 16) system
                 |> ignore
             )
             |> shouldFail
 
             (fun () ->
-                UnixSocket.bind fd UserBuffer.Mapped 16u ImmutableArray<byte>.Empty system
+                UnixSocket.tryBind fd UserBuffer.Mapped 16u ImmutableArray<byte>.Empty system
                 |> ignore
             )
             |> shouldFail

@@ -89,7 +89,7 @@ module TestSocketSyscallAgainstHost =
 
             for (domain, kind, protocol), _ in SocketSweep.load file do
                 let library =
-                    match UnixSocket.socket domain kind protocol system with
+                    match UnixSocket.trySocket domain kind protocol system with
                     | Error _ -> None
                     | Ok (Error error) -> Some (Error (UnixError.toRawErrnoUnder numbering error))
                     | Ok (Ok (fd, after)) ->

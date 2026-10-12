@@ -258,13 +258,28 @@ module SignalDispatch =
             | WriteOutcome.WouldBlock _ -> "that the write sleeps, the pipe being full"
             | WriteOutcome.Restarts _ -> "a restart"
 
-        match UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system with
-        | Error refusal -> refuse (WriteRefusal.describe refusal)
-        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer _, system)) ->
+        let refused (e : exn) : 'a =
+            KernelRefusal.fail
+                $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which it was given as its signal pipe's write end, and the kernel will not answer the write; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither"
+                e
 
-            match UnixReadWrite.write leader pipe.WriteEnd bytes system with
-            | Error refusal -> refuse (WriteRefusal.describe refusal)
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, written)) ->
+        let admission =
+            try
+                UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system
+            with :? UnmodelledException as e ->
+                refused e
+
+        match admission with
+        | WriteOutcome.Returns (WriteAdmission.Transfer _, system) ->
+
+            let outcome =
+                try
+                    UnixReadWrite.write leader pipe.WriteEnd bytes system
+                with :? UnmodelledException as e ->
+                    refused e
+
+            match outcome with
+            | WriteOutcome.Returns (WriteAnswer.Completed 1L, written) ->
                 // A byte that reached a pipe the host drains, one of the
                 // standard output streams, is guest-visible output, which only
                 // a step's effect streams; this poll has no step to carry one.
@@ -276,8 +291,8 @@ module SignalDispatch =
                         $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with one of the standard output streams the host drains; PawPrint would record the byte as output without streaming it."
 
                 state.MapKernel (EmulatedKernel.withUnix written) |> SignalPoll.Continues
-            | Ok outcome -> refuse $"the kernel answers %s{describe outcome}"
-        | Ok outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
+            | outcome -> refuse $"the kernel answers %s{describe outcome}"
+        | outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
     /// Whether the leader may take a signal on its return to user mode: one is pending, and
     /// the leader is not asleep in a syscall. Read from the process's own state alone.
@@ -329,10 +344,10 @@ module SignalDispatch =
         else
 
         let returnToUser (state : IlMachineState) : ReturnToUserOutcome<ThreadId, NativeSignalHandler> =
-            match UnixSignal.onReturnToUser leader state.Kernel.System with
-            | Ok outcome -> outcome
-            | Error refusal ->
-                failwith $"SignalDispatch.poll: the kernel will not say what the leader takes: %O{refusal}"
+            try
+                UnixSignal.onReturnToUser leader state.Kernel.System
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail "SignalDispatch.poll: the kernel will not say what the leader takes" e
 
         // Persist the walk's state whether or not it produced an action:
         // discarding a receivable ignored signal is a state change with no
@@ -568,56 +583,60 @@ module SignalDispatch =
         let system = state.Kernel.System
 
         let read =
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
-            // The loop reads the number it was given, so the read is of the
-            // signal pipe only while that number names the pipe's read end.
-            | None ->
-                match FileDescriptorRegistry.tryFindWithId pipe.ReadEnd (UnixSystem.fileDescriptors system) with
-                | Some (named, _) when named = pipe.ReadDescription ->
-                    Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
-                | Some (_, description) ->
+            try
+                match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
+                // The loop reads the number it was given, so the read is of the
+                // signal pipe only while that number names the pipe's read end.
+                | None ->
+                    match FileDescriptorRegistry.tryFindWithId pipe.ReadEnd (UnixSystem.fileDescriptors system) with
+                    | Some (named, _) when named = pipe.ReadDescription ->
+                        Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
+                    | Some (_, description) ->
+                        failwith
+                            $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, but which no longer names that pipe's read end: the guest has put %s{describeTarget description.Target} at that number. The real SignalHandlerLoop would read from that instead and take what it read for signal numbers, which PawPrint does not model."
+                    | None -> refuse "which the guest has closed, so the read fails with EBADF"
+                // Asleep in its read, which holds the description it was made
+                // through: finished once the kernel wakes it. Asked with every
+                // other sleeper, so that a reader that went to sleep on the pipe
+                // first takes the byte first. Its own wake condition is asked
+                // first, alone, because this runs between every two instructions
+                // and that answer is almost always no.
+                //
+                // Asked of this process's view alone (`UnixWait.wakes`) rather than
+                // of the machine (`SimulatedMachine.wakes`), which would choose the
+                // one reader the pipe wakes across every process: the process's own
+                // shim made the pipe, and nothing passes a descriptor to another
+                // process, so no other process can be asleep reading it.
+                | Some (ParkedSyscall.PipeRead _) ->
+                    if
+                        UnixWait.satisfied dispatcher system
+                        |> Option.exists (fun fired -> not (Set.isEmpty fired))
+                        && UnixWait.wakes (Scheduler.asleepInSyscall state) system
+                           |> List.exists (fun (task, _) -> task = dispatcher)
+                    then
+                        Some (UnixReadWrite.finishRead dispatcher system)
+                    else
+                        None
+                | Some other ->
                     failwith
-                        $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, but which no longer names that pipe's read end: the guest has put %s{describeTarget description.Target} at that number. The real SignalHandlerLoop would read from that instead and take what it read for signal numbers, which PawPrint does not model."
-                | None -> refuse "which the guest has closed, so the read fails with EBADF"
-            // Asleep in its read, which holds the description it was made
-            // through: finished once the kernel wakes it. Asked with every
-            // other sleeper, so that a reader that went to sleep on the pipe
-            // first takes the byte first. Its own wake condition is asked
-            // first, alone, because this runs between every two instructions
-            // and that answer is almost always no.
-            //
-            // Asked of this process's view alone (`UnixWait.wakes`) rather than
-            // of the machine (`SimulatedMachine.wakes`), which would choose the
-            // one reader the pipe wakes across every process: the process's own
-            // shim made the pipe, and nothing passes a descriptor to another
-            // process, so no other process can be asleep reading it.
-            | Some (ParkedSyscall.PipeRead _) ->
-                if
-                    UnixWait.satisfied dispatcher system
-                    |> Option.exists (fun fired -> not (Set.isEmpty fired))
-                    && UnixWait.wakes (Scheduler.asleepInSyscall state) system
-                       |> List.exists (fun (task, _) -> task = dispatcher)
-                then
-                    Some (UnixReadWrite.finishRead dispatcher system)
-                else
-                    None
-            | Some other ->
-                failwith
-                    $"SignalDispatch.poll: the dispatcher %O{dispatcher} is idle, but its task is asleep in %A{other}; the loop makes no syscall but its read of the signal pipe (this is an interpreter bug)."
+                        $"SignalDispatch.poll: the dispatcher %O{dispatcher} is idle, but its task is asleep in %A{other}; the loop makes no syscall but its read of the signal pipe (this is an interpreter bug)."
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail
+                    $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, and the kernel will not answer the read; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model"
+                    e
 
         match read with
         | None -> SignalPoll.Continues state
         // Empty, with the write end open: the read sleeps, and so does the
         // dispatcher, until a poll finds the kernel has woken it.
-        | Some (Ok (ReadOutcome.WouldBlock _, system)) ->
+        | Some (ReadOutcome.WouldBlock _, system) ->
             state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
-        | Some (Ok (ReadOutcome.Restarts, _)) ->
+        | Some (ReadOutcome.Restarts, _) ->
             refuse "is restarted by a signal, which PawPrint never directs at the dispatcher"
-        | Some (Error refusal) -> refuse (ReadRefusal.describe refusal)
-        | Some (Ok (ReadOutcome.Answered (ReadAnswer.Failed error), _)) -> refuse $"fails with %O{error}"
-        | Some (Ok (ReadOutcome.Answered (ReadAnswer.Drawn _), _)) ->
+        | Some (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> refuse $"fails with %O{error}"
+        | Some (ReadOutcome.Answered (ReadAnswer.Drawn _), _) ->
             refuse "draws from the entropy pool, which a read of a pipe never does"
-        | Some (Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system)) ->
+        | Some (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
 
         if bytes.Length <> 1 then
             refuse $"reads %d{bytes.Length} bytes rather than one"

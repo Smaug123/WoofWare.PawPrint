@@ -124,7 +124,7 @@ module TestKeventWriteData =
     /// `KeventWorld.darwin`, booted with the send space `sendSpace`.
     let private darwinWithSendSpace (sendSpace : int option) : UnixSystem<int, string> =
         KeventWorld.darwinWith (
-            UnixBootImage.withTcpSendSpace sendSpace
+            UnixBootImage.tryWithTcpSendSpace sendSpace
             >> Configured.expectOk TcpSendSpaceRefusal.describe
         )
 
@@ -369,7 +369,7 @@ module TestKeventWriteData =
         (Launched.boot Map.empty 0 (CpuId 0) linux).Machine.TcpSendSpace
         |> shouldEqual 16384
 
-        (UnixBootImage.withTcpSendSpace None linux
+        (UnixBootImage.tryWithTcpSendSpace None linux
          |> Configured.expectOk TcpSendSpaceRefusal.describe
          |> Launched.boot Map.empty 0 (CpuId 0))
             .Machine.TcpSendSpace
@@ -408,7 +408,7 @@ module TestKeventWriteData =
                 else
                     Ok ()
 
-            match UnixBootImage.withTcpSendSpace (Some size) darwin with
+            match UnixBootImage.tryWithTcpSendSpace (Some size) darwin with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 
@@ -429,7 +429,7 @@ module TestKeventWriteData =
         let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
         for size in [ Int32.MinValue ; 0 ; 16384 ; 131072 ; Int32.MaxValue ] do
-            UnixBootImage.withTcpSendSpace (Some size) linux
+            UnixBootImage.tryWithTcpSendSpace (Some size) linux
             |> Result.map ignore<UnixBootImage<int, string>>
             |> shouldEqual (Error (TcpSendSpaceRefusal.NotReadOn (SimulatedUnixFlavour.Linux, size)))
 

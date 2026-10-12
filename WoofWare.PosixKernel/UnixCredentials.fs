@@ -31,7 +31,7 @@ type GetIdsAnswer<'Id> =
 
 /// Why this kernel will not answer a `setresuid(2)` or `setresgid(2)`.
 [<RequireQualifiedAccess>]
-type SetIdsRefusal =
+type internal SetIdsRefusal =
     /// This flavour has no such call: Darwin declares neither `setresuid` nor
     /// `setresgid`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
@@ -44,7 +44,7 @@ type SetIdsRefusal =
     | DumpabilityUnmodelled
 
 [<RequireQualifiedAccess>]
-module SetIdsRefusal =
+module internal SetIdsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which IDs.
     let describe (refusal : SetIdsRefusal) : string =
@@ -54,15 +54,21 @@ module SetIdsRefusal =
         | SetIdsRefusal.DumpabilityUnmodelled ->
             "the call changes the effective ID of a process that writes core dumps. Linux then sets the process's dumpable flag from the fs.suid_dumpable sysctl, which this kernel does not model, so whether the process would still write a core dump is unknown."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SetIdsRefusal) : RefusalKind =
+        match refusal with
+        | SetIdsRefusal.NoSuchCall _ -> RefusalKind.NotOnPlatform
+        | SetIdsRefusal.DumpabilityUnmodelled -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `setgroups(2)`.
 [<RequireQualifiedAccess>]
-type SetGroupsRefusal =
+type internal SetGroupsRefusal =
     /// A privileged process on this flavour, whose `setgroups` has not been
     /// measured, because measuring it needs root.
     | UnmeasuredPrivileged of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module SetGroupsRefusal =
+module internal SetGroupsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and with which list.
     let describe (refusal : SetGroupsRefusal) : string =
@@ -70,9 +76,14 @@ module SetGroupsRefusal =
         | SetGroupsRefusal.UnmeasuredPrivileged flavour ->
             $"the process is privileged, and what %O{flavour}'s setgroups(2) does for a privileged process has not been measured: measuring it needs root."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SetGroupsRefusal) : RefusalKind =
+        match refusal with
+        | SetGroupsRefusal.UnmeasuredPrivileged _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `getresuid(2)` or `getresgid(2)`.
 [<RequireQualifiedAccess>]
-type GetIdsRefusal =
+type internal GetIdsRefusal =
     /// This flavour has no such call: Darwin declares neither `getresuid` nor
     /// `getresgid`.
     | NoSuchCall of flavour : SimulatedUnixFlavour
@@ -80,7 +91,7 @@ type GetIdsRefusal =
     | Buffer of BufferRefusal
 
 [<RequireQualifiedAccess>]
-module GetIdsRefusal =
+module internal GetIdsRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
     /// entry point asked, and what the buffers were.
     let describe (refusal : GetIdsRefusal) : string =
@@ -88,6 +99,12 @@ module GetIdsRefusal =
         | GetIdsRefusal.NoSuchCall flavour ->
             $"%O{flavour} has no getresuid(2) or getresgid(2); its C library declares neither."
         | GetIdsRefusal.Buffer refusal -> BufferRefusal.describe refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetIdsRefusal) : RefusalKind =
+        match refusal with
+        | GetIdsRefusal.NoSuchCall _ -> RefusalKind.NotOnPlatform
+        | GetIdsRefusal.Buffer _ -> RefusalKind.Unmodelled
 
 /// The calls by which a process reads and changes who it is: `getresuid(2)`,
 /// `getresgid(2)`, `setresuid(2)`, `setresgid(2)` and `setgroups(2)`.
@@ -132,12 +149,8 @@ module UnixCredentials =
 
         write [] [ real, realId ; effective, effectiveId ; saved, savedId ]
 
-    /// `getresuid(2)`: the process's real, effective and saved user IDs, into
-    /// three buffers.
-    ///
-    /// Changes nothing, so it returns no system. Refused on Darwin, which has
-    /// no such call.
-    let getresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getresuid`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserBuffer)
         (effective : UserBuffer)
         (saved : UserBuffer)
@@ -148,12 +161,26 @@ module UnixCredentials =
 
         getIds real effective saved (credentials.RealUser, credentials.EffectiveUser, credentials.SavedUser) system
 
-    /// `getresgid(2)`: the process's real, effective and saved group IDs, into
+    /// <summary>
+    /// `getresuid(2)`: the process's real, effective and saved user IDs, into
     /// three buffers.
     ///
     /// Changes nothing, so it returns no system. Refused on Darwin, which has
     /// no such call.
-    let getresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `getresuid` nor `getresgid`.</exception>
+    let getresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (real : UserBuffer)
+        (effective : UserBuffer)
+        (saved : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetIdsAnswer<UserId>
+        =
+        tryGetresuid real effective saved system
+        |> Refusal.orRaise "UnixCredentials.getresuid" GetIdsRefusal.kind GetIdsRefusal.describe
+
+    /// `getresgid`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserBuffer)
         (effective : UserBuffer)
         (saved : UserBuffer)
@@ -163,6 +190,24 @@ module UnixCredentials =
         let credentials = system.Process.Credentials
 
         getIds real effective saved (credentials.RealGroup, credentials.EffectiveGroup, credentials.SavedGroup) system
+
+    /// <summary>
+    /// `getresgid(2)`: the process's real, effective and saved group IDs, into
+    /// three buffers.
+    ///
+    /// Changes nothing, so it returns no system. Refused on Darwin, which has
+    /// no such call.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `getresuid` nor `getresgid`.</exception>
+    let getresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (real : UserBuffer)
+        (effective : UserBuffer)
+        (saved : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetIdsAnswer<GroupId>
+        =
+        tryGetresgid real effective saved system
+        |> Refusal.orRaise "UnixCredentials.getresgid" GetIdsRefusal.kind GetIdsRefusal.describe
 
     // Linux's rule for `setresuid` and `setresgid`, which differ only in which
     // triple they replace: a privileged process may set each ID to anything,
@@ -222,17 +267,8 @@ module UnixCredentials =
         | CoreDumps.Written
         | CoreDumps.Suppressed -> Ok ()
 
-    /// `setresuid(2)`: set the process's real, effective and saved user IDs.
-    /// `None` leaves an ID as it is.
-    ///
-    /// A privileged process may set them to anything. Any other process may
-    /// only set each to one of the three it already holds, and is otherwise
-    /// answered `EPERM` with nothing changed.
-    ///
-    /// Refused on Darwin, which has no such call, and for a process that writes
-    /// core dumps when its effective user ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
-    let setresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `setresuid`, with a refusal answered as the `Error` rather than raised.
+    let internal trySetresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : UserId option)
         (effective : UserId option)
         (saved : UserId option)
@@ -270,18 +306,31 @@ module UnixCredentials =
             }
         )
 
-    /// `setresgid(2)`: set the process's real, effective and saved group IDs.
+    /// <summary>
+    /// `setresuid(2)`: set the process's real, effective and saved user IDs.
     /// `None` leaves an ID as it is.
     ///
     /// A privileged process may set them to anything. Any other process may
-    /// only set each to one of the three it already holds (its supplementary
-    /// groups do not count), and is otherwise answered `EPERM` with nothing
-    /// changed. Privilege is the effective *user* ID's, as everywhere else.
+    /// only set each to one of the three it already holds, and is otherwise
+    /// answered `EPERM` with nothing changed.
     ///
     /// Refused on Darwin, which has no such call, and for a process that writes
-    /// core dumps when its effective group ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
-    let setresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// core dumps when its effective user ID would change: whether it still
+    /// writes one turns on `fs.suid_dumpable`, which this kernel does not model.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`.</exception>
+    let setresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (real : UserId option)
+        (effective : UserId option)
+        (saved : UserId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        trySetresuid real effective saved system
+        |> Refusal.orRaise "UnixCredentials.setresuid" SetIdsRefusal.kind SetIdsRefusal.describe
+
+    /// `setresgid`, with a refusal answered as the `Error` rather than raised.
+    let internal trySetresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (real : GroupId option)
         (effective : GroupId option)
         (saved : GroupId option)
@@ -318,6 +367,30 @@ module UnixCredentials =
                     }
             }
         )
+
+    /// <summary>
+    /// `setresgid(2)`: set the process's real, effective and saved group IDs.
+    /// `None` leaves an ID as it is.
+    ///
+    /// A privileged process may set them to anything. Any other process may
+    /// only set each to one of the three it already holds (its supplementary
+    /// groups do not count), and is otherwise answered `EPERM` with nothing
+    /// changed. Privilege is the effective *user* ID's, as everywhere else.
+    ///
+    /// Refused on Darwin, which has no such call, and for a process that writes
+    /// core dumps when its effective group ID would change: whether it still
+    /// writes one turns on `fs.suid_dumpable`, which this kernel does not model.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`.</exception>
+    let setresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (real : GroupId option)
+        (effective : GroupId option)
+        (saved : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        trySetresgid real effective saved system
+        |> Refusal.orRaise "UnixCredentials.setresgid" SetIdsRefusal.kind SetIdsRefusal.describe
 
     // Asserted wherever a kernel copies the list: a caller that read the
     // wrong number of words would otherwise be answered about a list it
@@ -356,18 +429,8 @@ module UnixCredentials =
         | GroupListWords.Readable words -> parse [] words
         | GroupListWords.FaultsAfter readable -> parse [] readable |> Result.bind (fun _ -> Error UnixError.EFAULT)
 
-    /// `setgroups(2)`: replace the process's supplementary groups with the
-    /// `size` groups `words` holds, kept in the order given.
-    ///
-    /// Only a privileged process may. A list longer than the platform's
-    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, or of negative size, is
-    /// `EINVAL`; an unreadable word is `EFAULT`, and `(gid_t)-1`, which no
-    /// process can hold, is `EINVAL`. The flavours check these in different
-    /// orders.
-    ///
-    /// Refused for a privileged Darwin process, whose answer has not been
-    /// measured.
-    let setgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `setgroups`, with a refusal answered as the `Error` rather than raised.
+    let internal trySetgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (size : int)
         (words : GroupListWords)
         (system : UnixSystem<'Task, 'Handler>)
@@ -429,3 +492,23 @@ module UnixCredentials =
             match words with
             | GroupListWords.FaultsAfter _ -> Ok (SyscallAnswer.Failed UnixError.EFAULT, system)
             | GroupListWords.Readable _ -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+
+    /// `setgroups(2)`: replace the process's supplementary groups with the
+    /// `size` groups `words` holds, kept in the order given.
+    ///
+    /// Only a privileged process may. A list longer than the platform's
+    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, or of negative size, is
+    /// `EINVAL`; an unreadable word is `EFAULT`, and `(gid_t)-1`, which no
+    /// process can hold, is `EINVAL`. The flavours check these in different
+    /// orders.
+    ///
+    /// Refused for a privileged Darwin process, whose answer has not been
+    /// measured.
+    let setgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (size : int)
+        (words : GroupListWords)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        trySetgroups size words system
+        |> Refusal.orRaise "UnixCredentials.setgroups" SetGroupsRefusal.kind SetGroupsRefusal.describe

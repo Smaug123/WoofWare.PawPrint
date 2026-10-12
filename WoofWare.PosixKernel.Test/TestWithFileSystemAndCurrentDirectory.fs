@@ -84,7 +84,7 @@ module TestWithFileSystemAndCurrentDirectory =
         (image : UnixBootImage<int, string>)
         : Result<UnixSystem<int, string>, StartFault>
         =
-        match UnixBootImage.boot (launchAt (UnixBootImage.platform image) dir) image with
+        match UnixBootImage.tryBoot (launchAt (UnixBootImage.platform image) dir) image with
         | Ok system -> Ok system
         | Error (LaunchRefusal.CurrentDirectory (_, fault)) -> Error (StartFault.Directory fault)
         | Error refusal -> failwith $"unexpected launch refusal: %s{LaunchRefusal.describe refusal}"
@@ -96,7 +96,7 @@ module TestWithFileSystemAndCurrentDirectory =
         : Result<UnixSystem<int, string>, StartFault>
         =
         UnixSystem.initial<int, string> platform
-        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+        |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault entries
         |> Result.mapError StartFault.Seed
         |> Result.bind (bootAt dir)
 
@@ -169,7 +169,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let replaced =
             match
                 seeded
-                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault deeper
+                |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault deeper
                 |> Result.mapError StartFault.Seed
                 |> Result.bind (bootAt "/outer/inner")
             with
@@ -218,13 +218,13 @@ module TestWithFileSystemAndCurrentDirectory =
         let wideSeed = Map.ofList [ name wide, SeedEntry.file noBytes ]
 
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault wideSeed
+        |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault wideSeed
         |> Result.map ignore
         |> shouldEqual (Error (FileSystemSeedFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault wideSeed
+            |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault wideSeed
             |> Result.map ignore
         with
         | Ok _ -> ()
@@ -236,7 +236,7 @@ module TestWithFileSystemAndCurrentDirectory =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match
                 UnixSystem.initial<int, string> platform
-                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault atLimit
+                |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault atLimit
                 |> Result.map ignore
             with
             | Ok _ -> ()
@@ -272,14 +272,14 @@ module TestWithFileSystemAndCurrentDirectory =
 
         for entries in [ atRoot ; nested ; asLink ] do
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+            |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault entries
             |> Result.map ignore
             |> shouldEqual (Error (FileSystemSeedFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin)))
 
             // Linux binds any NUL-free bytes, so the same seed is a filesystem it could hold.
             match
                 UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+                |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault entries
                 |> Result.map ignore
             with
             | Ok _ -> ()
@@ -295,7 +295,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault nonCharacter
+            |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault nonCharacter
             |> Result.map ignore
         with
         | Ok _ -> ()
@@ -307,7 +307,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let both = nameOfBytes (List.replicate 766 0xFFuy)
 
         UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault (Map.ofList [ both, SeedEntry.file noBytes ])
+        |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault (Map.ofList [ both, SeedEntry.file noBytes ])
         |> Result.map ignore
         |> shouldEqual (Error (FileSystemSeedFault.SeedNameTooLong (both, SimulatedUnixFlavour.Darwin)))
 
@@ -321,7 +321,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault forged
+                |> UnixBootImage.tryWithFileSystem createdAt Owners.linuxDefault forged
                 |> ignore<Result<UnixBootImage<int, string>, FileSystemSeedFault>>
             )
 
@@ -436,14 +436,24 @@ module TestWithFileSystemAndCurrentDirectory =
                 | Error (StartFault.Seed fault) ->
                     Some (
                         "Seed."
-                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<FileSystemSeedFault>)
+                        + (Reflection.FSharpValue.GetUnionFields (
+                            fault,
+                            typeof<FileSystemSeedFault>,
+                            System.Reflection.BindingFlags.Public
+                            ||| System.Reflection.BindingFlags.NonPublic
+                           )
                            |> fst)
                             .Name
                     )
                 | Error (StartFault.Directory fault) ->
                     Some (
                         "Directory."
-                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<CurrentDirectoryFault>)
+                        + (Reflection.FSharpValue.GetUnionFields (
+                            fault,
+                            typeof<CurrentDirectoryFault>,
+                            System.Reflection.BindingFlags.Public
+                            ||| System.Reflection.BindingFlags.NonPublic
+                           )
                            |> fst)
                             .Name
                     )
@@ -451,7 +461,11 @@ module TestWithFileSystemAndCurrentDirectory =
             |> Set.ofList
 
         let declared (prefix : string) (union : System.Type) =
-            Reflection.FSharpType.GetUnionCases union
+            Reflection.FSharpType.GetUnionCases (
+                union,
+                System.Reflection.BindingFlags.Public
+                ||| System.Reflection.BindingFlags.NonPublic
+            )
             |> Array.map (fun case -> prefix + case.Name)
             |> Set.ofArray
 

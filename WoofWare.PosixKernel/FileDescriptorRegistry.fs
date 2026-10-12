@@ -201,9 +201,8 @@ type SocketOptions =
         /// close of a connected socket where it would differ from the ordinary
         /// close. With a linger time of zero that close is a reset instead of
         /// an orderly shutdown, refused while the connection is still
-        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
-        /// positive time it waits for bytes still in the send buffer, refused
-        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
+        /// referenced; with a positive time it waits for bytes still in the
+        /// send buffer, refused where a real kernel waits.
         Linger : SocketLinger
     }
 
@@ -557,8 +556,8 @@ type OpenFileObject =
     ///
     /// Not `AnonymousInode`, which is a fact about Linux's `anon_inodefs`.
     /// Nothing contends on this: measured, `flock` on a kqueue is ENOTSUP for
-    /// every operation, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinKqueue`) ahead of any contention test.
+    /// every operation, which `UnixDescriptor.flock` refuses to answer ahead
+    /// of any contention test.
     | Kqueue of kqueue : OpenFileDescriptionId
     /// One socket. Carries an identity, and that is a `flock` fact rather than
     /// an aesthetic one — it is exactly where a socket differs from
@@ -569,8 +568,8 @@ type OpenFileObject =
     /// Linux grants two.
     ///
     /// Darwin never reaches this: measured, `flock` on any socket there is
-    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinSocket`) ahead of any contention test.
+    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer ahead of any
+    /// contention test.
     | Socket of SocketId
     /// One pipe, both of its ends together. Measured on Linux 6.18.5: with
     /// `LOCK_EX|LOCK_NB` held through a pipe's read end, the same request
@@ -578,8 +577,8 @@ type OpenFileObject =
     /// takes the lock. So the pipe, not the end, is what contends.
     ///
     /// Darwin never reaches this: measured, `flock` on any pipe there is
-    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
-    /// (`FLockRefusal.DarwinPipe`) ahead of any contention test.
+    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer ahead of any
+    /// contention test.
     | Pipe of PipeId
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
@@ -925,7 +924,7 @@ type OpenFileTarget =
     /// A FIFO (a named pipe), opened through its inode.
     ///
     /// Reserved: nothing in this version makes one, since nothing makes a FIFO
-    /// inode to open (`mknodat` of `S_IFIFO` answers `MkNodRefusal.Fifo`).
+    /// inode to open (`mknodat` of `S_IFIFO` is refused).
     /// `FileDescriptorRegistry.checkInvariants` reports a description naming
     /// one as a defect. The case exists so
     /// that a client's matches already handle it when FIFOs arrive.
@@ -970,8 +969,7 @@ module internal ReservedFifo =
 ///
 /// A three-case DU rather than a readable/writable pair of booleans, because
 /// this kernel opens no fourth: Darwin answers EINVAL for access mode 3, and
-/// Linux's descriptor that permits neither is refused before one exists (see
-/// `OpenRefusal.IoctlOnlyAccessMode`).
+/// Linux's descriptor that permits neither is refused before one exists.
 ///
 /// Fixed when the description is created and never changed afterwards — POSIX
 /// offers no way to alter one, and Linux's nearest equivalent (reopening through
@@ -1273,7 +1271,7 @@ type FileDescriptorRegistry =
 /// `Bound` is answered `EMFILE`, `EINVAL` or `EBADF` by a process whose limit is
 /// `Bound` and succeeds for one whose limit is higher, so this kernel refuses
 /// it.
-type DescriptorLimitRefusal =
+type internal DescriptorLimitRefusal =
     {
         /// The lowest number the call could have given its descriptor.
         Descriptor : int
@@ -1282,10 +1280,13 @@ type DescriptorLimitRefusal =
     }
 
 [<RequireQualifiedAccess>]
-module DescriptorLimitRefusal =
+module internal DescriptorLimitRefusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : DescriptorLimitRefusal) : string =
         $"the call would put a descriptor at %d{refusal.Descriptor}, at or above %d{refusal.Bound}. This kernel assumes the process's RLIMIT_NOFILE soft limit is at least %d{refusal.Bound}, the default a process starts with, and models no higher one: a process whose limit is %d{refusal.Bound} gets EMFILE, EINVAL or EBADF here, and one whose limit is higher gets the descriptor."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (_ : DescriptorLimitRefusal) : RefusalKind = RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 type internal FileDescriptorDupError =

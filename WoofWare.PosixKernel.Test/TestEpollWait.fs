@@ -47,7 +47,7 @@ module TestEpollWait =
         Tasks.ensure name system
 
     let private createEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixPoll.epollCreate1 0 system with
+        match UnixPoll.tryEpollCreate1 0 system with
         | Ok (Ok (fd, system)) -> fd, system
         | other -> failwith $"expected an epoll instance, got %A{other}"
 
@@ -110,7 +110,7 @@ module TestEpollWait =
 
         let system =
             match
-                UnixPoll.epollCtl
+                UnixPoll.tryEpollCtl
                     queueFd
                     1
                     listenerFd
@@ -205,7 +205,7 @@ module TestEpollWait =
         (system : UnixSystem<int, string>)
         : Result<EpollWaitOutcome * UnixSystem<int, string>, EpollWaitRefusal>
         =
-        UnixPoll.epollWait task epoll 8 UserBuffer.Mapped milliseconds system
+        UnixPoll.tryEpollWait task epoll 8 UserBuffer.Mapped milliseconds system
 
     let private parks
         (milliseconds : int)
@@ -217,12 +217,12 @@ module TestEpollWait =
         | other -> failwith $"expected a park, got %A{other}"
 
     let private finishes (system : UnixSystem<int, string>) : (uint64 * uint32) list * UnixSystem<int, string> =
-        match UnixPoll.finishEpollWait task system with
+        match UnixPoll.tryFinishEpollWait task system with
         | Ok (EpollWaitOutcome.Answered events, finished) -> events, finished
         | other -> failwith $"expected the wait to finish, got %A{other}"
 
     let private reparks (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixPoll.finishEpollWait task system with
+        match UnixPoll.tryFinishEpollWait task system with
         | Ok (EpollWaitOutcome.WouldBlock _, parked) -> parked
         | other -> failwith $"expected the wait to park again, got %A{other}"
 
@@ -303,7 +303,7 @@ module TestEpollWait =
                 None
 
         let property ((fd : int, maxEvents : int), (buffer : UserBuffer, milliseconds : int)) : unit =
-            match oracle fd maxEvents buffer, UnixPoll.epollWait task fd maxEvents buffer milliseconds idle with
+            match oracle fd maxEvents buffer, UnixPoll.tryEpollWait task fd maxEvents buffer milliseconds idle with
             | Some error, actual -> actual |> shouldEqual (Ok (EpollWaitOutcome.Failed error, idle))
             | None, Ok (EpollWaitOutcome.Failed error, _) ->
                 failwith $"the ladder let the call through, and epollWait failed it with %O{error}"
@@ -329,7 +329,7 @@ module TestEpollWait =
                     listener, wild, UnixError.EINVAL
                     0, UserBuffer.Mapped, UnixError.EINVAL
                 ] do
-                UnixPoll.epollWait task fd maxEvents buffer milliseconds idle
+                UnixPoll.tryEpollWait task fd maxEvents buffer milliseconds idle
                 |> shouldEqual (Ok (EpollWaitOutcome.Failed expected, idle))
 
         let negativeCount =
@@ -348,7 +348,7 @@ module TestEpollWait =
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> withTask task
 
-        UnixPoll.epollWait task 3 8 UserBuffer.Mapped -1 darwin
+        UnixPoll.tryEpollWait task 3 8 UserBuffer.Mapped -1 darwin
         |> shouldEqual (Error (EpollWaitRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
     // ------------------------------------------------------------------
@@ -543,7 +543,7 @@ module TestEpollWait =
         exn.Message |> shouldContainText "is parked"
 
         let exn =
-            Assert.Throws<exn> (fun () -> UnixPoll.finishEpollWait task idle |> ignore)
+            Assert.Throws<exn> (fun () -> UnixPoll.tryFinishEpollWait task idle |> ignore)
 
         exn.Message |> shouldContainText "is not parked"
 
@@ -569,11 +569,11 @@ module TestEpollWait =
             let started = after now idle
 
             for buffer, refusal in uncopyable do
-                UnixPoll.epollWait task epoll 8 buffer milliseconds (signal started)
+                UnixPoll.tryEpollWait task epoll 8 buffer milliseconds (signal started)
                 |> shouldEqual (Error refusal)
 
                 // Nothing to copy: the buffer is never looked at past the screen.
-                match UnixPoll.epollWait task epoll 8 buffer milliseconds started with
+                match UnixPoll.tryEpollWait task epoll 8 buffer milliseconds started with
                 | Ok (EpollWaitOutcome.Answered [], _) -> milliseconds |> shouldEqual 0
                 | Ok (EpollWaitOutcome.WouldBlock _, _) -> milliseconds |> shouldNotEqual 0
                 | other -> failwith $"expected no delivery, got %A{other}"
@@ -585,7 +585,7 @@ module TestEpollWait =
     let ``a parked wait finishes by copying to the buffer it was entered with`` () : unit =
         for buffer, refusal in uncopyable do
             let _, parked =
-                match UnixPoll.epollWait task epoll 8 buffer 5 idle with
+                match UnixPoll.tryEpollWait task epoll 8 buffer 5 idle with
                 | Ok (EpollWaitOutcome.WouldBlock condition, parked) -> condition, parked
                 | other -> failwith $"expected a park, got %A{other}"
 
@@ -593,10 +593,10 @@ module TestEpollWait =
             | Some (ParkedSyscall.EpollWait wait) -> wait.Buffer |> shouldEqual buffer
             | other -> failwith $"expected an epoll_wait, got %A{other}"
 
-            UnixPoll.finishEpollWait task (signal parked) |> shouldEqual (Error refusal)
+            UnixPoll.tryFinishEpollWait task (signal parked) |> shouldEqual (Error refusal)
 
             // Timing out copies nothing, so it answers.
-            match UnixPoll.finishEpollWait task (after (5L * nanosecondsPerMillisecond) parked) with
+            match UnixPoll.tryFinishEpollWait task (after (5L * nanosecondsPerMillisecond) parked) with
             | Ok (EpollWaitOutcome.Answered [], finished) ->
                 UnixTaskTable.parkedFor task finished.Tasks |> shouldEqual None
             | other -> failwith $"expected the wait to time out, got %A{other}"

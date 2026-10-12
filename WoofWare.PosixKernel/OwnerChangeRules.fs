@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// kernel's rule reads it: relative to the inode's current owner and to the
 /// caller.
 [<RequireQualifiedAccess>]
-type RequestedUser =
+type internal RequestedUser =
     /// `(uid_t)-1`: leave the owner as it is.
     | Unchanged
     /// The inode's current owner, named explicitly.
@@ -18,7 +18,7 @@ type RequestedUser =
 /// rule reads it: relative to the inode's current group and to the caller's
 /// groups.
 [<RequireQualifiedAccess>]
-type RequestedGroup =
+type internal RequestedGroup =
     /// `(gid_t)-1`: leave the group as it is.
     | Unchanged
     /// The inode's current group, named explicitly, whether or not the caller
@@ -33,7 +33,7 @@ type RequestedGroup =
 /// What a `chown(2)`-family call asks of one inode, as the kernel's rule reads
 /// it. The kernel derives it from the IDs the call names, the caller's
 /// credentials and the inode's owner.
-type OwnerChangeRequest =
+type internal OwnerChangeRequest =
     {
         UserAsked : RequestedUser
         GroupAsked : RequestedGroup
@@ -83,7 +83,7 @@ type OwnerChangeRule =
     ///
     /// What a privileged caller may do, and what a call clears where an
     /// ordinary user cannot set up the inode to ask, have not been measured;
-    /// `chown` refuses those rows (`OwnerChangeRefusal`).
+    /// `chown` refuses those rows.
     ///
     /// This is Darwin.
     | ClearsSetIdWhenAnIdIsNamed
@@ -104,7 +104,7 @@ type internal OwnerChange =
 /// Why this library will not say what a `chown(2)`-family call does: the
 /// kernel's answer for that caller and that inode has not been measured.
 [<RequireQualifiedAccess>]
-type OwnerChangeRefusal =
+type internal OwnerChangeRefusal =
     /// A privileged caller, under `OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed`,
     /// standing as `standing` towards an inode carrying `bits`, asking
     /// `request`.
@@ -119,7 +119,7 @@ type OwnerChangeRefusal =
     | UnmeasuredSetIdChange of standing : Standing * request : OwnerChangeRequest * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
-module OwnerChangeRefusal =
+module internal OwnerChangeRefusal =
     /// What this library knows about why it will not answer. A client adds
     /// which call it was answering and which inode it was.
     let describe (refusal : OwnerChangeRefusal) : string =
@@ -131,6 +131,12 @@ module OwnerChangeRefusal =
             $"what Darwin's chown does for a privileged caller, standing %A{standing} towards an inode carrying %O{bits} and asking %A{request}, has not been measured; measuring it needs root. %s{measured}"
         | OwnerChangeRefusal.UnmeasuredSetIdChange (standing, request, bits) ->
             $"what Darwin's chown does for a caller standing %A{standing} towards an inode carrying %O{bits} and asking %A{request} has not been measured; setting that inode up needs root or a second user. %s{measured}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : OwnerChangeRefusal) : RefusalKind =
+        match refusal with
+        | OwnerChangeRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
+        | OwnerChangeRefusal.UnmeasuredSetIdChange _ -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module internal OwnerChangeRequest =

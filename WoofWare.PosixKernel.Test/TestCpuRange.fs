@@ -47,7 +47,7 @@ module TestCpuRange =
 
     let private imageWith (platform : SimulatedUnixPlatform) (count : int) : UnixBootImage<int, string> =
         UnixSystem.initial platform
-        |> UnixBootImage.withProcessorCount count
+        |> UnixBootImage.tryWithProcessorCount count
         |> Configured.expectOk ProcessorCountRefusal.describe
 
     let private systemWith (platform : SimulatedUnixPlatform) (count : int) : UnixSystem<int, string> =
@@ -79,7 +79,7 @@ module TestCpuRange =
 
             let spawned =
                 try
-                    Ok (UnixTaskLifecycle.spawn 0 1 (CpuId cpu) system)
+                    Ok (UnixTaskLifecycle.trySpawn 0 1 (CpuId cpu) system)
                 with e ->
                     Error e.Message
 
@@ -102,7 +102,7 @@ module TestCpuRange =
         let property (cover : Side -> unit) (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
             let launch = Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId cpu)
 
-            match UnixBootImage.boot launch (imageWith platform count), inRange count cpu with
+            match UnixBootImage.tryBoot launch (imageWith platform count), inRange count cpu with
             | Ok system, true ->
                 cover Side.Inside
                 (UnixTaskTable.get 0 system.Tasks).Cpu |> shouldEqual (CpuId cpu)
@@ -122,7 +122,7 @@ module TestCpuRange =
 
             let launch = Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId cpu)
 
-            match SimulatedMachine.launch launch machine, inRange count cpu with
+            match SimulatedMachine.tryLaunch launch machine, inRange count cpu with
             | Ok (pid, after), true ->
                 cover Side.Inside
 

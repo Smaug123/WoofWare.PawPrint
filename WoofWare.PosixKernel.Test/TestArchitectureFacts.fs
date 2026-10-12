@@ -278,7 +278,7 @@ module TestArchitectureFacts =
                     else
                         Error (UserAddressLimitRefusal.NotObservedOn (limit, architecture, observedOn))
 
-            match UnixBootImage.withUserAddressLimit limit image with
+            match UnixBootImage.tryWithUserAddressLimit limit image with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 

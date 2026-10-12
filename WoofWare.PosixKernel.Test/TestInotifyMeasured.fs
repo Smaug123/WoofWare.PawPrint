@@ -103,7 +103,7 @@ module TestInotifyMeasured =
     /// `credentials` with tasks 0 to 2.
     let private boot (credentials : Credentials) (seed : (string * SeedEntry) list) : UnixSystem<int, string> =
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxArm64
-        |> UnixBootImage.withInotifyLimits
+        |> UnixBootImage.tryWithInotifyLimits
             {
                 MaxUserInstances = 128
                 MaxUserWatches = 8982
@@ -140,12 +140,12 @@ module TestInotifyMeasured =
         | SyscallAnswer.Failed error -> $"-1 %O{error}"
 
     let private init1 (flags : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixInotify.inotifyInit1 flags system with
+        match UnixInotify.tryInotifyInit1 flags system with
         | Ok (Ok created) -> created
         | other -> failwith $"inotify_init1(0x%x{flags}): %A{other}"
 
     let private initAnswer (flags : int) (system : UnixSystem<int, string>) : SyscallAnswer * UnixSystem<int, string> =
-        match UnixInotify.inotifyInit1 flags system with
+        match UnixInotify.tryInotifyInit1 flags system with
         | Ok (Ok (fd, system)) -> SyscallAnswer.Completed (int64 fd), system
         | Ok (Error error) -> SyscallAnswer.Failed error, system
         | Error refusal -> failwith $"inotify_init1(0x%x{flags}) refused: %s{InotifyRefusal.describe refusal}"
@@ -157,7 +157,7 @@ module TestInotifyMeasured =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixInotify.inotifyAddWatch fd (PathArg.ofText path) mask system with
+        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText path) mask system with
         | Ok answered -> answered
         | Error refusal ->
             failwith
@@ -169,12 +169,12 @@ module TestInotifyMeasured =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixInotify.inotifyRmWatch fd wd system with
+        match UnixInotify.tryInotifyRmWatch fd wd system with
         | Ok answered -> answered
         | Error refusal -> failwith $"inotify_rm_watch(%d{fd}, %d{wd}) refused: %s{InotifyRefusal.describe refusal}"
 
     let private close (fd : int) (system : UnixSystem<int, string>) : SyscallAnswer * UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok answered -> answered
         | Error refusal -> failwith $"close(%d{fd}): %A{refusal}"
 
@@ -279,7 +279,7 @@ module TestInotifyMeasured =
         (system : UnixSystem<int, string>)
         : ReadOutcome * UnixSystem<int, string>
         =
-        match UnixReadWrite.read task fd buffer (uint64 count) system with
+        match UnixReadWrite.tryRead task fd buffer (uint64 count) system with
         | Ok outcome -> outcome
         | Error refusal -> failwith $"read(%d{fd}, %d{count}) refused: %s{ReadRefusal.describe refusal}"
 
@@ -308,13 +308,13 @@ module TestInotifyMeasured =
         | records, system -> String.concat " | " records, system
 
     let private fionread (fd : int) (system : UnixSystem<int, string>) : string =
-        match UnixDescriptor.bytesAvailable fd UserBuffer.Mapped system with
+        match UnixDescriptor.tryBytesAvailable fd UserBuffer.Mapped system with
         | Ok (BytesAvailableAnswer.Reported count) -> $"%d{count}"
         | other -> failwith $"FIONREAD on %d{fd}: %A{other}"
 
     let private pollIn (fd : int) (events : int16) (system : UnixSystem<int, string>) : string =
         match
-            UnixPoll.poll
+            UnixPoll.tryPoll
                 0
                 [
                     {
@@ -337,7 +337,7 @@ module TestInotifyMeasured =
         let b, s = init1 (cloexec ||| nonblock) s
 
         let ep, s =
-            match UnixPoll.epollCreate1 0 s with
+            match UnixPoll.tryEpollCreate1 0 s with
             | Ok (Ok created) -> created
             | other -> failwith $"%A{other}"
 
@@ -349,7 +349,7 @@ module TestInotifyMeasured =
         // what the row measures of identity is the flock object, the same for
         // both instances and the epoll instance (the flock rows below).
         for fd in [ a ; b ; ep ] do
-            UnixPathResolution.fstat fd system
+            UnixPathResolution.tryFstat fd system
             |> shouldEqual (Error FStatRefusal.EventQueue)
 
         let objectOf (fd : int) =
@@ -360,7 +360,7 @@ module TestInotifyMeasured =
         objectOf ep |> shouldEqual (objectOf a)
 
         let flock (fd : int) (operation : int) =
-            match UnixDescriptor.flock 0 fd operation system with
+            match UnixDescriptor.tryFlock 0 fd operation system with
             | Ok (SyscallOutcome.Answered answer, s) ->
                 system <- s
                 rc answer
@@ -379,7 +379,7 @@ module TestInotifyMeasured =
         )
 
         let lseek (offset : int64) (whence : int) =
-            match UnixDescriptor.lseek a offset whence system with
+            match UnixDescriptor.tryLseek a offset whence system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -405,7 +405,7 @@ module TestInotifyMeasured =
 
         let polled =
             match
-                UnixPoll.poll
+                UnixPoll.tryPoll
                     0
                     [
                         {
@@ -485,19 +485,19 @@ module TestInotifyMeasured =
         )
 
         let badFd =
-            match UnixInotify.inotifyAddWatch 999 (PathArg.ofText "w/d1") modelledEvents system with
+            match UnixInotify.tryInotifyAddWatch 999 (PathArg.ofText "w/d1") modelledEvents system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
         let regular, s =
-            match UnixNamespace.openPath 0 0 (PathArg.ofText "w/f") 0 system with
+            match UnixNamespace.tryOpenPath 0 0 (PathArg.ofText "w/f") 0 system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), s) -> int fd, s
             | other -> failwith $"%A{other}"
 
         system <- s
 
         let onRegular =
-            match UnixInotify.inotifyAddWatch regular (PathArg.ofText "w/d1") modelledEvents system with
+            match UnixInotify.tryInotifyAddWatch regular (PathArg.ofText "w/d1") modelledEvents system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -552,7 +552,7 @@ module TestInotifyMeasured =
         let system = boot root [ "w", directory 0o755 [ "d1", directory 0o755 [] ] ]
         let fd, system = init1 nonblock system
 
-        UnixInotify.inotifyAddWatch fd (PathArg.ofText "w/d1") 0xFFFu system
+        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") 0xFFFu system
         |> shouldEqual (
             Error (
                 InotifyAddWatchRefusal.UnmodelledEvents
@@ -566,14 +566,14 @@ module TestInotifyMeasured =
         )
 
         // An add that fails anyway answers its errno.
-        match UnixInotify.inotifyAddWatch fd (PathArg.ofText "w/missing") 0xFFFu system with
+        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/missing") 0xFFFu system with
         | Ok (SyscallAnswer.Failed UnixError.ENOENT, _) -> ()
         | other -> failwith $"%A{other}"
 
-        UnixInotify.inotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x80000000u) system
+        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x80000000u) system
         |> shouldEqual (Error InotifyAddWatchRefusal.OneShot)
 
-        UnixInotify.inotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x2000u) system
+        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x2000u) system
         |> shouldEqual (Error (InotifyAddWatchRefusal.UnmodelledEvents [ InotifyEvent.Unmount ]))
 
     [<Test>]
@@ -615,7 +615,7 @@ module TestInotifyMeasured =
         let _, s = addWatch fd "p" create s
 
         let ep, s =
-            match UnixPoll.epollCreate1 0 s with
+            match UnixPoll.tryEpollCreate1 0 s with
             | Ok (Ok created) -> created
             | other -> failwith $"%A{other}"
 
@@ -628,7 +628,7 @@ module TestInotifyMeasured =
         // same either way.
         let added =
             match
-                UnixPoll.epollCtl
+                UnixPoll.tryEpollCtl
                     ep
                     1
                     fd
@@ -650,7 +650,7 @@ module TestInotifyMeasured =
         actual.Add ("epoll-ctl-add", added)
 
         let wait () =
-            match UnixPoll.epollWait 0 ep 4 UserBuffer.Mapped 0 system with
+            match UnixPoll.tryEpollWait 0 ep 4 UserBuffer.Mapped 0 system with
             | Ok (EpollWaitOutcome.Answered events, s) ->
                 system <- s
                 events
@@ -682,7 +682,7 @@ module TestInotifyMeasured =
         let fd2, s = init1 nonblock s
 
         let d, s =
-            match UnixDescriptor.dup fd s with
+            match UnixDescriptor.tryDup fd s with
             | Ok (SyscallAnswer.Completed d, s) -> int d, s
             | other -> failwith $"%A{other}"
 
@@ -753,7 +753,7 @@ module TestInotifyMeasured =
 
     /// What the woken read of `task` answers, as the probe prints it.
     let private finish (task : int) (system : UnixSystem<int, string>) : string * UnixSystem<int, string> =
-        match UnixReadWrite.finishRead task system with
+        match UnixReadWrite.tryFinishRead task system with
         | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), s) ->
             $"""result=%d{bytes.Length}  events=%s{String.concat " | " (render bytes)}""", s
         | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), s) -> $"result=-1 %O{error}", s
@@ -819,7 +819,7 @@ module TestInotifyMeasured =
 
         // The handler runs and returns, and the client issues the read again.
         let s =
-            match UnixSignal.onReturnToUser reader s with
+            match UnixSignal.tryOnReturnToUser reader s with
             | Ok (ReturnToUserOutcome.RunHandlers (frames, s)) ->
                 (s, frames)
                 ||> List.fold (fun s frame -> UnixSignal.sigreturn reader frame.Id s)
@@ -861,7 +861,7 @@ module TestInotifyMeasured =
         let accepted =
             [ 0..31 ]
             |> List.choose (fun bit ->
-                match UnixInotify.inotifyInit1 (1 <<< bit) system with
+                match UnixInotify.tryInotifyInit1 (1 <<< bit) system with
                 | Ok (Ok _) -> Some $"0%s{Convert.ToString (1L <<< bit, 8)}"
                 | Ok (Error UnixError.EINVAL) -> None
                 | other -> failwith $"bit %d{bit}: %A{other}"
@@ -914,26 +914,26 @@ module TestInotifyMeasured =
         let fd, s = init1 nonblock system
 
         let regular, s =
-            match UnixNamespace.openPath 0 0 (PathArg.ofText "g/f") 0 s with
+            match UnixNamespace.tryOpenPath 0 0 (PathArg.ofText "g/f") 0 s with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), s) -> int fd, s
             | other -> failwith $"%A{other}"
 
         let epoll, s =
-            match UnixPoll.epollCreate1 0 s with
+            match UnixPoll.tryEpollCreate1 0 s with
             | Ok (Ok created) -> created
             | other -> failwith $"%A{other}"
 
         system <- s
 
         let add (on : int) (path : PathArgumentBytes) (mask : uint32) =
-            match UnixInotify.inotifyAddWatch on path mask system with
+            match UnixInotify.tryInotifyAddWatch on path mask system with
             | Ok (answer, s) ->
                 system <- s
                 rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
         let rm (on : int) (wd : int) =
-            match UnixInotify.inotifyRmWatch on wd system with
+            match UnixInotify.tryInotifyRmWatch on wd system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -966,7 +966,7 @@ module TestInotifyMeasured =
         child <- s
 
         let addAs (path : string) (mask : uint32) =
-            match UnixInotify.inotifyAddWatch cfd (p path) mask child with
+            match UnixInotify.tryInotifyAddWatch cfd (p path) mask child with
             | Ok (answer, s) ->
                 child <- s
                 rc answer
@@ -1025,7 +1025,7 @@ module TestInotifyMeasured =
         for i, (case, mask) in List.indexed masks do
             let expected = measured |> List.find (fun (c, _) -> c = case) |> snd
 
-            match UnixInotify.inotifyAddWatch fd (PathArg.ofText $"m/%d{i}") mask system with
+            match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText $"m/%d{i}") mask system with
             | Error (InotifyAddWatchRefusal.UnmodelledEvents [ InotifyEvent.Unmount ]) when case = "UNMOUNT" -> ()
             | Error InotifyAddWatchRefusal.OneShot when case = "ONESHOT" -> ()
             | Ok (SyscallAnswer.Failed UnixError.EINVAL, _) -> expected |> shouldEqual "-1 EINVAL"
@@ -1223,13 +1223,13 @@ module TestInotifyMeasured =
         let _, s = addWatch fd "t" attrib s
 
         let ep, s =
-            match UnixPoll.epollCreate1 0 s with
+            match UnixPoll.tryEpollCreate1 0 s with
             | Ok (Ok created) -> created
             | other -> failwith $"%A{other}"
 
         let s =
             match
-                UnixPoll.epollCtl
+                UnixPoll.tryEpollCtl
                     ep
                     1
                     fd
@@ -1242,7 +1242,7 @@ module TestInotifyMeasured =
         system <- s
 
         let wait () =
-            match UnixPoll.epollWait 0 ep 4 UserBuffer.Mapped 0 system with
+            match UnixPoll.tryEpollWait 0 ep 4 UserBuffer.Mapped 0 system with
             | Ok (EpollWaitOutcome.Answered events, s) ->
                 system <- s
                 List.length events
@@ -1302,7 +1302,7 @@ module TestInotifyMeasured =
             | TerminalAttributesAnswer.NotATerminal error -> $"isatty=0 errno=%O{error}"
 
         let pread () =
-            match UnixReadWrite.pread 0 fd UserBuffer.Mapped 256UL 0L system with
+            match UnixReadWrite.tryPread 0 fd UserBuffer.Mapped 256UL 0L system with
             | Ok (ReadAnswer.Failed error, _) -> $"-1 %O{error}"
             | other -> failwith $"%A{other}"
 
@@ -1312,7 +1312,7 @@ module TestInotifyMeasured =
         let afterPread = $"FIONREAD=%s{fionread fd system}"
 
         let pwrite =
-            match UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 1UL 0L system with
+            match UnixReadWrite.tryAdmitPWrite 0 fd UserBuffer.Mapped 1UL 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> $"-1 %O{error}"
             | other -> failwith $"%A{other}"
 
@@ -1325,32 +1325,32 @@ module TestInotifyMeasured =
             | other -> failwith $"%A{other}"
 
         let fionreadNull =
-            match UnixDescriptor.bytesAvailable fd (UserBuffer.Unmapped 0UL) system with
+            match UnixDescriptor.tryBytesAvailable fd (UserBuffer.Unmapped 0UL) system with
             | Ok (BytesAvailableAnswer.Failed error) -> $"-1 %O{error}"
             | other -> failwith $"%A{other}"
 
         let fadvise =
-            match UnixDescriptor.posixFadvise fd 0L 0L 0 system with
+            match UnixDescriptor.tryPosixFadvise fd 0L 0L 0 system with
             | Ok FileAdviceAnswer.Completed -> "0"
             | other -> failwith $"%A{other}"
 
         let ftruncate =
-            match UnixDescriptor.ftruncate fd 0L system with
+            match UnixDescriptor.tryFtruncate fd 0L system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
         let ficlone =
-            match UnixDescriptor.fileClone fd other system with
+            match UnixDescriptor.tryFileClone fd other system with
             | Ok error -> $"-1 %O{error}"
             | Error refusal -> failwith $"%A{refusal}"
 
         let getdents =
-            match UnixNamespace.readDirectoryEntry fd system with
+            match UnixNamespace.tryReadDirectoryEntry fd system with
             | Ok (ReadDirectoryAnswer.Failed error, _) -> $"-1 %O{error}"
             | other -> failwith $"%A{other}"
 
         let recv =
-            match UnixReadWrite.recv 0 fd UserBuffer.Mapped 256UL 0 system with
+            match UnixReadWrite.tryRecv 0 fd UserBuffer.Mapped 256UL 0 system with
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> $"-1 %O{error}"
             | other -> failwith $"%A{other}"
 
@@ -1458,7 +1458,7 @@ module TestInotifyMeasured =
         let polled = pollIn fd -1s system
 
         let ep, s =
-            match UnixPoll.epollCreate1 0 system with
+            match UnixPoll.tryEpollCreate1 0 system with
             | Ok (Ok created) -> created
             | other -> failwith $"%A{other}"
 
@@ -1473,13 +1473,13 @@ module TestInotifyMeasured =
 
         let added, s =
             match
-                UnixPoll.epollCtl ep 1 fd (EpollEventArgument.Readable (every ||| EpollEvents.EdgeTriggered, 1UL)) s
+                UnixPoll.tryEpollCtl ep 1 fd (EpollEventArgument.Readable (every ||| EpollEvents.EdgeTriggered, 1UL)) s
             with
             | Ok (EpollCtlAnswer.Changed, s) -> "0", s
             | other -> failwith $"%A{other}"
 
         let waited =
-            match UnixPoll.epollWait 0 ep 2 UserBuffer.Mapped 0 s with
+            match UnixPoll.tryEpollWait 0 ep 2 UserBuffer.Mapped 0 s with
             | Ok (EpollWaitOutcome.Answered events, _) ->
                 match events with
                 | (_, mask) :: _ -> $"n=%d{events.Length} events=0x%x{mask}"

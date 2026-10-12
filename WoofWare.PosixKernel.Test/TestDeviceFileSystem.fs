@@ -71,7 +71,7 @@ module TestDeviceFileSystem =
 
         let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
-        match UnixBootImage.withFileSystem bootTime rootOwner seed image with
+        match UnixBootImage.tryWithFileSystem bootTime rootOwner seed image with
         | Ok image -> Launched.bootWith configure UnixSystem.pipedStandardStreams 0 (CpuId 0) image
         | Error fault -> failwith $"booting failed: %A{fault}"
 
@@ -92,7 +92,7 @@ module TestDeviceFileSystem =
             (UnixTimestamp.ofSeconds 1_700_000_000L)
 
     let private stat (path : string) (system : UnixSystem<int, string>) : Result<FileStatusAnswer, StatRefusal> =
-        UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText path) system
+        UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofText path) system
 
     let private reported (path : string) (system : UnixSystem<int, string>) : FileStatus =
         match stat path system with
@@ -144,7 +144,7 @@ module TestDeviceFileSystem =
                 status.BirthTime |> shouldEqual None
                 status.FileFlags |> shouldEqual None
 
-                UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system
+                UnixPathResolution.tryStat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system
                 |> shouldEqual (Ok (FileStatusAnswer.Reported status))
 
             (reported "/dev/null" system).Inode
@@ -176,7 +176,7 @@ module TestDeviceFileSystem =
             | Error (OpenRefusal.Path (PathRefusal.UnmodelledDeviceName _)) -> ()
             | other -> failwith $"open(O_CREAT) /dev/%s{unknown}: expected a refusal, got %A{other}"
 
-            match UnixNamespace.mkdir (PathArg.ofText $"/dev/%s{unknown}") 0o755 system with
+            match UnixNamespace.tryMkdir (PathArg.ofText $"/dev/%s{unknown}") 0o755 system with
             | Error (PathRefusal.UnmodelledDeviceName _) -> ()
             | other -> failwith $"mkdir /dev/%s{unknown}: expected a refusal, got %A{other}"
 
@@ -220,22 +220,22 @@ module TestDeviceFileSystem =
             FileSystemStatisticsAnswer.Reported (
                 FileSystemStatistics.Linux
                     {
-                        Type = 0x01021994L
-                        Geometry =
+                        TypeValue = 0x01021994L
+                        GeometryResult =
                             Ok
                                 {
                                     BlockSize = 4096L
                                     FragmentSize = 4096L
                                     NameLengthLimit = 255L
                                 }
-                        Capacity = Error CapacityRefusal.DeviceFileSystem
-                        FileSystemId =
+                        CapacityResult = Error CapacityRefusal.DeviceFileSystem
+                        FileSystemIdResult =
                             Ok
                                 {
                                     First = int32 0x544366deu
                                     Second = int32 0xad9235deu
                                 }
-                        Flags = Ok 0x1022L
+                        FlagsResult = Ok 0x1022L
                     }
             )
 
@@ -338,11 +338,11 @@ module TestDeviceFileSystem =
             | Ok fd, system -> fd, system
             | Error error, _ -> failwith $"opening /dev: %O{error}"
 
-        match UnixNamespace.readDirectoryEntry fd system with
+        match UnixNamespace.tryReadDirectoryEntry fd system with
         | Error (ReadDirectoryRefusal.DeviceFileSystem _) -> ()
         | other -> failwith $"reading /dev: expected a refusal, got %A{other}"
 
-        match UnixPathResolution.fstat fd system with
+        match UnixPathResolution.tryFstat fd system with
         | Error (FStatRefusal.DeviceFileSystemRoot _) -> ()
         | other -> failwith $"fstat of /dev: expected a refusal, got %A{other}"
 
@@ -355,7 +355,7 @@ module TestDeviceFileSystem =
         // devtmpfs holds.
         for system in [ booted linux ; bootedAsRoot linux ] do
             let rename (source : string) (destination : string) =
-                UnixNamespace.rename (PathArg.ofText source) (PathArg.ofText destination) system
+                UnixNamespace.tryRename (PathArg.ofText source) (PathArg.ofText destination) system
 
             for source, destination in
                 [
@@ -384,35 +384,35 @@ module TestDeviceFileSystem =
             | Error refusal -> failwith $"refused: %s{RemovalRefusal.describe refusal}"
 
         let renamed (system : UnixSystem<int, string>) (destination : string) =
-            match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText destination) system with
+            match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText destination) system with
             | Ok answer -> failed answer
             | Error refusal -> failwith $"refused: %s{RenameRefusal.describe refusal}"
 
-        removal (UnixNamespace.rmdir (PathArg.ofText "/dev") unprivileged)
+        removal (UnixNamespace.tryRmdir (PathArg.ofText "/dev") unprivileged)
         |> shouldEqual (Some UnixError.EACCES)
 
-        removal (UnixNamespace.rmdir (PathArg.ofText "/dev") root)
+        removal (UnixNamespace.tryRmdir (PathArg.ofText "/dev") root)
         |> shouldEqual (Some UnixError.EBUSY)
 
-        removal (UnixNamespace.unlink (PathArg.ofText "/dev") unprivileged)
+        removal (UnixNamespace.tryUnlink (PathArg.ofText "/dev") unprivileged)
         |> shouldEqual (Some UnixError.EACCES)
 
-        removal (UnixNamespace.unlink (PathArg.ofText "/dev") root)
+        removal (UnixNamespace.tryUnlink (PathArg.ofText "/dev") root)
         |> shouldEqual (Some UnixError.EISDIR)
 
         for system in [ unprivileged ; root ] do
-            removal (UnixNamespace.rmdir (PathArg.ofText "/dev/.") system)
+            removal (UnixNamespace.tryRmdir (PathArg.ofText "/dev/.") system)
             |> shouldEqual (Some UnixError.EINVAL)
 
         renamed unprivileged "/devx" |> shouldEqual (Some UnixError.EACCES)
         renamed root "/devx" |> shouldEqual (Some UnixError.EBUSY)
 
         // Unmeasured: the mount point as the thing displaced.
-        match UnixNamespace.rename (PathArg.ofText "/d") (PathArg.ofText "/dev") root with
+        match UnixNamespace.tryRename (PathArg.ofText "/d") (PathArg.ofText "/dev") root with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"rename /d -> /dev: expected a refusal, got %A{other}"
 
-        UnixNamespace.mkdir (PathArg.ofText "/dev") 0o755 unprivileged
+        UnixNamespace.tryMkdir (PathArg.ofText "/dev") 0o755 unprivileged
         |> Result.map failed
         |> shouldEqual (Ok (Some UnixError.EEXIST))
 
@@ -422,12 +422,12 @@ module TestDeviceFileSystem =
         // "/dev/." are on the device filesystem whatever they reach.
         for system in [ booted linux ; bootedAsRoot linux ] do
             for source in [ "/dev/.." ; "/dev/." ] do
-                match UnixNamespace.rename (PathArg.ofText source) (PathArg.ofText "/d/x") system with
+                match UnixNamespace.tryRename (PathArg.ofText source) (PathArg.ofText "/d/x") system with
                 | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
                 | Error refusal -> failwith $"rename %s{source}: refused: %s{RenameRefusal.describe refusal}"
 
             // And "/d/.." is on the root filesystem though it reaches the root.
-            match UnixNamespace.rename (PathArg.ofText "/d/..") (PathArg.ofText "/dev/x") system with
+            match UnixNamespace.tryRename (PathArg.ofText "/d/..") (PathArg.ofText "/dev/x") system with
             | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
             | Error refusal -> failwith $"rename /d/..: refused: %s{RenameRefusal.describe refusal}"
 
@@ -438,7 +438,7 @@ module TestDeviceFileSystem =
         let unprivileged = booted linux
 
         let sticky =
-            match UnixPathResolution.chmod (PathArg.ofText "/") 0o1777 (bootedAsRoot linux) with
+            match UnixPathResolution.tryChmod (PathArg.ofText "/") 0o1777 (bootedAsRoot linux) with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"chmod / as root: %A{other}"
 
@@ -448,16 +448,16 @@ module TestDeviceFileSystem =
                 (Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) [])
                 sticky
 
-        for removal in [ UnixNamespace.rmdir ; UnixNamespace.unlink ] do
+        for removal in [ UnixNamespace.tryRmdir ; UnixNamespace.tryUnlink ] do
             match removal (PathArg.ofText "/dev") sticky with
             | Error (RemovalRefusal.MountPoint _) -> ()
             | other -> failwith $"removing /dev from a sticky root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/devx") sticky with
+        match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText "/devx") sticky with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"renaming /dev in a sticky root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (bootedAsRoot linux) with
+        match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (bootedAsRoot linux) with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"moving /dev to another directory: expected a refusal, got %A{other}"
 
@@ -467,19 +467,19 @@ module TestDeviceFileSystem =
         let root = bootedAsRoot linux
 
         // Its root is root's, mode 0755: uid 1000 is refused by the bits.
-        match UnixNamespace.unlink (PathArg.ofText "/dev/null") unprivileged with
+        match UnixNamespace.tryUnlink (PathArg.ofText "/dev/null") unprivileged with
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.EACCES)
         | Error refusal -> failwith $"refused: %s{RemovalRefusal.describe refusal}"
 
-        match UnixNamespace.unlink (PathArg.ofText "/dev/null") root with
+        match UnixNamespace.tryUnlink (PathArg.ofText "/dev/null") root with
         | Error (RemovalRefusal.DeviceFileSystem (_, removed)) -> removed |> shouldEqual (name "null")
         | other -> failwith $"unlink /dev/null as root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.rename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") root with
+        match UnixNamespace.tryRename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") root with
         | Error (RenameRefusal.DeviceFileSystem _) -> ()
         | other -> failwith $"rename within /dev as root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.rename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") unprivileged with
+        match UnixNamespace.tryRename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") unprivileged with
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.EACCES)
         | Error refusal -> failwith $"refused: %s{RenameRefusal.describe refusal}"
 
@@ -526,10 +526,10 @@ module TestDeviceFileSystem =
             | SyscallAnswer.Completed fd, system -> int fd, system
             | other -> failwith $"opening /f: %A{other}"
 
-        UnixDescriptor.fileClone file dev system |> shouldEqual (Ok UnixError.EXDEV)
-        UnixDescriptor.fileClone dev file system |> shouldEqual (Ok UnixError.EXDEV)
+        UnixDescriptor.tryFileClone file dev system |> shouldEqual (Ok UnixError.EXDEV)
+        UnixDescriptor.tryFileClone dev file system |> shouldEqual (Ok UnixError.EXDEV)
         // On one filesystem, the directory is what answers.
-        UnixDescriptor.fileClone file directory system
+        UnixDescriptor.tryFileClone file directory system
         |> shouldEqual (Ok UnixError.EISDIR)
 
     // ------------------------------------------------------- the node itself
@@ -550,13 +550,13 @@ module TestDeviceFileSystem =
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.ENOTDIR)
         | Error refusal -> failwith $"refused: %s{OpenRefusal.describe refusal}"
 
-        UnixPathResolution.access (PathArg.ofText "/dev/urandom") 6 system
+        UnixPathResolution.tryAccess (PathArg.ofText "/dev/urandom") 6 system
         |> shouldEqual (Ok (SyscallAnswer.Completed 0L))
 
-        UnixPathResolution.access (PathArg.ofText "/dev/urandom") 1 system
+        UnixPathResolution.tryAccess (PathArg.ofText "/dev/urandom") 1 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EACCES))
 
-        UnixNamespace.readlink (PathArg.ofText "/dev/null") UserBuffer.Mapped 16 system
+        UnixNamespace.tryReadlink (PathArg.ofText "/dev/null") UserBuffer.Mapped 16 system
         |> shouldEqual (Ok (ReadLinkAnswer.Failed UnixError.EINVAL))
 
         Answered.chdir (PathArg.ofText "/dev/null") system
@@ -564,11 +564,11 @@ module TestDeviceFileSystem =
         |> shouldEqual (Some UnixError.ENOTDIR)
 
         // Only the owner may change the mode, and root owns it.
-        match UnixPathResolution.chmod (PathArg.ofText "/dev/null") 0o666 system with
+        match UnixPathResolution.tryChmod (PathArg.ofText "/dev/null") 0o666 system with
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.EPERM)
         | Error refusal -> failwith $"refused: %s{ChModRefusal.describe refusal}"
 
-        match UnixPathResolution.chmod (PathArg.ofText "/dev/null") 0o600 (bootedAsRoot linux) with
+        match UnixPathResolution.tryChmod (PathArg.ofText "/dev/null") 0o600 (bootedAsRoot linux) with
         | Ok (SyscallAnswer.Completed 0L, changed) -> (reported "/dev/null" changed).Mode |> shouldEqual 0o020600
         | other -> failwith $"chmod /dev/null as root: %A{other}"
 
@@ -593,7 +593,7 @@ module TestDeviceFileSystem =
 
         let emptyDev = Map.ofList [ name "dev", SeedEntry.directory Map.empty ]
 
-        match UnixBootImage.withFileSystem epoch rootOwner emptyDev system with
+        match UnixBootImage.tryWithFileSystem epoch rootOwner emptyDev system with
         | Ok image ->
             let booted = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
             (reported "/dev/null" booted).Mode |> shouldEqual 0o020666
@@ -605,7 +605,7 @@ module TestDeviceFileSystem =
                 SeedEntry.directory (Map.ofList [ name "x", SeedEntry.file ImmutableArray.Empty ])
                 SeedEntry.file ImmutableArray.Empty
             ] do
-            UnixBootImage.withFileSystem epoch rootOwner (Map.ofList [ name "dev", populated ]) system
+            UnixBootImage.tryWithFileSystem epoch rootOwner (Map.ofList [ name "dev", populated ]) system
             |> Result.map ignore
             |> shouldEqual (Error (FileSystemSeedFault.SeedCoversDeviceFileSystem (name "dev")))
 
@@ -682,6 +682,6 @@ module TestDeviceFileSystem =
             | Error (StatRefusal.Path (PathRefusal.UnmodelledFileSystem (_, MountedFileSystem.Devfs))) -> ()
             | other -> failwith $"stat %s{path} on Darwin: expected a refusal, got %A{other}"
 
-        match UnixPathResolution.chdir (PathArg.ofText "/dev") system with
+        match UnixPathResolution.tryChdir (PathArg.ofText "/dev") system with
         | Error (PathRefusal.UnmodelledFileSystem _) -> ()
         | other -> failwith $"chdir /dev on Darwin: expected a refusal, got %A{other}"

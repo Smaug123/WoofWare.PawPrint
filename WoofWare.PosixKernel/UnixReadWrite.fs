@@ -26,7 +26,7 @@ type ReadAnswer =
 
 /// Why this kernel will not answer a `read`.
 [<RequireQualifiedAccess>]
-type ReadRefusal =
+type internal ReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
     /// A socket in `phase`, which has a datagram peer or a refused
@@ -61,7 +61,7 @@ type ReadRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module ReadRefusal =
+module internal ReadRefusal =
     /// Shared with `PReadRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -87,6 +87,18 @@ module ReadRefusal =
             $"the read was asleep on a pipe or a connected socket: %s{SyscallInterruptionRefusal.describe refusal}"
         | ReadRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ReadRefusal) : RefusalKind =
+        match refusal with
+        | ReadRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | ReadRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ConnectionBecameNonBlocking _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | ReadRefusal.DatagramSleep _ -> RefusalKind.Unmodelled
+        | ReadRefusal.ScannedDirectoryPosition _ -> RefusalKind.Unmodelled
+        | ReadRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+        | ReadRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `pread`.
 ///
 /// `ReadRefusal` without its cases for sockets, pipes and directories partway
@@ -94,20 +106,26 @@ module ReadRefusal =
 /// first two and reads a directory at the offset it is given, so a shared type
 /// would hand every client arms it could not reach.
 [<RequireQualifiedAccess>]
-type PReadRefusal =
+type internal PReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
     /// As `ReadRefusal.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module PReadRefusal =
+module internal PReadRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half.
     let describe (refusal : PReadRefusal) : string =
         match refusal with
         | PReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | PReadRefusal.SignalAtPageBoundary count -> ReadRefusal.describeSignalAtPageBoundary count
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PReadRefusal) : RefusalKind =
+        match refusal with
+        | PReadRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | PReadRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
 
 /// What became of a `read(2)` this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -209,7 +227,7 @@ module BrokenWriteTarget =
 
 /// Why this kernel will not answer a `write`.
 [<RequireQualifiedAccess>]
-type WriteRefusal =
+type internal WriteRefusal =
     /// The buffer has no answer at the step the write reached.
     | Buffer of BufferRefusal
     /// A socket in `phase`, which has a datagram peer or a refused
@@ -261,7 +279,7 @@ type WriteRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module WriteRefusal =
+module internal WriteRefusal =
     /// Shared with `PWriteRefusal`, whose case of the same name is the same
     /// fact.
     let internal describeSignalAtPageBoundary (count : int) : string =
@@ -304,6 +322,23 @@ module WriteRefusal =
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
         | WriteRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : WriteRefusal) : RefusalKind =
+        match refusal with
+        | WriteRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | WriteRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ConnectionBecameNonBlocking _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | WriteRefusal.SendBuffer _ -> RefusalKind.Unmodelled
+        | WriteRefusal.Inet6Binding _ -> RefusalKind.Unmodelled
+        | WriteRefusal.EphemeralPortsExhausted _ -> RefusalKind.Unmodelled
+        | WriteRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | WriteRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | WriteRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
+        | WriteRefusal.SignalReceiver (_, inner) -> SignalReceiverRefusal.kind inner
+        | WriteRefusal.InitProcess _ -> RefusalKind.Unmodelled
+        | WriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `recv(2)`.
 ///
 /// Its own type rather than `ReadRefusal`: `recv` decodes a flag word and
@@ -311,7 +346,7 @@ module WriteRefusal =
 /// could not reach. A `recv` that sleeps is finished by
 /// `UnixReadWrite.finishRead`, whose refusals are `ReadRefusal`'s.
 [<RequireQualifiedAccess>]
-type ReceiveRefusal =
+type internal ReceiveRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The flag word holds `flags`, which this kernel does not model for
@@ -326,7 +361,7 @@ type ReceiveRefusal =
     | ConnectionFault of socket : SocketId
 
 [<RequireQualifiedAccess>]
-module ReceiveRefusal =
+module internal ReceiveRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -342,13 +377,22 @@ module ReceiveRefusal =
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}, which is not an end of a connection. This kernel answers recv(2) on a connected stream socket only; what it answers on any other socket has not been measured."
         | ReceiveRefusal.ConnectionFault socket -> ReadRefusal.describe (ReadRefusal.ConnectionFault socket)
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : ReceiveRefusal) : RefusalKind =
+        match refusal with
+        | ReceiveRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmeasuredCount _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | ReceiveRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `send(2)`.
 ///
 /// Its own type rather than `WriteRefusal`, as `ReceiveRefusal` is. A `send`
 /// that sleeps is finished by `UnixReadWrite.admitFinishWrite` and
 /// `UnixReadWrite.finishWrite`, whose refusals are `WriteRefusal`'s.
 [<RequireQualifiedAccess>]
-type SendRefusal =
+type internal SendRefusal =
     /// The buffer has no answer at the step the call reached.
     | Buffer of BufferRefusal
     /// The flag word holds `flags`, which this kernel does not model for
@@ -367,7 +411,7 @@ type SendRefusal =
     | InitProcess of target : BrokenWriteTarget
 
 [<RequireQualifiedAccess>]
-module SendRefusal =
+module internal SendRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which of its own callers could
     /// have reached this.
@@ -385,6 +429,17 @@ module SendRefusal =
         | SendRefusal.SignalReceiver (target, refusal) ->
             WriteRefusal.describe (WriteRefusal.SignalReceiver (target, refusal))
         | SendRefusal.InitProcess target -> WriteRefusal.describe (WriteRefusal.InitProcess target)
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SendRefusal) : RefusalKind =
+        match refusal with
+        | SendRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmodelledFlags _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmeasuredCount _ -> RefusalKind.Unmodelled
+        | SendRefusal.UnmodelledSocketPhase _ -> RefusalKind.Unmodelled
+        | SendRefusal.ConnectionFault _ -> RefusalKind.Unmodelled
+        | SendRefusal.SignalReceiver (_, inner) -> SignalReceiverRefusal.kind inner
+        | SendRefusal.InitProcess _ -> RefusalKind.Unmodelled
 
 /// What a `write(2)` or `send(2)` this kernel answered did to the process that
 /// made it, besides answering: `'Answer` is what the call answered, a
@@ -446,7 +501,7 @@ type PWriteAdmission =
 /// reaches its own write operation, and a shared type would hand every client
 /// arms it could not reach and would have to invent messages for.
 [<RequireQualifiedAccess>]
-type PWriteRefusal =
+type internal PWriteRefusal =
     /// The buffer has no answer at the step this `pwrite` reached: its screen, or
     /// the copy it never got to make.
     | Buffer of BufferRefusal
@@ -461,7 +516,7 @@ type PWriteRefusal =
     | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
-module PWriteRefusal =
+module internal PWriteRefusal =
     /// What this kernel knows about why it cannot complete a `pwrite`. The client
     /// supplies its own half -- which entry point, which descriptor, and what it
     /// would have to build or configure to lift the refusal.
@@ -476,9 +531,17 @@ module PWriteRefusal =
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
         | PWriteRefusal.SignalAtPageBoundary count -> WriteRefusal.describeSignalAtPageBoundary count
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : PWriteRefusal) : RefusalKind =
+        match refusal with
+        | PWriteRefusal.Buffer _ -> RefusalKind.Unmodelled
+        | PWriteRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | PWriteRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | PWriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+
 /// Why this kernel will not answer a `copy_file_range(2)`.
 [<RequireQualifiedAccess>]
-type CopyFileRangeRefusal =
+type internal CopyFileRangeRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has `copy_file_range`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// Both descriptors name regular files on a mount of this type, whose
@@ -492,7 +555,7 @@ type CopyFileRangeRefusal =
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
-module CopyFileRangeRefusal =
+module internal CopyFileRangeRefusal =
     /// What this kernel knows about why it cannot complete a copy. The client
     /// supplies its own half: which entry point, and which descriptors.
     let describe (refusal : CopyFileRangeRefusal) : string =
@@ -505,6 +568,14 @@ module CopyFileRangeRefusal =
             WriteRefusal.describeExceedsRepresentableLength inode offset count
         | CopyFileRangeRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : CopyFileRangeRefusal) : RefusalKind =
+        match refusal with
+        | CopyFileRangeRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
+        | CopyFileRangeRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
+        | CopyFileRangeRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
+        | CopyFileRangeRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
 
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -1597,47 +1668,8 @@ module UnixReadWrite =
 
         Ok (ReadAnswer.Completed bytes, withQueue rest system)
 
-    /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
-    /// caller's buffer, and advance the offset by what actually moved.
-    ///
-    /// `count` is the `size_t` the caller asked for. A count longer than one
-    /// call moves is refused or shortened as the platform's
-    /// `TransferCountLimit` says.
-    ///
-    /// The buffer is consulted at three points and *not* consulted at three
-    /// others, and both sets are measured; see the comments inline.
-    ///
-    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
-    /// answers without the buffer, with the errno its flavour gives its domain
-    /// and kind, except that a blocking read of a
-    /// datagram socket, which sleeps until a datagram arrives, is refused. A
-    /// connected stream socket answers from its connection: the bytes waiting, end of file, a reset's error,
-    /// or `EAGAIN`; a blocking read with nothing to answer sleeps
-    /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
-    /// copy bytes into an unmapped buffer is refused
-    /// (`ReadRefusal.ConnectionFault`). A socket
-    /// with a datagram peer, or with a refused connection's error, is refused,
-    /// except for Linux's zero-length read, which is 0 in every phase.
-    ///
-    /// A read by `task` of a pipe that holds nothing while a write end is open,
-    /// through a description without `O_NONBLOCK`, sleeps (`ReadOutcome.WouldBlock`)
-    /// without looking at the buffer, and `finishRead` finishes it. Setting
-    /// `O_NONBLOCK` on the description while it sleeps does not wake it.
-    ///
-    /// A read of `/dev/urandom` longer than a page, by a task with a signal
-    /// pending, is refused (`ReadRefusal.SignalAtPageBoundary`).
-    ///
-    /// A read of an inotify instance takes as many whole queued records as fit
-    /// in `count`, oldest first, and answers `EINVAL` if the oldest does not
-    /// fit, a count of 0 included. A buffer naming no storage is `EFAULT`, and
-    /// the oldest record is lost with it. An instance holding no record
-    /// answers `EAGAIN` through a description with `O_NONBLOCK`, whatever the
-    /// count, and otherwise the read sleeps (`ReadOutcome.WouldBlock`) without
-    /// looking at the buffer, and `finishRead` finishes it.
-    ///
-    /// Fails loudly if `task` is not one of the process's tasks, or is already
-    /// asleep in a syscall.
-    let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `read`, with a refusal answered as the `Error` rather than raised.
+    let internal tryRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -1955,6 +1987,56 @@ module UnixReadWrite =
                     (UnixSystemState.fileDescriptors system))
                 system)
 
+    /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
+    /// caller's buffer, and advance the offset by what actually moved.
+    ///
+    /// `count` is the `size_t` the caller asked for. A count longer than one
+    /// call moves is refused or shortened as the platform's
+    /// `TransferCountLimit` says.
+    ///
+    /// The buffer is consulted at three points and *not* consulted at three
+    /// others, and both sets are measured; see the comments inline.
+    ///
+    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
+    /// answers without the buffer, with the errno its flavour gives its domain
+    /// and kind, except that a blocking read of a
+    /// datagram socket, which sleeps until a datagram arrives, is refused. A
+    /// connected stream socket answers from its connection: the bytes waiting, end of file, a reset's error,
+    /// or `EAGAIN`; a blocking read with nothing to answer sleeps
+    /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
+    /// copy bytes into an unmapped buffer is refused. A socket
+    /// with a datagram peer, or with a refused connection's error, is refused,
+    /// except for Linux's zero-length read, which is 0 in every phase.
+    ///
+    /// A read by `task` of a pipe that holds nothing while a write end is open,
+    /// through a description without `O_NONBLOCK`, sleeps (`ReadOutcome.WouldBlock`)
+    /// without looking at the buffer, and `finishRead` finishes it. Setting
+    /// `O_NONBLOCK` on the description while it sleeps does not wake it.
+    ///
+    /// A read of `/dev/urandom` longer than a page, by a task with a signal
+    /// pending, is refused.
+    ///
+    /// A read of an inotify instance takes as many whole queued records as fit
+    /// in `count`, oldest first, and answers `EINVAL` if the oldest does not
+    /// fit, a count of 0 included. A buffer naming no storage is `EFAULT`, and
+    /// the oldest record is lost with it. An instance holding no record
+    /// answers `EAGAIN` through a description with `O_NONBLOCK`, whatever the
+    /// count, and otherwise the read sleeps (`ReadOutcome.WouldBlock`) without
+    /// looking at the buffer, and `finishRead` finishes it.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
+    let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryRead task fd buffer count system
+        |> Refusal.orRaise "UnixReadWrite.read" ReadRefusal.kind ReadRefusal.describe
+
     /// The pipe the open file description `description`, which a task parked in
     /// `syscall` holds, names `pipeEnd` of.
     let private parkedPipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2224,6 +2306,25 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
 
+    /// `finishRead`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFinishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // The call's reference to the read end goes as it returns, and with it
+        // the read end, if no descriptor names it any more
+        // (`open-file-references.c` section B1).
+        finishReadHolding task system
+        |> Result.map (fun (outcome, after) ->
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixReadWrite.finishRead" held after
+        )
+
     /// Finish the `read` or `recv` `task` is asleep in: look at the pipe, the
     /// connection or the inotify instance again, as a woken real read does,
     /// and answer.
@@ -2252,12 +2353,12 @@ module UnixReadWrite =
     /// something to answer, what the same call made then would: the bytes
     /// waiting, up to its count (left queued by `MSG_PEEK`), end of file, or
     /// a reset's error, which it takes unless it is a Darwin peek; a buffer
-    /// naming no storage, with bytes to copy, is refused
-    /// (`ReadRefusal.ConnectionFault`). A signal is as for a pipe: under Linux
+    /// naming no storage, with bytes to copy, is refused. A signal is as for a
+    /// pipe: under Linux
     /// the answer beats it, and under Darwin both at once are refused; with
     /// nothing to answer, it ends the read, `Restarts` or `Failed EINTR`. With
     /// neither, the read sleeps again, refused instead if its description has
-    /// become non-blocking (`ReadRefusal.ConnectionBecameNonBlocking`). One a
+    /// become non-blocking. One a
     /// close has ended, under Darwin, answers `EBADF`.
     ///
     /// A read of an inotify instance answers, once the instance holds a
@@ -2271,20 +2372,10 @@ module UnixReadWrite =
     let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        : ReadOutcome * UnixSystem<'Task, 'Handler>
         =
-        let held =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some parked -> ParkedSyscall.descriptions parked
-            | None -> []
-
-        // The call's reference to the read end goes as it returns, and with it
-        // the read end, if no descriptor names it any more
-        // (`open-file-references.c` section B1).
-        finishReadHolding task system
-        |> Result.map (fun (outcome, after) ->
-            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixReadWrite.finishRead" held after
-        )
+        tryFinishRead task system
+        |> Refusal.orRaise "UnixReadWrite.finishRead" ReadRefusal.kind ReadRefusal.describe
 
 
     /// The socket `fd` names and the open file description it is reached
@@ -2326,33 +2417,8 @@ module UnixReadWrite =
         =
         UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer (uint64 count)
 
-    /// `recv(2)`: move up to `count` bytes queued at the connected socket
-    /// `fd` names into the caller's buffer, by the flag word `flags`, raw in
-    /// the flavour's numbering (`MessageFlag.number`).
-    ///
-    /// It is `read(2)` but for what the measurements part (`tcp-transfer.c`
-    /// section S, `tcp-recv-send.c`):
-    ///
-    /// - **The order.** On Linux the buffer is screened before the descriptor
-    ///   is looked up, so an out-of-range buffer is `EFAULT` ahead of `EBADF`
-    ///   and `ENOTSOCK`. A descriptor that names no socket is `ENOTSOCK`.
-    /// - **A count of zero** is `read`'s 0 on Darwin, and on Linux what a
-    ///   longer one would answer, but for taking no bytes: `EAGAIN`, or a
-    ///   sleep until bytes, a FIN or a reset arrive.
-    /// - **`MSG_PEEK`** answers the bytes without taking them, and a pending
-    ///   error, which Linux takes and Darwin leaves pending. It sleeps as a
-    ///   read does.
-    /// - **`MSG_DONTWAIT`** makes the call non-blocking whatever the
-    ///   description says.
-    /// - **`MSG_NOSIGNAL`** changes nothing.
-    ///
-    /// Every other flag is refused (`ReceiveRefusal.UnmodelledFlags`), as is a
-    /// count above `INT_MAX` and a socket that is not an end of a connection.
-    /// A call that sleeps is finished by `finishRead`, as a `read` is.
-    ///
-    /// Fails loudly if `task` is not one of the process's tasks, or is already
-    /// asleep in a syscall.
-    let recv<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `recv`, with a refusal answered as the `Error` rather than raised.
+    let internal tryRecv<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -2416,24 +2482,46 @@ module UnixReadWrite =
             | ConnectionCopyRefusal.Buffer refusal -> ReceiveRefusal.Buffer refusal
         )
 
-    /// `pread(2)`: move up to `count` bytes from `offset` in the file `fd` names
-    /// into the caller's buffer, without consulting or moving the description's
-    /// own file offset.
+    /// `recv(2)`: move up to `count` bytes queued at the connected socket
+    /// `fd` names into the caller's buffer, by the flag word `flags`, raw in
+    /// the flavour's numbering (`MessageFlag.number`).
     ///
-    /// `count` is the `size_t` the caller asked for, treated as `read`'s is.
+    /// It is `read(2)` but for what the measurements part (`tcp-transfer.c`
+    /// section S, `tcp-recv-send.c`):
     ///
-    /// A negative `offset`, by contrast, *is* a request a kernel sees, and is
-    /// EINVAL. Where in the order it is answered differs between the flavours,
-    /// which is what makes this more than `read` with an extra argument.
+    /// - **The order.** On Linux the buffer is screened before the descriptor
+    ///   is looked up, so an out-of-range buffer is `EFAULT` ahead of `EBADF`
+    ///   and `ENOTSOCK`. A descriptor that names no socket is `ENOTSOCK`.
+    /// - **A count of zero** is `read`'s 0 on Darwin, and on Linux what a
+    ///   longer one would answer, but for taking no bytes: `EAGAIN`, or a
+    ///   sleep until bytes, a FIN or a reset arrive.
+    /// - **`MSG_PEEK`** answers the bytes without taking them, and a pending
+    ///   error, which Linux takes and Darwin leaves pending. It sleeps as a
+    ///   read does.
+    /// - **`MSG_DONTWAIT`** makes the call non-blocking whatever the
+    ///   description says.
+    /// - **`MSG_NOSIGNAL`** changes nothing.
     ///
-    /// It moves no file offset, and nothing in this kernel moves `atime`, so the
-    /// system that comes back is the one that arrived unless the read drew from
-    /// the entropy pool (`ReadAnswer.Drawn`).
+    /// Every other flag is refused, as is a count above `INT_MAX` and a socket
+    /// that is not an end of a connection.
+    /// A call that sleeps is finished by `finishRead`, as a `read` is.
     ///
-    /// `task` is the task making the call, which must be one of the process's
-    /// and not asleep in another; a read of `/dev/urandom` asks whether it has
-    /// a signal pending (`PReadRefusal.SignalAtPageBoundary`).
-    let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
+    let recv<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryRecv task fd buffer count flags system
+        |> Refusal.orRaise "UnixReadWrite.recv" ReceiveRefusal.kind ReceiveRefusal.describe
+
+    /// `pread`, with a refusal answered as the `Error` rather than raised.
+    let internal tryPread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -2614,6 +2702,35 @@ module UnixReadWrite =
         | Error refusal -> Error (PReadRefusal.Buffer refusal)
         | Ok (Error error) -> Ok (ReadAnswer.Failed error, system)
         | Ok (Ok bytes) -> Ok (ReadAnswer.Completed bytes, system)
+
+    /// `pread(2)`: move up to `count` bytes from `offset` in the file `fd` names
+    /// into the caller's buffer, without consulting or moving the description's
+    /// own file offset.
+    ///
+    /// `count` is the `size_t` the caller asked for, treated as `read`'s is.
+    ///
+    /// A negative `offset`, by contrast, *is* a request a kernel sees, and is
+    /// EINVAL. Where in the order it is answered differs between the flavours,
+    /// which is what makes this more than `read` with an extra argument.
+    ///
+    /// It moves no file offset, and nothing in this kernel moves `atime`, so the
+    /// system that comes back is the one that arrived unless the read drew from
+    /// the entropy pool (`ReadAnswer.Drawn`).
+    ///
+    /// `task` is the task making the call, which must be one of the process's
+    /// and not asleep in another; a read of `/dev/urandom` asks whether it has
+    /// a signal pending, and refuses one longer than a page if it does.
+    let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (offset : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryPread task fd buffer count offset system
+        |> Refusal.orRaise "UnixReadWrite.pread" PReadRefusal.kind PReadRefusal.describe
 
     /// What a `write` will operate on, once the descriptor's access mode has
     /// been checked: a file at its description's own offset, a socket, or a
@@ -2899,46 +3016,8 @@ module UnixReadWrite =
             |> parkConnectionWrite task call descriptionId fd UserBuffer.Mapped total taken
         | step -> mismatch $"is not the blocking write that takes part of it and sleeps (%A{step})"
 
-    /// Every answer `write(2)` by `task` gives *without* reading the caller's
-    /// buffer, and otherwise how many bytes to extract. See `WriteAdmission`
-    /// for why this is a separate call rather than a `write` that takes the
-    /// bytes.
-    ///
-    /// The system that comes back is the one a real kernel is in by the time it
-    /// either answers or copies. It is the one that arrived, except that on
-    /// Darwin a write reaching a pipe moves the pipe's timestamps whatever it
-    /// answers but `EPIPE`, and that a write into a pipe with no reader raises
-    /// `SIGPIPE`; so an answer here must be reported with it, and a transfer
-    /// passed to `write` against it.
-    ///
-    /// A write into a pipe with no reader answers `EPIPE` without the buffer,
-    /// ahead of `EAGAIN`, `EFAULT` and a short count, and raises `SIGPIPE`
-    /// before it returns. That is a zero-length write too, except on Linux,
-    /// where one answers 0 and raises nothing. The signal is `task`'s own on
-    /// Linux and the process's on Darwin; what it does is then what any
-    /// generated signal does (see `UnixSignal.kill`), and if its disposition
-    /// is the default, it ends the process.
-    ///
-    /// A blocking write into a pipe with no room for any of it sleeps
-    /// (`WriteOutcome.WouldBlock`) without reading the buffer; one with room
-    /// for part of it is given the whole count to transfer, and `write` puts in
-    /// what fits and sleeps for the rest. `admitFinishWrite` and `finishWrite`
-    /// finish a sleeping write.
-    ///
-    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
-    /// answers without the buffer, as its flavour does for its domain and
-    /// kind, at every length including zero; on
-    /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
-    /// connected stream socket answers from its connection: how many bytes it takes now, `EAGAIN`, or a
-    /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
-    /// no room for the whole of takes what fits and sleeps for the rest, as
-    /// one into a pipe does. One that would copy from an unmapped buffer is
-    /// refused (`WriteRefusal.ConnectionFault`). A socket with a datagram
-    /// peer, or with a refused connection's error, is refused.
-    ///
-    /// Fails loudly if `task` is not one of the process's tasks, or is already
-    /// asleep in a syscall.
-    let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `admitWrite`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAdmitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -3070,6 +3149,56 @@ module UnixReadWrite =
         | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (unchanged (WriteAdmission.Transfer count))
+
+    /// Every answer `write(2)` by `task` gives *without* reading the caller's
+    /// buffer, and otherwise how many bytes to extract. See `WriteAdmission`
+    /// for why this is a separate call rather than a `write` that takes the
+    /// bytes.
+    ///
+    /// The system that comes back is the one a real kernel is in by the time it
+    /// either answers or copies. It is the one that arrived, except that on
+    /// Darwin a write reaching a pipe moves the pipe's timestamps whatever it
+    /// answers but `EPIPE`, and that a write into a pipe with no reader raises
+    /// `SIGPIPE`; so an answer here must be reported with it, and a transfer
+    /// passed to `write` against it.
+    ///
+    /// A write into a pipe with no reader answers `EPIPE` without the buffer,
+    /// ahead of `EAGAIN`, `EFAULT` and a short count, and raises `SIGPIPE`
+    /// before it returns. That is a zero-length write too, except on Linux,
+    /// where one answers 0 and raises nothing. The signal is `task`'s own on
+    /// Linux and the process's on Darwin; what it does is then what any
+    /// generated signal does (see `UnixSignal.kill`), and if its disposition
+    /// is the default, it ends the process.
+    ///
+    /// A blocking write into a pipe with no room for any of it sleeps
+    /// (`WriteOutcome.WouldBlock`) without reading the buffer; one with room
+    /// for part of it is given the whole count to transfer, and `write` puts in
+    /// what fits and sleeps for the rest. `admitFinishWrite` and `finishWrite`
+    /// finish a sleeping write.
+    ///
+    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
+    /// answers without the buffer, as its flavour does for its domain and
+    /// kind, at every length including zero; on
+    /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
+    /// connected stream socket answers from its connection: how many bytes it takes now, `EAGAIN`, or a
+    /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
+    /// no room for the whole of takes what fits and sleeps for the rest, as
+    /// one into a pipe does. One that would copy from an unmapped buffer is
+    /// refused. A socket with a datagram peer, or with a refused connection's
+    /// error, is refused.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
+    let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<WriteAdmission, 'Task, 'Handler>
+        =
+        tryAdmitWrite task fd buffer count system
+        |> Refusal.orRaise "UnixReadWrite.admitWrite" WriteRefusal.kind WriteRefusal.describe
 
     /// `write`, without marking the description written.
     let private writeUnmarked<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -3269,6 +3398,20 @@ module UnixReadWrite =
                     Machine = UnixMachineState.commitFileSystem mutation system.Machine
                 })
 
+    /// `write`, with a refusal answered as the `Error` rather than raised.
+    let internal tryWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let outcome = writeUnmarked task fd bytes system
+
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
+        | None -> outcome
+        | Some id -> outcome |> Result.map (markedAfterWrite id (returnsHavingMoved 0))
+
     /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
     /// to.
     ///
@@ -3299,13 +3442,10 @@ module UnixReadWrite =
         (fd : int)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        : WriteOutcome<WriteAnswer, 'Task, 'Handler>
         =
-        let outcome = writeUnmarked task fd bytes system
-
-        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
-        | None -> outcome
-        | Some id -> outcome |> Result.map (markedAfterWrite id (returnsHavingMoved 0))
+        tryWrite task fd bytes system
+        |> Refusal.orRaise "UnixReadWrite.write" WriteRefusal.kind WriteRefusal.describe
 
     /// `outcome`, with the open file descriptions `held`, which the write held
     /// while it slept, released if nothing references them now: the call's
@@ -3706,6 +3846,33 @@ module UnixReadWrite =
             // no room again sleeps at the back of the queue.
             Ok (parkWrite task writer fd parked.Buffer parked.Count parked.Written system)
 
+    /// `admitFinishWrite`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAdmitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // An admission that answers is the call returning.
+        let moved (written : int) (resumption : WriteResumption) : bool =
+            match resumption with
+            | WriteResumption.Answered answer -> returnsHavingMoved written answer
+            | WriteResumption.Transfer _ -> false
+
+        let marking = waitingWriter task system
+
+        admitFinishWriteHolding task system
+        |> Result.map (fun outcome ->
+            match marking with
+            | Some (description, written) -> markedAfterWrite description (moved written) outcome
+            | None -> outcome
+        )
+        |> Result.map (releasedAfterWrite "UnixReadWrite.admitFinishWrite" held)
+
     /// Every answer the `write` `task` is asleep in gives *without* reading more
     /// of the caller's buffer, and otherwise which of its bytes to extract next.
     /// See `WriteAdmission` for why that is a separate call.
@@ -3754,10 +3921,9 @@ module UnixReadWrite =
     ///   beats room; under Darwin, room beside it is refused.
     /// - **There is room**, as a write made now would take:
     ///   `WriteResumption.Transfer` names the bytes to pass to `finishWrite`.
-    ///   A buffer naming no storage is refused (`WriteRefusal.ConnectionFault`).
+    ///   A buffer naming no storage is refused.
     /// - **Neither**: the task sleeps again, refused instead if its
-    ///   description has become non-blocking
-    ///   (`WriteRefusal.ConnectionBecameNonBlocking`).
+    ///   description has become non-blocking.
     /// - **A close has ended it**, under Darwin: `EBADF`, whatever it had
     ///   taken.
     ///
@@ -3765,28 +3931,10 @@ module UnixReadWrite =
     let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
+        : WriteOutcome<WriteResumption, 'Task, 'Handler>
         =
-        let held =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some parked -> ParkedSyscall.descriptions parked
-            | None -> []
-
-        // An admission that answers is the call returning.
-        let moved (written : int) (resumption : WriteResumption) : bool =
-            match resumption with
-            | WriteResumption.Answered answer -> returnsHavingMoved written answer
-            | WriteResumption.Transfer _ -> false
-
-        let marking = waitingWriter task system
-
-        admitFinishWriteHolding task system
-        |> Result.map (fun outcome ->
-            match marking with
-            | Some (description, written) -> markedAfterWrite description (moved written) outcome
-            | None -> outcome
-        )
-        |> Result.map (releasedAfterWrite "UnixReadWrite.admitFinishWrite" held)
+        tryAdmitFinishWrite task system
+        |> Refusal.orRaise "UnixReadWrite.admitFinishWrite" WriteRefusal.kind WriteRefusal.describe
 
 
     let private finishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -3849,23 +3997,8 @@ module UnixReadWrite =
 
             afterPartWritten task pipeId writer fd parked nonBlocking id system
 
-    /// The `write` `task` is asleep in, given the bytes the caller extracted
-    /// after `admitFinishWrite` said to: they go into the pipe or the
-    /// connection, and the call
-    /// returns its whole count if that was the last of it.
-    ///
-    /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
-    /// set on the description while the call slept, ends it with the count it
-    /// has put in by now, and with neither, it sleeps again for the rest. A
-    /// write to a connected socket sleeps again for the rest, or is refused if
-    /// its description has become non-blocking
-    /// (`WriteRefusal.ConnectionBecameNonBlocking`); a signal never reaches
-    /// it here, `admitFinishWrite` having answered one first.
-    ///
-    /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
-    /// the system the one it came with: anything else is the caller's mistake,
-    /// and fails loudly.
-    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `finishWrite`, with a refusal answered as the `Error` rather than raised.
+    let internal tryFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
@@ -3886,16 +4019,33 @@ module UnixReadWrite =
         )
         |> Result.map (releasedAfterWrite "UnixReadWrite.finishWrite" held)
 
-
-    /// A blocking `write` of `total` bytes by `task`, given the first of them
-    /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe or
-    /// the connection, and the call sleeps for the rest (`WriteOutcome.WouldBlock`), to be finished
-    /// with `admitFinishWrite` and `finishWrite`.
+    /// The `write` `task` is asleep in, given the bytes the caller extracted
+    /// after `admitFinishWrite` said to: they go into the pipe or the
+    /// connection, and the call
+    /// returns its whole count if that was the last of it.
     ///
-    /// `bytes` must be exactly the ones the admission named, and the system the
-    /// one it came with: anything else is the caller's mistake, and fails
-    /// loudly.
-    let writeThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
+    /// set on the description while the call slept, ends it with the count it
+    /// has put in by now, and with neither, it sleeps again for the rest. A
+    /// write to a connected socket sleeps again for the rest, or is refused if
+    /// its description has become non-blocking; a signal never reaches
+    /// it here, `admitFinishWrite` having answered one first.
+    ///
+    /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
+    /// the system the one it came with: anything else is the caller's mistake,
+    /// and fails loudly.
+    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<WriteAnswer, 'Task, 'Handler>
+        =
+        tryFinishWrite task bytes system
+        |> Refusal.orRaise "UnixReadWrite.finishWrite" WriteRefusal.kind WriteRefusal.describe
+
+
+    /// `writeThenSleep`, with a refusal answered as the `Error` rather than raised.
+    let internal tryWriteThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (total : int)
@@ -3943,6 +4093,25 @@ module UnixReadWrite =
                 system
             |> Ok
         | other -> mismatch $"names %A{other} rather than the write end of a pipe or a connected socket"
+
+    /// A blocking `write` of `total` bytes by `task`, given the first of them
+    /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe or
+    /// the connection, and the call sleeps for the rest (`WriteOutcome.WouldBlock`), to be finished
+    /// with `admitFinishWrite` and `finishWrite`.
+    ///
+    /// `bytes` must be exactly the ones the admission named, and the system the
+    /// one it came with: anything else is the caller's mistake, and fails
+    /// loudly.
+    let writeThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (total : int)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<WriteAnswer, 'Task, 'Handler>
+        =
+        tryWriteThenSleep task fd total bytes system
+        |> Refusal.orRaise "UnixReadWrite.writeThenSleep" WriteRefusal.kind WriteRefusal.describe
 
     /// A `WriteRefusal` from the connected-socket path `send` shares with
     /// `write`, as `send`'s own.
@@ -3996,32 +4165,8 @@ module UnixReadWrite =
 
         Ok (Ok (descriptionId, description.NonBlocking || dontWait, socketId, connectionId, connectionEnd))
 
-    /// Every answer `send(2)` by `task` gives *without* reading the caller's
-    /// buffer, and otherwise how many bytes to extract, as `admitWrite` is for
-    /// `write`. The flag word `flags` is raw, in the flavour's numbering
-    /// (`MessageFlag.number`).
-    ///
-    /// It is `write(2)` to a connected socket but for what the measurements
-    /// part (`tcp-transfer.c` section S, `tcp-recv-send.c`):
-    ///
-    /// - **The order.** On Linux the buffer is screened before the descriptor
-    ///   is looked up, so an out-of-range buffer is `EFAULT` ahead of `EBADF`
-    ///   and `ENOTSOCK`. A descriptor that names no socket is `ENOTSOCK`.
-    /// - **`MSG_DONTWAIT`** makes a Linux `send` non-blocking whatever the
-    ///   description says. Darwin's `send` ignores it.
-    /// - **`MSG_NOSIGNAL`**: an `EPIPE` raises no `SIGPIPE`, whether the
-    ///   call answers it at once or once it has slept.
-    /// - **No description is marked written** (Darwin's `FWASWRITTEN`, which
-    ///   a `write` that moves bytes sets).
-    ///
-    /// Every other flag is refused (`SendRefusal.UnmodelledFlags`), as is a
-    /// count above `INT_MAX` and a socket that is not an end of a connection.
-    /// A call that sleeps is finished by `admitFinishWrite` and `finishWrite`,
-    /// as a `write` is.
-    ///
-    /// Fails loudly if `task` is not one of the process's tasks, or is already
-    /// asleep in a syscall.
-    let admitSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `admitSend`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAdmitSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -4070,14 +4215,45 @@ module UnixReadWrite =
             system
         |> Result.mapError sendRefusalOf
 
-    /// `send(2)`, given the bytes the caller extracted after `admitSend` said
-    /// to, as `write` is for `write(2)`: it answers the flag word and the
-    /// descriptor itself, so a caller that skipped the admission gets a
-    /// kernel's answer, and takes no buffer to screen.
+    /// Every answer `send(2)` by `task` gives *without* reading the caller's
+    /// buffer, and otherwise how many bytes to extract, as `admitWrite` is for
+    /// `write`. The flag word `flags` is raw, in the flavour's numbering
+    /// (`MessageFlag.number`).
+    ///
+    /// It is `write(2)` to a connected socket but for what the measurements
+    /// part (`tcp-transfer.c` section S, `tcp-recv-send.c`):
+    ///
+    /// - **The order.** On Linux the buffer is screened before the descriptor
+    ///   is looked up, so an out-of-range buffer is `EFAULT` ahead of `EBADF`
+    ///   and `ENOTSOCK`. A descriptor that names no socket is `ENOTSOCK`.
+    /// - **`MSG_DONTWAIT`** makes a Linux `send` non-blocking whatever the
+    ///   description says. Darwin's `send` ignores it.
+    /// - **`MSG_NOSIGNAL`**: an `EPIPE` raises no `SIGPIPE`, whether the
+    ///   call answers it at once or once it has slept.
+    /// - **No description is marked written** (Darwin's `FWASWRITTEN`, which
+    ///   a `write` that moves bytes sets).
+    ///
+    /// Every other flag is refused, as is a count above `INT_MAX` and a socket
+    /// that is not an end of a connection.
+    /// A call that sleeps is finished by `admitFinishWrite` and `finishWrite`,
+    /// as a `write` is.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
-    let send<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let admitSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<WriteAdmission, 'Task, 'Handler>
+        =
+        tryAdmitSend task fd buffer count flags system
+        |> Refusal.orRaise "UnixReadWrite.admitSend" SendRefusal.kind SendRefusal.describe
+
+    /// `send`, with a refusal answered as the `Error` rather than raised.
+    let internal trySend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -4113,6 +4289,24 @@ module UnixReadWrite =
             connectionEnd
             system
         |> Result.mapError sendRefusalOf
+
+    /// `send(2)`, given the bytes the caller extracted after `admitSend` said
+    /// to, as `write` is for `write(2)`: it answers the flag word and the
+    /// descriptor itself, so a caller that skipped the admission gets a
+    /// kernel's answer, and takes no buffer to screen.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
+    let send<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<WriteAnswer, 'Task, 'Handler>
+        =
+        trySend task fd bytes flags system
+        |> Refusal.orRaise "UnixReadWrite.send" SendRefusal.kind SendRefusal.describe
 
     /// A blocking `send` of `total` bytes by `task`, given the first of them
     /// that `WriteAdmission.TransferThenSleep` named, as `writeThenSleep` is
@@ -4273,22 +4467,8 @@ module UnixReadWrite =
         // `write` does (`devices.c`, PWRITE rows).
         | OpenFileTarget.CharacterDevice (_, device) -> seekable (PWriteTarget.CharacterDevice device)
 
-    /// Every answer `pwrite(2)` gives *without* reading the caller's buffer, and
-    /// otherwise how many bytes to extract.
-    ///
-    /// Changes nothing: everything a write does before the copy is a question.
-    /// See `WriteAdmission` for why this is a separate call rather than a
-    /// `pwrite` that takes the bytes.
-    ///
-    /// Does not settle the length limit, which `pwrite` reports at the commit —
-    /// so a caller can be told to extract bytes for a write that is then refused
-    /// as unrepresentable. That costs the caller work rather than correctness,
-    /// the refusal carrying no state, and it is what `admitWrite` does too.
-    ///
-    /// `task` is the task making the call, which must be one of the process's
-    /// and not asleep in another; a write to `/dev/urandom` asks whether it
-    /// has a signal pending (`PWriteRefusal.SignalAtPageBoundary`).
-    let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `admitPWrite`, with a refusal answered as the `Error` rather than raised.
+    let internal tryAdmitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
@@ -4357,6 +4537,33 @@ module UnixReadWrite =
         | UserBuffer.Opaque -> Error (PWriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (PWriteAdmission.Transfer count)
+
+    /// Every answer `pwrite(2)` gives *without* reading the caller's buffer, and
+    /// otherwise how many bytes to extract.
+    ///
+    /// Changes nothing: everything a write does before the copy is a question.
+    /// See `WriteAdmission` for why this is a separate call rather than a
+    /// `pwrite` that takes the bytes.
+    ///
+    /// Does not settle the length limit, which `pwrite` reports at the commit —
+    /// so a caller can be told to extract bytes for a write that is then refused
+    /// as unrepresentable. That costs the caller work rather than correctness,
+    /// the refusal carrying no state, and it is what `admitWrite` does too.
+    ///
+    /// `task` is the task making the call, which must be one of the process's
+    /// and not asleep in another; a write to `/dev/urandom` asks whether it
+    /// has a signal pending, and refuses one longer than a page if it does.
+    let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : uint64)
+        (offset : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PWriteAdmission
+        =
+        tryAdmitPWrite task fd buffer count offset system
+        |> Refusal.orRaise "UnixReadWrite.admitPWrite" PWriteRefusal.kind PWriteRefusal.describe
 
     /// `pwrite`, without marking the description written.
     let private pwriteUnmarked<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -4430,6 +4637,25 @@ module UnixReadWrite =
             }
         )
 
+    /// `pwrite`, with a refusal answered as the `Error` rather than raised.
+    let internal tryPwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (offset : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, PWriteRefusal>
+        =
+        // Marked as a write is (`markedAfterWrite`): a pwrite that moved bytes
+        // marks the description it was made through.
+        match
+            pwriteUnmarked task fd bytes offset system,
+            FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+        with
+        | Ok (WriteAnswer.Completed written, system), Some id when written > 0L ->
+            Ok (WriteAnswer.Completed written, markWritten id system)
+        | result, _ -> result
+
     /// `pwrite(2)`, given the bytes the caller extracted after `admitPWrite` said
     /// to: place them at `offset` without consulting or moving the description's
     /// own file offset.
@@ -4459,36 +4685,13 @@ module UnixReadWrite =
         (bytes : ImmutableArray<byte>)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, PWriteRefusal>
+        : WriteAnswer * UnixSystem<'Task, 'Handler>
         =
-        // Marked as a write is (`markedAfterWrite`): a pwrite that moved bytes
-        // marks the description it was made through.
-        match
-            pwriteUnmarked task fd bytes offset system,
-            FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
-        with
-        | Ok (WriteAnswer.Completed written, system), Some id when written > 0L ->
-            Ok (WriteAnswer.Completed written, markWritten id system)
-        | result, _ -> result
+        tryPwrite task fd bytes offset system
+        |> Refusal.orRaise "UnixReadWrite.pwrite" PWriteRefusal.kind PWriteRefusal.describe
 
-    /// `copy_file_range(inFd, NULL, outFd, NULL, length, flags)`: copy up to
-    /// `length` bytes from `inFd`'s offset to `outFd`'s, inside the kernel,
-    /// and advance both offsets by what moved.
-    ///
-    /// Only the form that copies at the descriptions' own offsets is
-    /// expressible. `length` is the `size_t` the caller asked for; it is
-    /// shortened to what remains of the source, and then to what one call
-    /// moves (see `TransferCountLimit`). The answer is the count copied, 0 at
-    /// the source's end.
-    ///
-    /// EBADF for a descriptor the process does not hold, then EINVAL for any
-    /// `flags`, EISDIR if either names a directory, EINVAL if either is not a
-    /// regular file, EBADF for a source not open for reading or a destination
-    /// not open for writing, EFBIG for a destination at offset `INT64_MAX`,
-    /// and EINVAL for a copy within one file whose two ranges overlap. A copy writes as `write(2)` does: the destination's
-    /// modification and status-change times move and its set-ID bits are
-    /// stripped as a write strips them. A copy of nothing changes nothing.
-    let copyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `copyFileRange`, with a refusal answered as the `Error` rather than raised.
+    let internal tryCopyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inFd : int)
         (outFd : int)
         (length : uint64)
@@ -4637,3 +4840,34 @@ module UnixReadWrite =
                 |> UnixSystemState.withFileDescriptors registry
             )
         | _ -> failed UnixError.EINVAL
+
+    /// <summary>
+    /// `copy_file_range(inFd, NULL, outFd, NULL, length, flags)`: copy up to
+    /// `length` bytes from `inFd`'s offset to `outFd`'s, inside the kernel,
+    /// and advance both offsets by what moved.
+    ///
+    /// Only the form that copies at the descriptions' own offsets is
+    /// expressible. `length` is the `size_t` the caller asked for; it is
+    /// shortened to what remains of the source, and then to what one call
+    /// moves (see `TransferCountLimit`). The answer is the count copied, 0 at
+    /// the source's end.
+    ///
+    /// EBADF for a descriptor the process does not hold, then EINVAL for any
+    /// `flags`, EISDIR if either names a directory, EINVAL if either is not a
+    /// regular file, EBADF for a source not open for reading or a destination
+    /// not open for writing, EFBIG for a destination at offset `INT64_MAX`,
+    /// and EINVAL for a copy within one file whose two ranges overlap. A copy writes as `write(2)` does: the destination's
+    /// modification and status-change times move and its set-ID bits are
+    /// stripped as a write strips them. A copy of nothing changes nothing.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Linux-flavoured, and only Linux has `copy_file_range`.</exception>
+    let copyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inFd : int)
+        (outFd : int)
+        (length : uint64)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryCopyFileRange inFd outFd length flags system
+        |> Refusal.orRaise "UnixReadWrite.copyFileRange" CopyFileRangeRefusal.kind CopyFileRangeRefusal.describe

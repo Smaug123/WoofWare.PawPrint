@@ -45,7 +45,7 @@ module TestEpollCreate1 =
         ]
 
     let private created (flags : int) (system : UnixSystem<int, string>) : bool =
-        match UnixPoll.epollCreate1 flags system with
+        match UnixPoll.tryEpollCreate1 flags system with
         | Ok (Ok _) -> true
         | Ok (Error UnixError.EINVAL) -> false
         | other -> failwith $"flags 0x%x{flags}: expected an epoll instance or EINVAL, got %A{other}"
@@ -89,7 +89,7 @@ module TestEpollCreate1 =
                 linux
 
         let property (flags : int) : unit =
-            match UnixPoll.epollCreate1 flags holed with
+            match UnixPoll.tryEpollCreate1 flags holed with
             | Ok (Ok (fd, after)) ->
                 (flags = 0 || flags = cloExec) |> shouldEqual true
                 fd |> shouldEqual epoll
@@ -121,7 +121,7 @@ module TestEpollCreate1 =
     [<Test>]
     let ``Darwin has no epoll, so every call is refused`` () : unit =
         let property (flags : int) : unit =
-            UnixPoll.epollCreate1 flags darwin
+            UnixPoll.tryEpollCreate1 flags darwin
             |> shouldEqual (Error (EpollCreateRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen flagsGen) property)

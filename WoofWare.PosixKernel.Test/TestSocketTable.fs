@@ -40,7 +40,7 @@ module TestSocketTable =
     /// `close(2)`. A refusal crashes the test; an errno comes back, because that
     /// is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system

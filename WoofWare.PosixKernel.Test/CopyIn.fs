@@ -9,7 +9,7 @@ open WoofWare.PosixKernel
 /// two calls a client makes with it, admitting the copy and then passing the
 /// bytes the admission named.
 [<RequireQualifiedAccess>]
-module CopyIn =
+module internal CopyIn =
 
     /// How long `blob` is: longer than any copy-in takes, which is at most 128
     /// bytes on Linux and 255 on Darwin.
@@ -103,7 +103,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : ImmutableArray<byte>
         =
-        match UnixSocket.admitSockaddrCopy syscall fd destination declaredLength system with
+        match UnixSocket.tryAdmitSockaddrCopy syscall fd destination declaredLength system with
         | Ok (SockaddrCopyAdmission.Transfer length) -> prefix blob length
         | Ok (SockaddrCopyAdmission.Answered _)
         | Error _ -> ImmutableArray.Empty
@@ -118,7 +118,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        UnixSocket.bind
+        UnixSocket.tryBind
             fd
             destination
             declaredLength
@@ -135,7 +135,7 @@ module CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
-        UnixConnection.connect
+        UnixConnection.tryConnect
             fd
             destination
             declaredLength
@@ -145,7 +145,7 @@ module CopyIn =
 /// What `getsockname(2)` and `accept(2)` copy out, read back and predicted
 /// without the library's own encoder.
 [<RequireQualifiedAccess>]
-module CopyOut =
+module internal CopyOut =
 
     /// The endpoint in a copied-out `struct sockaddr_in` that reaches
     /// `sin_addr`: the port at 2 and the address at 4, both network order.

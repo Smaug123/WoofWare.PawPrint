@@ -161,7 +161,7 @@ module TestUnixScheduling =
         |> Machines.doIn
             pid
             (fun view ->
-                match UnixPipe.pipe2 0 UserBuffer.Mapped view with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped view with
                 | Ok (Pipe2Answer.Created (3, 4), view) -> view
                 | other -> failwith $"pipe2: %A{other}"
             )
@@ -174,7 +174,9 @@ module TestUnixScheduling =
         let cpu = CpuId (cpu % world.Count)
 
         match
-            SimulatedMachine.launch (Launched.launch world.Platform UnixSystem.pipedStandardStreams 0 cpu) world.Machine
+            SimulatedMachine.tryLaunch
+                (Launched.launch world.Platform UnixSystem.pipedStandardStreams 0 cpu)
+                world.Machine
         with
         | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
         | Ok (pid, machine) ->
@@ -201,7 +203,7 @@ module TestUnixScheduling =
 
         let system =
             UnixSystem.initial platform
-            |> UnixBootImage.withProcessorCount count
+            |> UnixBootImage.tryWithProcessorCount count
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 leaderCpu
 
@@ -254,7 +256,7 @@ module TestUnixScheduling =
         }
 
     let private endOn (ended : EndedProcess<int, string>) (machine : SimulatedMachine<int, string>) =
-        match SimulatedMachine.endProcess ended machine with
+        match SimulatedMachine.tryEndProcess ended machine with
         | Ok (_, machine) -> machine
         | Error refusal -> failwith $"endProcess: %s{ProcessEndRefusal.describe refusal}"
 
@@ -275,7 +277,7 @@ module TestUnixScheduling =
                     |> Machines.doIn
                         pid
                         (fun view ->
-                            match UnixTaskLifecycle.spawn 0 name cpu view with
+                            match UnixTaskLifecycle.trySpawn 0 name cpu view with
                             | Ok (SpawnAnswer.Spawned _, view) -> view
                             | other -> failwith $"spawn: %A{other}"
                         )
@@ -349,7 +351,7 @@ module TestUnixScheduling =
                     |> Machines.inProcess
                         task.Pid
                         (fun view ->
-                            match UnixReadWrite.read task.Name 3 UserBuffer.Mapped 1UL view with
+                            match UnixReadWrite.tryRead task.Name 3 UserBuffer.Mapped 1UL view with
                             | Ok (ReadOutcome.WouldBlock _, view) -> true, view
                             | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), view) when bytes.Length = 1 ->
                                 false, view
@@ -419,7 +421,7 @@ module TestUnixScheduling =
                     |> Machines.inProcess
                         task.Pid
                         (fun view ->
-                            match UnixReadWrite.finishRead task.Name view with
+                            match UnixReadWrite.tryFinishRead task.Name view with
                             | Ok (ReadOutcome.WouldBlock _, view) -> true, view
                             | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), view) when bytes.Length = 1 ->
                                 false, view
@@ -461,7 +463,7 @@ module TestUnixScheduling =
             match pick index candidates with
             | None -> world
             | Some task ->
-                match UnixTaskLifecycle.exitThread task.Name 0 (viewOf task.Pid world) with
+                match UnixTaskLifecycle.tryExitThread task.Name 0 (viewOf task.Pid world) with
                 | Ok (TaskOutcome.Continues view) ->
                     { world with
                         Machine = SimulatedMachine.unfocus view world.Machine
@@ -516,7 +518,7 @@ module TestUnixScheduling =
             if linux then
                 match running with
                 | Some cpu when not parked ->
-                    UnixScheduling.getcpu task.Name view
+                    UnixScheduling.tryGetcpu task.Name view
                     |> shouldEqual (
                         Ok
                             {
@@ -529,10 +531,10 @@ module TestUnixScheduling =
                     if not parked && lastDispatched task.Serial world.Events then
                         cover Reached.DisplacedGetCpu
 
-                    if not (throws (fun () -> UnixScheduling.getcpu task.Name view)) then
+                    if not (throws (fun () -> UnixScheduling.tryGetcpu task.Name view)) then
                         failwith $"getcpu answered for a task not running, or parked: %s{context}"
             else
-                UnixScheduling.getcpu task.Name view
+                UnixScheduling.tryGetcpu task.Name view
                 |> shouldEqual (Error (GetCpuRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
     let private op : Gen<SchedulingOp> =
@@ -625,7 +627,7 @@ module TestUnixScheduling =
             UnixScheduling.runningOn 0 (Machines.viewOf pid machine)
 
         let getcpu (pid : ProcessId) (machine : SimulatedMachine<int, string>) : bool =
-            not (throws (fun () -> UnixScheduling.getcpu 0 (Machines.viewOf pid machine)))
+            not (throws (fun () -> UnixScheduling.tryGetcpu 0 (Machines.viewOf pid machine)))
 
         let mutable machine = machine
 
@@ -646,7 +648,7 @@ module TestUnixScheduling =
     let ``a dispatch elsewhere leaves the task's previous processor idle`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withProcessorCount 2
+            |> UnixBootImage.tryWithProcessorCount 2
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> Tasks.spawn 1
@@ -670,7 +672,7 @@ module TestUnixScheduling =
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixScheduling.dispatch 0 (CpuId 0)
 
-        UnixScheduling.getcpu 0 system
+        UnixScheduling.tryGetcpu 0 system
         |> shouldEqual (Error (GetCpuRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
         UnixScheduling.runningOn 0 system |> shouldEqual (Some (CpuId 0))
@@ -707,7 +709,7 @@ module TestUnixScheduling =
     let ``checkInvariants reports an occupied processor the machine does not have`` () : unit =
         let pids, machine =
             Machines.withTasksOn
-                (UnixBootImage.withProcessorCount 2
+                (UnixBootImage.tryWithProcessorCount 2
                  >> Configured.expectOk ProcessorCountRefusal.describe)
                 SimulatedUnixPlatform.linuxX64
                 1
@@ -745,7 +747,7 @@ module TestUnixScheduling =
                 Machines.doIn
                     first
                     (fun view ->
-                        match UnixTaskLifecycle.exitThread 1 0 view with
+                        match UnixTaskLifecycle.tryExitThread 1 0 view with
                         | Ok (TaskOutcome.Continues view) -> view
                         | other -> failwith $"exitThread: %A{other}"
                     )
@@ -775,7 +777,7 @@ module TestUnixScheduling =
     let ``checkInvariants reports a running task whose processor is another`` () : unit =
         let pids, machine =
             Machines.withTasksOn
-                (UnixBootImage.withProcessorCount 2
+                (UnixBootImage.tryWithProcessorCount 2
                  >> Configured.expectOk ProcessorCountRefusal.describe)
                 SimulatedUnixPlatform.linuxX64
                 1
@@ -797,7 +799,7 @@ module TestUnixScheduling =
         // report names the thread already running, so that report must cost no garbage.
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withProcessorCount 2
+            |> UnixBootImage.tryWithProcessorCount 2
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> Tasks.spawn 1

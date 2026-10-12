@@ -269,7 +269,7 @@ module SignalFuzz =
                 }
 
         let rec returnToUser () : unit =
-            match UnixSignal.onReturnToUser leader system with
+            match UnixSignal.tryOnReturnToUser leader system with
             | Error refusal -> raise (Refusal $"onReturnToUser refused: %O{refusal}")
             | Ok (ReturnToUserOutcome.Resumes after) -> system <- after
             | Ok (ReturnToUserOutcome.RunHandlers (frames, after)) ->
@@ -329,7 +329,7 @@ module SignalFuzz =
 
                 withSignals (SignalState.setDisposition (signal s) disposition (signals ()))
             | SignalFuzzOp.Kill s ->
-                match UnixSignal.kill self s system with
+                match UnixSignal.tryKill self s system with
                 | Error refusal -> raise (Refusal $"kill refused: %O{refusal}")
                 | Ok (Error errno) ->
                     events.Add
@@ -341,7 +341,7 @@ module SignalFuzz =
                     | other -> failwith $"kill ended the process with %O{other}"
                 | Ok (Ok (KillOutcome.ProcessStopped _)) -> raise (Refusal "a stop signal was sent")
             | SignalFuzzOp.Raise s ->
-                match UnixSignal.pthreadKill leader s system with
+                match UnixSignal.tryPthreadKill leader s system with
                 | Error refusal -> raise (Refusal $"raise refused: %O{refusal}")
                 | Ok (Error errno) ->
                     events.Add

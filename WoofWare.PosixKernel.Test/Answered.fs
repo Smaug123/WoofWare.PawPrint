@@ -24,7 +24,7 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixNamespace.unlink (PathArg.ofPath path) system with
+        match UnixNamespace.tryUnlink (PathArg.ofPath path) system with
         | Ok answer -> answer
         | Error refusal -> failwith $"unlink(%O{path}) was refused: %s{RemovalRefusal.describe refusal}"
 
@@ -33,7 +33,7 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixNamespace.rmdir (PathArg.ofPath path) system with
+        match UnixNamespace.tryRmdir (PathArg.ofPath path) system with
         | Ok answer -> answer
         | Error refusal -> failwith $"rmdir(%O{path}) was refused: %s{RemovalRefusal.describe refusal}"
 
@@ -43,7 +43,7 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixNamespace.mkdir path mode system with
+        match UnixNamespace.tryMkdir path mode system with
         | Ok answer -> answer
         | Error refusal -> failwith $"mkdir was refused: %s{PathRefusal.describe refusal}"
 
@@ -52,7 +52,7 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixPathResolution.chdir path system with
+        match UnixPathResolution.tryChdir path system with
         | Ok answer -> answer
         | Error refusal -> failwith $"chdir was refused: %s{PathRefusal.describe refusal}"
 
@@ -61,7 +61,7 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : FileSystemStatisticsAnswer
         =
-        match UnixPathResolution.statfs path system with
+        match UnixPathResolution.tryStatfs path system with
         | Ok answer -> answer
         | Error refusal -> failwith $"statfs was refused: %s{PathRefusal.describe refusal}"
 
@@ -88,6 +88,6 @@ module internal Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixDescriptor.dup fd system with
+        match UnixDescriptor.tryDup fd system with
         | Ok answer -> answer
         | Error refusal -> failwith $"dup(%d{fd}) was refused: %s{DescriptorLimitRefusal.describe refusal}"

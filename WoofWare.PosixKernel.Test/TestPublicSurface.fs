@@ -311,7 +311,9 @@ module TestPublicSurface =
         // A control, so that this cannot pass by finding no types.
         types.Length |> shouldBeGreaterThan 100
 
+        // An exception is thrown rather than passed, so no signature names it.
         types
+        |> List.filter (fun (t : Type) -> not (typeof<exn>.IsAssignableFrom t))
         |> List.filter (mentionedElsewhere >> not)
         |> List.map (fun (t : Type) -> t.FullName)
         |> List.sort

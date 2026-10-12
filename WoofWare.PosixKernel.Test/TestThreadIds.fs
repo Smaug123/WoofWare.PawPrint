@@ -34,13 +34,13 @@ module TestThreadIds =
         OsThreadId.toUInt64 (UnixTaskState.osThreadId (UnixTaskTable.get task system.Tasks))
 
     let private spawnOrFail (child : int) (system : UnixSystem<int, string>) : uint64 * UnixSystem<int, string> =
-        match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
+        match UnixTaskLifecycle.trySpawn system.Leader child (CpuId 0) system with
         | Ok (SpawnAnswer.Spawned id, system) -> OsThreadId.toUInt64 id, system
         | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %d{child} failed with %O{error}"
         | Error refusal -> failwith $"spawning %d{child} was refused: %s{SpawnRefusal.describe refusal}"
 
     let private exitOrFail (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixTaskLifecycle.exitThread task 0 system with
+        match UnixTaskLifecycle.tryExitThread task 0 system with
         | Ok (TaskOutcome.Continues system) -> system
         | other -> failwith $"expected task %d{task}'s exit to leave the process running, got %A{other}"
 
@@ -66,7 +66,7 @@ module TestThreadIds =
     let ``the leader is on the processor it was given`` () : unit =
         let system : UnixSystem<string, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxArm64
-            |> UnixBootImage.withProcessorCount 4
+            |> UnixBootImage.tryWithProcessorCount 4
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams "main" (CpuId 3)
 
@@ -206,7 +206,7 @@ module TestThreadIds =
         let system = system |> UnixSystem.writePidMaxSysctl "test" 400
 
         let rec fill (child : int) (started : uint64 list) (system : UnixSystem<int, string>) =
-            match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
+            match UnixTaskLifecycle.trySpawn system.Leader child (CpuId 0) system with
             | Ok (SpawnAnswer.Spawned id, system) -> fill (child + 1) (OsThreadId.toUInt64 id :: started) system
             | Ok (SpawnAnswer.Failed error, after) ->
                 // A failed creation hands out no thread ID and adds no task.
@@ -271,7 +271,7 @@ module TestThreadIds =
             (pidMax, idOf 0 written, idOf 1 written) |> shouldEqual (pidMax, 5000UL, 5001UL)
             UnixSystem.checkInvariants written |> shouldEqual []
 
-            match UnixSignal.kill 5000 0 written with
+            match UnixSignal.tryKill 5000 0 written with
             | Ok (Ok (KillOutcome.ProcessContinues after)) -> after |> shouldEqual written
             | other -> failwith $"kill(5000, 0) at pid_max %d{pidMax}: %A{other}"
 
@@ -405,7 +405,7 @@ module TestThreadIds =
             exn.Message |> shouldContainText text
 
         let spawn (parent : int) (child : int) (system : UnixSystem<int, string>) () : unit =
-            UnixTaskLifecycle.spawn parent child (CpuId 0) system
+            UnixTaskLifecycle.trySpawn parent child (CpuId 0) system
             |> ignore<Result<SpawnAnswer * UnixSystem<int, string>, SpawnRefusal<int>>>
 
         fails (spawn 7 2 system) "names no task"
@@ -467,7 +467,7 @@ module TestThreadIds =
 
                 let creator =
                     if pendOnCreator then
-                        match UnixSignal.pthreadKill 0 (Signal.toRawSignoUnder numbering Signal.SIGUSR2) creator with
+                        match UnixSignal.tryPthreadKill 0 (Signal.toRawSignoUnder numbering Signal.SIGUSR2) creator with
                         | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
                         | other -> failwith $"pthread_kill answered %A{other}"
                     else
@@ -507,12 +507,12 @@ module TestThreadIds =
                 | Error error -> failwith $"sigaction failed with %O{error}"
 
             let system =
-                match UnixSignal.pthreadKill 0 usr1 system with
+                match UnixSignal.tryPthreadKill 0 usr1 system with
                 | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
                 | other -> failwith $"pthread_kill answered %A{other}"
 
             let frame, inHandler =
-                match UnixSignal.onReturnToUser 0 system with
+                match UnixSignal.tryOnReturnToUser 0 system with
                 | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) -> frame, system
                 | other -> failwith $"onReturnToUser answered %A{other}"
 
@@ -543,7 +543,7 @@ module TestThreadIds =
             |> Launched.leaderThreadId (System.UInt64.MaxValue - 1UL)
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        UnixTaskLifecycle.spawn 0 1 (CpuId 0) system
+        UnixTaskLifecycle.trySpawn 0 1 (CpuId 0) system
         |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
 
         // The refusal carries no system, and the one before it is as it was:
@@ -552,7 +552,7 @@ module TestThreadIds =
         |> Set.map OsThreadId.toUInt64
         |> shouldEqual (Set.singleton (System.UInt64.MaxValue - 1UL))
 
-        UnixTaskLifecycle.spawn 0 2 (CpuId 0) system
+        UnixTaskLifecycle.trySpawn 0 2 (CpuId 0) system
         |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
 
         // One below, the counter hands out its last ID.
@@ -564,7 +564,7 @@ module TestThreadIds =
         let id, system = spawnOrFail 1 system
         id |> shouldEqual (System.UInt64.MaxValue - 1UL)
 
-        UnixTaskLifecycle.spawn 0 2 (CpuId 0) system
+        UnixTaskLifecycle.trySpawn 0 2 (CpuId 0) system
         |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
 
     // ------------------------------------------------------------------
@@ -747,7 +747,7 @@ module TestThreadIds =
             | Op.Spawn index ->
                 let parent = live.[index % live.Length]
                 let held = liveIds system
-                let actual = UnixTaskLifecycle.spawn parent nextName (CpuId 0) system
+                let actual = UnixTaskLifecycle.trySpawn parent nextName (CpuId 0) system
 
                 match modelNext held model, actual with
                 | Expected.Exhausted, Ok (SpawnAnswer.Failed error, after) ->

@@ -181,7 +181,7 @@ module TestCloneFile =
         (system : UnixSystem<int, string>)
         : Result<SyscallAnswer * UnixSystem<int, string>, CloneFileRefusal>
         =
-        UnixNamespace.cloneFile (argument source) (argument destination) flags system
+        UnixNamespace.tryCloneFile (argument source) (argument destination) flags system
 
     let private answerText (result : Result<SyscallAnswer * UnixSystem<int, string>, CloneFileRefusal>) : string =
         match result with
@@ -298,16 +298,16 @@ module TestCloneFile =
     let ``bad flags are answered before either pathname is read, and the source before the destination`` () : unit =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 u501 tree
 
-        UnixNamespace.cloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable (1 <<< 20) system
+        UnixNamespace.tryCloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable (1 <<< 20) system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EINVAL, system))
 
-        UnixNamespace.cloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, system))
 
-        UnixNamespace.cloneFile (argument "nx") PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFile (argument "nx") PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, system))
 
-        UnixNamespace.cloneFile (argument "f") PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFile (argument "f") PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, system))
 
     [<Test>]
@@ -479,7 +479,7 @@ module TestCloneFile =
             |> Launched.restand
 
         let system =
-            match UnixNamespace.rmdir (PathArg.ofPath (UnixPath.parseOrFail context "/orph")) system with
+            match UnixNamespace.tryRmdir (PathArg.ofPath (UnixPath.parseOrFail context "/orph")) system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"rmdir: %A{other}"
 
@@ -559,7 +559,7 @@ module TestCloneFile =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 u501 tree
 
         for destination in [ "new" ; "g" ] do
-            match UnixSystem.step 0 (Syscall.CloneFile (argument "f", argument destination, 0x4)) system with
+            match UnixSystem.tryStep 0 (Syscall.CloneFile (argument "f", argument destination, 0x4)) system with
             | Ok (SyscallOutcome.Answered answer, after) ->
                 Ok (answer, after) |> shouldEqual (clone "f" destination 0x4 system)
             | other -> failwith $"%A{other}"

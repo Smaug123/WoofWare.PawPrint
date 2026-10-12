@@ -43,7 +43,7 @@ module TestWakeSweepMemo =
         Machines.doIn
             pid
             (fun view ->
-                match UnixConnection.accept task listener UserBuffer.Mapped 16u view with
+                match UnixConnection.tryAccept task listener UserBuffer.Mapped 16u view with
                 | Ok (AcceptOutcome.WouldBlock _, view) -> view
                 | other -> failwith $"accept by task %d{task}: %A{other}"
             )
@@ -80,7 +80,7 @@ module TestWakeSweepMemo =
             Machines.doIn
                 pid
                 (fun view ->
-                    match UnixSignal.pthreadKill 1 10 view with
+                    match UnixSignal.tryPthreadKill 1 10 view with
                     | Ok (Ok (KillOutcome.ProcessContinues view)) -> view
                     | other -> failwith $"pthread_kill: %A{other}"
                 )
@@ -228,7 +228,7 @@ module TestWakeSweepMemo =
                             Events = 0x0001s
                         }
 
-                    match UnixPoll.poll task [ entry ] milliseconds view with
+                    match UnixPoll.tryPoll task [ entry ] milliseconds view with
                     | Ok (PollOutcome.WouldBlock _, view) -> view
                     | other -> failwith $"poll by task %d{task}: %A{other}"
                 )

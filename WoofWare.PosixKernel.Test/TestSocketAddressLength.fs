@@ -80,7 +80,7 @@ module TestSocketAddressLength =
         let fd, system = streamSocket (systemOn platform)
         let system = bindAt (loopback listenerPort) fd system
 
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (ListenAnswer.Listening _, system) -> fd, system
         | other -> failwith $"listening: %A{other}"
 
@@ -108,7 +108,7 @@ module TestSocketAddressLength =
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 
     let private localAddress (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
-        match UnixSocket.getsockname fd UserBuffer.Mapped 16u system with
+        match UnixSocket.tryGetsockname fd UserBuffer.Mapped 16u system with
         | Ok (GetSockNameAnswer.Reported (copiedOut, _)) -> CopyOut.endpoint copiedOut
         | other -> failwith $"getsockname of fd %d{fd}: %A{other}"
 
@@ -120,7 +120,7 @@ module TestSocketAddressLength =
         (system : UnixSystem<int, string>)
         : SockaddrCopyAdmission
         =
-        match UnixSocket.admitSockaddrCopy syscall fd destination word system with
+        match UnixSocket.tryAdmitSockaddrCopy syscall fd destination word system with
         | Ok admission -> admission
         | Error refusal -> failwith $"word 0x%08x{word}: refused: %s{SockaddrCopyRefusal.describe refusal}"
 
@@ -209,7 +209,7 @@ module TestSocketAddressLength =
                                 GetSockNameAnswer.Failed (UnixError.EFAULT, lengthAfterFault platform)
                             | _ -> GetSockNameAnswer.Reported (CopyOut.expected platform (loopback 6000us) word, 16)
 
-                    match UnixSocket.getsockname fd destination word system with
+                    match UnixSocket.tryGetsockname fd destination word system with
                     | Ok actual when actual = expected -> ()
                     | actual ->
                         failwith
@@ -239,7 +239,7 @@ module TestSocketAddressLength =
                         [ UserBuffer.Mapped ]
 
                 for destination in destinations do
-                    match UnixConnection.accept 0 listenerFd destination word system with
+                    match UnixConnection.tryAccept 0 listenerFd destination word system with
                     | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, after) when
                         isLinux platform && int word < 0
                         ->
@@ -251,7 +251,7 @@ module TestSocketAddressLength =
                         UnixSystem.checkInvariants after |> shouldEqual []
 
                         match
-                            UnixPoll.poll
+                            UnixPoll.tryPoll
                                 0
                                 [
                                     {
@@ -284,11 +284,11 @@ module TestSocketAddressLength =
         let _, system = connectClient system
 
         for word in [ 0xFFFF_FFFFu ; 0x8000_0000u ] do
-            match UnixConnection.accept 0 listenerFd (UserBuffer.Unmapped 0UL) word system with
+            match UnixConnection.tryAccept 0 listenerFd (UserBuffer.Unmapped 0UL) word system with
             | Error (AcceptRefusal.UnmeasuredCopyOutFault _) -> ()
             | other -> failwith $"word 0x%08x{word}: expected a refusal, got %A{other}"
 
-            match UnixConnection.accept 0 listenerFd UserBuffer.Addressless word system with
+            match UnixConnection.tryAccept 0 listenerFd UserBuffer.Addressless word system with
             | Error (AcceptRefusal.Buffer BufferRefusal.AddresslessAtScreen) -> ()
             | other -> failwith $"word 0x%08x{word}: expected a refusal, got %A{other}"
 
@@ -320,7 +320,7 @@ module TestSocketAddressLength =
             let listenerFd, system = withListener SimulatedUnixPlatform.linuxX64
 
             let queueFd, system =
-                match UnixPoll.epollCreate1 0 system with
+                match UnixPoll.tryEpollCreate1 0 system with
                 | Ok (Ok created) -> created
                 | other -> failwith $"epoll_create1: %A{other}"
 
@@ -350,13 +350,18 @@ module TestSocketAddressLength =
                             system
                         else
                             match
-                                UnixPoll.epollCtl queueFd 1 clientFd (EpollEventArgument.Readable (events, 7UL)) system
+                                UnixPoll.tryEpollCtl
+                                    queueFd
+                                    1
+                                    clientFd
+                                    (EpollEventArgument.Readable (events, 7UL))
+                                    system
                             with
                             | Ok (EpollCtlAnswer.Changed, system) -> system
                             | other -> failwith $"epoll_ctl ADD: %A{other}"
 
                     if closed then
-                        match UnixDescriptor.close clientFd system with
+                        match UnixDescriptor.tryClose clientFd system with
                         | Ok (SyscallAnswer.Completed _, system) -> system
                         | other -> failwith $"closing a client: %A{other}"
                     else
@@ -364,14 +369,14 @@ module TestSocketAddressLength =
                 )
 
             let dropped =
-                match UnixConnection.accept 0 listenerFd UserBuffer.Mapped word system with
+                match UnixConnection.tryAccept 0 listenerFd UserBuffer.Mapped word system with
                 | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, after) -> after
                 | other -> failwith $"word 0x%08x{word}: expected a dropped connection, got %A{other}"
 
             let acceptedThenClosed =
-                match UnixConnection.accept 0 listenerFd UserBuffer.Mapped 16u system with
+                match UnixConnection.tryAccept 0 listenerFd UserBuffer.Mapped 16u system with
                 | Ok (AcceptOutcome.Accepted (acceptedFd, _, _), after) ->
-                    match UnixDescriptor.close acceptedFd after with
+                    match UnixDescriptor.tryClose acceptedFd after with
                     | Ok (SyscallAnswer.Completed _, after) -> after
                     | other -> failwith $"closing the accepted descriptor: %A{other}"
                 | other -> failwith $"expected an accept, got %A{other}"
@@ -410,13 +415,13 @@ module TestSocketAddressLength =
                 let system = Tasks.ensure 1 system
 
                 let system =
-                    match UnixConnection.accept 1 listenerFd UserBuffer.Mapped word system with
+                    match UnixConnection.tryAccept 1 listenerFd UserBuffer.Mapped word system with
                     | Ok (AcceptOutcome.WouldBlock _, system) -> system
                     | other -> failwith $"%O{platform} 0x%08x{word}: expected a park, got %A{other}"
 
                 let _, system = connectClient system
 
-                match UnixConnection.finishAccept 1 system, isLinux platform && int word < 0 with
+                match UnixConnection.tryFinishAccept 1 system, isLinux platform && int word < 0 with
                 | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, after), true ->
                     queueOf listenerFd after |> shouldEqual []
                     UnixTaskTable.parkedFor 1 after.Tasks |> shouldEqual None
@@ -437,10 +442,10 @@ module TestSocketAddressLength =
                     admit syscall closedFd (UserBuffer.Unmapped 4096UL) word system
                     |> shouldEqual (SockaddrCopyAdmission.Answered UnixError.EBADF)
 
-                UnixSocket.getsockname closedFd UserBuffer.Mapped word system
+                UnixSocket.tryGetsockname closedFd UserBuffer.Mapped word system
                 |> shouldEqual (Ok (GetSockNameAnswer.Failed (UnixError.EBADF, None)))
 
-                match UnixConnection.accept 0 closedFd UserBuffer.Mapped word system with
+                match UnixConnection.tryAccept 0 closedFd UserBuffer.Mapped word system with
                 | Ok (AcceptOutcome.Failed UnixError.EBADF, _) -> ()
                 | other -> failwith $"%O{platform} accept at 0x%08x{word}: %A{other}"
             )
@@ -481,7 +486,7 @@ module TestSocketAddressLength =
                             UserBuffer.Opaque
                             UserBuffer.Addressless
                         ] do
-                        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Bind fd destination word system
+                        UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Bind fd destination word system
                         |> shouldEqual (Ok (SockaddrCopyAdmission.Answered UnixError.ENOTSOCK))
 
                         let length = int word
@@ -502,7 +507,7 @@ module TestSocketAddressLength =
                                 | UserBuffer.Opaque -> Ok (SockaddrCopyAdmission.Answered UnixError.ENOTSOCK)
 
                         let actual =
-                            UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination word system
+                            UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd destination word system
 
                         if actual <> expected then
                             failwith
@@ -537,7 +542,7 @@ module TestSocketAddressLength =
 
                 everyLength (fun word ->
                     for destination in [ UserBuffer.Mapped ; UserBuffer.Unmapped 4096UL ] do
-                        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Bind fd destination word system
+                        UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Bind fd destination word system
                         |> shouldEqual refused
 
                         let length = int word
@@ -553,7 +558,7 @@ module TestSocketAddressLength =
                                 refused
 
                         let actual =
-                            UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination word system
+                            UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd destination word system
 
                         if actual <> expected then
                             failwith

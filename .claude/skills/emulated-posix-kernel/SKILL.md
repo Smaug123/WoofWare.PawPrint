@@ -205,18 +205,28 @@ a constant becomes a lie the moment the state it depends on lands. This is why
 the platforms agree on none — while `SystemNative_GetFileSystemType` answers,
 having one field measured on both.
 
-Inside `WoofWare.PosixKernel`, "refuse" means a typed `Error`, never a throw,
-and that holds for boot configuration too: a setter in `UnixBootImage` or
-`ProcessLaunch` that rejects a well-formed value (`withBootTime`, `withMount`,
-`withTcpSendSpace`, `withProcessId`, `withCredentials`, …) returns a `Result`
-whose `Error` is a refusal type of that setter's own, with a `describe`, whose
-cases state facts and name no knob. Each case's docstring says whether the
-value is unmeasured, unmodelled or contradictory. `KernelConfig.toKernel`
-matches every case and fails with the `KernelConfig` field the value came from
-(`"KernelConfig.Mount: "` and so on), as
-`EmulatedKernel.withFileSystemAndCurrentDirectory` does for
-`FileSystemSeedFault`. Only a forged value (`Unchecked.defaultof`) still throws, and
-a setter keeps a `context` parameter only to name the knob in that throw.
+Inside `WoofWare.PosixKernel`, "refuse" means a typed value, internal to the
+library: an internal function `tryX` answers `Result<_, XRefusal>`, where
+`XRefusal` is an internal union whose cases state facts and name no knob, with
+a `describe` and a `kind`. Only the public entry point `X` throws, through
+`Refusal.orRaise`, and `XRefusal.kind` says as what: `UnmodelledException`
+where the model does not cover the call (unmeasured or unmodelled), and the
+BCL's own exception where no client following the documentation could have
+made it (`ArgumentException` or `ArgumentOutOfRangeException` for a
+contradictory boot setting, `InvalidOperationException` for misuse,
+`PlatformNotSupportedException` for a call the flavour lacks). A new refusal is
+a new internal case and an arm of its `kind`; nothing public changes, so it is
+a minor version. That holds for boot configuration too: a setter in
+`UnixBootImage` or `ProcessLaunch` that rejects a well-formed value
+(`withBootTime`, `withMount`, `withTcpSendSpace`, `withProcessId`,
+`withCredentials`, …) has a `tryWith…` returning its own refusal, each case's
+docstring saying whether the value is unmeasured, unmodelled or contradictory.
+PawPrint, a client without friend access, sees only the exception:
+`KernelConfig.toKernel` catches what a setter throws and fails naming the
+`KernelConfig` field the value came from (`"KernelConfig.Mount: "` and so on),
+as `EmulatedKernel.withFileSystemAndCurrentDirectory` does for the seed. Only a
+forged value (`Unchecked.defaultof`) still fails with `failwith`, and a setter
+keeps a `context` parameter only to name the knob in that throw.
 
 Before concluding a modelled constant has **no guest observer**, enumerate the
 interpreter's own limits that are *arithmetic in that constant*: a byte-offset

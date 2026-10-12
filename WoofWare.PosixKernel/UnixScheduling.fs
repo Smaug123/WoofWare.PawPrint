@@ -25,18 +25,23 @@ type GetCpuAnswer =
 
 /// Why this kernel will not answer a `getcpu(2)`.
 [<RequireQualifiedAccess>]
-type GetCpuRefusal =
+type internal GetCpuRefusal =
     /// This kernel is not Linux-flavoured, and only Linux has `getcpu`.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module GetCpuRefusal =
+module internal GetCpuRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which of its entry points asked.
     let describe (refusal : GetCpuRefusal) : string =
         match refusal with
         | GetCpuRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and getcpu exists on Linux only. Darwin's libc has neither sched_getcpu nor getcpu."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : GetCpuRefusal) : RefusalKind =
+        match refusal with
+        | GetCpuRefusal.UnmodelledFlavour _ -> RefusalKind.NotOnPlatform
 
 /// Which task runs on which of the machine's logical processors.
 ///
@@ -128,16 +133,8 @@ module UnixScheduling =
         | Some _
         | None -> None
 
-    /// `getcpu(2)`, made by `task`: the processor it is running on, and that
-    /// processor's NUMA node. glibc's `sched_getcpu(3)` reads the same value.
-    ///
-    /// Refuses under Darwin, which has no `getcpu`.
-    ///
-    /// Fails loudly if `task` names no task, is parked in a syscall, or is not
-    /// running (`runningOn`): a task making a syscall is running, so each
-    /// means the client's record of what it runs disagrees with this
-    /// library's, which is a bug in the client.
-    let getcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `getcpu`, with a refusal answered as the `Error` rather than raised.
+    let internal tryGetcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetCpuAnswer, GetCpuRefusal>
@@ -169,3 +166,23 @@ module UnixScheduling =
 
             failwith
                 $"UnixScheduling.getcpu: task %O{task} is not running on any processor (%s{occupied}), so it cannot be making the getcpu syscall. Report each task the client runs with UnixScheduling.dispatch (this is a bug in the client)."
+
+    /// <summary>
+    /// `getcpu(2)`, made by `task`: the processor it is running on, and that
+    /// processor's NUMA node. glibc's `sched_getcpu(3)` reads the same value.
+    ///
+    /// Refuses under Darwin, which has no `getcpu`.
+    ///
+    /// Fails loudly if `task` names no task, is parked in a syscall, or is not
+    /// running (`runningOn`): a task making a syscall is running, so each
+    /// means the client's record of what it runs disagrees with this
+    /// library's, which is a bug in the client.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Linux-flavoured, and only Linux has `getcpu`.</exception>
+    let getcpu<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : GetCpuAnswer
+        =
+        tryGetcpu task system
+        |> Refusal.orRaise "UnixScheduling.getcpu" GetCpuRefusal.kind GetCpuRefusal.describe

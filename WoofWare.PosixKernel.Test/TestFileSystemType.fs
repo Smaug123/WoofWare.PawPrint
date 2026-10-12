@@ -66,7 +66,7 @@ module TestFileSystemType =
     /// configured with the mount `mount`.
     let private machineMounting (flavour : SimulatedUnixFlavour) (mount : EmulatedMount option) : UnixMachineState =
         (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
-         |> UnixBootImage.withMount mount
+         |> UnixBootImage.tryWithMount mount
          |> Configured.expectOk MountRefusal.describe
          |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
@@ -113,15 +113,15 @@ module TestFileSystemType =
     let private measuredTmpfs (fsid : FileSystemId) : FileSystemStatistics =
         FileSystemStatistics.Linux
             {
-                Type = 0x01021994L
-                Geometry =
+                TypeValue = 0x01021994L
+                GeometryResult =
                     Ok
                         {
                             BlockSize = 4096L
                             FragmentSize = 4096L
                             NameLengthLimit = 255L
                         }
-                Capacity =
+                CapacityResult =
                     Ok
                         {
                             Blocks = 0UL
@@ -130,8 +130,8 @@ module TestFileSystemType =
                             Files = 0UL
                             FreeFiles = 0UL
                         }
-                FileSystemId = Ok fsid
-                Flags = Ok 0x420L
+                FileSystemIdResult = Ok fsid
+                FlagsResult = Ok 0x420L
             }
 
     /// Every APFS field measured on Darwin, with the fields the mount was
@@ -141,22 +141,22 @@ module TestFileSystemType =
     let private measuredApfs (apfs : ApfsMount) : FileSystemStatistics =
         FileSystemStatistics.Darwin
             {
-                Type = 0x1Au
-                TypeName = utf8 "apfs"
-                Geometry =
+                TypeValue = 0x1Au
+                TypeNameValue = utf8 "apfs"
+                GeometryResult =
                     Ok
                         {
                             BlockSize = 4096u
                             IoSize = apfs.IoSize
                         }
-                Capacity = Error CapacityRefusal.Apfs
-                FileSystemId =
+                CapacityResult = Error CapacityRefusal.Apfs
+                FileSystemIdResult =
                     Ok
                         {
                             First = 0x1000001
                             Second = 0x1A
                         }
-                Mount =
+                MountResult =
                     Ok
                         {
                             Owner = apfs.Owner
@@ -173,21 +173,21 @@ module TestFileSystemType =
         | SimulatedUnixFlavour.Linux ->
             FileSystemStatistics.Linux
                 {
-                    Type = 0x6969L
-                    Geometry = Error GeometryRefusal.Nfs
-                    Capacity = Error CapacityRefusal.Nfs
-                    FileSystemId = Error FileSystemIdRefusal.Nfs
-                    Flags = Error MountFieldsRefusal.Nfs
+                    TypeValue = 0x6969L
+                    GeometryResult = Error GeometryRefusal.Nfs
+                    CapacityResult = Error CapacityRefusal.Nfs
+                    FileSystemIdResult = Error FileSystemIdRefusal.Nfs
+                    FlagsResult = Error MountFieldsRefusal.Nfs
                 }
         | SimulatedUnixFlavour.Darwin ->
             FileSystemStatistics.Darwin
                 {
-                    Type = 2u
-                    TypeName = utf8 "nfs"
-                    Geometry = Error GeometryRefusal.Nfs
-                    Capacity = Error CapacityRefusal.Nfs
-                    FileSystemId = Error FileSystemIdRefusal.Nfs
-                    Mount = Error MountFieldsRefusal.Nfs
+                    TypeValue = 2u
+                    TypeNameValue = utf8 "nfs"
+                    GeometryResult = Error GeometryRefusal.Nfs
+                    CapacityResult = Error CapacityRefusal.Nfs
+                    FileSystemIdResult = Error FileSystemIdRefusal.Nfs
+                    MountResult = Error MountFieldsRefusal.Nfs
                 }
 
     /// What `fstatfs` answers for an object on no mount: on Linux, the
@@ -209,15 +209,15 @@ module TestFileSystemType =
 
             FileSystemStatistics.Linux
                 {
-                    Type = magic
-                    Geometry =
+                    TypeValue = magic
+                    GeometryResult =
                         Ok
                             {
                                 BlockSize = 4096L
                                 FragmentSize = 4096L
                                 NameLengthLimit = 255L
                             }
-                    Capacity =
+                    CapacityResult =
                         Ok
                             {
                                 Blocks = 0UL
@@ -226,8 +226,8 @@ module TestFileSystemType =
                                 Files = 0UL
                                 FreeFiles = 0UL
                             }
-                    FileSystemId = Error (FileSystemIdRefusal.PseudoFileSystemDevice fileSystem)
-                    Flags = Ok 0x20L
+                    FileSystemIdResult = Error (FileSystemIdRefusal.PseudoFileSystemDevice fileSystem)
+                    FlagsResult = Ok 0x20L
                 }
             |> FileSystemStatisticsAnswer.Reported
 
@@ -254,11 +254,11 @@ module TestFileSystemType =
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial platform
-            |> UnixBootImage.withMount (Some mount)
+            |> UnixBootImage.tryWithMount (Some mount)
             |> Configured.expectOk MountRefusal.describe
 
         match
-            UnixBootImage.withFileSystem
+            UnixBootImage.tryWithFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 tree
@@ -408,7 +408,7 @@ module TestFileSystemType =
         // would leave the other pair silently constructible.
         for flavour, fsType in everyIncoherentPair do
             UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
-            |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> UnixBootImage.tryWithMount (Some (EmulatedMount.defaultOf fsType))
             |> Result.map ignore<UnixBootImage<int, string>>
             |> shouldEqual (Error (MountRefusal.NotReportableUnder (fsType, flavour)))
 
@@ -570,13 +570,13 @@ module TestFileSystemType =
         let fd, system = openPath "/f" system
 
         let device =
-            match UnixPathResolution.fstat fd system with
+            match UnixPathResolution.tryFstat fd system with
             | Ok (FileStatusAnswer.Reported status) -> status.DeviceId
             | other -> failwith $"fstat: %A{other}"
 
         match UnixPathResolution.fstatfs fd system with
         | FileSystemStatisticsAnswer.Reported (FileSystemStatistics.Darwin darwin) ->
-            darwin.FileSystemId
+            darwin.FileSystemIdResult
             |> shouldEqual (
                 Ok
                     {
@@ -650,7 +650,7 @@ module TestFileSystemType =
                 let parsed = UnixPath.parseOrFail context path
 
                 let viaStat =
-                    match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath parsed) system with
+                    match UnixPathResolution.tryStat SymlinkPolicy.Follow (PathArg.ofPath parsed) system with
                     | Ok (FileStatusAnswer.Failed error) -> Some error
                     | Ok (FileStatusAnswer.Reported _) -> None
                     | Error refusal -> failwith $"test bug: stat refused: %s{StatRefusal.describe refusal}"
@@ -744,10 +744,10 @@ module TestFileSystemType =
         | FileSystemStatisticsAnswer.Reported (FileSystemStatistics.Linux host),
           FileSystemStatisticsAnswer.Reported (FileSystemStatistics.Linux model) ->
             same "f_type" host.Type (Ok model.Type : Result<int64, unit>)
-            same "geometry" (stated "geometry" host.Geometry) model.Geometry
-            same "capacity" (stated "capacity" host.Capacity) model.Capacity
-            same "f_fsid" (stated "f_fsid" host.FileSystemId) model.FileSystemId
-            same "f_flags" (stated "f_flags" host.Flags) model.Flags
+            same "geometry" (stated "geometry" host.GeometryResult) model.GeometryResult
+            same "capacity" (stated "capacity" host.CapacityResult) model.CapacityResult
+            same "f_fsid" (stated "f_fsid" host.FileSystemIdResult) model.FileSystemIdResult
+            same "f_flags" (stated "f_flags" host.FlagsResult) model.FlagsResult
         | _ -> failwith $"%s{label}: this host answers %A{host}, but the model says %A{model}."
 
     [<Test>]
@@ -879,16 +879,16 @@ module TestFileSystemType =
                     match host, model with
                     | FileSystemStatistics.Linux host, FileSystemStatistics.Linux model ->
                         host.Type |> shouldEqual model.Type
-                        host.Geometry |> shouldEqual model.Geometry
+                        host.GeometryResult |> shouldEqual model.GeometryResult
 
-                        match host.Flags with
+                        match host.FlagsResult with
                         | Ok flags when flags &&& 0x20L <> 0L -> ()
                         | other -> failwith $"this host's tmpfs does not set ST_VALID: %A{other}"
                     | FileSystemStatistics.Darwin host, FileSystemStatistics.Darwin model ->
                         host.Type |> shouldEqual model.Type
                         host.TypeName |> shouldEqual model.TypeName
 
-                        match host.Geometry, model.Geometry with
+                        match host.GeometryResult, model.GeometryResult with
                         | Ok host, Ok model -> host.BlockSize |> shouldEqual model.BlockSize
                         | other -> failwith $"test bug: %A{other}"
 
@@ -896,7 +896,7 @@ module TestFileSystemType =
                         // volfs, journaled, multilabel.
                         let apfsBits = 0x1000u ||| 0x8000u ||| 0x800000u ||| 0x4000000u
 
-                        match host.Mount, model.Mount with
+                        match host.MountResult, model.MountResult with
                         | Ok host, Ok model ->
                             if host.Flags &&& apfsBits <> apfsBits then
                                 failwith
@@ -927,7 +927,7 @@ module TestFileSystemType =
 
                     match host with
                     | FileSystemStatistics.Darwin host ->
-                        host.FileSystemId
+                        host.FileSystemIdResult
                         |> shouldEqual (
                             Ok
                                 {

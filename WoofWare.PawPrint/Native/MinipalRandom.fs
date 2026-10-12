@@ -93,8 +93,16 @@ module MinipalRandom =
                 system
             else
 
-            match UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system with
-            | Ok (GetRandomAnswer.Completed draw, system) ->
+            let answer =
+                try
+                    UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system
+                with :? UnmodelledException as e ->
+                    KernelRefusal.fail
+                        $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread} was refused"
+                        e
+
+            match answer with
+            | GetRandomAnswer.Completed draw, system ->
                 let moved = EntropyDraw.count draw
 
                 if moved <= 0 || moved > remaining then
@@ -103,15 +111,9 @@ module MinipalRandom =
 
                 builder.AddRange (EntropyDraw.bytes draw)
                 fill system
-            | Ok (GetRandomAnswer.Failed error, _) ->
+            | GetRandomAnswer.Failed error, _ ->
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes into storage PawPrint owns answered %O{error} (this is a bug in the kernel library)."
-            | Error (GetRandomRefusal.SignalAtPageBoundary _ as refusal) ->
-                failwith
-                    $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread}, which has a signal pending, was refused: %s{GetRandomRefusal.describe refusal}"
-            | Error refusal ->
-                failwith
-                    $"%s{operation}: getrandom of %d{remaining} bytes was refused: %s{GetRandomRefusal.describe refusal}"
 
         let system = fill kernel.System
         builder.MoveToImmutable (), EmulatedKernel.withUnix system kernel
@@ -135,29 +137,37 @@ module MinipalRandom =
 
         // `open("/dev/urandom", O_RDONLY | O_CLOEXEC)`, retried on EINTR, which
         // an open of a device never answers here.
-        match
-            UnixNamespace.openPath thread (OpenFlagsPal.minipalUrandom kernel.UnixPlatform) urandomPath 0 kernel.System
-        with
-        | Error refusal -> failwith $"%s{operation}: open(/dev/urandom) was refused: %s{OpenRefusal.describe refusal}"
-        | Ok (SyscallOutcome.WouldBlock condition, _) ->
+        let opened =
+            try
+                UnixNamespace.openPath
+                    thread
+                    (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
+                    urandomPath
+                    0
+                    kernel.System
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail $"%s{operation}: open(/dev/urandom) was refused" e
+
+        match opened with
+        | SyscallOutcome.WouldBlock condition, _ ->
             failwith
                 $"%s{operation}: open(/dev/urandom) on thread %O{thread} would sleep until %A{condition}, but only an open of a FIFO sleeps, and /dev/urandom is a device node (this is a bug in the kernel library)."
-        | Ok (SyscallOutcome.Restarts, _) ->
+        | SyscallOutcome.Restarts, _ ->
             failwith
                 $"%s{operation}: open(/dev/urandom) on thread %O{thread} answered a restart, which only a finishing call answers (this is a bug in the kernel library)."
-        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed fd), system) ->
+        | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
             let kernel = EmulatedKernel.withUnix system kernel
 
             Ok (int fd),
             { kernel with
                 ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open (int fd), lrand48)
             }
-        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOENT), _) ->
+        | SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOENT), _ ->
             // minipal latches a missing `/dev/urandom` and never asks again. A
             // Linux machine here always has one, and nothing can remove it.
             failwith
                 $"%s{operation}: open(/dev/urandom) answered ENOENT, which minipal latches for the process's life; this kernel's devtmpfs always holds the node, so the latch is not modelled (this is a bug in the kernel library)."
-        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
+        | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
             Error error, EmulatedKernel.withUnix system kernel
 
     /// `minipal_get_cryptographically_secure_random_bytes` in System.Native's
@@ -214,22 +224,26 @@ module MinipalRandom =
 
                 builder.AddRange bytes
 
-            match UnixReadWrite.read thread fd UserBuffer.Mapped (uint64 remaining) system with
-            | Error refusal ->
-                failwith $"%s{operation}: read of fd %d{fd} was refused: %s{ReadRefusal.describe refusal}"
-            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+            let outcome =
+                try
+                    UnixReadWrite.read thread fd UserBuffer.Mapped (uint64 remaining) system
+                with :? UnmodelledException as e ->
+                    KernelRefusal.fail $"%s{operation}: read of fd %d{fd} was refused" e
+
+            match outcome with
+            | ReadOutcome.Answered (ReadAnswer.Completed bytes), system ->
                 moved bytes
                 fill false system
-            | Ok (ReadOutcome.Answered (ReadAnswer.Drawn draw), system) ->
+            | ReadOutcome.Answered (ReadAnswer.Drawn draw), system ->
                 moved (EntropyDraw.bytes draw)
                 fill false system
             // minipal reads again after EINTR.
-            | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), system) -> fill first system
-            | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) -> Some error, system
-            | Ok (ReadOutcome.WouldBlock condition, _) ->
+            | ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), system -> fill first system
+            | ReadOutcome.Answered (ReadAnswer.Failed error), system -> Some error, system
+            | ReadOutcome.WouldBlock condition, _ ->
                 failwith
                     $"%s{operation}: read of fd %d{fd}, minipal's /dev/urandom descriptor, would sleep until %A{condition}; the descriptor no longer names /dev/urandom, and a sleep inside minipal is not modelled."
-            | Ok (ReadOutcome.Restarts, _) ->
+            | ReadOutcome.Restarts, _ ->
                 failwith
                     $"%s{operation}: read of fd %d{fd} restarted, though it never slept (this is a bug in the kernel library)."
 
@@ -280,7 +294,7 @@ module MinipalRandom =
             | Some state -> state
             | None ->
                 match UnixClock.clockGettime clockRealtimeCoarse kernel.System with
-                | Ok (Ok now) -> Lrand48.seed (UnixTimestamp.seconds now)
+                | Ok now -> Lrand48.seed (UnixTimestamp.seconds now)
                 | other ->
                     failwith
                         $"%s{operation}: time(NULL), which glibc answers from CLOCK_REALTIME_COARSE, failed: %A{other} (this is a bug in the kernel library)."

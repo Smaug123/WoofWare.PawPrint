@@ -124,7 +124,7 @@ module TestMinipalRandom =
                 openFds kernel |> shouldEqual (openFds start @ [ fd ])
 
                 match UnixPathResolution.fstat fd kernel.System with
-                | Ok (FileStatusAnswer.Reported status) ->
+                | FileStatusAnswer.Reported status ->
                     status.Mode |> shouldEqual 0o020666
                     status.SpecialFileDevice |> shouldEqual 265L
                 | other -> failwith $"fstat of minipal's descriptor: %A{other}"
@@ -148,7 +148,7 @@ module TestMinipalRandom =
 
         let kernel =
             match UnixDescriptor.close fd kernel.System with
-            | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+            | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
         let fill, after = secure 16 kernel
@@ -170,7 +170,7 @@ module TestMinipalRandom =
 
         let kernel =
             match UnixDescriptor.close fd kernel.System with
-            | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+            | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
         secure 0 kernel
@@ -185,7 +185,7 @@ module TestMinipalRandom =
         // Close it, and let the next open take its number: /dev/null.
         let system =
             match UnixDescriptor.close fd kernel.System with
-            | Ok (SyscallAnswer.Completed _, system) -> system
+            | SyscallAnswer.Completed _, system -> system
             | other -> failwith $"close: %A{other}"
 
         let system =
@@ -197,7 +197,7 @@ module TestMinipalRandom =
                     0
                     system
             with
-            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed reopened), system) ->
+            | SyscallOutcome.Answered (SyscallAnswer.Completed reopened), system ->
                 int reopened |> shouldEqual fd
                 system
             | other -> failwith $"open: %A{other}"
@@ -280,7 +280,7 @@ module TestMinipalRandom =
 
         let kernel =
             match UnixDescriptor.close fd kernel.System with
-            | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+            | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
         match MinipalRandom.systemNativeNonSecureRandomBytes "test" thread 6 kernel with
@@ -308,7 +308,7 @@ module TestMinipalRandom =
                 match
                     UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 length) GetRandomFlags.Insecure kernel.System
                 with
-                | Ok (GetRandomAnswer.Completed draw, system) -> Seq.toArray (EntropyDraw.bytes draw), system
+                | GetRandomAnswer.Completed draw, system -> Seq.toArray (EntropyDraw.bytes draw), system
                 | other -> failwith $"%A{other}"
 
             Seq.toArray bytes |> shouldEqual expected
@@ -343,7 +343,7 @@ module TestMinipalRandom =
                     (UnixSystem.initial platform
                      |> (Launched.boot UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)))
             with
-            | Ok (GetEntropyAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
+            | GetEntropyAnswer.Completed draw, system -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"
 
         (UnixSystem.entropyPool kernel.System)
@@ -406,7 +406,7 @@ module TestMinipalRandom =
 
         let system =
             match UnixSignal.pthreadKill thread 10 caught with
-            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+            | Ok (KillOutcome.ProcessContinues system) -> system
             | other -> failwith $"pthread_kill: %A{other}"
 
         let kernel = EmulatedKernel.withUnix system kernel
@@ -414,7 +414,7 @@ module TestMinipalRandom =
         let thrown =
             Assert.Throws<exn> (fun () -> MinipalRandom.coreClrSecureRandomBytes "test" thread 4097 kernel |> ignore)
 
-        thrown.Message |> shouldContainText "signal pending"
+        thrown.Message |> shouldContainText "a signal is pending"
 
         // A page or less is answered whatever is pending.
         MinipalRandom.coreClrSecureRandomBytes "test" thread 4096 kernel

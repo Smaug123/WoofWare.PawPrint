@@ -216,10 +216,10 @@ module TestProcessTermination =
         =
         let _, _, raw, _, code, status = row
 
-        (row, ProcessTermination.waitpidStatus platform termination)
+        (row, ProcessTermination.tryWaitpidStatus platform termination)
         |> shouldEqual (row, Ok raw)
 
-        (row, ProcessTermination.waitidStatus platform termination)
+        (row, ProcessTermination.tryWaitidStatus platform termination)
         |> shouldEqual (row, Ok (codeOf code, status))
 
     let private signalOf (flavour : SimulatedUnixFlavour) (row : Row) : Signal =
@@ -284,10 +284,10 @@ module TestProcessTermination =
                     (row, decoded) |> shouldEqual (row, $"signaled(%d{arg})")
                     assertRendersAs platform row (ProcessTermination.Signaled (signal, false))
 
-                    ProcessTermination.waitpidStatus platform (ProcessTermination.Signaled (signal, true))
+                    ProcessTermination.tryWaitpidStatus platform (ProcessTermination.Signaled (signal, true))
                     |> shouldEqual (Error (WaitStatusRefusal.CoreDumpOnDarwin signal))
 
-                    ProcessTermination.waitidStatus platform (ProcessTermination.Signaled (signal, true))
+                    ProcessTermination.tryWaitidStatus platform (ProcessTermination.Signaled (signal, true))
                     |> shouldEqual (Error (WaitStatusRefusal.CoreDumpOnDarwin signal))
             | other -> failwith $"unexpected row kind %s{other}"
 
@@ -330,10 +330,10 @@ module TestProcessTermination =
             let termination = ProcessTermination.Exited status
             let platform = platformFor flavour
 
-            ProcessTermination.waitpidStatus platform termination
+            ProcessTermination.tryWaitpidStatus platform termination
             |> shouldEqual (Ok ((retained &&& 0xff) <<< 8))
 
-            ProcessTermination.waitidStatus platform termination
+            ProcessTermination.tryWaitidStatus platform termination
             |> shouldEqual (Ok (WaitIdCode.Exited, retained))
 
             ProcessTermination.shellStatus (SimulatedUnixPlatform.signalNumbering platform) termination
@@ -380,16 +380,17 @@ module TestProcessTermination =
 
                     match flavour, coreDumped with
                     | _, false ->
-                        ProcessTermination.waitpidStatus platform termination |> shouldEqual (Ok signo)
+                        ProcessTermination.tryWaitpidStatus platform termination
+                        |> shouldEqual (Ok signo)
 
-                        ProcessTermination.waitidStatus platform termination
+                        ProcessTermination.tryWaitidStatus platform termination
                         |> shouldEqual (Ok (WaitIdCode.Killed, signo))
                     | SimulatedUnixFlavour.Linux, true ->
-                        ProcessTermination.waitpidStatus platform termination
+                        ProcessTermination.tryWaitpidStatus platform termination
                         |> shouldEqual (Ok (signo ||| 0x80))
 
-                        ProcessTermination.waitidStatus platform termination
+                        ProcessTermination.tryWaitidStatus platform termination
                         |> shouldEqual (Ok (WaitIdCode.Dumped, signo))
                     | SimulatedUnixFlavour.Darwin, true ->
-                        ProcessTermination.waitpidStatus platform termination
+                        ProcessTermination.tryWaitpidStatus platform termination
                         |> shouldEqual (Error (WaitStatusRefusal.CoreDumpOnDarwin signal))

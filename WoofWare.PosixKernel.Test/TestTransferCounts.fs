@@ -76,7 +76,7 @@ module TestTransferCounts =
         | None -> image
         | Some limit ->
             image
-            |> UnixBootImage.withUserAddressLimit limit
+            |> UnixBootImage.tryWithUserAddressLimit limit
             |> Configured.expectOk UserAddressLimitRefusal.describe
 
     let internal systemOn (machine : SimulatedUnixPlatform * uint64 option) : UnixSystem<int, string> =
@@ -510,7 +510,7 @@ module TestTransferCounts =
             let actual =
                 // A pwrite's admission says what a write's does, but for the
                 // sleeping write, which a file never makes.
-                match UnixReadWrite.admitPWrite 0 fd case.Buffer case.Count offset system with
+                match UnixReadWrite.tryAdmitPWrite 0 fd case.Buffer case.Count offset system with
                 | Ok (PWriteAdmission.Answered answer) -> Ok (WriteAdmission.Answered answer)
                 | Ok (PWriteAdmission.Transfer count) -> Ok (WriteAdmission.Transfer count)
                 | Error (PWriteRefusal.Buffer refusal) -> Error refusal
@@ -605,7 +605,7 @@ module TestTransferCounts =
                 (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
                 |> shouldEqual (machine, length, "write", expected)
 
-                (machine, length, "pwrite", outcome (UnixReadWrite.pwrite 0 fd bytes nearTop system))
+                (machine, length, "pwrite", outcome (UnixReadWrite.tryPwrite 0 fd bytes nearTop system))
                 |> shouldEqual (machine, length, "pwrite", expected)
 
         for machine, length, expected in
@@ -621,7 +621,7 @@ module TestTransferCounts =
             (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
             |> shouldEqual (machine, length, "write", expected)
 
-            (machine, length, "pwrite", outcome (UnixReadWrite.pwrite 0 fd bytes Int64.MaxValue system))
+            (machine, length, "pwrite", outcome (UnixReadWrite.tryPwrite 0 fd bytes Int64.MaxValue system))
             |> shouldEqual (machine, length, "pwrite", expected)
 
     // --------------------------------------- the descriptors, as measured
@@ -749,7 +749,7 @@ module TestTransferCounts =
                         }
                 }
 
-            match UnixReadWrite.admitWrite system.Leader fd buffer count system with
+            match UnixReadWrite.tryAdmitWrite system.Leader fd buffer count system with
             | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, _)) when
                 signal.Signal = Signal.SIGPIPE
                 ->
@@ -767,7 +767,7 @@ module TestTransferCounts =
             | Ok other -> failwith $"unexpected write outcome %A{other}"
             | Error _ -> Seen.Refused
         | "pwrite" ->
-            match UnixReadWrite.admitPWrite 0 fd buffer count 0L system with
+            match UnixReadWrite.tryAdmitPWrite 0 fd buffer count 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
             | Ok (PWriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
             | Ok (PWriteAdmission.Transfer count) -> Seen.Moved count
@@ -883,7 +883,7 @@ module TestTransferCounts =
             =
             let system =
                 imageOn (platform, None)
-                |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fileSystem))
+                |> UnixBootImage.tryWithMount (Some (EmulatedMount.defaultOf fileSystem))
                 |> Configured.expectOk MountRefusal.describe
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -1018,7 +1018,7 @@ module TestTransferCounts =
                 | Ok (GetCwdAnswer.Failed error) -> Ok (Error error)
                 | Error refusal -> Error refusal
 
-            let actual = UnixPathResolution.getcwd UserBuffer.Mapped capacity system
+            let actual = UnixPathResolution.tryGetcwd UserBuffer.Mapped capacity system
 
             if normalise expected <> normalise actual then
                 failwith $"%A{machine} at capacity %d{capacity}: expected %A{expected}, got %A{actual}"
@@ -1106,7 +1106,7 @@ module TestTransferCountsLarge =
         exn.Message |> shouldContainText "one call moves"
 
         let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.pwrite 0 fd bytes 0L system |> ignore)
+            Assert.Throws<Exception> (fun () -> UnixReadWrite.tryPwrite 0 fd bytes 0L system |> ignore)
 
         exn.Message |> shouldContainText "one call moves"
 

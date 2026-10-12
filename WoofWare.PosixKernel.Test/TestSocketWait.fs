@@ -64,11 +64,11 @@ module TestSocketWait =
     let private withEventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux ->
-            match UnixPoll.epollCreate1 0 system with
+            match UnixPoll.tryEpollCreate1 0 system with
             | Ok (Ok (fd, system)) -> fd, system
             | other -> failwith $"expected an epoll instance, got %A{other}"
         | SimulatedUnixFlavour.Darwin ->
-            match UnixKqueue.kqueue system with
+            match UnixKqueue.tryKqueue system with
             | Ok (fd, system) -> fd, system
             | Error refusal -> failwith $"expected a kqueue, got %s{KqueueRefusal.describe refusal}"
 
@@ -121,7 +121,7 @@ module TestSocketWait =
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux ->
-            match UnixPoll.epollWait task fd maxEvents buffer -1 system with
+            match UnixPoll.tryEpollWait task fd maxEvents buffer -1 system with
             | Ok (EpollWaitOutcome.Failed error, after) ->
                 after |> shouldEqual system
                 Waited.Failed error
@@ -129,7 +129,7 @@ module TestSocketWait =
             | Ok (EpollWaitOutcome.WouldBlock _, parked) -> parkedOn parked
             | other -> failwith $"unexpected epoll_wait answer %A{other}"
         | SimulatedUnixFlavour.Darwin ->
-            match UnixKqueue.kevent task fd 0 [] maxEvents buffer KeventTimeout.Null system with
+            match UnixKqueue.tryKevent task fd 0 [] maxEvents buffer KeventTimeout.Null system with
             | Ok (KeventOutcome.Failed error, after) ->
                 after |> shouldEqual system
                 Waited.Failed error
@@ -342,7 +342,7 @@ module TestSocketWait =
     let ``an addressless buffer is refused only where the flavour screens`` () : unit =
         let linuxFd, linux = withEventQueue (systemOn SimulatedUnixPlatform.linuxX64)
 
-        UnixPoll.epollWait task linuxFd 8 UserBuffer.Addressless -1 (Tasks.ensure task linux)
+        UnixPoll.tryEpollWait task linuxFd 8 UserBuffer.Addressless -1 (Tasks.ensure task linux)
         |> shouldEqual (Error (EpollWaitRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
         let darwinFd, darwin = withEventQueue (systemOn SimulatedUnixPlatform.macOsArm64)

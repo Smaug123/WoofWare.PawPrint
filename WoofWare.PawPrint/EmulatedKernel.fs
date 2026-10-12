@@ -1026,11 +1026,14 @@ module EmulatedKernel =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let launch =
-            match ProcessLaunch.create platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0) with
-            | Ok launch -> launch
-            | Error refusal ->
-                failwith
-                    $"EmulatedKernel.processLaunch: the standard streams' launch table was refused: %s{LaunchTableRefusal.describe refusal} (this is a bug in PawPrint)."
+            try
+                ProcessLaunch.create platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
+            with
+            | :? UnmodelledException
+            | :? System.ArgumentException as e ->
+                KernelRefusal.fail
+                    "EmulatedKernel.processLaunch: the standard streams' launch table was refused (this is a bug in PawPrint)"
+                    e
 
         launch
         |> ProcessLaunch.withEnvironment
@@ -1078,39 +1081,18 @@ module EmulatedKernel =
         (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixSystem<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.boot launch machine with
-        | Ok system -> system
-        | Error (LaunchRefusal.CurrentDirectory (directory, fault)) ->
-            let described = AbsoluteUnixPath.toEscaped directory
-
-            match fault with
-            | CurrentDirectoryFault.DoesNotResolve error ->
-                failwith
-                    $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" does not resolve in %s{machineKnobs}.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make %s{machineKnobs}.FileSystem contain %s{processKnobs}.CurrentDirectory."
-            | CurrentDirectoryFault.TooLong flavour ->
-                // Distinguished because the remedy is different, and the
-                // message above would send the reader looking for a missing
-                // directory that is in fact present.
-                //
-                // Both causes are named because the walk reports one errno
-                // for them: a host told only about NAME_MAX would shorten a
-                // path that was never the problem.
-                failwith
-                    $"%s{processKnobs}.CurrentDirectory: %O{flavour} refuses \"%s{described}\" as too long, so no process could have been started in it. Either a component is past NAME_MAX -- shorten %s{processKnobs}.CurrentDirectory -- or, on Darwin, a symbolic link it goes through expands past PATH_MAX, in which case shorten that link's target in %s{machineKnobs}.FileSystem."
-            | CurrentDirectoryFault.NotADirectory ->
-                failwith
-                    $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" resolves in %s{machineKnobs}.FileSystem, but not to a directory. No process can be started anywhere else; point %s{processKnobs}.CurrentDirectory at a directory the seed contains."
-            | CurrentDirectoryFault.Path refusal ->
-                failwith
-                    $"%s{processKnobs}.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal} Start the process somewhere outside /dev."
-        | Error (LaunchRefusal.NotOfPlatform _ as refusal) ->
-            failwith
-                $"%s{processKnobs}: the process was described for another platform than its machine's: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
-        | Error (LaunchRefusal.LeaderCpuBeyondMachine _ as refusal) ->
-            // PawPrint puts the leader on processor 0, and every machine has at
-            // least one.
-            failwith
-                $"%s{processKnobs}: the process's leader is on a processor its machine does not have: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
+        // PawPrint describes the launch with its machine's platform and puts
+        // the leader on processor 0, which every machine has, so the one
+        // setting a host can make the boot refuse is where the process starts.
+        try
+            UnixBootImage.boot launch machine
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising
+                $"%s{processKnobs}.CurrentDirectory"
+                $"%s{processKnobs}.CurrentDirectory must name a directory in %s{machineKnobs}.FileSystem."
+                e
 
     /// The kernel of the PawPrint process `system` is the POSIX half of, newly
     /// launched, as though its launcher had left `inheritedIgnores` ignored
@@ -1147,8 +1129,16 @@ module EmulatedKernel =
             match SimulatedUnixPlatform.flavour platform with
             | SimulatedUnixFlavour.Linux -> ProcessRandom.Minipal (MinipalUrandom.Unopened, None), system
             | SimulatedUnixFlavour.Darwin ->
-                match UnixEntropy.getEntropy UserBuffer.Mapped 32UL system with
-                | Ok (GetEntropyAnswer.Completed draw, system) ->
+                let drawn =
+                    try
+                        UnixEntropy.getEntropy UserBuffer.Mapped 32UL system
+                    with :? UnmodelledException as e ->
+                        KernelRefusal.fail
+                            $"%s{context}: libSystem's getentropy(32) into storage it owns was refused (this is a bug in the kernel library)"
+                            e
+
+                match drawn with
+                | GetEntropyAnswer.Completed draw, system ->
                     ProcessRandom.LibSystem (LibSystemRandom.ofSeed (EntropyDraw.bytes draw)), system
                 | other ->
                     failwith
@@ -1264,17 +1254,10 @@ module EmulatedKernel =
         (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withFileSystem createdAt owner seed machine with
-        | Ok machine -> machine
-        | Error (FileSystemSeedFault.SeedNameTooLong (name, flavour)) ->
-            failwith
-                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in %s{knobs}.FileSystem, or configure the flavour whose limit admits it."
-        | Error (FileSystemSeedFault.SeedNameNotBindable (name, flavour)) ->
-            failwith
-                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in %s{knobs}.FileSystem, or configure the flavour that binds it."
-        | Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name) ->
-            failwith
-                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem binds \"%s{DirectoryEntryName.toEscaped name}\" at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot. Remove that entry from %s{knobs}.FileSystem: the kernel supplies /dev itself."
+        try
+            UnixBootImage.withFileSystem createdAt owner seed machine
+        with :? System.ArgumentException as e ->
+            KernelRefusal.fail $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem" e
 
     /// Set the filesystem the guest sees (`machineWithFileSystem`, naming
     /// `KernelConfig`'s knob), and the directory the simulated process starts
@@ -1339,13 +1322,14 @@ module EmulatedKernel =
         // Each refusal is out of reach: the checks above keep the instant in
         // [0, 9999-12-31], far inside the range the library admits, and a whole
         // number of milliseconds is never finer than a microsecond.
-        match UnixBootImage.withBootTime bootTime machine with
-        | Ok machine -> machine
-        | Error (BootTimeRefusal.BeforeEpoch _ as refusal)
-        | Error (BootTimeRefusal.PastMaxBootTime _ as refusal)
-        | Error (BootTimeRefusal.FinerThanMicrosecond _ as refusal) ->
-            failwith
-                $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time: %s{BootTimeRefusal.describe refusal} This is a bug in PawPrint."
+        try
+            UnixBootImage.withBootTime bootTime machine
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.fail
+                $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time (this is a bug in PawPrint)"
+                e
 
     /// `machineWithWallClockEpochMs` of `image`'s machine.
     let withWallClockEpochMs (epochMs : int64) (image : KernelImage) : KernelImage =
@@ -1651,12 +1635,18 @@ module EmulatedKernel =
         // 0 is what glibc's `start_thread` passes to the thread-exit syscall once
         // the thread's start routine has returned. Only a last task's status is ever
         // read, and that is refused below.
-        match UnixTaskLifecycle.exitThread thread 0 kernel.System with
-        | Ok (TaskOutcome.Continues system) -> withUnix system kernel
-        | Ok (TaskOutcome.ProcessEnded ended) ->
+        let outcome =
+            try
+                UnixTaskLifecycle.exitThread thread 0 kernel.System
+            with
+            | :? UnmodelledException
+            | :? System.InvalidOperationException as e -> KernelRefusal.fail "EmulatedKernel.exitThread" e
+
+        match outcome with
+        | TaskOutcome.Continues system -> withUnix system kernel
+        | TaskOutcome.ProcessEnded ended ->
             failwith
                 $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
-        | Error refusal -> failwith $"EmulatedKernel.exitThread: %s{ThreadExitRefusal.describe refusal}"
 
     /// `thread` is about to run an instruction: `UnixScheduling.dispatch` of its task
     /// to the processor its task is on (`UnixTaskState.Cpu`), which displaces whichever
@@ -1732,8 +1722,14 @@ module EmulatedKernel =
             | Ok (_, system) -> system
             | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
 
-        match UnixSignal.pthreadKill thread signo system with
-        | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+        let raised =
+            try
+                UnixSignal.pthreadKill thread signo system
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
+
+        match raised with
+        | Ok (KillOutcome.ProcessEnded ended) ->
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
             | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
@@ -2392,20 +2388,31 @@ module ProcessConfig =
         let credentials = credentials knobs flavour config
 
         let credentialsOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            match ProcessLaunch.withCredentials credentials launch with
-            | Ok launch -> launch
-            | Error (CredentialsRefusal.TooManySupplementaryGroups _ as refusal) ->
-                failwith $"%s{knobs}.SupplementaryGroups: %s{CredentialsRefusal.describe refusal}"
-            | Error (CredentialsRefusal.IdsDifferOnDarwin _ as refusal) ->
+            try
+                ProcessLaunch.withCredentials credentials launch
+            with
+            | :? UnmodelledException
+            | :? System.ArgumentException as e ->
                 // `Credentials.ofIds` gives the real, effective and saved IDs
-                // one value each, so the configuration cannot reach this.
-                failwith
-                    $"%s{knobs}.UserId and %s{knobs}.GroupId: %s{CredentialsRefusal.describe refusal} (this is a bug in PawPrint)."
+                // one value each, so the only setting the library can refuse is
+                // a list of supplementary groups longer than the flavour holds.
+                let knob =
+                    if
+                        List.length credentials.SupplementaryGroups > SimulatedUnixPlatform.supplementaryGroupLimit
+                            platform
+                    then
+                        $"%s{knobs}.SupplementaryGroups"
+                    else
+                        $"%s{knobs}.UserId and %s{knobs}.GroupId (this is a bug in PawPrint)"
+
+                KernelRefusal.fail knob e
 
         let umaskOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            match ProcessLaunch.withUmask config.Umask launch with
-            | Ok launch -> launch
-            | Error refusal -> failwith $"%s{knobs}.Umask: %s{UmaskRefusal.describe refusal}"
+            try
+                ProcessLaunch.withUmask config.Umask launch
+            with
+            | :? UnmodelledException
+            | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.Umask" e
 
         // Named for this knob before the library sees it, so a host that forged
         // one is told which field it set rather than which library function
@@ -2471,10 +2478,12 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withProcessorCount count image with
-        | Ok image -> image
-        | Error (ProcessorCountRefusal.NotPositive _ as refusal) ->
-            failwith $"%s{knobs}.ProcessorCount: %s{ProcessorCountRefusal.describe refusal} Configure at least 1."
+        try
+            UnixBootImage.withProcessorCount count image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising $"%s{knobs}.ProcessorCount" "Configure at least 1." e
 
     let private withUserAddressLimit
         (knobs : string)
@@ -2482,13 +2491,17 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withUserAddressLimit limit image with
-        | Ok image -> image
-        | Error (UserAddressLimitRefusal.NoUpFrontScreen _ as refusal) ->
-            failwith $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Leave it None."
-        | Error (UserAddressLimitRefusal.NotObservedOn _ as refusal) ->
-            failwith
-                $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Pick one of those, or None for the platform's own."
+        try
+            UnixBootImage.withUserAddressLimit limit image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            let remedy =
+                match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
+                | SimulatedUnixFlavour.Darwin -> "Leave it None."
+                | SimulatedUnixFlavour.Linux -> "Pick an observed limit, or None for the platform's own."
+
+            KernelRefusal.failAdvising $"%s{knobs}.UserAddressLimit" remedy e
 
     let private withMount
         (knobs : string)
@@ -2496,11 +2509,17 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withMount mount image with
-        | Ok image -> image
-        | Error (MountRefusal.NotReportableUnder (_, flavour) as refusal) ->
-            failwith
-                $"%s{knobs}.Mount: %s{MountRefusal.describe refusal} Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+        try
+            UnixBootImage.withMount mount image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            let flavour = SimulatedUnixPlatform.flavour (UnixBootImage.platform image)
+
+            KernelRefusal.failAdvising
+                $"%s{knobs}.Mount"
+                $"Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+                e
 
     let private withEphemeralPortRange
         (knobs : string)
@@ -2508,11 +2527,11 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withEphemeralPortRange range image with
-        | Ok image -> image
-        | Error (EphemeralPortRangeRefusal.LowIsZero _ as refusal)
-        | Error (EphemeralPortRangeRefusal.Empty _ as refusal) ->
-            failwith $"%s{knobs}.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
+        try
+            UnixBootImage.withEphemeralPortRange range image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.EphemeralPortRange" e
 
     let private withSoMaxConn
         (knobs : string)
@@ -2520,11 +2539,15 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withSoMaxConn value image with
-        | Ok image -> image
-        | Error (SoMaxConnRefusal.NotPositive _ as refusal) ->
-            failwith
-                $"%s{knobs}.SoMaxConn: %s{SoMaxConnRefusal.describe refusal} Configure a positive value, or None for the flavour's default."
+        try
+            UnixBootImage.withSoMaxConn value image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising
+                $"%s{knobs}.SoMaxConn"
+                "Configure a positive value, or None for the flavour's default."
+                e
 
     let private withTcpSendSpace
         (knobs : string)
@@ -2532,16 +2555,19 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withTcpSendSpace value image with
-        | Ok image -> image
-        | Error (TcpSendSpaceRefusal.NotReadOn _ as refusal) ->
-            failwith $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceRefusal.AboveSocketBufferMax (_, max) as refusal) ->
-            failwith
-                $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at most %d{max}, or None for the default."
-        | Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
-            failwith
-                $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
+        try
+            UnixBootImage.withTcpSendSpace value image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            // Linux reads no TCP send space here; on Darwin the library's
+            // account says which bound the value is on the wrong side of.
+            let remedy =
+                match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
+                | SimulatedUnixFlavour.Linux -> "Pass None."
+                | SimulatedUnixFlavour.Darwin -> "Configure a size within the bounds, or None for the default."
+
+            KernelRefusal.failAdvising $"%s{knobs}.TcpSendSpace" remedy e
 
     let private withTcpReceiveSpace
         (knobs : string)
@@ -2549,11 +2575,12 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withTcpReceiveSpace value image with
-        | Ok image -> image
-        | Error refusal ->
-            failwith
-                $"%s{knobs}.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
+        try
+            UnixBootImage.withTcpReceiveSpace value image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising $"%s{knobs}.TcpReceiveSpace" "Configure another size, or None for the default." e
 
     let private withTcpSendSpaceMax
         (knobs : string)
@@ -2561,13 +2588,19 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withTcpSendSpaceMax value image with
-        | Ok image -> image
-        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
-            failwith $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
-            failwith
-                $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+        try
+            UnixBootImage.withTcpSendSpaceMax value image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            // Darwin reads no send buffer maximum here; Linux refuses only a
+            // size that is not positive.
+            let remedy =
+                match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
+                | SimulatedUnixFlavour.Darwin -> "Pass None."
+                | SimulatedUnixFlavour.Linux -> "Configure a positive size, or None for the default."
+
+            KernelRefusal.failAdvising $"%s{knobs}.TcpSendSpaceMax" remedy e
 
     let private withProtectedFiles
         (knobs : string)
@@ -2575,10 +2608,11 @@ module MachineConfig =
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixBootImage<ThreadId, NativeSignalHandler>
         =
-        match UnixBootImage.withProtectedFiles protection image with
-        | Ok image -> image
-        | Error (ProtectedFilesRefusal.NoSuchSysctls _ as refusal) ->
-            failwith $"%s{knobs}.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
+        try
+            UnixBootImage.withProtectedFiles protection image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.ProtectedFiles" e
 
     /// The boot image of the machine `config` describes. Each setter's refusal
     /// fails loudly, naming the knob `knobs.X`, where `knobs` names the
@@ -2599,9 +2633,11 @@ module MachineConfig =
             (image : UnixBootImage<ThreadId, NativeSignalHandler>)
             : UnixBootImage<ThreadId, NativeSignalHandler>
             =
-            match UnixBootImage.withProcessId (ProcessId.assertValid $"%s{knobs}.ProcessId" config.ProcessId) image with
-            | Ok image -> image
-            | Error refusal -> failwith $"%s{knobs}.ProcessId: %s{ProcessIdRefusal.describe refusal}"
+            try
+                UnixBootImage.withProcessId (ProcessId.assertValid $"%s{knobs}.ProcessId" config.ProcessId) image
+            with
+            | :? UnmodelledException
+            | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.ProcessId" e
 
         let leaderThreadIdOrFail
             (image : UnixBootImage<ThreadId, NativeSignalHandler>)
@@ -2615,9 +2651,11 @@ module MachineConfig =
             | SimulatedUnixFlavour.Darwin, id ->
                 let id = id |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
 
-                match UnixBootImage.withLeaderThreadId id image with
-                | Ok image -> image
-                | Error refusal -> failwith $"%s{knobs}.LeaderThreadId: %s{LeaderThreadIdRefusal.describe refusal}"
+                try
+                    UnixBootImage.withLeaderThreadId id image
+                with
+                | :? UnmodelledException
+                | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.LeaderThreadId" e
 
         UnixSystem.initial platform
         |> withProcessorCount knobs config.ProcessorCount

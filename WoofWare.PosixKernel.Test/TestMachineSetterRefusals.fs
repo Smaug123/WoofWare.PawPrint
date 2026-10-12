@@ -56,7 +56,7 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withSoMaxConn admits exactly the positive values, and refuses the rest as not positive`` () : unit =
         let property (platform : SimulatedUnixPlatform, value : int) : unit =
-            match UnixBootImage.withSoMaxConn (Some value) (imageOn platform), value >= 1 with
+            match UnixBootImage.tryWithSoMaxConn (Some value) (imageOn platform), value >= 1 with
             | Ok image, true ->
                 (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.SoMaxConn
                 |> shouldEqual value
@@ -69,11 +69,11 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withSoMaxConn's boundary is between 0 and 1`` () : unit =
         for platform in platforms do
-            UnixBootImage.withSoMaxConn (Some 0) (imageOn platform)
+            UnixBootImage.tryWithSoMaxConn (Some 0) (imageOn platform)
             |> Result.map (fun _ -> ())
             |> shouldEqual (Error (SoMaxConnRefusal.NotPositive 0))
 
-            (UnixBootImage.withSoMaxConn (Some 1) (imageOn platform)
+            (UnixBootImage.tryWithSoMaxConn (Some 1) (imageOn platform)
              |> Configured.expectOk SoMaxConnRefusal.describe
              |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                 .Machine.SoMaxConn
@@ -84,7 +84,7 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withProcessorCount admits exactly the positive counts, and refuses the rest as not positive`` () : unit =
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
-            match UnixBootImage.withProcessorCount count (imageOn platform), count >= 1 with
+            match UnixBootImage.tryWithProcessorCount count (imageOn platform), count >= 1 with
             | Ok image, true ->
                 UnixMachineState.processorCount
                     (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine
@@ -98,11 +98,11 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withProcessorCount's boundary is between 0 and 1`` () : unit =
         for platform in platforms do
-            UnixBootImage.withProcessorCount 0 (imageOn platform)
+            UnixBootImage.tryWithProcessorCount 0 (imageOn platform)
             |> Result.map (fun _ -> ())
             |> shouldEqual (Error (ProcessorCountRefusal.NotPositive 0))
 
-            UnixBootImage.withProcessorCount 1 (imageOn platform)
+            UnixBootImage.tryWithProcessorCount 1 (imageOn platform)
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> fun system -> UnixMachineState.processorCount system.Machine
@@ -121,7 +121,7 @@ module TestMachineSetterRefusals =
                 else
                     Ok ()
 
-            match UnixBootImage.withEphemeralPortRange (low, high) (imageOn platform) with
+            match UnixBootImage.tryWithEphemeralPortRange (low, high) (imageOn platform) with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 
@@ -151,7 +151,7 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withEphemeralPortRange's boundaries`` () : unit =
         let outcome (low : uint16, high : uint16) : Result<unit, EphemeralPortRangeRefusal> =
-            UnixBootImage.withEphemeralPortRange (low, high) (imageOn SimulatedUnixPlatform.linuxX64)
+            UnixBootImage.tryWithEphemeralPortRange (low, high) (imageOn SimulatedUnixPlatform.linuxX64)
             |> Result.map (fun _ -> ())
 
         outcome (0us, 0us)
@@ -179,7 +179,7 @@ module TestMachineSetterRefusals =
                 | _ when device < 0L -> Error (PipeDeviceRefusal.Negative device)
                 | _ -> Ok ()
 
-            match UnixBootImage.withPipeDevice (Some device) (imageOn platform) with
+            match UnixBootImage.tryWithPipeDevice (Some device) (imageOn platform) with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 
@@ -192,7 +192,7 @@ module TestMachineSetterRefusals =
     [<Test>]
     let ``withPipeDevice's boundaries`` () : unit =
         let outcome (platform : SimulatedUnixPlatform) (device : int64) : Result<unit, PipeDeviceRefusal> =
-            UnixBootImage.withPipeDevice (Some device) (imageOn platform)
+            UnixBootImage.tryWithPipeDevice (Some device) (imageOn platform)
             |> Result.map (fun _ -> ())
 
         outcome SimulatedUnixPlatform.linuxX64 -1L
@@ -211,7 +211,7 @@ module TestMachineSetterRefusals =
         outcome SimulatedUnixPlatform.macOsArm64 0L |> shouldEqual (Ok ())
 
         for platform in platforms do
-            (UnixBootImage.withPipeDevice None (imageOn platform)
+            (UnixBootImage.tryWithPipeDevice None (imageOn platform)
              |> Configured.expectOk PipeDeviceRefusal.describe
              |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                 .Machine.PipeDevice

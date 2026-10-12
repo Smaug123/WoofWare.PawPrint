@@ -336,7 +336,7 @@ module TestUnconnectedSocketTransfer =
         |> Option.map _.Endpoint
         |> shouldEqual (Some (loopbackAt 0us))
 
-        match UnixReadWrite.admitWrite system.Leader fd UserBuffer.Mapped 1UL system with
+        match UnixReadWrite.tryAdmitWrite system.Leader fd UserBuffer.Mapped 1UL system with
         | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EDESTADDRREQ), after)) ->
             let low, high = system.Machine.EphemeralPortRange
 
@@ -398,7 +398,7 @@ module TestUnconnectedSocketTransfer =
                 | other -> failwith $"the kernel would not bind %A{row}: %A{other}"
 
         let listening (system : UnixSystem<int, string>) =
-            match UnixSocket.listen fd 4 system with
+            match UnixSocket.tryListen fd 4 system with
             | Ok (ListenAnswer.Listening _, system) -> Some system
             | Ok (ListenAnswer.Failed _, _)
             | Error _ -> None
@@ -474,7 +474,7 @@ module TestUnconnectedSocketTransfer =
     let private kernelAgrees (row : Row) (fd : int) (system : UnixSystem<int, string>) : bool =
         match row.Call with
         | Call.Read count ->
-            match UnixReadWrite.read 1 fd UserBuffer.Mapped count system, row.Seen with
+            match UnixReadWrite.tryRead 1 fd UserBuffer.Mapped count system, row.Seen with
             | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after), Seen.ReturnedZero ->
                 bytes.IsEmpty && after = system
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after), Seen.Failed seen ->
@@ -482,14 +482,16 @@ module TestUnconnectedSocketTransfer =
             | Error (ReadRefusal.DatagramSleep _), Seen.Sleeps -> true
             | _ -> false
         | Call.Write count ->
-            let admitted = UnixReadWrite.admitWrite 1 fd UserBuffer.Mapped count system
+            let admitted = UnixReadWrite.tryAdmitWrite 1 fd UserBuffer.Mapped count system
 
             // `write` without the admission, as a caller holding the bytes may
             // make it, answers the same, but only for a count the caller could
             // hold in one call.
             let written =
                 if count <= uint64 (1 <<< 20) then
-                    Some (UnixReadWrite.write 1 fd (ImmutableArray.Create<byte> (Array.zeroCreate (int count))) system)
+                    Some (
+                        UnixReadWrite.tryWrite 1 fd (ImmutableArray.Create<byte> (Array.zeroCreate (int count))) system
+                    )
                 else
                     None
 

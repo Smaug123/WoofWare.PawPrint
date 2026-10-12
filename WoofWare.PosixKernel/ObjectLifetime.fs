@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// any more: what the release would do to an object the description was the
 /// last reference to has not been measured.
 [<RequireQualifiedAccess>]
-type DescriptionReleaseRefusal =
+type internal DescriptionReleaseRefusal =
     /// The description is the last reference to the connected stream socket
     /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
     /// connection `connection` is still referenced: by its peer, or by a
@@ -41,7 +41,7 @@ type DescriptionReleaseRefusal =
     | DarwinCloseBehindQueuedFin of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
-module DescriptionReleaseRefusal =
+module internal DescriptionReleaseRefusal =
     /// What this kernel knows about why it cannot release the description. The
     /// client supplies its own half: which call let go of the last reference.
     let describe (refusal : DescriptionReleaseRefusal) : string =
@@ -52,6 +52,13 @@ module DescriptionReleaseRefusal =
             $"releasing the last reference destroys socket %O{socket}, which shut its send side while bytes it wrote to connection %O{connection} were unsent, so its FIN still waits behind them; the peer's FIN has arrived, and bytes are left unread. Measured on Darwin, the close then sends no reset, and neither the remaining bytes nor the FIN reach the peer, which reads what it holds and then EAGAIN for at least 2 s: only a TCP timer ends that, and this kernel keeps none."
         | DescriptionReleaseRefusal.LingeringClose (socket, connection, unsent) ->
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time greater than zero, while %d{unsent} bytes it wrote to connection %O{connection} are still in its send buffer. Measured with the peer open and nothing unread, a real kernel's close then waits, for up to the linger time, for them to reach the peer -- on Linux whatever the description's O_NONBLOCK, on Darwin when the description is blocking -- and this kernel does not model that wait."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : DescriptionReleaseRefusal) : RefusalKind =
+        match refusal with
+        | DescriptionReleaseRefusal.AbortiveClose _ -> RefusalKind.Unmodelled
+        | DescriptionReleaseRefusal.LingeringClose _ -> RefusalKind.Unmodelled
+        | DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _ -> RefusalKind.Unmodelled
 
 /// When this kernel frees what nothing references any more: an open file
 /// description once no descriptor names it and no syscall in flight holds it,

@@ -43,7 +43,7 @@ module TestStateQueries =
 
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
             imageOn platform
-            |> UnixBootImage.withProcessorCount count
+            |> UnixBootImage.tryWithProcessorCount count
             |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> fun system -> UnixMachineState.processorCount system.Machine
@@ -76,7 +76,7 @@ module TestStateQueries =
             uptime |> shouldEqual (List.sum advances)
             UnixSystem.nanosecondsSinceBoot system |> shouldEqual uptime
 
-            match UnixClock.clockGettime (fullPrecisionSinceBoot platform) system with
+            match UnixClock.tryClockGettime (fullPrecisionSinceBoot platform) system with
             | Ok (Ok reading) ->
                 UnixTimestamp.seconds reading * 1_000_000_000L
                 + int64 (UnixTimestamp.nanoseconds reading)
@@ -188,12 +188,12 @@ module TestStateQueries =
             UnixTaskState.park (UnixTaskTable.get 0 system.Tasks) |> shouldEqual None
 
             let system =
-                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                 | Ok (Pipe2Answer.Created (3, 4), system) -> system
                 | other -> failwith $"pipe2: %A{other}"
 
             let system =
-                match UnixReadWrite.read 0 3 UserBuffer.Mapped 16UL system with
+                match UnixReadWrite.tryRead 0 3 UserBuffer.Mapped 16UL system with
                 | Ok (ReadOutcome.WouldBlock _, system) -> system
                 | other -> failwith $"expected a read of the empty pipe to sleep, got %A{other}"
 
@@ -216,7 +216,7 @@ module TestStateQueries =
         for platform in platforms do
             let system =
                 imageOn platform
-                |> UnixBootImage.withProcessorCount 3
+                |> UnixBootImage.tryWithProcessorCount 3
                 |> Configured.expectOk ProcessorCountRefusal.describe
                 |> (Launched.bootWith
                         (ProcessLaunch.withEnvironment context [ entry ]
@@ -248,7 +248,7 @@ module TestStateQueries =
             UnixSystem.descriptorTarget 3 system |> shouldEqual None
 
             // And a write that reaches the client is what `delivered` reports.
-            match UnixReadWrite.write 0 1 (ImmutableArray.Create<byte> [| 7uy |]) system with
+            match UnixReadWrite.tryWrite 0 1 (ImmutableArray.Create<byte> [| 7uy |]) system with
             | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, written)) ->
                 UnixSystem.delivered written
                 |> DeliveryLog.toList

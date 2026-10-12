@@ -218,24 +218,24 @@ module TestUnblockForAnotherTask =
             | other -> failwith $"binding the listener: %A{other}"
 
         let system =
-            match UnixSocket.listen listener 8 system with
+            match UnixSocket.tryListen listener 8 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listening: %A{other}"
 
         let port, system =
             match flavour with
             | SimulatedUnixFlavour.Darwin ->
-                match UnixKqueue.kqueue system with
+                match UnixKqueue.tryKqueue system with
                 | Ok (fd, system) -> fd, system
                 | other -> failwith $"kqueue: %A{other}"
             | SimulatedUnixFlavour.Linux ->
                 let epoll, system =
-                    match UnixPoll.epollCreate1 0 system with
+                    match UnixPoll.tryEpollCreate1 0 system with
                     | Ok (Ok (fd, system)) -> fd, system
                     | other -> failwith $"epoll_create1: %A{other}"
 
                 match
-                    UnixPoll.epollCtl
+                    UnixPoll.tryEpollCtl
                         epoll
                         1
                         listener
@@ -275,12 +275,12 @@ module TestUnblockForAnotherTask =
             |> UnixSystemState.withFileDescriptors registry
 
         let system =
-            match UnixDescriptor.flock holder lockedThrough 2 system with
+            match UnixDescriptor.tryFlock holder lockedThrough 2 system with
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> system
             | other -> failwith $"the holder's lock: %A{other}"
 
         let pipe (system : UnixSystem<int, string>) : int * int * UnixSystem<int, string> =
-            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created (readEnd, writeEnd), system) -> readEnd, writeEnd, system
             | other -> failwith $"pipe2: %A{other}"
 
@@ -331,7 +331,7 @@ module TestUnblockForAnotherTask =
 
         match sleep with
         | Sleep.PollOfNothing ->
-            UnixPoll.poll
+            UnixPoll.tryPoll
                 task
                 [
                     {
@@ -343,7 +343,7 @@ module TestUnblockForAnotherTask =
                 system
             |> parkedOrNot "the poll of nothing"
         | Sleep.PollListener ->
-            UnixPoll.poll
+            UnixPoll.tryPoll
                 task
                 [
                     {
@@ -355,13 +355,13 @@ module TestUnblockForAnotherTask =
                 system
             |> parkedOrNot "the poll"
         | Sleep.Accept ->
-            UnixConnection.accept task world.Listener UserBuffer.Mapped 16u system
+            UnixConnection.tryAccept task world.Listener UserBuffer.Mapped 16u system
             |> parkedOrNot "the accept"
         | Sleep.Flock ->
-            UnixDescriptor.flock task world.WaitingThrough 2 system
+            UnixDescriptor.tryFlock task world.WaitingThrough 2 system
             |> parkedOrNot "the flock"
         | Sleep.PipeRead ->
-            UnixReadWrite.read task world.EmptyPipeReadEnd UserBuffer.Mapped 1UL system
+            UnixReadWrite.tryRead task world.EmptyPipeReadEnd UserBuffer.Mapped 1UL system
             |> parkedOrNot "the read"
         | Sleep.PipeWrite ->
             match
@@ -378,15 +378,15 @@ module TestUnblockForAnotherTask =
         | Sleep.EventPort ->
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux ->
-                UnixPoll.epollWait task world.Port 8 UserBuffer.Mapped -1 system
+                UnixPoll.tryEpollWait task world.Port 8 UserBuffer.Mapped -1 system
                 |> parkedOrNot "the epoll_wait"
             | SimulatedUnixFlavour.Darwin ->
-                UnixKqueue.kevent task world.Port 0 [] 1 UserBuffer.Mapped KeventTimeout.Null system
+                UnixKqueue.tryKevent task world.Port 0 [] 1 UserBuffer.Mapped KeventTimeout.Null system
                 |> parkedOrNot "the kevent"
         | Sleep.Sigsuspend ->
             let mask = SignalState.maskOf task system.Process.Signals
-            UnixSignal.sigsuspend task mask system |> parkedOrNot "the sigsuspend"
-        | Sleep.Pause -> UnixSignal.pause task system |> parkedOrNot "the pause"
+            UnixSignal.trySigsuspend task mask system |> parkedOrNot "the sigsuspend"
+        | Sleep.Pause -> UnixSignal.tryPause task system |> parkedOrNot "the pause"
 
     let private orFail (what : string) (result : Result<'a * UnixSystem<int, string>, 'e>) : UnixSystem<int, string> =
         match result with
@@ -401,10 +401,10 @@ module TestUnblockForAnotherTask =
         let outcome =
             match case.Target with
             | Target.Process ->
-                UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) raw system
+                UnixSignal.tryKill (ProcessId.toInt32 (UnixSystem.processId system)) raw system
                 |> Result.mapError (fun refusal -> $"%A{refusal}")
             | Target.Task task ->
-                UnixSignal.pthreadKill task raw system
+                UnixSignal.tryPthreadKill task raw system
                 |> Result.mapError (fun refusal -> $"%A{refusal}")
 
         match outcome with
@@ -437,7 +437,7 @@ module TestUnblockForAnotherTask =
                 | Route.SigprocmaskUnblock -> unblockHow case.Flavour, s
                 | _ -> setmaskHow case.Flavour, SignalMask.empty
 
-            match UnixSignal.sigprocmask case.Unblocker how (Some set) system with
+            match UnixSignal.trySigprocmask case.Unblocker how (Some set) system with
             | Ok answer -> answered answer
             | Error refusal -> Unblocked.Refused refusal
 

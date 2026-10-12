@@ -50,9 +50,8 @@ module TestNativeLibc =
         : UnixSystem<int, NativeSignalHandler>
         =
         match UnixTaskLifecycle.spawn leader task (CpuId 0) system with
-        | Ok (SpawnAnswer.Spawned _, system) -> system
-        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning task %d{task} failed with %O{error}"
-        | Error refusal -> failwith $"spawning task %d{task} was refused: %s{SpawnRefusal.describe refusal}"
+        | SpawnAnswer.Spawned _, system -> system
+        | SpawnAnswer.Failed error, _ -> failwith $"spawning task %d{task} failed with %O{error}"
 
     /// `system` once `entry` has been sent, by `kill(2)` to the process or by
     /// `pthread_kill(3)` to its target, failing the test unless the process
@@ -68,7 +67,7 @@ module TestNativeLibc =
                 |> Result.mapError (sprintf "%A")
 
         match outcome with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (KillOutcome.ProcessContinues system) -> system
         | other -> failwith $"sending %A{entry}: %A{other}"
 
     let private signal (numbering : SignalNumbering) (signo : int) : Signal =

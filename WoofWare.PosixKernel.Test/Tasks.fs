@@ -13,7 +13,7 @@ module Tasks =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
+        match UnixTaskLifecycle.trySpawn system.Leader child (CpuId 0) system with
         | Ok (SpawnAnswer.Spawned _, system) -> system
         | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %O{child} failed with %O{error}"
         | Error refusal -> failwith $"spawning %O{child} was refused: %s{SpawnRefusal.describe refusal}"

@@ -109,7 +109,7 @@ type Syscall =
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
-type SyscallRefusal<'Task> =
+type internal SyscallRefusal<'Task> =
     | Dup of DescriptorLimitRefusal
     | Fcntl of FcntlRefusal
     | Dup2 of Dup2Refusal<'Task>
@@ -139,7 +139,7 @@ type SyscallRefusal<'Task> =
     | Inotify of InotifyRefusal
 
 [<RequireQualifiedAccess>]
-module SyscallRefusal =
+module internal SyscallRefusal =
     /// What this kernel knows about why it cannot answer, after the name of
     /// the syscall it refused. The client supplies its own half: which task
     /// made the call.
@@ -170,6 +170,35 @@ module SyscallRefusal =
         | SyscallRefusal.SetIds refusal -> $"setresuid or setresgid: %s{SetIdsRefusal.describe refusal}"
         | SyscallRefusal.SetGroups refusal -> $"setgroups: %s{SetGroupsRefusal.describe refusal}"
         | SyscallRefusal.Inotify refusal -> $"inotify_init1 or inotify_rm_watch: %s{InotifyRefusal.describe refusal}"
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SyscallRefusal<'Task>) : RefusalKind =
+        match refusal with
+        | SyscallRefusal.Dup _ -> RefusalKind.Unmodelled
+        | SyscallRefusal.Fcntl inner -> FcntlRefusal.kind inner
+        | SyscallRefusal.Dup2 inner -> Dup2Refusal.kind inner
+        | SyscallRefusal.Dup3 inner -> Dup3Refusal.kind inner
+        | SyscallRefusal.LSeek inner -> LSeekRefusal.kind inner
+        | SyscallRefusal.FLock inner -> FLockRefusal.kind inner
+        | SyscallRefusal.FTruncate inner -> TruncationRefusal.kind inner
+        | SyscallRefusal.MkDir inner -> PathRefusal.kind inner
+        | SyscallRefusal.UnlinkAt inner -> UnlinkAtRefusal.kind inner
+        | SyscallRefusal.ChDir inner -> PathRefusal.kind inner
+        | SyscallRefusal.FChModAt inner -> FChModAtRefusal.kind inner
+        | SyscallRefusal.FChMod inner -> FChModRefusal.kind inner
+        | SyscallRefusal.FChOwnAt inner -> FChOwnAtRefusal.kind inner
+        | SyscallRefusal.FChOwn inner -> FChOwnRefusal.kind inner
+        | SyscallRefusal.Access inner -> AccessRefusal.kind inner
+        | SyscallRefusal.Symlink inner -> SymlinkRefusal.kind inner
+        | SyscallRefusal.Link inner -> LinkRefusal.kind inner
+        | SyscallRefusal.Close inner -> CloseRefusal.kind inner
+        | SyscallRefusal.UTimensAt inner -> UTimensAtRefusal.kind inner
+        | SyscallRefusal.CopyFileRange inner -> CopyFileRangeRefusal.kind inner
+        | SyscallRefusal.FileClone inner -> FileCloneRefusal.kind inner
+        | SyscallRefusal.CloneFile inner -> CloneFileRefusal.kind inner
+        | SyscallRefusal.SetIds inner -> SetIdsRefusal.kind inner
+        | SyscallRefusal.SetGroups inner -> SetGroupsRefusal.kind inner
+        | SyscallRefusal.Inotify inner -> InotifyRefusal.kind inner
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -690,7 +719,7 @@ module UnixSystemDefect =
 /// root, so those are bugs in this library and crash rather than being handed
 /// to a caller who could do nothing about them.
 [<RequireQualifiedAccess>]
-type CurrentDirectoryFault =
+type internal CurrentDirectoryFault =
     /// The path does not resolve in the seeded filesystem at all. Carries what
     /// the walk answered.
     | DoesNotResolve of UnixError
@@ -717,10 +746,20 @@ type CurrentDirectoryFault =
     /// This kernel will not resolve the path.
     | Path of PathRefusal
 
+[<RequireQualifiedAccess>]
+module internal CurrentDirectoryFault =
+    /// Which exception a public entry point raises this fault as.
+    let kind (fault : CurrentDirectoryFault) : RefusalKind =
+        match fault with
+        | CurrentDirectoryFault.DoesNotResolve _ -> RefusalKind.Contradictory "launch"
+        | CurrentDirectoryFault.TooLong _ -> RefusalKind.Contradictory "launch"
+        | CurrentDirectoryFault.NotADirectory -> RefusalKind.Contradictory "launch"
+        | CurrentDirectoryFault.Path inner -> PathRefusal.kind inner
+
 /// Why `UnixBootImage.withFileSystem` refuses a seed: it describes a filesystem
 /// no kernel of the machine's flavour could have mounted.
 [<RequireQualifiedAccess>]
-type FileSystemSeedFault =
+type internal FileSystemSeedFault =
     /// The seed holds a directory entry whose name is past this flavour's
     /// `NAME_MAX`, so it describes a filesystem no kernel of that flavour could
     /// have mounted: `stat` of the name would answer ENAMETOOLONG while
@@ -737,17 +776,24 @@ type FileSystemSeedFault =
     | SeedCoversDeviceFileSystem of name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
-module FileSystemSeedFault =
+module internal FileSystemSeedFault =
     /// What this library knows about why it refused the seed, for a client
     /// composing a diagnostic that names its own knob.
     let describe (fault : FileSystemSeedFault) : string =
         match fault with
         | FileSystemSeedFault.SeedNameTooLong (name, flavour) ->
-            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which is past the %O{flavour} flavour's NAME_MAX, so no kernel of that flavour could have mounted the filesystem it describes."
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which is past the %O{flavour} flavour's NAME_MAX, so no kernel of that flavour could have mounted the filesystem it describes. Shorten the name, or simulate a flavour whose NAME_MAX admits it."
         | FileSystemSeedFault.SeedNameNotBindable (name, flavour) ->
-            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which a %O{flavour} filesystem will not bind, so no kernel of that flavour could have created it."
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which a %O{flavour} filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no kernel of that flavour could have created it. Rename the entry, or simulate a flavour that binds it."
         | FileSystemSeedFault.SeedCoversDeviceFileSystem name ->
-            $"the seed binds %s{DirectoryEntryName.toEscaped name} at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot, which would hide what the seed put there."
+            $"the seed binds %s{DirectoryEntryName.toEscaped name} at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot, which would hide what the seed put there. Leave it out of the seed: the kernel supplies /dev itself."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : FileSystemSeedFault) : RefusalKind =
+        match refusal with
+        | FileSystemSeedFault.SeedNameTooLong _ -> RefusalKind.Contradictory "seed"
+        | FileSystemSeedFault.SeedNameNotBindable _ -> RefusalKind.Contradictory "seed"
+        | FileSystemSeedFault.SeedCoversDeviceFileSystem _ -> RefusalKind.Contradictory "seed"
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -1086,26 +1132,8 @@ module UnixSystem =
                 }
         }
 
-    /// Answer one syscall, made by `task`.
-    ///
-    /// The task is what a blocking answer is recorded against: `FLock` that
-    /// would block parks it, and the returned system carries that park.
-    ///
-    /// Sugar over the per-syscall functions above, for a client that wants one
-    /// surface — to log every syscall, to replay a recorded sequence, or to
-    /// generate them. Where a syscall's own function has a narrower type (the
-    /// answer to `GetEffectiveUserId` cannot be a failure, `Dup` cannot be
-    /// refused, and only `FLock` can block), that type is the one to prefer.
-    ///
-    /// **Not every syscall this module answers is reachable through here.** A
-    /// syscall whose answer carries more than an integer — `read`, whose answer
-    /// carries bytes — has no case in `Syscall`, because `SyscallAnswer` would
-    /// have to grow a shape for it and nothing yet consumes that shape. Adding
-    /// one for its own sake would be inventing an encoding before there is a
-    /// client to be wrong about; the first thing that genuinely logs or replays
-    /// a buffer-carrying syscall gets to choose it. Until then those syscalls
-    /// are reached through their own functions, which lose nothing.
-    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `step`, with a refusal answered as the `Error` rather than raised.
+    let internal tryStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1143,60 +1171,63 @@ module UnixSystem =
                 SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (ProcessId.toInt32 (processId system)))),
                 system
             )
-        | Syscall.Dup fd -> UnixDescriptor.dup fd system |> answered |> Result.mapError SyscallRefusal.Dup
+        | Syscall.Dup fd ->
+            UnixDescriptor.tryDup fd system
+            |> answered
+            |> Result.mapError SyscallRefusal.Dup
         | Syscall.Fcntl (fd, command, argument) ->
-            UnixDescriptor.fcntl fd command argument system
+            UnixDescriptor.tryFcntl fd command argument system
             |> answered
             |> Result.mapError SyscallRefusal.Fcntl
         | Syscall.Dup2 (oldFd, newFd) ->
-            UnixDescriptor.dup2 oldFd newFd system
+            UnixDescriptor.tryDup2 oldFd newFd system
             |> answered
             |> Result.mapError SyscallRefusal.Dup2
         | Syscall.Dup3 (oldFd, newFd, flags) ->
-            UnixDescriptor.dup3 oldFd newFd flags system
+            UnixDescriptor.tryDup3 oldFd newFd flags system
             |> answered
             |> Result.mapError SyscallRefusal.Dup3
         | Syscall.LSeek (fd, offset, whence) ->
-            UnixDescriptor.lseek fd offset whence system
+            UnixDescriptor.tryLseek fd offset whence system
             |> answered
             |> Result.mapError SyscallRefusal.LSeek
         | Syscall.FLock (fd, operation) ->
-            UnixDescriptor.flock task fd operation system
+            UnixDescriptor.tryFlock task fd operation system
             |> Result.mapError SyscallRefusal.FLock
         | Syscall.FTruncate (fd, length) ->
-            UnixDescriptor.ftruncate fd length system
+            UnixDescriptor.tryFtruncate fd length system
             |> answered
             |> Result.mapError SyscallRefusal.FTruncate
         | Syscall.Close fd ->
-            UnixDescriptor.close fd system
+            UnixDescriptor.tryClose fd system
             |> answered
             |> Result.mapError SyscallRefusal.Close
         | Syscall.MkDirAt (dirfd, path, mode) ->
-            UnixNamespace.mkdirat dirfd path mode system
+            UnixNamespace.tryMkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
         | Syscall.UnlinkAt (dirfd, path, flags) ->
-            UnixNamespace.unlinkat dirfd path flags system
+            UnixNamespace.tryUnlinkat dirfd path flags system
             |> answered
             |> Result.mapError SyscallRefusal.UnlinkAt
         | Syscall.ChDir path ->
-            UnixPathResolution.chdir path system
+            UnixPathResolution.tryChdir path system
             |> answered
             |> Result.mapError SyscallRefusal.ChDir
         | Syscall.FChModAt (dirfd, path, mode, flags) ->
-            UnixPathResolution.fchmodat dirfd path mode flags system
+            UnixPathResolution.tryFchmodat dirfd path mode flags system
             |> answered
             |> Result.mapError SyscallRefusal.FChModAt
         | Syscall.FChMod (fd, mode) ->
-            UnixPathResolution.fchmod fd mode system
+            UnixPathResolution.tryFchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
         | Syscall.FChOwnAt (dirfd, path, user, group, flags) ->
-            UnixPathResolution.fchownat dirfd path user group flags system
+            UnixPathResolution.tryFchownat dirfd path user group flags system
             |> answered
             |> Result.mapError SyscallRefusal.FChOwnAt
         | Syscall.FChOwn (fd, user, group) ->
-            UnixPathResolution.fchown fd user group system
+            UnixPathResolution.tryFchown fd user group system
             |> answered
             |> Result.mapError SyscallRefusal.FChOwn
         | Syscall.UMask mask ->
@@ -1204,54 +1235,85 @@ module UnixSystem =
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
         | Syscall.FAccessAt (dirfd, path, mode, flags) ->
-            UnixPathResolution.faccessat dirfd path mode flags system
+            UnixPathResolution.tryFaccessat dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Access
         | Syscall.SymlinkAt (target, dirfd, path) ->
-            UnixNamespace.symlinkat target dirfd path system
+            UnixNamespace.trySymlinkat target dirfd path system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Symlink
         | Syscall.LinkAt (olddirfd, oldpath, newdirfd, newpath, flags) ->
-            UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
+            UnixNamespace.tryLinkat olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
         | Syscall.UTimensAt (dirfd, path, times, flags) ->
-            UnixPathResolution.utimensat dirfd path times flags system
+            UnixPathResolution.tryUtimensat dirfd path times flags system
             |> answered
             |> Result.mapError SyscallRefusal.UTimensAt
         | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
-            UnixReadWrite.copyFileRange inFd outFd length flags system
+            UnixReadWrite.tryCopyFileRange inFd outFd length flags system
             |> answered
             |> Result.mapError SyscallRefusal.CopyFileRange
         | Syscall.FileClone (destination, source) ->
-            UnixDescriptor.fileClone destination source system
+            UnixDescriptor.tryFileClone destination source system
             |> Result.map (fun error -> SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
             |> Result.mapError SyscallRefusal.FileClone
         | Syscall.CloneFile (source, destination, flags) ->
-            UnixNamespace.cloneFile source destination flags system
+            UnixNamespace.tryCloneFile source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
         | Syscall.SetResUid (real, effective, saved) ->
-            UnixCredentials.setresuid real effective saved system
+            UnixCredentials.trySetresuid real effective saved system
             |> answered
             |> Result.mapError SyscallRefusal.SetIds
         | Syscall.SetResGid (real, effective, saved) ->
-            UnixCredentials.setresgid real effective saved system
+            UnixCredentials.trySetresgid real effective saved system
             |> answered
             |> Result.mapError SyscallRefusal.SetIds
         | Syscall.SetGroups (size, words) ->
-            UnixCredentials.setgroups size words system
+            UnixCredentials.trySetgroups size words system
             |> answered
             |> Result.mapError SyscallRefusal.SetGroups
         | Syscall.InotifyInit1 flags ->
-            match UnixInotify.inotifyInit1 flags system with
+            match UnixInotify.tryInotifyInit1 flags system with
             | Error refusal -> Error (SyscallRefusal.Inotify refusal)
             | Ok (Error error) -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
             | Ok (Ok (fd, system)) -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 fd)), system)
         | Syscall.InotifyRmWatch (fd, wd) ->
-            UnixInotify.inotifyRmWatch fd wd system
+            UnixInotify.tryInotifyRmWatch fd wd system
             |> answered
             |> Result.mapError SyscallRefusal.Inotify
+
+    /// <summary>
+    /// Answer one syscall, made by `task`.
+    ///
+    /// The task is what a blocking answer is recorded against: `FLock` that
+    /// would block parks it, and the returned system carries that park.
+    ///
+    /// Sugar over the per-syscall functions above, for a client that wants one
+    /// surface — to log every syscall, to replay a recorded sequence, or to
+    /// generate them. Where a syscall's own function has a narrower type (the
+    /// answer to `GetEffectiveUserId` cannot be a failure, `Dup` cannot be
+    /// refused, and only `FLock` can block), that type is the one to prefer.
+    ///
+    /// **Not every syscall this module answers is reachable through here.** A
+    /// syscall whose answer carries more than an integer — `read`, whose answer
+    /// carries bytes — has no case in `Syscall`, because `SyscallAnswer` would
+    /// have to grow a shape for it and nothing yet consumes that shape. Adding
+    /// one for its own sake would be inventing an encoding before there is a
+    /// client to be wrong about; the first thing that genuinely logs or replays
+    /// a buffer-carrying syscall gets to choose it. Until then those syscalls
+    /// are reached through their own functions, which lose nothing.
+    /// </summary>
+    /// <exception cref="T:System.PlatformNotSupportedException">The flavour has no `dup3`. This kernel is not Linux-flavoured, and only Linux has `copy_file_range`. This kernel is not Linux-flavoured, and `FICLONE` is a Linux request. This kernel is not Darwin-flavoured, and only Darwin has `clonefile`. This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`. This kernel is of `flavour` (Darwin), which has no inotify: no Darwin kernel has the call, so there is no answer to measure.</exception>
+    let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (call : Syscall)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallOutcome * UnixSystem<'Task, 'Handler>
+        =
+        tryStep task call system
+        |> Refusal.orRaise "UnixSystem.step" SyscallRefusal.kind SyscallRefusal.describe
 
     /// Every way the machine's tables disagree with each other or with the
     /// processes on it: the clauses of `checkInvariants` that concern the

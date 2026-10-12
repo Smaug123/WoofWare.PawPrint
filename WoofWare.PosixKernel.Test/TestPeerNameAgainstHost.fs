@@ -404,7 +404,7 @@ module TestPeerNameAgainstHost =
 
             let system = bindTo fd address system
 
-            match UnixSocket.listen fd 16 system with
+            match UnixSocket.tryListen fd 16 system with
             | Ok (ListenAnswer.Listening _, system) -> fd, (modelName fd system).Port, system
             | other -> failwith $"the model's listen answered %A{other}"
 
@@ -414,12 +414,12 @@ module TestPeerNameAgainstHost =
             | other, _ -> failwith $"the model would not set O_NONBLOCK: %A{other}"
 
         let accept (listener : int) (system : UnixSystem<int, string>) =
-            match UnixConnection.accept 0 listener UserBuffer.Mapped 16u system with
+            match UnixConnection.tryAccept 0 listener UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
             | other -> failwith $"the model's accept answered %A{other}"
 
         let close (fd : int) (system : UnixSystem<int, string>) =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (SyscallAnswer.Completed _, system) -> system
             | Ok (SyscallAnswer.Failed error, _) -> failwith $"the model's close answered %O{error}"
             | Error refusal -> failwith $"the model refused a close: %s{CloseRefusal.describe refusal}"
@@ -508,7 +508,7 @@ module TestPeerNameAgainstHost =
                     let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
                     match
-                        UnixSocket.getsockopt
+                        UnixSocket.tryGetsockopt
                             client
                             level
                             optionName
@@ -756,7 +756,7 @@ module TestPeerNameAgainstHost =
             | Destination.Null
             | Destination.Faulting -> None
 
-        match UnixSocket.getpeername fd userBuffer declared system with
+        match UnixSocket.tryGetpeername fd userBuffer declared system with
         | Error refusal -> failwith $"the model refused: %s{GetSockNameRefusal.describe refusal}"
         | Ok (GetSockNameAnswer.Reported (copied, reported)) ->
             {

@@ -109,7 +109,7 @@ module TestStreamReaderGone =
 
                 // `write` without the admission, as a caller holding the bytes
                 // may make it, answers the same.
-                UnixReadWrite.write task fd bytes system |> shouldEqual actual
+                UnixReadWrite.tryWrite task fd bytes system |> shouldEqual actual
 
                 if Set.contains fd gone && not (flavour = SimulatedUnixFlavour.Linux && count = 0) then
                     let raised = sigPipeFrom flavour task
@@ -252,7 +252,7 @@ module TestStreamReaderGone =
             assertSound "launched" system
 
             let closed =
-                match UnixDescriptor.close 1 system with
+                match UnixDescriptor.tryClose 1 system with
                 | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"close 1: %A{other}"
 
@@ -270,7 +270,7 @@ module TestStreamReaderGone =
             for fd in [ 1 ; 99 ] do
                 let admit =
                     Assert.Throws (fun () ->
-                        UnixReadWrite.admitWrite 7 fd UserBuffer.Mapped 1UL system
+                        UnixReadWrite.tryAdmitWrite 7 fd UserBuffer.Mapped 1UL system
                         |> ignore<Result<WriteOutcome<WriteAdmission, int, string>, WriteRefusal>>
                     )
 
@@ -278,7 +278,7 @@ module TestStreamReaderGone =
 
                 let write =
                     Assert.Throws (fun () ->
-                        UnixReadWrite.write 7 fd (payload 0 1) system
+                        UnixReadWrite.tryWrite 7 fd (payload 0 1) system
                         |> ignore<Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>>
                     )
 
@@ -304,7 +304,7 @@ module TestStreamReaderGone =
 
                 match
                     SimulatedUnixPlatform.flavour platform,
-                    UnixReadWrite.write system.Leader 1 ImmutableArray.Empty system
+                    UnixReadWrite.tryWrite system.Leader 1 ImmutableArray.Empty system
                 with
                 | SimulatedUnixFlavour.Linux, Ok (WriteOutcome.Returns (WriteAnswer.Completed 0L, _))
                 | SimulatedUnixFlavour.Darwin, Error (WriteRefusal.InitProcess _) -> ()

@@ -19,12 +19,12 @@ module TestUnixTaskTable =
     /// machine with four processors.
     let private initial : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64
-        |> UnixBootImage.withProcessorCount 4
+        |> UnixBootImage.tryWithProcessorCount 4
         |> Configured.expectOk ProcessorCountRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private withTask (name : int) (cpu : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixTaskLifecycle.spawn system.Leader name (CpuId cpu) system with
+        match UnixTaskLifecycle.trySpawn system.Leader name (CpuId cpu) system with
         | Ok (SpawnAnswer.Spawned _, system) -> system
         | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %d{name} failed with %O{error}"
         | Error refusal -> failwith $"spawning %d{name} was refused: %s{SpawnRefusal.describe refusal}"

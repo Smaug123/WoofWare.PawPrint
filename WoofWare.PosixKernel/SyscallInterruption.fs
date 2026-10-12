@@ -25,7 +25,7 @@ type internal SyscallInterruption =
 /// Why this library will not say how a signal ends the syscall a task is asleep
 /// in.
 [<RequireQualifiedAccess>]
-type SyscallInterruptionRefusal =
+type internal SyscallInterruptionRefusal =
     /// The library will not say what the task takes as it returns to user
     /// mode.
     | Receiver of SignalReceiverRefusal
@@ -44,7 +44,7 @@ type SyscallInterruptionRefusal =
     | SignalBesideCompletion of flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
-module SyscallInterruptionRefusal =
+module internal SyscallInterruptionRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which call was asleep, and in which task.
     let describe (refusal : SyscallInterruptionRefusal) : string =
@@ -58,11 +58,19 @@ module SyscallInterruptionRefusal =
         | SyscallInterruptionRefusal.SignalBesideCompletion flavour ->
             $"a task asleep in a syscall has both the syscall's own answer and a signal with a handler waiting for it. Under the %O{flavour} flavour the kernel answers whichever of the two reached the sleeping task first, and this kernel does not record which did."
 
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SyscallInterruptionRefusal) : RefusalKind =
+        match refusal with
+        | SyscallInterruptionRefusal.Receiver inner -> SignalReceiverRefusal.kind inner
+        | SyscallInterruptionRefusal.DefaultAction _ -> RefusalKind.Unmodelled
+        | SyscallInterruptionRefusal.MixedRestartFlags _ -> RefusalKind.Unmodelled
+        | SyscallInterruptionRefusal.SignalBesideCompletion _ -> RefusalKind.Unmodelled
+
 /// Why this library will not answer a `sigsuspend(2)` or `pause(2)`, or the
 /// finishing of one: something it does not model, rather than an error a
 /// kernel would report.
 [<RequireQualifiedAccess>]
-type SigsuspendRefusal =
+type internal SigsuspendRefusal =
     /// The library will not say what the task takes as it returns to user
     /// mode.
     | Receiver of SignalReceiverRefusal
@@ -84,7 +92,7 @@ type SigsuspendRefusal =
     | DarwinPendingContinue
 
 [<RequireQualifiedAccess>]
-module SigsuspendRefusal =
+module internal SigsuspendRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which call was made, and by which task.
     let describe (refusal : SigsuspendRefusal) : string =
@@ -95,6 +103,13 @@ module SigsuspendRefusal =
             $"the first signal a task in sigsuspend would take is %O{signal}, at its default, which stops the process. A real kernel restarts the call once the process is continued, if no handler has run, and this kernel models no stopped process."
         | SigsuspendRefusal.DarwinPendingContinue ->
             "under Darwin, a task in sigsuspend could take a pending SIGCONT, ignored or at its default. Darwin was measured to leave such a signal pending without ending the call until another signal does, which this kernel cannot express: it wakes a sleeping task whenever the state holds something for it to take."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : SigsuspendRefusal) : RefusalKind =
+        match refusal with
+        | SigsuspendRefusal.Receiver inner -> SignalReceiverRefusal.kind inner
+        | SigsuspendRefusal.DefaultStop _ -> RefusalKind.Unmodelled
+        | SigsuspendRefusal.DarwinPendingContinue -> RefusalKind.Unmodelled
 
 [<RequireQualifiedAccess>]
 module SyscallInterruption =

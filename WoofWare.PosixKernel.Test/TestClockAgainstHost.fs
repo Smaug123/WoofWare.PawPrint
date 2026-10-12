@@ -57,7 +57,7 @@ module TestClockAgainstHost =
             let disagreements =
                 sweptIds
                 |> List.choose (fun clockId ->
-                    match UnixClock.clockGettime clockId system, hostRead clockId with
+                    match UnixClock.tryClockGettime clockId system, hostRead clockId with
                     // A refusal is this kernel declining to model a clock; the host may
                     // answer it or not, and either is consistent with declining.
                     | Error _, _ -> None
@@ -93,7 +93,7 @@ module TestClockAgainstHost =
             // whole microseconds drops it, and one that does not keeps it.
             let system =
                 imageOn flavour
-                |> UnixBootImage.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
+                |> UnixBootImage.tryWithBootTime (UnixTimestamp.ofSeconds 1_000_000L)
                 |> Configured.expectOk BootTimeRefusal.describe
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> UnixSystem.advanceClock 1_000_000_123L
@@ -106,7 +106,7 @@ module TestClockAgainstHost =
                 flavour = SimulatedUnixFlavour.Linux && clockId = 5
 
             for clockId in [ 0..16 ] |> List.filter (hostDependent >> not) do
-                match UnixClock.clockGettime clockId system with
+                match UnixClock.tryClockGettime clockId system with
                 | Ok (Ok reading) ->
                     let modelKeepsNanoseconds = UnixTimestamp.nanoseconds reading % 1000 <> 0
 

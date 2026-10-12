@@ -250,7 +250,7 @@ module TestSocketErrorAgainstHost =
             | other -> failwith $"the model's listener did not bind: %A{other}"
 
         let system =
-            match UnixSocket.listen listener 16 system with
+            match UnixSocket.tryListen listener 16 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"the model's listener did not listen: %A{other}"
 
@@ -339,7 +339,7 @@ module TestSocketErrorAgainstHost =
         let lengthBuffer = userBuffer lengthCell
 
         let read =
-            match UnixSocket.admitGetSockOpt fd level optionName (userBuffer value) lengthBuffer system with
+            match UnixSocket.tryAdmitGetSockOpt fd level optionName (userBuffer value) lengthBuffer system with
             | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
             | Ok GetSockOptAdmission.SkipLength
             | Ok (GetSockOptAdmission.Answered _)
@@ -351,7 +351,7 @@ module TestSocketErrorAgainstHost =
             | Buffer.Null
             | Buffer.Faulting -> None
 
-        match UnixSocket.getsockopt fd level optionName (userBuffer value) lengthBuffer read system with
+        match UnixSocket.tryGetsockopt fd level optionName (userBuffer value) lengthBuffer read system with
         | Error refusal -> failwith $"the model refused SO_ERROR: %s{SocketOptionRefusal.describe refusal}"
         | Ok (GetSockOptAnswer.Failed (error, overwritten), system) ->
             {
@@ -441,7 +441,7 @@ module TestSocketErrorAgainstHost =
 
                             Some (observed host, observed model, system)
                         | Operation.Listen ->
-                            match UnixSocket.listen modelFd 4 system with
+                            match UnixSocket.tryListen modelFd 4 system with
                             | Error _ -> None
                             | Ok (answer, system) ->
 

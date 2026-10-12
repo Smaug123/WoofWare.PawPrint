@@ -49,9 +49,21 @@ module NativeDispatch =
 
     /// Run the native method `ctx` is executing, using the handlers of the runtime whose CoreLib
     /// the run loaded (`ctx.BaseClassTypes.Corelib`). `None` if no handler implements it.
+    ///
+    /// A call a handler makes into `WoofWare.PosixKernel` that the library's model does not
+    /// cover throws `UnmodelledException`; a handler that has more to say about it catches it
+    /// itself (`KernelRefusal`), and this names the entry point for every other.
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
-        handlersFor (EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib)
-        |> List.tryPick (fun handler -> handler ctx)
+        try
+            handlersFor (EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib)
+            |> List.tryPick (fun handler -> handler ctx)
+        with :? WoofWare.PosixKernel.UnmodelledException as e ->
+            let entryPoint =
+                match ctx.Instruction.ExecutingMethod.TryNativeImport with
+                | Some import -> import.EntryPointName
+                | None -> ctx.Instruction.ExecutingMethod.Name
+
+            KernelRefusal.fail entryPoint e
 
     let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult = NativeCall.failUnimplemented ctx
 

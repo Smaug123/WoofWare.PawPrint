@@ -55,7 +55,7 @@ module TestBlockingAccept =
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener at port %d{port}: %A{other}"
 
-        match UnixSocket.listen fd 8 system with
+        match UnixSocket.tryListen fd 8 system with
         | Ok (ListenAnswer.Listening _, system) -> fd, system
         | other -> failwith $"listening at port %d{port}: %A{other}"
 
@@ -99,13 +99,13 @@ module TestBlockingAccept =
 
     /// `task` parks in an accept through `fd`, whose queue must be empty.
     let private parkIn (task : int) (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixConnection.accept task fd UserBuffer.Mapped 16u system with
+        match UnixConnection.tryAccept task fd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.WouldBlock _, system) -> system
         | other -> failwith $"expected task %d{task} to park, got %A{other}"
 
     /// `task` finishes its accept, which must hand a connection over.
     let private finishWithConnection (task : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixConnection.finishAccept task system with
+        match UnixConnection.tryFinishAccept task system with
         | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
         | other -> failwith $"expected task %d{task}'s accept to finish with a connection, got %A{other}"
 
@@ -159,7 +159,7 @@ module TestBlockingAccept =
 
             let listener = idOf fd system
 
-            match UnixConnection.accept task fd destination declaredLength system with
+            match UnixConnection.tryAccept task fd destination declaredLength system with
             | Ok (AcceptOutcome.WouldBlock condition, parked) ->
                 condition
                 |> shouldEqual (
@@ -231,10 +231,10 @@ module TestBlockingAccept =
         let fd, system = world platform
         let parked = parkIn 1 fd system
 
-        Assert.Throws<exn> (fun () -> UnixConnection.accept 1 fd UserBuffer.Mapped 16u parked |> ignore<_>)
+        Assert.Throws<exn> (fun () -> UnixConnection.tryAccept 1 fd UserBuffer.Mapped 16u parked |> ignore<_>)
         |> ignore<exn>
 
-        Assert.Throws<exn> (fun () -> UnixConnection.finishAccept 2 parked |> ignore<_>)
+        Assert.Throws<exn> (fun () -> UnixConnection.tryFinishAccept 2 parked |> ignore<_>)
         |> ignore<exn>
 
     // ------------------------------------------------------------------
@@ -284,7 +284,7 @@ module TestBlockingAccept =
             let listener = idOf fd system
 
             let system =
-                match UnixConnection.accept 1 fd destination declaredLength system with
+                match UnixConnection.tryAccept 1 fd destination declaredLength system with
                 | Ok (AcceptOutcome.WouldBlock _, system) -> system
                 | other -> failwith $"expected the accept to park, got %A{other}"
 
@@ -300,12 +300,12 @@ module TestBlockingAccept =
                         if List.isEmpty (queueOf fd system) then
                             system
                         else
-                            match UnixConnection.accept 2 fd UserBuffer.Mapped 16u system with
+                            match UnixConnection.tryAccept 2 fd UserBuffer.Mapped 16u system with
                             | Ok (AcceptOutcome.Accepted _, system) -> system
                             | other -> failwith $"expected the steal to succeed, got %A{other}"
                 )
 
-            let finished = UnixConnection.finishAccept 1 system
+            let finished = UnixConnection.tryFinishAccept 1 system
 
             if List.isEmpty (queueOf fd system) then
                 match finished with
@@ -330,7 +330,7 @@ module TestBlockingAccept =
                 | other -> failwith $"expected the accept to park again, got %A{other}"
             else
                 let oracle =
-                    UnixConnection.accept 1 fd destination declaredLength (UnixParkState.unpark 1 system)
+                    UnixConnection.tryAccept 1 fd destination declaredLength (UnixParkState.unpark 1 system)
 
                 finished |> shouldEqual oracle
 
@@ -420,12 +420,12 @@ module TestBlockingAccept =
         let system = setNonBlocking fd true system
 
         let system =
-            match UnixConnection.accept 3 fd UserBuffer.Mapped 16u system with
+            match UnixConnection.tryAccept 3 fd UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted _, system) -> system
             | other -> failwith $"expected task 3 to take the connection, got %A{other}"
 
         let system =
-            match UnixConnection.finishAccept 1 system with
+            match UnixConnection.tryFinishAccept 1 system with
             | Ok (AcceptOutcome.WouldBlock _, system) -> system
             | other -> failwith $"expected task 1 to park again, got %A{other}"
 
@@ -442,7 +442,7 @@ module TestBlockingAccept =
 
         let system =
             match
-                UnixPoll.poll
+                UnixPoll.tryPoll
                     2
                     [
                         {
@@ -608,7 +608,7 @@ module TestBlockingAccept =
         let system = parkIn 1 fd system
 
         let system =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
@@ -647,7 +647,7 @@ module TestBlockingAccept =
         let system = parkIn 1 fd system
 
         let system =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
@@ -669,7 +669,7 @@ module TestBlockingAccept =
         let system = parkIn 1 fd system
 
         let system =
-            match UnixDescriptor.close fd system with
+            match UnixDescriptor.tryClose fd system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
@@ -715,7 +715,7 @@ module TestBlockingAccept =
             let system = parkIn 1 fd system
 
             let system =
-                match UnixDescriptor.close (if closeEntered then fd else other) system with
+                match UnixDescriptor.tryClose (if closeEntered then fd else other) system with
                 | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"expected the close to succeed, got %A{other}"
 
@@ -745,17 +745,17 @@ module TestBlockingAccept =
         }
 
     let private closed (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixDescriptor.close fd system with
+        match UnixDescriptor.tryClose fd system with
         | Ok (SyscallAnswer.Completed 0L, system) -> system
         | other -> failwith $"expected the close of fd %d{fd} to succeed, got %A{other}"
 
     let private finishAborted (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixConnection.finishAccept task system with
+        match UnixConnection.tryFinishAccept task system with
         | Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, system) -> system
         | other -> failwith $"expected task %d{task}'s accept to answer ECONNABORTED, got %A{other}"
 
     let private acceptAnswer (fd : int) (system : UnixSystem<int, string>) =
-        UnixConnection.accept 6 fd UserBuffer.Mapped 16u system
+        UnixConnection.tryAccept 6 fd UserBuffer.Mapped 16u system
 
     /// Measured (`close-ends-call.c`, sections A1-A4, and `blocking-accept.c`
     /// section C): on Darwin, closing the descriptor an accept was made
@@ -846,7 +846,7 @@ module TestBlockingAccept =
 
         // A second `listen` leaves it drained (section A7h).
         let relistened =
-            match UnixSocket.listen other 16 system with
+            match UnixSocket.tryListen other 16 system with
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listening again: %A{other}"
 
@@ -1117,7 +1117,7 @@ module TestBlockingAccept =
     let private acceptTasks : int list = [ 1 ; 2 ; 3 ; 4 ]
 
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixSignal.onReturnToUser task system with
+        match UnixSignal.tryOnReturnToUser task system with
         | Ok (ReturnToUserOutcome.Resumes system) -> system
         | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
             (system, frames)
@@ -1248,12 +1248,14 @@ module TestBlockingAccept =
                         OptionValue.ofLinger (if onOff then 1 else 0) time
 
                 let supplied =
-                    match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system with
+                    match
+                        UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system
+                    with
                     | Ok (SetSockOptAdmission.Transfer count) ->
                         Some (System.Collections.Immutable.ImmutableArray.Create (value, 0, count))
                     | other -> failwith $"setsockopt of %A{change} through fd %d{fd} was admitted as %A{other}"
 
-                UnixSocket.setsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+                UnixSocket.trySetsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
 
             // The accepted socket must hold what its client's connection
             // completed with, and is then closed at once, its linger turned off
@@ -1288,7 +1290,7 @@ module TestBlockingAccept =
                     | Ok (SetSockOptAnswer.Set, system) -> system
                     | other -> failwith $"%s{where}: turning the accepted fd %d{fd}'s linger off: %A{other}"
 
-                match UnixDescriptor.close fd system with
+                match UnixDescriptor.tryClose fd system with
                 | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"%s{where}: closing the accepted fd %d{fd}: %A{other}"
 
@@ -1343,7 +1345,7 @@ module TestBlockingAccept =
 
                 match op with
                 | AcceptOp.Accept (task, fd) ->
-                    let answer = UnixConnection.accept task fd UserBuffer.Mapped 16u system
+                    let answer = UnixConnection.tryAccept task fd UserBuffer.Mapped 16u system
 
                     match Map.tryFind fd reference.Fds, answer with
                     | None, Ok (AcceptOutcome.Failed UnixError.EBADF, _) -> cover $"%s{flavourName} accept: EBADF"
@@ -1413,7 +1415,7 @@ module TestBlockingAccept =
                 | AcceptOp.Close fd ->
                     match Map.tryFind fd reference.Fds with
                     | None ->
-                        match UnixDescriptor.close fd system with
+                        match UnixDescriptor.tryClose fd system with
                         | Ok (SyscallAnswer.Failed UnixError.EBADF, _) -> ()
                         | other -> failwith $"%s{where}: %A{other}"
                     | Some _ ->
@@ -1440,7 +1442,7 @@ module TestBlockingAccept =
 
                     let dies = reference.Alive && not (listenerHeld after)
 
-                    match UnixDescriptor.close fd system with
+                    match UnixDescriptor.tryClose fd system with
                     | Ok (SyscallAnswer.Completed 0L, closed) ->
                         if dies && not reference.Queue.IsEmpty then
                             cover $"%s{flavourName} close: resets the queued clients"
@@ -1551,7 +1553,7 @@ module TestBlockingAccept =
                 | AcceptOp.Finish task ->
                     let park = reference.Parks.[task]
                     let signalled = Set.contains task reference.Signalled
-                    let answer = UnixConnection.finishAccept task system
+                    let answer = UnixConnection.tryFinishAccept task system
 
                     let settle (r : AcceptReference) (after : UnixSystem<int, string>) =
                         let r = answered task r
@@ -1915,5 +1917,5 @@ module TestBlockingAccept =
                 | Some (OpenFileTarget.Socket socketId) -> socketId
                 | other -> failwith $"expected a socket, got %A{other}"
 
-            UnixSocket.admitSetSockOpt fd level option UserBuffer.Mapped 16u system
+            UnixSocket.tryAdmitSetSockOpt fd level option UserBuffer.Mapped 16u system
             |> shouldEqual (Error (SocketOptionRefusal.UnmodelledOption (socketId, level, option)))
