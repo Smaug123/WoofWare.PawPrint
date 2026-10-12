@@ -163,10 +163,21 @@ module TestShutdownAgainstHost =
         let eof = if flags &&& KeventFlags.Eof <> 0us then "/EOF" else ""
         $"%d{data}%s{eof}/%d{fflags}"
 
+    /// A TCP socket as `/proc/net/tcp` or `/proc/net/tcp6` lists it.
+    type private ListedTcpSocket =
+        {
+            /// The local address as listed: eight hex digits for IPv4, 32 for
+            /// IPv6, each 32-bit word in the host's byte order.
+            LocalAddress : string
+            LocalPort : int
+            RemotePort : int
+            /// The file and line it was listed on.
+            Line : string
+        }
+
     /// Each TCP socket in this Linux host's network namespace, whichever process
-    /// holds it, as `/proc/net/tcp` and `/proc/net/tcp6` list it: its local
-    /// port, its remote port, and its line.
-    let private linuxTcpSockets () : (int * int * string) list =
+    /// holds it, as `/proc/net/tcp` and `/proc/net/tcp6` list it.
+    let private linuxTcpSockets () : ListedTcpSocket list =
         let portOf (field : string) : int =
             Convert.ToInt32 (field.Substring (field.LastIndexOf ':' + 1), 16)
 
@@ -176,8 +187,38 @@ module TestShutdownAgainstHost =
                 if path = "/proc/net/tcp" || IO.File.Exists path then
                     for line in IO.File.ReadAllLines path |> Array.skip 1 do
                         let fields = line.Split (' ', StringSplitOptions.RemoveEmptyEntries)
-                        portOf fields.[1], portOf fields.[2], $"%s{path}: %s{line.Trim ()}"
+
+                        {
+                            LocalAddress = fields.[1].Substring (0, fields.[1].LastIndexOf ':')
+                            LocalPort = portOf fields.[1]
+                            RemotePort = portOf fields.[2]
+                            Line = $"%s{path}: %s{line.Trim ()}"
+                        }
         ]
+
+    /// Whether a socket on a port, at `localAddress` as `/proc/net/tcp` or
+    /// `/proc/net/tcp6` lists it, would refuse an IPv4 bind of that port at
+    /// the wildcard address if `wildcard` and at 127.0.0.1 otherwise: whether
+    /// the two addresses overlap. An IPv6 socket at `::` counts, since a
+    /// listing does not say whether it is `IPV6_V6ONLY`.
+    let private refusesIpv4Bind (wildcard : bool) (localAddress : string) : bool =
+        // The listing's words are in host byte order, which these literals
+        // spell for a little-endian host.
+        if not BitConverter.IsLittleEndian then
+            failwith "a /proc/net/tcp address is read only on a little-endian host"
+
+        let overlapsIpv4 (ipv4 : string) : bool =
+            wildcard || ipv4 = "00000000" || ipv4 = "0100007F"
+
+        match localAddress.Length with
+        | 8 -> overlapsIpv4 localAddress
+        | 32 ->
+            let mapped = "0000000000000000FFFF0000"
+
+            localAddress = String ('0', 32)
+            || (localAddress.StartsWith (mapped, StringComparison.Ordinal)
+                && overlapsIpv4 (localAddress.Substring mapped.Length))
+        | _ -> failwith $"a /proc/net/tcp local address of unexpected length: %s{localAddress}"
 
     /// A pair on the host, as the probe's `pair_locked` makes one.
     type private HostPair (flavour : SimulatedUnixFlavour, shape : ShutdownPairShape) =
@@ -247,19 +288,24 @@ module TestShutdownAgainstHost =
         // a socket refuses a bind of that port whatever the pair's own sockets
         // do. Darwin's chooses only a free port. Read while the refused
         // candidate is still open, so that the holder cannot yet have gone.
-        let noteRefusal (port : int) : unit =
+        let noteRefusal (wildcard : bool) (port : int) : unit =
             match flavour with
             | SimulatedUnixFlavour.Darwin -> ()
             | SimulatedUnixFlavour.Linux ->
                 let cPort, pPort = connection
 
+                let own (listed : ListedTcpSocket) : bool =
+                    (listed.LocalPort = cPort && listed.RemotePort = pPort)
+                    || (listed.LocalPort = pPort && listed.RemotePort = cPort)
+
                 let foreign =
                     linuxTcpSockets ()
-                    |> List.filter (fun (local, remote, _) ->
-                        local = port
-                        && not ((local = cPort && remote = pPort) || (local = pPort && remote = cPort))
+                    |> List.filter (fun listed ->
+                        listed.LocalPort = port
+                        && refusesIpv4Bind wildcard listed.LocalAddress
+                        && not (own listed)
                     )
-                    |> List.map (fun (_, _, line) -> line)
+                    |> List.map (fun listed -> listed.Line)
 
                 foreignHolders <- foreignHolders @ foreign
 
@@ -590,7 +636,7 @@ module TestShutdownAgainstHost =
                     call (fun () -> int64 (hostBind (n, address, uint32 address.Length)))
 
                 if result < 0L && errorName errno = "EADDRINUSE" then
-                    noteRefusal port
+                    noteRefusal false port
 
                 hostClose n |> ignore<int>
 
@@ -614,7 +660,7 @@ module TestShutdownAgainstHost =
                     call (fun () -> int64 (hostBind (n, address, uint32 address.Length)))
 
                 if bound < 0L && errorName bindErrno = "EADDRINUSE" then
-                    noteRefusal port
+                    noteRefusal wildcard port
 
                 let answer =
                     if bound < 0L then
@@ -812,6 +858,31 @@ module TestShutdownAgainstHost =
 
     /// Only Linux's `connect` chooses a local port that another socket holds,
     /// so only there is a foreign holder looked for.
+    [<Test>]
+    let ``a listed socket refuses an IPv4 bind exactly where the addresses overlap`` () =
+        [
+            // 127.0.0.1, 127.0.0.2 and 0.0.0.0
+            "0100007F"
+            "0200007F"
+            "00000000"
+            // ::1, ::, and 127.0.0.1 and 127.0.0.2 mapped into IPv6
+            "00000000000000000000000001000000"
+            "00000000000000000000000000000000"
+            "0000000000000000FFFF00000100007F"
+            "0000000000000000FFFF00000200007F"
+        ]
+        |> List.map (fun address -> address, refusesIpv4Bind false address, refusesIpv4Bind true address)
+        |> shouldEqual
+            [
+                "0100007F", true, true
+                "0200007F", false, true
+                "00000000", true, true
+                "00000000000000000000000001000000", false, false
+                "00000000000000000000000000000000", true, true
+                "0000000000000000FFFF00000100007F", true, true
+                "0000000000000000FFFF00000200007F", false, true
+            ]
+
     let private onLinuxHost (action : unit -> unit) : unit =
         HostPlatform.onUnixHost (fun flavour ->
             match flavour with
