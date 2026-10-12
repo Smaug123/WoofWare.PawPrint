@@ -707,6 +707,9 @@ module TestShutdownAgainstHost =
             Datagram : unit -> int
             /// A descriptor that names no socket.
             NotSocket : unit -> int
+            /// A number that names no descriptor, and that nothing else in the
+            /// process can take before the call that is passed it.
+            NamesNothing : unit -> int
             /// `bind` to the loopback address and port 0.
             BindAny : int -> unit
             Shutdown : int -> int -> ShutdownLine
@@ -754,7 +757,7 @@ module TestShutdownAgainstHost =
                 let n = w.NotSocket ()
                 prefixed $"U\tnot-socket\t%s{hn}\t" (w.Shutdown n how)
                 w.Close n
-                prefixed $"U\tclosed-fd\t%s{hn}\t" (w.Shutdown n how)
+                prefixed $"U\tclosed-fd\t%s{hn}\t" (w.Shutdown (w.NamesNothing ()) how)
             for _ in 1 .. 3 * 4 do
                 ShutdownLine.Elsewhere
             for how in [ 0 ; 1 ; 2 ] do
@@ -881,6 +884,11 @@ module TestShutdownAgainstHost =
                         hostClose fds.[1] |> ignore<int>
                         fds.[0]
                     | _ -> failwith "pipe failed"
+            // Any thread of the test host may open a descriptor, and so take a
+            // number this replay has just freed, so the closed-fd rows ask about
+            // INT_MAX, which no descriptor can ever have; `unallocatable-fd.c`
+            // measured that both flavours answer it as they do a freed slot.
+            NamesNothing = fun () -> Int32.MaxValue
             BindAny =
                 fun fd ->
                     let any = loopbackAt 0
@@ -1565,6 +1573,15 @@ module TestShutdownAgainstHost =
                     match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
                     | Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
                         system <- kernelClose writeFd after
+                        readFd
+                    | other -> failwith $"pipe2: %A{other}"
+            // Nothing but this replay changes `system`, so a slot it frees
+            // stays free, and the closed-fd rows ask about one, as the probe's do.
+            NamesNothing =
+                fun () ->
+                    match UnixPipe.tryPipe2 0 UserBuffer.Mapped system with
+                    | Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
+                        system <- after |> kernelClose writeFd |> kernelClose readFd
                         readFd
                     | other -> failwith $"pipe2: %A{other}"
             BindAny = fun fd -> system <- kernelBind fd 0 system
