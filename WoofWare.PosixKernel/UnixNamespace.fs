@@ -1189,8 +1189,11 @@ module UnixNamespace =
                 | Ok system -> Ok (true, system)
                 | Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal)) ->
                     Error (OpenRefusal.UnmeasuredSetIdChange (inode, refusal))
-                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal) ->
-                    // Truncating to zero cannot exceed a length limit.
+                // Truncating to zero cannot exceed a length limit, and a
+                // truncation through a path reaches the file by a name this
+                // kernel keeps.
+                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal)
+                | Error (TruncationRefusal.UnplacedChange _ as refusal) ->
                     failwith
                         $"UnixNamespace.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
             | InodeContent.RegularFile _

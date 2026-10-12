@@ -165,6 +165,9 @@ type internal TruncationRefusal =
     /// What truncating the file at `inode` would do to its set-ID bits has
     /// not been measured for this process.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+    /// An inotify watch could hear of the truncation, through a name this
+    /// kernel does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal TruncationRefusal =
@@ -174,12 +177,14 @@ module internal TruncationRefusal =
             $"inode %O{inode} was asked to become %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file -- so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
         | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"truncating inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
+        | TruncationRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : TruncationRefusal) : RefusalKind =
         match refusal with
         | TruncationRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
         | TruncationRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | TruncationRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why a Darwin close that ends a sleeping pipe `write` cannot be answered: the
 /// write raises `SIGPIPE` for the process as it returns, before the close does,

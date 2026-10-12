@@ -106,6 +106,47 @@ type internal Unplaced =
     /// the name the directory had there.
     | AtOldParent of oldParent : InodeNumber * events : Set<InotifyEvent>
 
+/// Why this kernel will not commit a filesystem change: Linux would report it
+/// to an inotify watch through a name this kernel does not keep, and some
+/// watch that could be that one asks for an event the change raises.
+[<RequireQualifiedAccess>]
+type internal UnplacedChangeRefusal =
+    /// A change to `inode` through a descriptor, raising `events`, which
+    /// `watch` of the instance `instance`, on `watched`, asks for: it is the
+    /// watch on the inode itself, or on a directory that could hold the name
+    /// the descriptor was opened through, which this kernel does not record.
+    | DescriptorName of
+        inode : InodeNumber *
+        events : Set<InotifyEvent> *
+        instance : OpenFileDescriptionId *
+        watch : WatchDescriptor *
+        watched : InodeNumber
+    /// A change through a path to a directory whose last name has gone,
+    /// raising `events`, which Linux reports to `watch` of the instance
+    /// `instance`, on the directory it was last named in (`oldParent`), under
+    /// the name it had there, which this kernel does not keep.
+    | RemovedDirectoryName of
+        oldParent : InodeNumber *
+        events : Set<InotifyEvent> *
+        instance : OpenFileDescriptionId *
+        watch : WatchDescriptor
+
+[<RequireQualifiedAccess>]
+module internal UnplacedChangeRefusal =
+    /// What this kernel knows about why it will not commit the change.
+    let describe (refusal : UnplacedChangeRefusal) : string =
+        match refusal with
+        | UnplacedChangeRefusal.DescriptorName (inode, events, instance, watch, watched) ->
+            $"a change to inode %O{inode} through a descriptor raises %A{Set.toList events}, which watch %O{watch} of the inotify instance %O{instance}, on inode %O{watched}, asks for and could be the watch Linux reports it to: the watch on the inode itself, or on the directory of the name the descriptor was opened through. This kernel does not record the name the descriptor was opened through, so it cannot say which watches Linux reports the change to."
+        | UnplacedChangeRefusal.RemovedDirectoryName (oldParent, events, instance, watch) ->
+            $"a change through a path to a directory whose last name has gone raises %A{Set.toList events}, which Linux reports to watch %O{watch} of the inotify instance %O{instance}, on the directory it was last named in (inode %O{oldParent}), under the name it had there. This kernel does not keep that name."
+
+    /// Which exception a public entry point raises this refusal as.
+    let kind (refusal : UnplacedChangeRefusal) : RefusalKind =
+        match refusal with
+        | UnplacedChangeRefusal.DescriptorName _ -> RefusalKind.Unmodelled
+        | UnplacedChangeRefusal.RemovedDirectoryName _ -> RefusalKind.Unmodelled
+
 /// The records a filesystem change queues on the inotify instances watching
 /// it, in Linux's order (docs/plans/2026-10-11-inotify.md, 4.2 and 4.5).
 [<RequireQualifiedAccess>]

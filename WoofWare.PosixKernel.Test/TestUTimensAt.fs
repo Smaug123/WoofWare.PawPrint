@@ -743,6 +743,7 @@ module TestUTimensAt =
         | UTimensAtRefusal.UnmeasuredFileSystem _ -> "UnmeasuredFileSystem"
         | UTimensAtRefusal.UnmeasuredPrivilegedCaller _ -> "UnmeasuredPrivilegedCaller"
         | UTimensAtRefusal.UnmeasuredSymlinkWrite _ -> "UnmeasuredSymlinkWrite"
+        | UTimensAtRefusal.UnplacedChange _ -> "UnplacedChange"
 
     /// One row, made ready to replay.
     type private Row =

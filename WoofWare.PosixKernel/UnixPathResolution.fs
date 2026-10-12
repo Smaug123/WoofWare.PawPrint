@@ -229,6 +229,9 @@ type internal ChModRefusal =
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal ChModRefusal =
@@ -239,12 +242,14 @@ module internal ChModRefusal =
         | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
+        | ChModRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : ChModRefusal) : RefusalKind =
         match refusal with
         | ChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
         | ChModRefusal.Path inner -> PathRefusal.kind inner
+        | ChModRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
@@ -260,6 +265,9 @@ type internal FChModRefusal =
     /// The descriptor is a socket, on a flavour whose sockets have a mode that
     /// `fchmod` changes. This kernel holds no such mode.
     | Socket of socket : SocketId
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal FChModRefusal =
@@ -273,6 +281,7 @@ module internal FChModRefusal =
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchmod on a pipe end changes the mode fstat then reports (0600 to 02750, say) if the caller owns the pipe or is privileged, and answers EPERM otherwise; this pipe's owner is whoever launched the process, which the launch table does not state, so either answer would be a guess."
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
+        | FChModRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : FChModRefusal) : RefusalKind =
@@ -280,6 +289,7 @@ module internal FChModRefusal =
         | FChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
         | FChModRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
         | FChModRefusal.Socket _ -> RefusalKind.Unmodelled
+        | FChModRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchmodat(2)`.
 [<RequireQualifiedAccess>]
@@ -320,6 +330,9 @@ type internal ChOwnRefusal =
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal ChOwnRefusal =
@@ -330,12 +343,14 @@ module internal ChOwnRefusal =
         | ChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) ->
             $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
         | ChOwnRefusal.Path refusal -> PathRefusal.describe refusal
+        | ChOwnRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : ChOwnRefusal) : RefusalKind =
         match refusal with
         | ChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
         | ChOwnRefusal.Path inner -> PathRefusal.kind inner
+        | ChOwnRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchown(2)`.
 [<RequireQualifiedAccess>]
@@ -351,6 +366,9 @@ type internal FChOwnRefusal =
     /// The descriptor is a socket, on a flavour whose sockets have an owner
     /// that `fchown` changes. This kernel holds no such owner.
     | Socket of socket : SocketId
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal FChOwnRefusal =
@@ -364,6 +382,7 @@ module internal FChOwnRefusal =
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchown on a pipe end changes the owner fstat then reports by the same rule as a file's, which depends on who owns the pipe; this pipe's owner is whoever launched the process, which the launch table does not state, so any answer would be a guess."
         | FChOwnRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
+        | FChOwnRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : FChOwnRefusal) : RefusalKind =
@@ -371,6 +390,7 @@ module internal FChOwnRefusal =
         | FChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
         | FChOwnRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
         | FChOwnRefusal.Socket _ -> RefusalKind.Unmodelled
+        | FChOwnRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchownat(2)`.
 [<RequireQualifiedAccess>]
@@ -433,6 +453,9 @@ type internal UTimensAtRefusal =
     /// for another user's link where it answers EACCES for a file, and no
     /// link the caller may write but does not own was available to measure.
     | UnmeasuredSymlinkWrite of inode : InodeNumber
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal UTimensAtRefusal =
@@ -455,6 +478,7 @@ module internal UTimensAtRefusal =
             $"a privileged caller would set the times of inode %O{inode}, which it does not own, on Darwin; this was measured only for an unprivileged caller."
         | UTimensAtRefusal.UnmeasuredSymlinkWrite inode ->
             $"AT_SYMLINK_NOFOLLOW reached symbolic link %O{inode}, which the caller does not own but may write, with both times now. Measured on Darwin 27.0, another user's link answers EPERM where a file answers EACCES, and whether write permission on a link lets a non-owner set its times to now, as it does for a file, is unmeasured."
+        | UTimensAtRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : UTimensAtRefusal) : RefusalKind =
@@ -467,6 +491,7 @@ module internal UTimensAtRefusal =
         | UTimensAtRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
         | UTimensAtRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
         | UTimensAtRefusal.UnmeasuredSymlinkWrite _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// <summary>
 /// What <c>fstat(2)</c> reported.
