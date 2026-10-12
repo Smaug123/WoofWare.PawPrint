@@ -1746,6 +1746,24 @@ WoofWare.PosixKernel.InodeTimes.get_Modification [method]: unit -> WoofWare.Posi
 WoofWare.PosixKernel.InodeTimes.get_StatusChange [method]: unit -> WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.Modification [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.StatusChange [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
+WoofWare.PosixKernel.InotifyAddWatchProgress`2 inherit obj - union type with 2 cases
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered inherit WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath inherit WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath.get_paused [method]: unit -> WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath.paused [property]: [read-only] WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags inherit obj
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags.Answered [static field]: int = 0
+WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags.NeedsPath [static field]: int = 1
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_IsAnswered [method]: unit -> bool
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_IsNeedsPath [method]: unit -> bool
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.IsAnswered [property]: [read-only] bool
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.IsNeedsPath [property]: [read-only] bool
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.NewAnswered [static method]: WoofWare.PosixKernel.SyscallAnswer -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.NewNeedsPath [static method]: WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.InotifyAddWatchProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.InotifyEvent inherit obj, implements WoofWare.PosixKernel.InotifyEvent System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyEvent System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 13 cases
 WoofWare.PosixKernel.InotifyEvent+Tags inherit obj
 WoofWare.PosixKernel.InotifyEvent+Tags.Access [static field]: int = 0
@@ -3077,6 +3095,8 @@ WoofWare.PosixKernel.PausedAccess`2 inherit obj, implements WoofWare.PosixKernel
 WoofWare.PosixKernel.PausedAccess`2.Equals [method]: (WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PausedCloneFile`2 inherit obj
 WoofWare.PosixKernel.PausedCloneFileSource`2 inherit obj
+WoofWare.PosixKernel.PausedInotifyAddWatch`2 inherit obj, implements WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
+WoofWare.PosixKernel.PausedInotifyAddWatch`2.Equals [method]: (WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PausedLink`2 inherit obj
 WoofWare.PosixKernel.PausedRename`2 inherit obj
 WoofWare.PosixKernel.PausedSymlink`2 inherit obj
@@ -6219,6 +6239,8 @@ WoofWare.PosixKernel.UnixErrorModule.toRawErrnoUnder [static method]: WoofWare.P
 WoofWare.PosixKernel.UnixErrorModule.tryToRawErrnoUnder [static method]: WoofWare.PosixKernel.RawErrnoNumbering -> WoofWare.PosixKernel.UnixError -> int option
 WoofWare.PosixKernel.UnixInotify inherit obj
 WoofWare.PosixKernel.UnixInotify.inotifyAddWatch [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> System.UInt32 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
+WoofWare.PosixKernel.UnixInotify.inotifyAddWatchScreenPhase [static method]: int -> System.UInt32 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixInotify.inotifyAddWatchWithPath [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixInotify.inotifyInit1 [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<(int * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>), WoofWare.PosixKernel.UnixError>
 WoofWare.PosixKernel.UnixInotify.inotifyRmWatch [static method]: int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixKqueue inherit obj

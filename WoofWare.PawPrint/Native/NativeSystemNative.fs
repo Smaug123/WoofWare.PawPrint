@@ -4367,6 +4367,113 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        // `intptr_t SystemNative_INotifyInit(void)` (pal_io.c:1461):
+        // `inotify_init1(IN_CLOEXEC)`, whose descriptor or -1-and-errno it
+        // returns. Built without inotify, as every Darwin shim is, it sets
+        // errno to ENOTSUP and returns -1 without a syscall, which is the
+        // Darwin flavour's answer here; the library is never asked.
+        | Some "SystemNative_INotifyInit", [], MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
+            let fd, state =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin -> -1L, withErrnoOnly ctx UnixError.ENOTSUP state
+                | SimulatedUnixFlavour.Linux ->
+                    match UnixInotify.inotifyInit1 InotifyInitFlags.CloseOnExec state.Kernel.System with
+                    | Ok (fd, system) -> int64 fd, withAnswered system state
+                    | Error error -> -1L, withErrnoOnly ctx error state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim fd)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_INotifyAddWatch(intptr_t fd, const char*
+        // pathName, uint32_t mask)` (pal_io.c:1471): `inotify_add_watch(2)`,
+        // whose watch descriptor or -1-and-errno it returns, with the mask
+        // passed as it is (`NotifyEventsPal`). Its asserts that `fd` is not
+        // negative and `pathName` not null are compiled out of the shipped
+        // build, so either reaches the kernel, which screens the mask and the
+        // descriptor before it copies the path in; the path is read only
+        // then. Built without inotify it answers ENOTSUP, as
+        // `SystemNative_INotifyInit` does, reading nothing.
+        //
+        // The mask is matched loosely: CoreLib declares it `uint`, and a guest
+        // hand-rolling the P/Invoke may write `int`.
+        | Some "SystemNative_INotifyAddWatch",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_INotifyAddWatch"
+
+            let answer, state =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin -> -1, withErrnoOnly ctx UnixError.ENOTSUP state
+                | SimulatedUnixFlavour.Linux ->
+
+                let fd = fdArgument operation instruction.Arguments.[0]
+
+                let mask =
+                    NotifyEventsPal.toInotifyMask (NativeCall.uint32Argument operation instruction.Arguments.[2])
+
+                let answer =
+                    try
+                        match UnixInotify.inotifyAddWatchScreenPhase fd mask state.Kernel.System with
+                        | InotifyAddWatchProgress.Answered answer -> Choice1Of2 answer
+                        | InotifyAddWatchProgress.NeedsPath paused ->
+                            // Read only now: Linux answers a bad mask and every
+                            // descriptor error without copying the path in, so
+                            // the pointer may name memory this interpreter
+                            // cannot read as bytes.
+                            let path =
+                                pathArgumentBytes ctx operation "pathName" instruction.Arguments.[1] state
+
+                            Choice2Of2 (UnixInotify.inotifyAddWatchWithPath path paused)
+                    with :? UnmodelledException as e ->
+                        // A fact about CoreLib, from `TranslateFilters`: the
+                        // only refused bit FileSystemWatcher ever asks for.
+                        let advice =
+                            if mask &&& InotifyEvent.bit InotifyEvent.Access <> 0u then
+                                "FileSystemWatcher asks for IN_ACCESS exactly when its NotifyFilter includes NotifyFilters.LastAccess."
+                            else
+                                ""
+
+                        KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}, mask 0x%08x{mask}" advice e
+
+                match answer with
+                // Answered by the screen, which changes nothing.
+                | Choice1Of2 (SyscallAnswer.Failed error) -> -1, withErrnoOnly ctx error state
+                | Choice1Of2 (SyscallAnswer.Completed watch) -> int watch, state
+                | Choice2Of2 (SyscallAnswer.Completed watch, system) -> int watch, withAnswered system state
+                | Choice2Of2 (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_INotifyRemoveWatch(intptr_t fd, int32_t wd)`
+        // (pal_io.c:1488): `inotify_rm_watch(2)`, returning 0 or
+        // -1-and-errno. Its asserts that neither argument is negative are
+        // compiled out of the shipped build. Built without inotify it answers
+        // ENOTSUP, as `SystemNative_INotifyInit` does.
+        | Some "SystemNative_INotifyRemoveWatch",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_INotifyRemoveWatch"
+
+            let answer, state =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin -> -1, withErrnoOnly ctx UnixError.ENOTSUP state
+                | SimulatedUnixFlavour.Linux ->
+
+                let fd = fdArgument operation instruction.Arguments.[0]
+                let watch = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+                match UnixInotify.inotifyRmWatch fd watch state.Kernel.System with
+                | SyscallAnswer.Completed _, system -> 0, withAnswered system state
+                | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         // `int32_t SystemNative_Read(intptr_t fd, void* buffer, int32_t
         // bufferSize)` (pal_io.c:1178) forwards to `Common_Read`
         // (pal_io_common.h:36), which rejects a negative size itself and then
@@ -4488,7 +4595,8 @@ module NativeSystemNative =
             // into the buffer the call was made with.
             match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.ConnectionRead _) ->
+            | Some (ParkedSyscall.ConnectionRead _)
+            | Some (ParkedSyscall.InotifyRead _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
                 let outcome =
