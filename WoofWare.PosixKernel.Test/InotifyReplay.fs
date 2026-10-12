@@ -262,21 +262,89 @@ module internal InotifyReplay =
         | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> system
         | other -> failwith $"read(%d{fd}): %A{other}"
 
-    /// That `call` fails loudly, with a message holding `fragment`: a call
-    /// this kernel refuses rather than answer wrongly.
-    let refused (fragment : string) (call : unit -> 'a) : unit =
-        let error = NUnit.Framework.Assert.Throws<exn> (fun () -> call () |> ignore<'a>)
+    /// The refusal of a change an inotify watch could hear of through a name
+    /// this kernel does not keep, which `result` answers: `choose` picks it out
+    /// of the call's own refusal. Fails the test for an answer, or another
+    /// refusal.
+    let unplaced
+        (call : string)
+        (choose : 'r -> UnplacedChangeRefusal option)
+        (result : Result<'a, 'r>)
+        : UnplacedChangeRefusal
+        =
+        match result with
+        | Ok answer -> failwith $"%s{call} answered %A{answer}, where it should have been refused"
+        | Error refusal ->
+            match choose refusal with
+            | Some unplaced -> unplaced
+            | None -> failwith $"%s{call} was refused, but for another reason: %A{refusal}"
 
-        if not (error.Message.Contains fragment) then
-            failwith $"the call failed, but not for want of %s{fragment}: %s{error.Message}"
+    /// That `refusal` is of a change through a descriptor, whose missing input
+    /// is the name the descriptor was opened through.
+    let throughDescriptor (refusal : UnplacedChangeRefusal) : unit =
+        match refusal with
+        | UnplacedChangeRefusal.DescriptorName _ -> ()
+        | UnplacedChangeRefusal.RemovedDirectoryName _ -> failwith $"refused as %A{refusal}, not through a descriptor"
 
-    /// What the message of a change through a descriptor that some watch
-    /// would hear of holds, when this kernel refuses it.
-    let throughDescriptor : string = "the name the descriptor was opened through"
+    /// That `refusal` is of a change through a removed directory, whose
+    /// missing input is the name it had in its old parent.
+    let throughRemovedDirectory (refusal : UnplacedChangeRefusal) : unit =
+        match refusal with
+        | UnplacedChangeRefusal.RemovedDirectoryName _ -> ()
+        | UnplacedChangeRefusal.DescriptorName _ -> failwith $"refused as %A{refusal}, not through a removed directory"
 
-    /// What the message of a change through a removed directory that its
-    /// old parent's watch would hear of holds, when this kernel refuses it.
-    let throughRemovedDirectory : string = "under the name it had"
+    /// That a write of `text` through `fd` is refused as a change through a
+    /// descriptor that a watch could hear of.
+    let writeRefused (fd : int) (text : string) (system : UnixSystem<int, string>) : unit =
+        let bytes = ImmutableArray.CreateRange (Encoding.ASCII.GetBytes text)
+
+        WriteOutcomes.admitThenWrite 0 fd UserBuffer.Mapped bytes system
+        |> unplaced
+            $"write(%d{fd})"
+            (fun refusal ->
+                match refusal with
+                | WriteRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
+
+    /// `writeRefused`, for `pwrite` at `offset`.
+    let pwriteRefused (fd : int) (text : string) (offset : int64) (system : UnixSystem<int, string>) : unit =
+        let bytes = ImmutableArray.CreateRange (Encoding.ASCII.GetBytes text)
+
+        UnixReadWrite.tryPwrite 0 fd bytes offset system
+        |> unplaced
+            $"pwrite(%d{fd})"
+            (fun refusal ->
+                match refusal with
+                | PWriteRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
+
+    /// `writeRefused`, for `ftruncate` to `length`.
+    let ftruncateRefused (fd : int) (length : int64) (system : UnixSystem<int, string>) : unit =
+        UnixDescriptor.tryFtruncate fd length system
+        |> unplaced
+            $"ftruncate(%d{fd})"
+            (fun refusal ->
+                match refusal with
+                | TruncationRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
+
+    /// The refusal of `chmod(path, mode)`, which must be of a change an
+    /// inotify watch could hear of through a name this kernel does not keep.
+    let chmodRefusal (path : string) (mode : int) (system : UnixSystem<int, string>) : UnplacedChangeRefusal =
+        UnixPathResolution.tryChmod (PathArg.ofText path) mode system
+        |> unplaced
+            $"chmod(%s{path})"
+            (fun refusal ->
+                match refusal with
+                | ChModRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
 
     /// The probe's `writeFile`, under a watch that would hear of its write,
     /// which this kernel refuses: the open, the write refused, and the close.
@@ -284,7 +352,7 @@ module internal InotifyReplay =
         let fd, system =
             openFd (openFlags FileAccessMode.WriteOnly true false true) path 0o644 system
 
-        refused throughDescriptor (fun () -> write fd text system)
+        writeRefused fd text system
         close fd system
 
     /// The probe's `writeFile`: `open(O_WRONLY|O_CREAT|O_TRUNC, 0644)`, a

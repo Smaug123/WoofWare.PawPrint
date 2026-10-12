@@ -18,6 +18,10 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// `rmdir` removed, reached by ".", is reported by Linux at its old parent
 /// under its old name, which the graph does not keep; so it is refused when
 /// that parent's watch asks for an event it raises.
+///
+/// A refusal is `UnplacedChangeRefusal`, inside each call's own refusal, from
+/// its internal `tryX`; the public entry point raises it as
+/// `UnmodelledException`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInotifyRefusals =
@@ -49,39 +53,77 @@ module TestInotifyRefusals =
     [<Test>]
     let ``a write through a descriptor is refused under a watch on its directory asking for IN_MODIFY`` () : unit =
         let _, fd, system = watchingThenOpen "a" modify
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``each change through a descriptor is refused under a watch that would hear of it`` () : unit =
         let _, fd, system = watchingThenOpen "a" (modify ||| attrib)
-        refused throughDescriptor (fun () -> pwrite fd "y" 0L system)
-        refused throughDescriptor (fun () -> ftruncate fd 0L system)
+        pwriteRefused fd "y" 0L system
+        ftruncateRefused fd 0L system
 
-        refused
-            throughDescriptor
-            (fun () ->
-                UnixPathResolution.tryFchmod fd 0o600 system
-                |> Result.map (fun (answer, _) -> answer)
+        UnixPathResolution.tryFchmod fd 0o600 system
+        |> unplaced
+            "fchmod"
+            (fun refusal ->
+                match refusal with
+                | FChModRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
             )
+        |> throughDescriptor
 
-        refused
-            throughDescriptor
-            (fun () -> UnixPathResolution.tryFchown fd (Some UserId.root) None system |> Result.map fst)
-
-        refused
-            throughDescriptor
-            (fun () ->
-                UnixPathResolution.tryUtimensat fd NullablePathArgument.Null TimesArgument.Null 0 system
-                |> Result.map fst
+        UnixPathResolution.tryFchown fd (Some UserId.root) None system
+        |> unplaced
+            "fchown"
+            (fun refusal ->
+                match refusal with
+                | FChOwnRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
             )
+        |> throughDescriptor
+
+        UnixPathResolution.tryUtimensat fd NullablePathArgument.Null TimesArgument.Null 0 system
+        |> unplaced
+            "futimens"
+            (fun refusal ->
+                match refusal with
+                | UTimensAtRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
 
         // `fchmodat`'s empty path under Linux's `AT_EMPTY_PATH` is the descriptor.
-        refused
-            throughDescriptor
-            (fun () ->
-                UnixPathResolution.tryFchmodat fd (PathArg.ofText "") 0o600 0x1000 system
-                |> Result.map fst
+        UnixPathResolution.tryFchmodat fd (PathArg.ofText "") 0o600 0x1000 system
+        |> unplaced
+            "fchmodat(fd, \"\", AT_EMPTY_PATH)"
+            (fun refusal ->
+                match refusal with
+                | FChModAtRefusal.Descriptor (FChModRefusal.UnplacedChange refusal) -> Some refusal
+                | _ -> None
             )
+        |> throughDescriptor
+
+    [<Test>]
+    let ``the public entry points raise the refusal of a change through a descriptor as UnmodelledException``
+        ()
+        : unit
+        =
+        let _, fd, system = watchingThenOpen "a" (modify ||| attrib)
+
+        let error =
+            Assert.Throws<UnmodelledException> (fun () ->
+                UnixPathResolution.fchmod fd 0o600 system
+                |> ignore<SyscallAnswer * UnixSystem<int, string>>
+            )
+
+        error.Message |> shouldContainText "the name the descriptor was opened through"
+
+        let error =
+            Assert.Throws<UnmodelledException> (fun () ->
+                UnixDescriptor.ftruncate fd 0L system
+                |> ignore<SyscallAnswer * UnixSystem<int, string>>
+            )
+
+        error.Message |> shouldContainText "the name the descriptor was opened through"
 
     [<Test>]
     let ``copy_file_range into a file under a watch asking for IN_MODIFY is refused`` () : unit =
@@ -94,9 +136,15 @@ module TestInotifyRefusals =
 
         let destination, system = openFd writable "a/x" 0 system
 
-        refused
-            throughDescriptor
-            (fun () -> UnixReadWrite.tryCopyFileRange source destination 3UL 0 system |> Result.map fst)
+        UnixReadWrite.tryCopyFileRange source destination 3UL 0 system
+        |> unplaced
+            "copy_file_range"
+            (fun refusal ->
+                match refusal with
+                | CopyFileRangeRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
 
     [<Test>]
     let ``a change through a descriptor goes through, queuing nothing, where no watch asks for its events`` () : unit =
@@ -115,7 +163,7 @@ module TestInotifyRefusals =
     [<Test>]
     let ``a write is refused under a watch on the file itself`` () : unit =
         let _, fd, system = watchingThenOpen "a/x" modify
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``a write is refused under a watch on any directory holding a name of the file`` () : unit =
@@ -124,13 +172,13 @@ module TestInotifyRefusals =
         let instance, fd, system = watchingThenOpen "b" modify
         let system = link "a/x" "b/other" system
         let _, system = drain instance system
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``a write to a file with no name left is refused under any watch asking for IN_MODIFY`` () : unit =
         let _, fd, system = watchingThenOpen "u" modify
         let system = unlink "a/x" system
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``a write through a name since unlinked is refused under a watch on that name's directory, though another name survives``
@@ -143,7 +191,7 @@ module TestInotifyRefusals =
         let instance, fd, system = watchingThenOpen "a" modify
         let system = system |> link "a/x" "b/y" |> unlink "a/x"
         let _, system = drain instance system
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``a write is refused under a watch on any directory asking for IN_MODIFY, which could hold the name it was opened through``
@@ -151,7 +199,7 @@ module TestInotifyRefusals =
         : unit
         =
         let _, fd, system = watchingThenOpen "u" modify
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``a write goes through under a watch with IN_EXCL_UNLINK on a directory not naming the file`` () : unit =
@@ -177,13 +225,21 @@ module TestInotifyRefusals =
         let system = unlink "z/f" system
         let instance, system = init1 nonblock system
         let _, system = watch instance "z" (attrib ||| modify ||| 0x04000000u) system
-        refused throughDescriptor (fun () -> write fd "y" system)
+        writeRefused fd "y" system
 
     [<Test>]
     let ``fchmod is refused under a watch with IN_EXCL_UNLINK on a directory not naming the file`` () : unit =
         let _, fd, system = watchingThenOpen "u" (attrib ||| 0x04000000u)
 
-        refused throughDescriptor (fun () -> UnixPathResolution.tryFchmod fd 0o600 system |> Result.map fst)
+        UnixPathResolution.tryFchmod fd 0o600 system
+        |> unplaced
+            "fchmod"
+            (fun refusal ->
+                match refusal with
+                | FChModRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
 
     [<Test>]
     let ``fchmod of a directory's descriptor goes through under a watch on a directory that is not its parent``
@@ -233,7 +289,7 @@ module TestInotifyRefusals =
         let _, system = watch instance "z" attrib system
         let f, system = openFd writable "z/f" 0 system
         let g, system = openFd writable "z/g" 0 system
-        refused throughDescriptor (fun () -> write f "y" system)
+        writeRefused f "y" system
         let system = write g "y" system
         drain instance system |> fst |> shouldEqual "(none)"
 
@@ -246,7 +302,15 @@ module TestInotifyRefusals =
         let fd, system =
             openFd (openFlags FileAccessMode.ReadOnly false false false) "a" 0 system
 
-        refused throughDescriptor (fun () -> UnixPathResolution.tryFchmod fd 0o700 system |> Result.map fst)
+        UnixPathResolution.tryFchmod fd 0o700 system
+        |> unplaced
+            "fchmod"
+            (fun refusal ->
+                match refusal with
+                | FChModRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
+            )
+        |> throughDescriptor
 
     /// A machine whose process stands in `gone`, which `rmdir` has removed,
     /// with an instance watching `.` (the old parent) for `parentMask`, and
@@ -266,27 +330,48 @@ module TestInotifyRefusals =
         : unit
         =
         let _, system = standingInRemoved attrib
-        refused throughRemovedDirectory (fun () -> chmod "." 0o700 system)
+        chmodRefusal "." 0o700 system |> throughRemovedDirectory
 
-        refused
-            throughRemovedDirectory
-            (fun () ->
-                UnixPathResolution.tryUtimensat
-                    -100
-                    (NullablePathArgument.NotNull (PathArg.ofText "."))
-                    TimesArgument.Null
-                    0
-                    system
-                |> Result.map fst
+        UnixPathResolution.tryUtimensat
+            -100
+            (NullablePathArgument.NotNull (PathArg.ofText "."))
+            TimesArgument.Null
+            0
+            system
+        |> unplaced
+            "utimensat(.)"
+            (fun refusal ->
+                match refusal with
+                | UTimensAtRefusal.UnplacedChange refusal -> Some refusal
+                | _ -> None
             )
+        |> throughRemovedDirectory
 
         // `fchmodat`'s empty path from `AT_FDCWD` under `AT_EMPTY_PATH` is ".".
-        refused
-            throughRemovedDirectory
-            (fun () ->
-                UnixPathResolution.tryFchmodat -100 (PathArg.ofText "") 0o700 0x1000 system
-                |> Result.map fst
+        UnixPathResolution.tryFchmodat -100 (PathArg.ofText "") 0o700 0x1000 system
+        |> unplaced
+            "fchmodat(AT_FDCWD, \"\", AT_EMPTY_PATH)"
+            (fun refusal ->
+                match refusal with
+                | FChModAtRefusal.ChMod (ChModRefusal.UnplacedChange refusal) -> Some refusal
+                | _ -> None
             )
+        |> throughRemovedDirectory
+
+    [<Test>]
+    let ``the public entry point raises the refusal of a change through a removed directory as UnmodelledException``
+        ()
+        : unit
+        =
+        let _, system = standingInRemoved attrib
+
+        let error =
+            Assert.Throws<UnmodelledException> (fun () ->
+                UnixPathResolution.chmod (PathArg.ofText ".") 0o700 system
+                |> ignore<SyscallAnswer * UnixSystem<int, string>>
+            )
+
+        error.Message |> shouldContainText "under the name it had"
 
     [<Test>]
     let ``a change through a removed current directory goes through, heard at its own watch, where its old parent's watch asks for nothing it raises``

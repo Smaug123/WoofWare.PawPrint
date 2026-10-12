@@ -16,7 +16,8 @@ open WoofWare.PosixKernel.Test.InotifyReplay
 /// Rows are skipped, each named, where the model cannot make the call or does
 /// not yet report what it records:
 /// - a change made through a descriptor (`write`, `pwrite`, `ftruncate`), which
-///   the model refuses where a watch would hear of it (`refused`), not knowing
+///   the model refuses where a watch would hear of it (`writeRefused` and
+///   the like expect the refusal), not knowing
 ///   the name the descriptor was opened through;
 /// - `truncate(2)`, which the model does not have;
 /// - the records of the watched inode itself going (`IN_DELETE_SELF`,
@@ -97,13 +98,13 @@ module TestInotifyDeliveryMeasured =
 
         system <- s
         row "open-creat"
-        refused throughDescriptor (fun () -> write f "hello" system)
+        writeRefused f "hello" system
         row "write"
         system <- write f "" system
         row "write-0"
-        refused throughDescriptor (fun () -> pwrite f "p" 0L system)
+        pwriteRefused f "p" 0L system
         row "pwrite"
-        refused throughDescriptor (fun () -> ftruncate f 2L system)
+        ftruncateRefused f 2L system
         row "ftruncate"
         system <- close f system
         row "close-write"
@@ -245,12 +246,12 @@ module TestInotifyDeliveryMeasured =
             produced.Add (case, $"%d{records.Length} events: %s{text}")
 
         for text in [ "1" ; "2" ; "3" ] do
-            refused throughDescriptor (fun () -> write f text system)
+            writeRefused f text system
 
         counted "three-writes"
-        refused throughDescriptor (fun () -> write f "4" system)
+        writeRefused f "4" system
         system <- chmod "c/f" 0o600 system
-        refused throughDescriptor (fun () -> write f "5" system)
+        writeRefused f "5" system
         counted "write-chmod-write"
         system <- system |> chmod "c/f" 0o644 |> chmod "c/g" 0o644 |> chmod "c/f" 0o600
         counted "chmod-f-g-f"
@@ -264,8 +265,8 @@ module TestInotifyDeliveryMeasured =
             openFd (openFlags FileAccessMode.WriteOnly false false false) "c/g" 0 system
 
         system <- s
-        refused throughDescriptor (fun () -> write g "a" system)
-        refused throughDescriptor (fun () -> write g "b" system)
+        writeRefused g "a" system
+        writeRefused g "b" system
         system <- system |> writeFileRefused "c/i" "x" |> close g
         counted "create-write-write-create"
         system <- chmod "c/f" 0o644 system
@@ -767,7 +768,7 @@ module TestInotifyDeliveryMeasured =
         let drained, s = drain gone system
         system <- s
         produced.Add ("rmdir-of-current", $"p=%d{wpg} gone=%d{wg}: %s{drained}")
-        refused throughRemovedDirectory (fun () -> chmod "." 0o700 system)
+        chmodRefusal "." 0o700 system |> throughRemovedDirectory
         let drained, s = drain gone system
         system <- s
         produced.Add ("chmod-removed-current", $"chmod=0: %s{drained}")
