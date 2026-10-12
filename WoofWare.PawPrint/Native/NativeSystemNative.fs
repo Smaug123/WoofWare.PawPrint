@@ -4390,8 +4390,10 @@ module NativeSystemNative =
         // whose watch descriptor or -1-and-errno it returns, with the mask
         // passed as it is (`NotifyEventsPal`). Its asserts that `fd` is not
         // negative and `pathName` not null are compiled out of the shipped
-        // build, so either reaches the kernel. Built without inotify it
-        // answers ENOTSUP, as `SystemNative_INotifyInit` does, reading nothing.
+        // build, so either reaches the kernel, which screens the mask and the
+        // descriptor before it copies the path in; the path is read only
+        // then. Built without inotify it answers ENOTSUP, as
+        // `SystemNative_INotifyInit` does, reading nothing.
         //
         // The mask is matched loosely: CoreLib declares it `uint`, and a guest
         // hand-rolling the P/Invoke may write `int`.
@@ -4410,12 +4412,19 @@ module NativeSystemNative =
                 let mask =
                     NotifyEventsPal.toInotifyMask (NativeCall.uint32Argument operation instruction.Arguments.[2])
 
-                let path =
-                    pathArgumentBytes ctx operation "pathName" instruction.Arguments.[1] state
-
                 let answer =
                     try
-                        UnixInotify.inotifyAddWatch fd path mask state.Kernel.System
+                        match UnixInotify.inotifyAddWatchScreenPhase fd mask state.Kernel.System with
+                        | InotifyAddWatchProgress.Answered answer -> Choice1Of2 answer
+                        | InotifyAddWatchProgress.NeedsPath paused ->
+                            // Read only now: Linux answers a bad mask and every
+                            // descriptor error without copying the path in, so
+                            // the pointer may name memory this interpreter
+                            // cannot read as bytes.
+                            let path =
+                                pathArgumentBytes ctx operation "pathName" instruction.Arguments.[1] state
+
+                            Choice2Of2 (UnixInotify.inotifyAddWatchWithPath path paused)
                     with :? UnmodelledException as e ->
                         // A fact about CoreLib, from `TranslateFilters`: the
                         // only refused bit FileSystemWatcher ever asks for.
@@ -4428,8 +4437,11 @@ module NativeSystemNative =
                         KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}, mask 0x%08x{mask}" advice e
 
                 match answer with
-                | SyscallAnswer.Completed watch, system -> int watch, withAnswered system state
-                | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
+                // Answered by the screen, which changes nothing.
+                | Choice1Of2 (SyscallAnswer.Failed error) -> -1, withErrnoOnly ctx error state
+                | Choice1Of2 (SyscallAnswer.Completed watch) -> int watch, state
+                | Choice2Of2 (SyscallAnswer.Completed watch, system) -> int watch, withAnswered system state
+                | Choice2Of2 (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread

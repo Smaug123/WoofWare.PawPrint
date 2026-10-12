@@ -94,8 +94,9 @@ type PausedInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler 
     private
         {
             System : UnixSystem<'Task, 'Handler>
-            Fd : int
-            Mask : uint32
+            Instance : OpenFileDescriptionId
+            State : InotifyState
+            Word : InotifyMaskWord
         }
 
 /// What screening an `inotify_add_watch(2)`'s mask and descriptor found:
@@ -261,15 +262,15 @@ module UnixInotify =
         tryInotifyInit1 flags system
         |> Refusal.orRaise "UnixInotify.inotifyInit1" InotifyRefusal.kind InotifyRefusal.describe
 
-    /// `inotifyAddWatch`, with a refusal answered as the `Error` rather than raised.
-    let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `inotifyAddWatchScreenPhase`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
-        (path : PathArgumentBytes)
         (mask : uint32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
+        : Result<InotifyAddWatchProgress<'Task, 'Handler>, InotifyAddWatchRefusal>
         =
-        let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
+        let failed (error : UnixError) =
+            Ok (InotifyAddWatchProgress.Answered (SyscallAnswer.Failed error))
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Darwin -> Error (InotifyAddWatchRefusal.Flavour SimulatedUnixFlavour.Darwin)
@@ -290,6 +291,60 @@ module UnixInotify =
         match instanceOf fd system with
         | Error error -> failed error
         | Ok (instance, state) ->
+
+        Ok (
+            InotifyAddWatchProgress.NeedsPath
+                {
+                    System = system
+                    Instance = instance
+                    State = state
+                    Word = word
+                }
+        )
+
+    /// <summary>
+    /// The first half of `inotify_add_watch(2)`: screen its raw `mask` and its
+    /// descriptor `fd`, before the path is read.
+    /// </summary>
+    /// <remarks>
+    /// A client that reads the path out of a caller's memory calls this first,
+    /// and reads the path only on `InotifyAddWatchProgress.NeedsPath`: Linux
+    /// answers a bad mask, a descriptor not open, `IN_MASK_ADD` with
+    /// `IN_MASK_CREATE`, and a descriptor naming anything but an inotify
+    /// instance without reading the path, so the path may be a pointer the
+    /// client could not read at all. `inotifyAddWatch` is this followed by
+    /// `inotifyAddWatchWithPath`; see it for what each answers.
+    /// </remarks>
+    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify.</exception>
+    let inotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (mask : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : InotifyAddWatchProgress<'Task, 'Handler>
+        =
+        tryInotifyAddWatchScreenPhase fd mask system
+        |> Refusal.orRaise
+            "UnixInotify.inotifyAddWatchScreenPhase"
+            InotifyAddWatchRefusal.kind
+            InotifyAddWatchRefusal.describe
+
+    /// `inotifyAddWatchWithPath`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
+        =
+        match box paused with
+        | null ->
+            failwith
+                "UnixInotify.inotifyAddWatchWithPath: this paused call is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixInotify.inotifyAddWatchScreenPhase instead."
+        | _ -> ()
+
+        let system = paused.System
+        let instance = paused.Instance
+        let state = paused.State
+        let word = paused.Word
+        let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
 
         match UnixPathResolution.copyIn path system with
         | Error error -> failed error
@@ -433,6 +488,37 @@ module UnixInotify =
         Ok (SyscallAnswer.Completed (int64 (WatchDescriptor.toInt watch)), commit state)
 
     /// <summary>
+    /// The second half of `inotify_add_watch(2)`: copy in `path`, the
+    /// argument's bytes, and answer the call `paused` describes.
+    /// </summary>
+    /// <remarks>
+    /// See `inotifyAddWatch` for what it answers and refuses.
+    /// </remarks>
+    let inotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        tryInotifyAddWatchWithPath path paused
+        |> Refusal.orRaise
+            "UnixInotify.inotifyAddWatchWithPath"
+            InotifyAddWatchRefusal.kind
+            InotifyAddWatchRefusal.describe
+
+    /// `inotifyAddWatch`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (path : PathArgumentBytes)
+        (mask : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
+        =
+        match tryInotifyAddWatchScreenPhase fd mask system with
+        | Error refusal -> Error refusal
+        | Ok (InotifyAddWatchProgress.Answered answer) -> Ok (answer, system)
+        | Ok (InotifyAddWatchProgress.NeedsPath paused) -> tryInotifyAddWatchWithPath path paused
+
+    /// <summary>
     /// `inotify_add_watch(2)`: watch the inode `path` names, through the
     /// inotify instance `fd` names, for what `mask` asks; or change what an
     /// existing watch of that inode asks. Answers the watch's descriptor.
@@ -464,6 +550,10 @@ module UnixInotify =
     ///
     /// Adding a watch queues nothing. Under the Darwin flavour every call is
     /// refused.
+    ///
+    /// The first three checks never read the path. A client that has yet to
+    /// read it out of a caller's memory calls `inotifyAddWatchScreenPhase` and
+    /// `inotifyAddWatchWithPath` instead, which this is.
     /// </summary>
     /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify.</exception>
     let inotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -475,59 +565,6 @@ module UnixInotify =
         =
         tryInotifyAddWatch fd path mask system
         |> Refusal.orRaise "UnixInotify.inotifyAddWatch" InotifyAddWatchRefusal.kind InotifyAddWatchRefusal.describe
-
-    /// `inotifyAddWatchScreenPhase`, with a refusal answered as the `Error` rather than raised.
-    let internal tryInotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (mask : uint32)
-        (system : UnixSystem<'Task, 'Handler>)
-        : Result<InotifyAddWatchProgress<'Task, 'Handler>, InotifyAddWatchRefusal>
-        =
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-        | SimulatedUnixFlavour.Darwin -> Error (InotifyAddWatchRefusal.Flavour SimulatedUnixFlavour.Darwin)
-        | SimulatedUnixFlavour.Linux ->
-
-        Ok (
-            InotifyAddWatchProgress.NeedsPath
-                {
-                    System = system
-                    Fd = fd
-                    Mask = mask
-                }
-        )
-
-    /// The first half of `inotify_add_watch(2)`.
-    let inotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (mask : uint32)
-        (system : UnixSystem<'Task, 'Handler>)
-        : InotifyAddWatchProgress<'Task, 'Handler>
-        =
-        tryInotifyAddWatchScreenPhase fd mask system
-        |> Refusal.orRaise
-            "UnixInotify.inotifyAddWatchScreenPhase"
-            InotifyAddWatchRefusal.kind
-            InotifyAddWatchRefusal.describe
-
-    /// `inotifyAddWatchWithPath`, with a refusal answered as the `Error` rather than raised.
-    let internal tryInotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (path : PathArgumentBytes)
-        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
-        =
-        tryInotifyAddWatch paused.Fd path paused.Mask paused.System
-
-    /// The second half of `inotify_add_watch(2)`.
-    let inotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (path : PathArgumentBytes)
-        (paused : PausedInotifyAddWatch<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
-        =
-        tryInotifyAddWatchWithPath path paused
-        |> Refusal.orRaise
-            "UnixInotify.inotifyAddWatchWithPath"
-            InotifyAddWatchRefusal.kind
-            InotifyAddWatchRefusal.describe
 
     /// `inotifyRmWatch`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

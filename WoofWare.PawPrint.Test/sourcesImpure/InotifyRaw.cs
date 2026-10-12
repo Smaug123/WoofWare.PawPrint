@@ -224,6 +224,11 @@ class Program
 
     static unsafe int Main()
     {
+        // A type handle: readable memory on the real runtime, and memory
+        // PawPrint holds as a runtime structure rather than as bytes. Each call
+        // handed it below is one Linux answers without touching it.
+        byte* typeHandle = (byte*)typeof(int).TypeHandle.Value;
+
         IntPtr fd = INotifyInit();
         if (fd == (IntPtr)(-1)) return Unsupported();
         if ((long)fd < 0) return 1;
@@ -237,6 +242,9 @@ class Program
         byte* small = stackalloc byte[64];
         if (Read(fd, small, 64) != -1) return 6;
         if (LastPalError() != PAL_EAGAIN) return 7;
+        // Before any buffer is looked at.
+        if (Read(fd, typeHandle, 64) != -1) return 63;
+        if (LastPalError() != PAL_EAGAIN) return 64;
         if (SetIsNonBlocking(fd, 0) != 0) return 8;
 
         // Section W: the add's failures.
@@ -256,10 +264,7 @@ class Program
         // Linux decides a bad mask, then the descriptor, then IN_MASK_ADD with
         // IN_MASK_CREATE, then a descriptor that is no instance, all before it
         // copies the path in (inotify-instance-probe.c section G), so each of
-        // these answers whatever the path pointer names. A type handle is
-        // readable memory on the real runtime, and memory PawPrint holds as a
-        // runtime structure rather than as bytes.
-        byte* typeHandle = (byte*)typeof(int).TypeHandle.Value;
+        // these answers whatever the path pointer names.
         if (INotifyAddWatch((IntPtr)NeverOpened, typeHandle, WatcherMask) != -1) return 50;
         if (LastPalError() != PAL_EBADF) return 51;
         if (INotifyAddWatch(fd, typeHandle, 0) != -1) return 52;
@@ -299,6 +304,8 @@ class Program
         // Section R: a count shorter than the first record, zero included, is
         // EINVAL and takes nothing; enough for it returns it.
         byte* buffer = stackalloc byte[64];
+        if (Read(fd, typeHandle, 31) != -1) return 65;
+        if (LastPalError() != PAL_EINVAL) return 66;
         if (Read(fd, buffer, 31) != -1) return 30;
         if (LastPalError() != PAL_EINVAL) return 31;
         if (Read(fd, buffer, 0) != -1) return 32;
@@ -307,6 +314,14 @@ class Program
         if (!IsRecord(buffer, 0, 1, IN_ATTRIB | IN_ISDIR, "sub", 16)) return 35;
         if (Available(fd) != 0) return 36;
         if (PollIn(fd) != 0) return 37;
+
+        // Section R: a read into a null buffer with a record queued is EFAULT,
+        // and takes the record with it.
+        if (ChModPath("d/sub", 0x1C0) != 0) return 58;
+        if (Available(fd) != 32) return 59;
+        if (Read(fd, null, 64) != -1) return 60;
+        if (LastPalError() != PAL_EFAULT) return 61;
+        if (Available(fd) != 0) return 62;
 
         // Section W: the removal's failures, which queue nothing.
         if (INotifyRemoveWatch(fd, 999) != -1) return 38;
