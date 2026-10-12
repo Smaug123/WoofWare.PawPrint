@@ -93,6 +93,8 @@ class Program
     const uint IN_DELETE = 0x00000200;
     const uint IN_IGNORED = 0x00008000;
     const uint IN_ONLYDIR = 0x01000000;
+    const uint IN_MASK_CREATE = 0x10000000;
+    const uint IN_MASK_ADD = 0x20000000;
     const uint IN_EXCL_UNLINK = 0x04000000;
     const uint IN_ISDIR = 0x40000000;
 
@@ -250,6 +252,23 @@ class Program
         // build, so a null path reaches the kernel, which cannot copy it in.
         if (INotifyAddWatch(fd, null, WatcherMask) != -1) return 17;
         if (LastPalError() != PAL_EFAULT) return 18;
+
+        // Linux decides a bad mask, then the descriptor, then IN_MASK_ADD with
+        // IN_MASK_CREATE, then a descriptor that is no instance, all before it
+        // copies the path in (inotify-instance-probe.c section G), so each of
+        // these answers whatever the path pointer names. A type handle is
+        // readable memory on the real runtime, and memory PawPrint holds as a
+        // runtime structure rather than as bytes.
+        byte* typeHandle = (byte*)typeof(int).TypeHandle.Value;
+        if (INotifyAddWatch((IntPtr)NeverOpened, typeHandle, WatcherMask) != -1) return 50;
+        if (LastPalError() != PAL_EBADF) return 51;
+        if (INotifyAddWatch(fd, typeHandle, 0) != -1) return 52;
+        if (LastPalError() != PAL_EINVAL) return 53;
+        if (INotifyAddWatch(fd, typeHandle, IN_CREATE | IN_MASK_ADD | IN_MASK_CREATE) != -1) return 54;
+        if (LastPalError() != PAL_EINVAL) return 55;
+        // Standard output, which is not an inotify instance.
+        if (INotifyAddWatch((IntPtr)1, typeHandle, WatcherMask) != -1) return 56;
+        if (LastPalError() != PAL_EINVAL) return 57;
 
         // The first watch is 1, and adding its directory again answers it again
         // and queues nothing.
