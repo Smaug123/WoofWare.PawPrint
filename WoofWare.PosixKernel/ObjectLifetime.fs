@@ -243,15 +243,6 @@ module ObjectLifetime =
             | Some (ReachedThrough.RemovedDirectory _)
             | None -> Ok system
         | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "ObjectLifetime.releaseDestroyed" inode
-        | OpenFileTarget.Pipe (pipeId, _) when
-            not (Map.containsKey pipeId system.Machine.Pipes)
-            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Machine)
-            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Machine)
-            ->
-            // Both ends' descriptions were destroyed before either was
-            // released, as a process's end on Linux destroys them, and the
-            // other's release freed the pipe.
-            Ok system
         | OpenFileTarget.Pipe (pipeId, _) ->
             // The pipe goes when neither end is open any more: it is the last
             // description onto either end that frees it, not the last onto both.

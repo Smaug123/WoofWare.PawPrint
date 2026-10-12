@@ -632,18 +632,54 @@ module SimulatedMachine =
 
                 match SimulatedUnixPlatform.flavour dead.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux ->
-                    // Newest first.
-                    let dead, destroyed =
-                        ((dead, []), ascending)
-                        ||> List.fold (fun (dead, destroyed) fd ->
+                    // A description the drops let go of is still a reference
+                    // until its deferred `fput` releases it, as Linux's file
+                    // is: so each is held while the drops run, and destroyed
+                    // only as its turn comes. Measured
+                    // (`inotify-self-probe.c` section X): of two files held
+                    // through descriptors let go of in turn, the one whose
+                    // name an unreleased file still holds goes later.
+                    // Each description held, by the last of this process's
+                    // descriptors naming it.
+                    let dead, held =
+                        ((dead, Map.empty), ascending)
+                        ||> List.fold (fun (dead, held) fd ->
+                            let id =
+                                match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors dead) with
+                                | Some id -> id
+                                | None ->
+                                    failwith
+                                        $"SimulatedMachine.endProcess: process %O{processId}'s table held descriptor %d{fd} a moment ago, and it names no description now (this is a bug in this library)."
+
+                            let dead =
+                                if Map.containsKey id held then
+                                    dead
+                                else
+                                    UnixSystemState.mapOpenFiles (OpenFileTable.hold id) dead
+
                             match drop fd dead with
-                            | dead, None -> dead, destroyed
-                            | dead, Some description -> dead, description :: destroyed
+                            | dead, None -> dead, Map.add id fd held
+                            | _, Some destroyed ->
+                                failwith
+                                    $"SimulatedMachine.endProcess: closing descriptor %d{fd} destroyed %A{destroyed.Description.Target}, which this call holds (this is a bug in this library)."
                         )
 
-                    (Ok dead, destroyed)
-                    ||> List.fold (fun state destroyed ->
-                        state |> Result.bind (ObjectLifetime.releaseDestroyed destroyed)
+                    // The last let go of first.
+                    let released = held |> Map.toList |> List.sortByDescending snd |> List.map fst
+
+                    (Ok dead, released)
+                    ||> List.fold (fun state id ->
+                        match state with
+                        | Error refusal -> Error refusal
+                        | Ok dead ->
+
+                        let dead = UnixSystemState.mapOpenFiles (OpenFileTable.releaseHold id) dead
+
+                        match OpenFileTable.destroyIfUnreferenced id dead.Machine.OpenFiles with
+                        | _, None -> Ok dead
+                        | openFiles, Some destroyed ->
+                            UnixSystemState.mapOpenFiles (fun _ -> openFiles) dead
+                            |> ObjectLifetime.releaseDestroyed destroyed
                     )
                 | SimulatedUnixFlavour.Darwin ->
                     (Ok dead, List.rev ascending)
