@@ -4913,7 +4913,8 @@ module NativeSystemNative =
             | Ok (domain, socketType, protocol) ->
 
             match UnixSocket.socket domain socketType protocol state.Kernel.System with
-            | Error (SocketRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
+            | Error (SocketRefusal.Reason.DescriptorLimit refusal) ->
+                failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, so a real run would call socket(%d{domain}, 0x%x{socketType}, %d{protocol}), and WoofWare.PosixKernel has no answer: %s{SocketRefusal.describe refusal}"
@@ -4991,8 +4992,9 @@ module NativeSystemNative =
 
             let refuseCopy (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
                 match refusal with
-                | SockaddrCopyRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | SockaddrCopyRefusal.UnmodelledDomain (_, domain) ->
+                | SockaddrCopyRefusal.Reason.Buffer refusal ->
+                    failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | SockaddrCopyRefusal.Reason.UnmodelledDomain (_, domain) ->
                     // The library says why no kernel answer exists; PawPrint says
                     // how a guest could be holding such a socket, which is a fact
                     // about CoreLib rather than about any kernel.
@@ -5005,9 +5007,7 @@ module NativeSystemNative =
                                 $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
 
                     failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
-                | SockaddrCopyRefusal.UnmodelledInet6Kind _
-                | SockaddrCopyRefusal.DarwinShortInet6Sockaddr _ ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
 
             let refuse (refusal : BindRefusal) : NativeHandlerResult option =
                 match refusal with
@@ -5042,7 +5042,7 @@ module NativeSystemNative =
                     | Error _ -> setsockopt None
 
                 match answer with
-                | Error (SocketOptionRefusal.LinuxReuseAddressInTimeWait _ as refusal) ->
+                | Error (SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait _ as refusal) ->
                     // Reached by a PT_TCP bind of a connected socket in
                     // TIME_WAIT without the option, which the bind itself
                     // then refuses as EINVAL.
@@ -5125,16 +5125,14 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match refusal with
-                    | ListenRefusal.Ipv6Listener _ ->
+                    | ListenRefusal.Reason.Ipv6Listener _ ->
                         " A managed guest reaches this by listening on an IPv6 or dual-mode `Socket`, such as one bound to IPAddress.IPv6Any; one bound to an IPv4 address is an IPv4 socket, which listens."
-                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
+                    | ListenRefusal.Reason.UnmodelledDomain (_, SocketDomain.Unix) ->
                         " That belongs with the filesystem work (issue #956), not here."
-                    | ListenRefusal.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
+                    | ListenRefusal.Reason.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
                         failwith
                             $"%s{operation}: the library refused an internet socket's domain, which it listens on or refuses otherwise. This is an interpreter bug."
-                    | ListenRefusal.UnmeasuredKind _
-                    | ListenRefusal.UnmeasuredPhase _
-                    | ListenRefusal.EphemeralPortsExhausted _ -> ""
+                    | _ -> ""
 
                 failwith $"%s{operation}: fd %d{fd}: %s{ListenRefusal.describe refusal}%s{reachedBy}"
             | Ok (answer, unix) ->
@@ -5225,7 +5223,7 @@ module NativeSystemNative =
                     |> complete (UnixErrorPal.toPal error)
 
                 match outcome with
-                | Error (AcceptRefusal.UnmodelledDomain (_, domain) as refusal) ->
+                | Error (AcceptRefusal.Reason.UnmodelledDomain (_, domain) as refusal) ->
                     // The library says why no kernel answer exists; PawPrint says how
                     // a guest could be holding such a socket, which is a fact about
                     // CoreLib rather than about any kernel.
@@ -5239,19 +5237,14 @@ module NativeSystemNative =
                                 $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
-                | Error (AcceptRefusal.Buffer refusal) ->
+                | Error (AcceptRefusal.Reason.Buffer refusal) ->
                     failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | Error (AcceptRefusal.UnmeasuredCopyOutFault _ as refusal) ->
+                | Error (AcceptRefusal.Reason.UnmeasuredCopyOutFault _ as refusal) ->
                     // The library never saw the pointer, only how PawPrint
                     // classified it, so naming the argument is PawPrint's half.
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
-                | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
-                | Error (AcceptRefusal.DescriptorLimit _ as refusal)
-                | Error (AcceptRefusal.Interruption _ as refusal)
-                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal)
-                | Error (AcceptRefusal.AbortiveDrop _ as refusal) ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
+                | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
                 | Ok (AcceptOutcome.Failed UnixError.EINTR, system) ->
@@ -5479,8 +5472,9 @@ module NativeSystemNative =
 
             let refuse (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
                 match refusal with
-                | SockaddrCopyRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | SockaddrCopyRefusal.UnmodelledDomain (_, domain) ->
+                | SockaddrCopyRefusal.Reason.Buffer refusal ->
+                    failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | SockaddrCopyRefusal.Reason.UnmodelledDomain (_, domain) ->
                     // The library says why no kernel answer exists; PawPrint says
                     // how a guest could be holding such a socket, which is a fact
                     // about CoreLib rather than about any kernel.
@@ -5493,9 +5487,7 @@ module NativeSystemNative =
                                 $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
 
                     failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
-                | SockaddrCopyRefusal.UnmodelledInet6Kind _
-                | SockaddrCopyRefusal.DarwinShortInet6Sockaddr _ ->
-                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
+                | _ -> failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
 
             let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
                 match outcome with
@@ -5532,7 +5524,7 @@ module NativeSystemNative =
                     (copiedSockaddr ctx operation addressArgument length state)
                     state.Kernel.System
             with
-            | Error (ConnectRefusal.Copy refusal) -> refuse refusal
+            | Error (ConnectRefusal.Reason.Copy refusal) -> refuse refusal
             | Error refusal ->
                 // The library says which unmeasured or unmodelled input it
                 // will not answer across; a guest reached it through the
@@ -5606,9 +5598,9 @@ module NativeSystemNative =
             match
                 syscall fd (BufferPointer.toUserBuffer addressArgument) (uint32 declaredLength) state.Kernel.System
             with
-            | Error (GetSockNameRefusal.Buffer refusal) ->
+            | Error (GetSockNameRefusal.Reason.Buffer refusal) ->
                 failwith (BufferPointer.refusalMessage addressArgument refusal)
-            | Error (GetSockNameRefusal.UnmodelledDomain (_, domain) as refusal) ->
+            | Error (GetSockNameRefusal.Reason.UnmodelledDomain (_, domain) as refusal) ->
                 // The library says why no kernel answer exists; PawPrint says how
                 // a guest could be holding such a socket, which is a fact about
                 // CoreLib rather than about any kernel.
@@ -5621,9 +5613,10 @@ module NativeSystemNative =
                             $"%s{operation}: the library refused an internet socket's domain, which it reports addresses for. This is an interpreter bug."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} %s{reachedBy}"
-            | Error (GetSockNameRefusal.UnmodelledInet6Kind _ as refusal) ->
+            | Error (GetSockNameRefusal.Reason.UnmodelledInet6Kind _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} A managed guest reaches this through an IPv6 `Socket` of `SocketType.Dgram`."
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal}"
             | Ok (GetSockNameAnswer.Failed (error, _lengthOverwritten)) ->
                 // `lengthOverwritten` is dropped, and that is what the shim does
                 // rather than an omission: it passes the syscall a local
@@ -5773,19 +5766,18 @@ module NativeSystemNative =
                 // a guest could be holding such a socket.
                 let reachedBy =
                     match refusal with
-                    | ShutdownRefusal.Listener _ ->
+                    | ShutdownRefusal.Reason.Listener _ ->
                         " A managed guest reaches this by calling Socket.Shutdown on a listening Socket."
-                    | ShutdownRefusal.LinuxUnconnected _ ->
+                    | ShutdownRefusal.Reason.LinuxUnconnected _ ->
                         " A managed guest reaches this by calling Socket.Shutdown on a Socket that never connected, which a real Linux kernel answers ENOTCONN to while leaving the socket changed."
-                    | ShutdownRefusal.ConnectedDatagram _ ->
+                    | ShutdownRefusal.Reason.ConnectedDatagram _ ->
                         " A managed guest reaches this by calling Socket.Shutdown on a UDP Socket after Connect."
-                    | ShutdownRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
+                    | ShutdownRefusal.Reason.UnmodelledDomain (_, SocketDomain.Unix) ->
                         " That belongs with the filesystem work (issue #956), not here."
-                    | ShutdownRefusal.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
+                    | ShutdownRefusal.Reason.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
                         failwith
                             $"%s{operation}: the library refused an internet socket's domain, which it shuts down or refuses otherwise. This is an interpreter bug."
-                    | ShutdownRefusal.UnmeasuredKind _
-                    | ShutdownRefusal.ReceiveShutBeforeUnsentBytes _ -> ""
+                    | _ -> ""
 
                 failwith $"%s{operation}: fd %d{fd}: %s{ShutdownRefusal.describe refusal}%s{reachedBy}"
             | Ok (ShutdownAnswer.Shut, system) -> withAnswered system state |> complete UnixErrorPal.palSuccess
@@ -6346,7 +6338,7 @@ module NativeSystemNative =
                 | Error _ -> None
 
             match UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix with
-            | Error (SocketOptionRefusal.Buffer refusal) ->
+            | Error (SocketOptionRefusal.Reason.Buffer refusal) ->
                 failwith (BufferPointer.refusalMessage valueArgument refusal)
             | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SocketOptionRefusal.describe refusal}"
             | Ok (SetSockOptAnswer.Set, unix) ->
@@ -6446,7 +6438,7 @@ module NativeSystemNative =
                 | Error _ -> None
 
             match UnixSocket.getsockopt fd level name value UserBuffer.Mapped read unix with
-            | Error (SocketOptionRefusal.Buffer refusal) ->
+            | Error (SocketOptionRefusal.Reason.Buffer refusal) ->
                 failwith (BufferPointer.refusalMessage valueArgument refusal)
             | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SocketOptionRefusal.describe refusal}"
             | Ok (GetSockOptAnswer.Failed (error, _lengthOverwritten), unix) ->

@@ -61,67 +61,132 @@ type AcceptOutcome =
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `AcceptRefusal.Reason`, and ends its match with a wildcard, where
+/// `AcceptRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type AcceptRefusal =
-    /// A descriptor the call would make lies at or above the bound this kernel
-    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    internal
+    /// See `AcceptRefusal.Reason.DescriptorLimit`.
     | DescriptorLimit of DescriptorLimitRefusal
-    /// The descriptor is a socket in a domain whose addresses this kernel does
-    /// not model, so there is no peer address to report even if the accept
-    /// itself would succeed.
+    /// See `AcceptRefusal.Reason.UnmodelledDomain`.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
-    /// The descriptor is a socket of a kind whose `accept(2)` answer is
-    /// unmeasured. `SOCK_SEQPACKET` does accept connections, so answering
-    /// rather than measuring would be the difference between an answer and a
-    /// state change.
+    /// See `AcceptRefusal.Reason.UnmeasuredKind`.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
-    /// The accept would succeed and copy the peer address out, but the
-    /// destination is one this library has no answer for: its bytes cannot be
-    /// produced, or it is not an address at all.
-    ///
-    /// Reached only once a connection has been selected, which is what makes it
-    /// worth distinguishing from `UnmeasuredCopyOutFault` beside it: here the
-    /// kernel *would* have succeeded and dequeued, and it is the client that
-    /// cannot represent the transfer.
+    /// See `AcceptRefusal.Reason.Buffer`.
     | Buffer of BufferRefusal
-    /// The accept would succeed and copy the peer address out, but the
-    /// destination is unmapped, so the copy faults.
-    ///
-    /// `getsockname` answers EFAULT for this and `accept` cannot, which is the
-    /// whole reason the case exists: by the time the fault happens a connection
-    /// has been taken off the queue. Measured, Linux stores the untruncated
-    /// length in the caller's cell, answers EFAULT and loses the connection,
-    /// while Darwin ignores the fault and succeeds; neither is an outcome this
-    /// library can return, since neither a failure that writes the cell nor a
-    /// success whose address the caller must not write is one. A NULL
-    /// destination (`Unmapped 0UL`) is refused here too, although no kernel
-    /// faults on it: both skip the copy and the length cell, which this
-    /// library has no outcome for either.
+    /// See `AcceptRefusal.Reason.UnmeasuredCopyOutFault`.
     | UnmeasuredCopyOutFault of listener : SocketId
-    /// The accept was asleep and a signal is pending for the task, and this
-    /// library will not say how the signal ends it.
+    /// See `AcceptRefusal.Reason.Interruption`.
     | Interruption of SyscallInterruptionRefusal
-    /// The accept would sleep on a listener a close has drained
-    /// (`ListenState.Drained`): its queue is empty and the description it was
-    /// made through blocking.
-    ///
-    /// Darwin answers such a sleep with `ECONNABORTED` once anything wakes it,
-    /// and a connection wakes one sleeper and stays queued, so a second sleeper
-    /// sleeps on through it. This kernel wakes a sleeping accept while a
-    /// connection is queued, which would wake that second sleeper too.
+    /// See `AcceptRefusal.Reason.DarwinDrainedListener`.
     | DarwinDrainedListener of listener : SocketId
-    /// The accept fails after taking `connection` off `listener`'s queue, which
-    /// closes the connection's server end at once, and that end has the
-    /// `SO_LINGER` the listener had when the connection completed, on with a
-    /// time of zero, while the client is still open. A real kernel resets the connection, and the client reads
-    /// ECONNRESET; this kernel models no abortive close. See
-    /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
-    /// the drop is the ordinary close, since the server end has written
-    /// nothing that could still be in its send buffer.
+    /// See `AcceptRefusal.Reason.AbortiveDrop`.
     | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module AcceptRefusal =
+    /// The reasons this kernel refuses an `accept`, one partial pattern each. A
+    /// match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// A descriptor the call would make lies at or above the bound this
+        /// kernel assumes the process's `RLIMIT_NOFILE` reaches. Gives the
+        /// `DescriptorLimitRefusal`.
+        let (|DescriptorLimit|_|) (refusal : AcceptRefusal) : DescriptorLimitRefusal option =
+            match refusal with
+            | AcceptRefusal.DescriptorLimit refusal -> Some refusal
+            | _ -> None
+
+        /// The descriptor is a socket in a domain whose addresses this kernel
+        /// does not model, so there is no peer address to report even if the
+        /// accept itself would succeed. Gives the socket, then the domain.
+        let (|UnmodelledDomain|_|) (refusal : AcceptRefusal) : (SocketId * SocketDomain) option =
+            match refusal with
+            | AcceptRefusal.UnmodelledDomain (socket, domain) -> Some (socket, domain)
+            | _ -> None
+
+        /// The descriptor is a socket of a kind whose `accept(2)` answer is
+        /// unmeasured. `SOCK_SEQPACKET` does accept connections, so answering
+        /// rather than measuring would be the difference between an answer and
+        /// a state change. Gives the socket, then the kind.
+        let (|UnmeasuredKind|_|) (refusal : AcceptRefusal) : (SocketId * SocketKind) option =
+            match refusal with
+            | AcceptRefusal.UnmeasuredKind (socket, kind) -> Some (socket, kind)
+            | _ -> None
+
+        /// The accept would succeed and copy the peer address out, but the
+        /// destination is one this library has no answer for: its bytes cannot
+        /// be produced, or it is not an address at all. Gives the
+        /// `BufferRefusal`.
+        ///
+        /// Reached only once a connection has been selected, which is what
+        /// makes it worth distinguishing from `UnmeasuredCopyOutFault` beside
+        /// it: here the kernel *would* have succeeded and dequeued, and it is
+        /// the client that cannot represent the transfer.
+        let (|Buffer|_|) (refusal : AcceptRefusal) : BufferRefusal option =
+            match refusal with
+            | AcceptRefusal.Buffer refusal -> Some refusal
+            | _ -> None
+
+        /// The accept would succeed and copy the peer address out, but the
+        /// destination is unmapped, so the copy faults. Gives the listener.
+        ///
+        /// `getsockname` answers EFAULT for this and `accept` cannot, which is
+        /// the whole reason the case exists: by the time the fault happens a
+        /// connection has been taken off the queue. Measured, Linux stores the
+        /// untruncated length in the caller's cell, answers EFAULT and loses
+        /// the connection, while Darwin ignores the fault and succeeds; neither
+        /// is an outcome this library can return, since neither a failure that
+        /// writes the cell nor a success whose address the caller must not
+        /// write is one. A NULL destination (`Unmapped 0UL`) is refused here
+        /// too, although no kernel faults on it: both skip the copy and the
+        /// length cell, which this library has no outcome for either.
+        let (|UnmeasuredCopyOutFault|_|) (refusal : AcceptRefusal) : SocketId option =
+            match refusal with
+            | AcceptRefusal.UnmeasuredCopyOutFault listener -> Some listener
+            | _ -> None
+
+        /// The accept was asleep and a signal is pending for the task, and this
+        /// library will not say how the signal ends it. Gives the
+        /// `SyscallInterruptionRefusal`.
+        let (|Interruption|_|) (refusal : AcceptRefusal) : SyscallInterruptionRefusal option =
+            match refusal with
+            | AcceptRefusal.Interruption refusal -> Some refusal
+            | _ -> None
+
+        /// The accept would sleep on a listener a close has drained
+        /// (`ListenState.Drained`): its queue is empty and the description it
+        /// was made through blocking. Gives the listener.
+        ///
+        /// Darwin answers such a sleep with `ECONNABORTED` once anything wakes
+        /// it, and a connection wakes one sleeper and stays queued, so a second
+        /// sleeper sleeps on through it. This kernel wakes a sleeping accept
+        /// while a connection is queued, which would wake that second sleeper
+        /// too.
+        let (|DarwinDrainedListener|_|) (refusal : AcceptRefusal) : SocketId option =
+            match refusal with
+            | AcceptRefusal.DarwinDrainedListener listener -> Some listener
+            | _ -> None
+
+        /// The accept fails after taking a connection off the listener's queue,
+        /// which closes the connection's server end at once, and that end has
+        /// the `SO_LINGER` the listener had when the connection completed, on
+        /// with a time of zero, while the client is still open. Gives the
+        /// listener, then the connection.
+        ///
+        /// A real kernel resets the connection, and the client reads
+        /// ECONNRESET; this kernel models no abortive close. See
+        /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger
+        /// time the drop is the ordinary close, since the server end has
+        /// written nothing that could still be in its send buffer.
+        let (|AbortiveDrop|_|) (refusal : AcceptRefusal) : (SocketId * ConnectionId) option =
+            match refusal with
+            | AcceptRefusal.AbortiveDrop (listener, connection) -> Some (listener, connection)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point, which descriptor, and how a caller
     /// could have come by such a socket or such a buffer.
@@ -150,42 +215,91 @@ type ShutdownAnswer =
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `shutdown(2)`.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ShutdownRefusal.Reason`, and ends its match with a wildcard, where
+/// `ShutdownRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ShutdownRefusal =
-    /// The descriptor is a listening socket. Measured, Linux's `SHUT_RD` and
-    /// `SHUT_RDWR` reset every queued connection's client, wake a sleeping
-    /// `accept` with EINVAL and return the listener to an idle socket that
-    /// keeps its port, and Darwin answers ENOTCONN and changes nothing
-    /// (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
-    /// sections U, B, E and Q); neither is modelled yet.
+    internal
+    /// See `ShutdownRefusal.Reason.Listener`.
     | Listener of socket : SocketId
-    /// The descriptor is a socket with no connection, under Linux. Linux
-    /// answers ENOTCONN, as Darwin does, but still marks the sides `how`
-    /// names shut, and they stay shut through a later `connect`: measured
-    /// (`tcp-shutdown.c`, section U, `fresh-then` and `udp-then`), a fresh
-    /// stream socket then polls IN|RDHUP after `SHUT_RD`, and its writes once
-    /// connected answer EPIPE after `SHUT_WR`. This kernel keeps no shut
-    /// sides on a socket without a connection.
+    /// See `ShutdownRefusal.Reason.LinuxUnconnected`.
     | LinuxUnconnected of socket : SocketId
-    /// The descriptor is a datagram socket connected to a peer, whose
-    /// `shutdown(2)` is unmeasured.
+    /// See `ShutdownRefusal.Reason.ConnectedDatagram`.
     | ConnectedDatagram of socket : SocketId
-    /// The descriptor is a socket in a domain this kernel models no
-    /// `shutdown(2)` for.
+    /// See `ShutdownRefusal.Reason.UnmodelledDomain`.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
-    /// The descriptor is a socket of a kind whose `shutdown(2)` is
-    /// unmeasured.
+    /// See `ShutdownRefusal.Reason.UnmeasuredKind`.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
-    /// Under Darwin, the call would shut the receive side of `socket`, the
-    /// connection's end, while `unsent` bytes the peer wrote still wait in
-    /// the peer's send buffer. Measured, the peer is then reset only when a
-    /// TCP timer fires, at a time that varied between runs, or not within
-    /// 15 s (`tcp-shutdown.c`, sections R and X). This kernel delivers bytes
-    /// as soon as there is room, and keeps no timers.
+    /// See `ShutdownRefusal.Reason.ReceiveShutBeforeUnsentBytes`.
     | ReceiveShutBeforeUnsentBytes of socket : SocketId * unsent : int
 
 [<RequireQualifiedAccess>]
 module ShutdownRefusal =
+    /// The reasons this kernel refuses a `shutdown(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The descriptor is a listening socket. Measured, Linux's `SHUT_RD`
+        /// and `SHUT_RDWR` reset every queued connection's client, wake a
+        /// sleeping `accept` with EINVAL and return the listener to an idle
+        /// socket that keeps its port, and Darwin answers ENOTCONN and changes
+        /// nothing (`tcp-shutdown.c` in
+        /// docs/plans/2026-10-08-tcp-shutdown-linger, sections U, B, E and Q);
+        /// neither is modelled yet. Gives the socket.
+        let (|Listener|_|) (refusal : ShutdownRefusal) : SocketId option =
+            match refusal with
+            | ShutdownRefusal.Listener socket -> Some socket
+            | _ -> None
+
+        /// The descriptor is a socket with no connection, under Linux. Linux
+        /// answers ENOTCONN, as Darwin does, but still marks the sides `how`
+        /// names shut, and they stay shut through a later `connect`: measured
+        /// (`tcp-shutdown.c`, section U, `fresh-then` and `udp-then`), a fresh
+        /// stream socket then polls IN|RDHUP after `SHUT_RD`, and its writes
+        /// once connected answer EPIPE after `SHUT_WR`. This kernel keeps no
+        /// shut sides on a socket without a connection. Gives the socket.
+        let (|LinuxUnconnected|_|) (refusal : ShutdownRefusal) : SocketId option =
+            match refusal with
+            | ShutdownRefusal.LinuxUnconnected socket -> Some socket
+            | _ -> None
+
+        /// The descriptor is a datagram socket connected to a peer, whose
+        /// `shutdown(2)` is unmeasured. Gives the socket.
+        let (|ConnectedDatagram|_|) (refusal : ShutdownRefusal) : SocketId option =
+            match refusal with
+            | ShutdownRefusal.ConnectedDatagram socket -> Some socket
+            | _ -> None
+
+        /// The descriptor is a socket in a domain this kernel models no
+        /// `shutdown(2)` for. Gives the socket, then the domain.
+        let (|UnmodelledDomain|_|) (refusal : ShutdownRefusal) : (SocketId * SocketDomain) option =
+            match refusal with
+            | ShutdownRefusal.UnmodelledDomain (socket, domain) -> Some (socket, domain)
+            | _ -> None
+
+        /// The descriptor is a socket of a kind whose `shutdown(2)` is
+        /// unmeasured. Gives the socket, then the kind.
+        let (|UnmeasuredKind|_|) (refusal : ShutdownRefusal) : (SocketId * SocketKind) option =
+            match refusal with
+            | ShutdownRefusal.UnmeasuredKind (socket, kind) -> Some (socket, kind)
+            | _ -> None
+
+        /// Under Darwin, the call would shut the receive side of a socket, the
+        /// connection's end, while bytes the peer wrote still wait in the
+        /// peer's send buffer. Gives the socket, then how many bytes wait.
+        ///
+        /// Measured, the peer is then reset only when a TCP timer fires, at a
+        /// time that varied between runs, or not within 15 s (`tcp-shutdown.c`,
+        /// sections R and X). This kernel delivers bytes as soon as there is
+        /// room, and keeps no timers.
+        let (|ReceiveShutBeforeUnsentBytes|_|) (refusal : ShutdownRefusal) : (SocketId * int) option =
+            match refusal with
+            | ShutdownRefusal.ReceiveShutBeforeUnsentBytes (socket, unsent) -> Some (socket, unsent)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half: which entry point, and which descriptor.
     let describe (refusal : ShutdownRefusal) : string =
@@ -211,61 +325,172 @@ module ShutdownRefusal =
 /// A `SocketAddress` a case carries is a `SocketAddress.Inet`, even from a
 /// dual-mode IPv6 socket: the IPv4 transport endpoint the connect resolved,
 /// not the v4-mapped address the socket would present it as.
+///
+/// Open: a minor version may add a reason, so a client cannot match every one.
+/// It names the reasons it has something to add to through
+/// `ConnectRefusal.Reason`, and ends its match with a wildcard, where
+/// `ConnectRefusal.describe` says what was refused.
 [<RequireQualifiedAccess>]
 type ConnectRefusal =
-    /// The sockaddr copy could not be admitted.
+    internal
+    /// See `ConnectRefusal.Reason.Copy`.
     | Copy of SockaddrCopyRefusal
-    /// A seqpacket socket, whose `connect(2)` is unmeasured.
+    /// See `ConnectRefusal.Reason.UnmeasuredKind`.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
-    /// The socket has no concrete source address and the destination is not
-    /// loopback, and which source a kernel resolves for it is unmeasured.
-    /// `boundToWildcard` says whether the socket was bound to the wildcard or
-    /// not bound at all.
+    /// See `ConnectRefusal.Reason.SourceForNonLoopbackDestination`.
     | SourceForNonLoopbackDestination of socket : SocketId * destination : SocketAddress * boundToWildcard : bool
-    /// The implicit bind found every port in the ephemeral range taken, and
-    /// what a kernel answers then is unmeasured.
+    /// See `ConnectRefusal.Reason.EphemeralPortsExhausted`.
     | EphemeralPortsExhausted of range : uint16 * uint16
-    /// The destination is not an address of this machine, and this library
-    /// models no network to carry a packet anywhere else.
+    /// See `ConnectRefusal.Reason.DestinationNotLocal`.
     | DestinationNotLocal of destination : SocketAddress * kind : SocketKind
-    /// The listener's accept queue is at its measured capacity: a real kernel
-    /// leaves the SYN unanswered and the client retries on a timer.
+    /// See `ConnectRefusal.Reason.AcceptQueueFull`.
     | AcceptQueueFull of listener : SocketId * destination : SocketAddress * queued : int
-    /// The resolved source equals the destination while a listener matched,
-    /// which only a reuse-bound client can engineer; unmeasured.
+    /// See `ConnectRefusal.Reason.SelfTuple`.
     | SelfTuple of endpoint : SocketAddress
-    /// A connection between this source and destination already exists, or,
-    /// under Darwin, another datagram socket is connected from this source to
-    /// this destination, and how a kernel refuses the duplicate four-tuple is
-    /// unmeasured.
+    /// See `ConnectRefusal.Reason.DuplicateFourTuple`.
     | DuplicateFourTuple of source : SocketAddress * destination : SocketAddress
-    /// A Linux socket whose non-blocking connect completed, and whose
-    /// connection was then reset before any connect reported the completion.
-    /// Linux's retry would answer the reset's pending error, or ECONNABORTED
-    /// once it is taken, and disconnect the socket; unmeasured.
+    /// See `ConnectRefusal.Reason.ResetBeforeReport`.
     | ResetBeforeReport of socket : SocketId
-    /// The destination is the socket's own bound address with nothing
-    /// listening: TCP simultaneous open, which is unmodelled.
+    /// See `ConnectRefusal.Reason.SimultaneousOpen`.
     | SimultaneousOpen of destination : SocketAddress
-    /// Darwin drops the SYN to a bound but unlistened port, and the connect
-    /// pends on a retransmission schedule this library cannot honour.
+    /// See `ConnectRefusal.Reason.DarwinSynDropped`.
     | DarwinSynDropped of destination : SocketAddress
-    /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle, whose
-    /// `tcp_disconnect` consequences are unmeasured.
+    /// See `ConnectRefusal.Reason.LinuxUnspecOnPhase`.
     | LinuxUnspecOnPhase of socket : SocketId * phase : SocketPhase
-    /// A datagram connect to the broadcast address or a multicast group that
-    /// would succeed. This library models no group membership and no
-    /// interface to broadcast on, so it does not record such a peer.
+    /// See `ConnectRefusal.Reason.DatagramGroupDestination`.
     | DatagramGroupDestination of socket : SocketId * destination : SocketAddress
-    /// An IPv6 socket would connect to an IPv6 address that is not v4-mapped,
-    /// which needs an IPv6 transport this kernel does not have. `destination`
-    /// is the `struct sockaddr_in6` the caller passed; its scope id is 0 if
-    /// the caller's length stopped short of `sin6_scope_id`, as Linux reads
-    /// such a length.
+    /// See `ConnectRefusal.Reason.Ipv6Destination`.
     | Ipv6Destination of socket : SocketId * destination : Ipv6Endpoint
 
 [<RequireQualifiedAccess>]
 module ConnectRefusal =
+    /// The reasons this kernel refuses a `connect(2)`, one partial pattern
+    /// each. A match over them is never complete: end it with a wildcard.
+    [<RequireQualifiedAccess>]
+    module Reason =
+        /// The sockaddr copy could not be admitted. Gives the
+        /// `SockaddrCopyRefusal`.
+        let (|Copy|_|) (refusal : ConnectRefusal) : SockaddrCopyRefusal option =
+            match refusal with
+            | ConnectRefusal.Copy refusal -> Some refusal
+            | _ -> None
+
+        /// A seqpacket socket, whose `connect(2)` is unmeasured. Gives the
+        /// socket, then the kind.
+        let (|UnmeasuredKind|_|) (refusal : ConnectRefusal) : (SocketId * SocketKind) option =
+            match refusal with
+            | ConnectRefusal.UnmeasuredKind (socket, kind) -> Some (socket, kind)
+            | _ -> None
+
+        /// The socket has no concrete source address and the destination is not
+        /// loopback, and which source a kernel resolves for it is unmeasured.
+        /// Gives the socket, then the destination, then whether the socket was
+        /// bound to the wildcard rather than not bound at all.
+        let (|SourceForNonLoopbackDestination|_|)
+            (refusal : ConnectRefusal)
+            : (SocketId * SocketAddress * bool) option
+            =
+            match refusal with
+            | ConnectRefusal.SourceForNonLoopbackDestination (socket, destination, boundToWildcard) ->
+                Some (socket, destination, boundToWildcard)
+            | _ -> None
+
+        /// The implicit bind found every port in the ephemeral range taken, and
+        /// what a kernel answers then is unmeasured. Gives the range's lowest
+        /// port, then its highest.
+        let (|EphemeralPortsExhausted|_|) (refusal : ConnectRefusal) : (uint16 * uint16) option =
+            match refusal with
+            | ConnectRefusal.EphemeralPortsExhausted (low, high) -> Some (low, high)
+            | _ -> None
+
+        /// The destination is not an address of this machine, and this library
+        /// models no network to carry a packet anywhere else. Gives the
+        /// destination, then the kind.
+        let (|DestinationNotLocal|_|) (refusal : ConnectRefusal) : (SocketAddress * SocketKind) option =
+            match refusal with
+            | ConnectRefusal.DestinationNotLocal (destination, kind) -> Some (destination, kind)
+            | _ -> None
+
+        /// The listener's accept queue is at its measured capacity: a real
+        /// kernel leaves the SYN unanswered and the client retries on a timer.
+        /// Gives the listener, then the destination, then how many connections
+        /// the queue holds.
+        let (|AcceptQueueFull|_|) (refusal : ConnectRefusal) : (SocketId * SocketAddress * int) option =
+            match refusal with
+            | ConnectRefusal.AcceptQueueFull (listener, destination, queued) -> Some (listener, destination, queued)
+            | _ -> None
+
+        /// The resolved source equals the destination while a listener matched,
+        /// which only a reuse-bound client can engineer; unmeasured. Gives the
+        /// endpoint.
+        let (|SelfTuple|_|) (refusal : ConnectRefusal) : SocketAddress option =
+            match refusal with
+            | ConnectRefusal.SelfTuple endpoint -> Some endpoint
+            | _ -> None
+
+        /// A connection between this source and destination already exists, or,
+        /// under Darwin, another datagram socket is connected from this source
+        /// to this destination, and how a kernel refuses the duplicate
+        /// four-tuple is unmeasured. Gives the source, then the destination.
+        let (|DuplicateFourTuple|_|) (refusal : ConnectRefusal) : (SocketAddress * SocketAddress) option =
+            match refusal with
+            | ConnectRefusal.DuplicateFourTuple (source, destination) -> Some (source, destination)
+            | _ -> None
+
+        /// A Linux socket whose non-blocking connect completed, and whose
+        /// connection was then reset before any connect reported the
+        /// completion. Linux's retry would answer the reset's pending error, or
+        /// ECONNABORTED once it is taken, and disconnect the socket;
+        /// unmeasured. Gives the socket.
+        let (|ResetBeforeReport|_|) (refusal : ConnectRefusal) : SocketId option =
+            match refusal with
+            | ConnectRefusal.ResetBeforeReport socket -> Some socket
+            | _ -> None
+
+        /// The destination is the socket's own bound address with nothing
+        /// listening: TCP simultaneous open, which is unmodelled. Gives the
+        /// destination.
+        let (|SimultaneousOpen|_|) (refusal : ConnectRefusal) : SocketAddress option =
+            match refusal with
+            | ConnectRefusal.SimultaneousOpen destination -> Some destination
+            | _ -> None
+
+        /// Darwin drops the SYN to a bound but unlistened port, and the connect
+        /// pends on a retransmission schedule this library cannot honour. Gives
+        /// the destination.
+        let (|DarwinSynDropped|_|) (refusal : ConnectRefusal) : SocketAddress option =
+            match refusal with
+            | ConnectRefusal.DarwinSynDropped destination -> Some destination
+            | _ -> None
+
+        /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle,
+        /// whose `tcp_disconnect` consequences are unmeasured. Gives the
+        /// socket, then the phase.
+        let (|LinuxUnspecOnPhase|_|) (refusal : ConnectRefusal) : (SocketId * SocketPhase) option =
+            match refusal with
+            | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) -> Some (socket, phase)
+            | _ -> None
+
+        /// A datagram connect to the broadcast address or a multicast group
+        /// that would succeed. This library models no group membership and no
+        /// interface to broadcast on, so it does not record such a peer. Gives
+        /// the socket, then the destination.
+        let (|DatagramGroupDestination|_|) (refusal : ConnectRefusal) : (SocketId * SocketAddress) option =
+            match refusal with
+            | ConnectRefusal.DatagramGroupDestination (socket, destination) -> Some (socket, destination)
+            | _ -> None
+
+        /// An IPv6 socket would connect to an IPv6 address that is not
+        /// v4-mapped, which needs an IPv6 transport this kernel does not have.
+        /// Gives the socket, then the destination, which is the
+        /// `struct sockaddr_in6` the caller passed; its scope id is 0 if the
+        /// caller's length stopped short of `sin6_scope_id`, as Linux reads
+        /// such a length.
+        let (|Ipv6Destination|_|) (refusal : ConnectRefusal) : (SocketId * Ipv6Endpoint) option =
+            match refusal with
+            | ConnectRefusal.Ipv6Destination (socket, destination) -> Some (socket, destination)
+            | _ -> None
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point, and which caller could have asked.
     let describe (refusal : ConnectRefusal) : string =
@@ -1956,7 +2181,7 @@ module UnixConnection =
     /// (`ListenState.Drained`); see `UnixDescriptor.close`. A later accept on
     /// it that finds a connection queued takes it, and a non-blocking one that
     /// finds none answers `EAGAIN`; one that would sleep is refused
-    /// (`AcceptRefusal.DarwinDrainedListener`).
+    /// (`AcceptRefusal.Reason.DarwinDrainedListener`).
     ///
     /// The accepted descriptor inherits `O_NONBLOCK` from the description this
     /// call was made through, on the flavours whose kernels do that: see
@@ -2207,7 +2432,8 @@ module UnixConnection =
     /// docs/plans/2026-10-08-tcp-shutdown-linger, section U): EBADF, then
     /// ENOTSOCK, then EINVAL for any other `how`, then the socket's state.
     /// An IPv4 or IPv6 socket with no connection answers ENOTCONN under
-    /// Darwin, and is refused under Linux (`ShutdownRefusal.LinuxUnconnected`).
+    /// Darwin, and is refused under Linux
+    /// (`ShutdownRefusal.Reason.LinuxUnconnected`).
     ///
     /// On a connected stream socket the call shuts the sides `how` names, by
     /// each flavour's rules: shutting the send side
