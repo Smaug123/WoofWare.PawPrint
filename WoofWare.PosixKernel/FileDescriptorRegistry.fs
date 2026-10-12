@@ -2825,8 +2825,6 @@ module FileDescriptorRegistry =
         tryFindWithId fd registry
         |> Option.map (fun (id, description) -> OpenFileDescription.object id description)
 
-    /// What `fd` refers to and where in it, if `fd` is live. For the callers
-    /// that move or consume the file offset.
     /// The name the description `fd` names was opened through
     /// (`OpenFileTable.openedThrough`). Loudly partial: `operation`, named in
     /// the message, has just found `fd` naming a description onto an inode.
@@ -2841,6 +2839,8 @@ module FileDescriptorRegistry =
             failwith
                 $"%s{operation}: fd %d{fd} names no description onto an inode, though the caller found it naming one moments ago (this is a bug in this library)."
 
+    /// What `fd` refers to and where in it, if `fd` is live. For the callers
+    /// that move or consume the file offset.
     let tryFindTarget (fd : int) (registry : FileDescriptorRegistry) : OpenFileTarget option =
         tryFind fd registry |> Option.map (fun description -> description.Target)
 
