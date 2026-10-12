@@ -202,7 +202,17 @@ module TestInotifySelfMeasured =
         =
         let produced = ResizeArray<string * string> ()
 
-        let system = boot root [ "r", directory 0o755 [ "s", file "s" ; "t", file "t" ] ]
+        // One machine for the three, as the probe's, so that the renames'
+        // cookies differ.
+        let system =
+            boot
+                root
+                [
+                    "r", directory 0o755 [ "s", file "s" ; "t", file "t" ]
+                    "rd", directory 0o755 [ "sd", directory 0o755 [] ; "td", directory 0o755 [] ]
+                    "rs", directory 0o755 [ "s", file "s" ]
+                ]
+
         let fd, system = init1 nonblock system
         let row = recorder produced fd
         let wr, system = watch fd "r" modelledEvents system
@@ -214,27 +224,21 @@ module TestInotifySelfMeasured =
         let system = system |> rename "r/u" "r/v" |> row "other-name-of-watched"
         let system = system |> rename "r/v" "r/t" |> row "name-onto-same-file"
         let system = system |> rename "r/t" "r/t" |> row "name-onto-itself"
-        system |> unlink "r/v" |> drain fd |> ignore<string * UnixSystem<int, string>>
-
-        let system =
-            boot root [ "r", directory 0o755 [ "sd", directory 0o755 [] ; "td", directory 0o755 [] ] ]
+        let _, system = system |> unlink "r/v" |> drain fd
+        let system = close fd system
 
         let fd, system = init1 nonblock system
         let row = recorder produced fd
-        let wr, system = watch fd "r" modelledEvents system
-        let wsd, system = watch fd "r/sd" modelledEvents system
-        let wtd, system = watch fd "r/td" modelledEvents system
+        let wr, system = watch fd "rd" modelledEvents system
+        let wsd, system = watch fd "rd/sd" modelledEvents system
+        let wtd, system = watch fd "rd/td" modelledEvents system
         produced.Add ("dir-wds", $"r=%d{wr} sd=%d{wsd} td=%d{wtd}")
+        let system = system |> rename "rd/sd" "rd/td" |> row "watched-dir-over-watched-dir"
+        let system = close fd system
 
-        system
-        |> rename "r/sd" "r/td"
-        |> row "watched-dir-over-watched-dir"
-        |> ignore<UnixSystem<int, string>>
-
-        let system = boot root [ "r", directory 0o755 [ "s", file "s" ] ]
         let fd, system = init1 nonblock system
-        let ws, system = watch fd "r/s" (modelledEvents &&& ~~~moveSelf) system
-        let drained, _ = system |> rename "r/s" "r/s2" |> drain fd
+        let ws, system = watch fd "rs/s" (modelledEvents &&& ~~~moveSelf) system
+        let drained, _ = system |> rename "rs/s" "rs/s2" |> drain fd
         produced.Add ("no-move-self-asked", $"wd=%d{ws}: %s{drained}")
 
         actual produced |> shouldEqual (expected selfProbe "R")
