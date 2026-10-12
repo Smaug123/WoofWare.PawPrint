@@ -323,12 +323,51 @@ module UnixMachineState =
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
 
     /// `machine` with the filesystem `mutation` leaves, which must have been
-    /// made from `machine.FileSystem`. Every syscall that changes the
-    /// filesystem stores its change through here.
-    let internal commitFileSystem (mutation : VfsMutation) (machine : UnixMachineState) : UnixMachineState =
-        { machine with
-            CommittedFileSystem = CommittedFileSystem.commit mutation machine.CommittedFileSystem
-        }
+    /// made from `machine.FileSystem`, and the records its changes raise
+    /// queued on the inotify instances watching what they changed, the
+    /// syscall having reached it as `notice` says; or the refusal of a change
+    /// an inotify watch could hear of through a name this kernel does not
+    /// keep (`CommittedFileSystem.commit`). Every syscall that changes the
+    /// filesystem stores its change through here or `commitFileSystem`.
+    let internal tryCommitFileSystem
+        (notice : ChangeNotice)
+        (mutation : VfsMutation)
+        (machine : UnixMachineState)
+        : Result<UnixMachineState, UnplacedChangeRefusal>
+        =
+        CommittedFileSystem.commit
+            notice
+            machine.InotifyLimits.MaxQueuedEvents
+            mutation
+            machine.OpenFiles
+            machine.CommittedFileSystem
+        |> Result.map (fun (committed, openFiles) ->
+            { machine with
+                CommittedFileSystem = committed
+                OpenFiles = openFiles
+            }
+        )
+
+    /// `tryCommitFileSystem`, for a change of names (`ChangeNotice.Names`),
+    /// which is never refused.
+    let internal commitFileSystem
+        (notice : ChangeNotice)
+        (mutation : VfsMutation)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        match notice with
+        | ChangeNotice.Names -> ()
+        | ChangeNotice.SetAttributes _
+        | ChangeNotice.Written ->
+            failwith
+                $"UnixMachineState.commitFileSystem: committed %A{notice}, which may be refused; commit it through tryCommitFileSystem (this is a bug in this library)."
+
+        match tryCommitFileSystem notice mutation machine with
+        | Ok machine -> machine
+        | Error refusal ->
+            failwith
+                $"UnixMachineState.commitFileSystem: a change of names was refused, which none is: %s{UnplacedChangeRefusal.describe refusal} (this is a bug in this library)."
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
     /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs

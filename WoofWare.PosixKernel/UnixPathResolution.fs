@@ -229,6 +229,9 @@ type internal ChModRefusal =
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal ChModRefusal =
@@ -239,12 +242,14 @@ module internal ChModRefusal =
         | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
+        | ChModRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : ChModRefusal) : RefusalKind =
         match refusal with
         | ChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
         | ChModRefusal.Path inner -> PathRefusal.kind inner
+        | ChModRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
@@ -260,6 +265,9 @@ type internal FChModRefusal =
     /// The descriptor is a socket, on a flavour whose sockets have a mode that
     /// `fchmod` changes. This kernel holds no such mode.
     | Socket of socket : SocketId
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal FChModRefusal =
@@ -273,6 +281,7 @@ module internal FChModRefusal =
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchmod on a pipe end changes the mode fstat then reports (0600 to 02750, say) if the caller owns the pipe or is privileged, and answers EPERM otherwise; this pipe's owner is whoever launched the process, which the launch table does not state, so either answer would be a guess."
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
+        | FChModRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : FChModRefusal) : RefusalKind =
@@ -280,6 +289,7 @@ module internal FChModRefusal =
         | FChModRefusal.UnmeasuredModeChange (_, inner) -> ModeChangeRefusal.kind inner
         | FChModRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
         | FChModRefusal.Socket _ -> RefusalKind.Unmodelled
+        | FChModRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchmodat(2)`.
 [<RequireQualifiedAccess>]
@@ -320,6 +330,9 @@ type internal ChOwnRefusal =
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal ChOwnRefusal =
@@ -330,12 +343,14 @@ module internal ChOwnRefusal =
         | ChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) ->
             $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
         | ChOwnRefusal.Path refusal -> PathRefusal.describe refusal
+        | ChOwnRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : ChOwnRefusal) : RefusalKind =
         match refusal with
         | ChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
         | ChOwnRefusal.Path inner -> PathRefusal.kind inner
+        | ChOwnRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchown(2)`.
 [<RequireQualifiedAccess>]
@@ -351,6 +366,9 @@ type internal FChOwnRefusal =
     /// The descriptor is a socket, on a flavour whose sockets have an owner
     /// that `fchown` changes. This kernel holds no such owner.
     | Socket of socket : SocketId
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal FChOwnRefusal =
@@ -364,6 +382,7 @@ module internal FChOwnRefusal =
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchown on a pipe end changes the owner fstat then reports by the same rule as a file's, which depends on who owns the pipe; this pipe's owner is whoever launched the process, which the launch table does not state, so any answer would be a guess."
         | FChOwnRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
+        | FChOwnRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : FChOwnRefusal) : RefusalKind =
@@ -371,6 +390,7 @@ module internal FChOwnRefusal =
         | FChOwnRefusal.UnmeasuredOwnerChange (_, inner) -> OwnerChangeRefusal.kind inner
         | FChOwnRefusal.LaunchedPipe _ -> RefusalKind.Unmodelled
         | FChOwnRefusal.Socket _ -> RefusalKind.Unmodelled
+        | FChOwnRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer an `fchownat(2)`.
 [<RequireQualifiedAccess>]
@@ -433,6 +453,9 @@ type internal UTimensAtRefusal =
     /// for another user's link where it answers EACCES for a file, and no
     /// link the caller may write but does not own was available to measure.
     | UnmeasuredSymlinkWrite of inode : InodeNumber
+    /// An inotify watch could hear of the change, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal UTimensAtRefusal =
@@ -455,6 +478,7 @@ module internal UTimensAtRefusal =
             $"a privileged caller would set the times of inode %O{inode}, which it does not own, on Darwin; this was measured only for an unprivileged caller."
         | UTimensAtRefusal.UnmeasuredSymlinkWrite inode ->
             $"AT_SYMLINK_NOFOLLOW reached symbolic link %O{inode}, which the caller does not own but may write, with both times now. Measured on Darwin 27.0, another user's link answers EPERM where a file answers EACCES, and whether write permission on a link lets a non-owner set its times to now, as it does for a file, is unmeasured."
+        | UTimensAtRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : UTimensAtRefusal) : RefusalKind =
@@ -467,6 +491,7 @@ module internal UTimensAtRefusal =
         | UTimensAtRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
         | UTimensAtRefusal.UnmeasuredPrivilegedCaller _ -> RefusalKind.Unmodelled
         | UTimensAtRefusal.UnmeasuredSymlinkWrite _ -> RefusalKind.Unmodelled
+        | UTimensAtRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// <summary>
 /// What <c>fstat(2)</c> reported.
@@ -785,6 +810,30 @@ module UnixPathResolution =
         =
         resolvePathFull directory policy TrailingSeparatorPolicy.Demand path system
         |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target |> Result.mapError PathFailure.Errno)
+
+    /// `resolvePath`, and the name the walk reached the inode through
+    /// (`ReachedThrough.ofResolved`), for a call that changes the inode's attributes.
+    let internal resolvePathReached<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<InodeNumber * ReachedThrough, PathFailure>
+        =
+        resolvePathFull directory policy TrailingSeparatorPolicy.Demand path system
+        |> Result.bind (fun resolution ->
+            PathWalk.existingOf resolution.Target
+            |> Result.mapError PathFailure.Errno
+            |> Result.map (fun inode -> inode, ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem)
+        )
+
+    /// The current directory, reached as the path "." reaches it.
+    let private currentDirectoryReached<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : InodeNumber * ReachedThrough
+        =
+        let cwd = system.Process.CurrentDirectoryInode
+        cwd, ReachedThrough.ofDirectory cwd system.Machine.FileSystem
 
     /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
     let private reportedLinkCount (platform : SimulatedUnixPlatform) (count : int64) : int64 =
@@ -1185,15 +1234,37 @@ module UnixPathResolution =
         tryFstatat dirfd path flags system
         |> Refusal.orRaise "UnixPathResolution.fstatat" FStatAtRefusal.kind FStatAtRefusal.describe
 
+    /// Why `changeModeOf` or `changeOwnerOf` will not answer: what the change
+    /// would do has not been measured for this caller (`'Unmeasured`, with the
+    /// inode), or an inotify watch could hear of it through a name this kernel
+    /// does not keep.
+    [<RequireQualifiedAccess>]
+    type private AttributeChangeRefusal<'Unmeasured> =
+        | Unmeasured of inode : InodeNumber * refusal : 'Unmeasured
+        | UnplacedChange of UnplacedChangeRefusal
+
+    /// `refusal`, as the call's own refusal, `unmeasured` or `unplaced`.
+    let private attributeChangeRefusal<'Unmeasured, 'Refusal>
+        (unmeasured : InodeNumber * 'Unmeasured -> 'Refusal)
+        (unplaced : UnplacedChangeRefusal -> 'Refusal)
+        (refusal : AttributeChangeRefusal<'Unmeasured>)
+        : 'Refusal
+        =
+        match refusal with
+        | AttributeChangeRefusal.Unmeasured (inode, refusal) -> unmeasured (inode, refusal)
+        | AttributeChangeRefusal.UnplacedChange refusal -> unplaced refusal
+
     /// What `chmod` and `fchmod` do once they have reached `inode`, which is a
     /// regular file, a device, a directory, or a symbolic link on a flavour
     /// whose links change (`SymlinkModeChange.ChangesLink`), this filesystem
     /// holds: EPERM changing nothing, or the new bits with `ctime` moved.
+    /// The caller reached `inode` `through` a path or a descriptor.
     let private changeModeOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (inode : InodeNumber)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InodeNumber * ModeChangeRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, AttributeChangeRefusal<ModeChangeRefusal>>
         =
         let entry =
             match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
@@ -1205,19 +1276,30 @@ module UnixPathResolution =
         let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
 
         match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials entry.Owner) mode with
-        | Error refusal -> Error (inode, refusal)
+        | Error refusal -> Error (AttributeChangeRefusal.Unmeasured (inode, refusal))
         | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
         | Ok (ModeChange.Permitted bits) ->
 
         let now = UnixMachineState.realtime system.Scheduling system.Machine
 
+        let set =
+            { AttributesSet.none with
+                Mode = true
+            }
+
+        match
+            UnixMachineState.tryCommitFileSystem
+                (ChangeNotice.SetAttributes (through, set))
+                (VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem)
+                system.Machine
+        with
+        | Error refusal -> Error (AttributeChangeRefusal.UnplacedChange refusal)
+        | Ok machine ->
+
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine =
-                    UnixMachineState.commitFileSystem
-                        (VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem)
-                        system.Machine
+                Machine = machine
             }
         )
 
@@ -1241,10 +1323,10 @@ module UnixPathResolution =
         // CALLS) a final link is the link itself, dangling or looping or not,
         // and "ld/" is still the directory and "lf/" ENOTDIR, as
         // `NoFollowFinal` answers.
-        match resolvePath directory policy path system with
+        match resolvePathReached directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
-        | Ok inode ->
+        | Ok (inode, through) ->
 
         match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
         | None ->
@@ -1265,8 +1347,8 @@ module UnixPathResolution =
             | InodeContent.CharacterDevice _ -> true
 
         if changeable then
-            changeModeOf inode mode system
-            |> Result.mapError ChModRefusal.UnmeasuredModeChange
+            changeModeOf through inode mode system
+            |> Result.mapError (attributeChangeRefusal ChModRefusal.UnmeasuredModeChange ChModRefusal.UnplacedChange)
         else
             Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
 
@@ -1331,8 +1413,8 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeModeOf inode mode system
-            |> Result.mapError FChModRefusal.UnmeasuredModeChange
+            changeModeOf ReachedThrough.Descriptor inode mode system
+            |> Result.mapError (attributeChangeRefusal FChModRefusal.UnmeasuredModeChange FChModRefusal.UnplacedChange)
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
         | Some (OpenFileObject.Kqueue _) -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
@@ -1405,13 +1487,15 @@ module UnixPathResolution =
     /// What `chown`, `lchown` and `fchown` do once they have reached `inode`,
     /// which is an inode of any kind this filesystem holds: EPERM changing
     /// nothing, success changing nothing, or the new owner and bits with
-    /// `ctime` moved.
+    /// `ctime` moved. The caller reached `inode` `through` a path or a
+    /// descriptor.
     let private changeOwnerOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (inode : InodeNumber)
         (user : UserId option)
         (group : GroupId option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InodeNumber * OwnerChangeRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, AttributeChangeRefusal<OwnerChangeRefusal>>
         =
         let entry =
             match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
@@ -1440,7 +1524,7 @@ module UnixPathResolution =
                 target
                 bits
         with
-        | Error refusal -> Error (inode, refusal)
+        | Error refusal -> Error (AttributeChangeRefusal.Unmeasured (inode, refusal))
         | Ok OwnerChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
         | Ok OwnerChange.Untouched -> Ok (SyscallAnswer.Completed 0L, system)
         | Ok (OwnerChange.Changed changed) ->
@@ -1453,20 +1537,34 @@ module UnixPathResolution =
                 Group = defaultArg group entry.Owner.Group
             }
 
-        let machine =
-            UnixMachineState.commitFileSystem
-                (VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem)
-                system.Machine
+        let mutation = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
 
         // Measured on Darwin (`chmod-chown-at.c`, LINKSETID): a link's set-ID
-        // bits go exactly as a regular file's do.
-        let machine =
+        // bits go exactly as a regular file's do. One mutation with the owner's,
+        // because a watcher hears of the two as one event (measured,
+        // `inotify-delivery-probe.c` row Z chown-at-one-short).
+        let mutation =
             if changed = bits then
-                machine
+                mutation
             else
-                UnixMachineState.commitFileSystem
-                    (VirtualFileSystem.setPermissions inode changed now machine.FileSystem)
-                    machine
+                VfsMutation.andThen
+                    (VirtualFileSystem.setPermissions inode changed now (VfsMutation.after mutation))
+                    mutation
+
+        // Measured (`inotify-delivery-probe.c` section C): naming neither ID
+        // moves `ctime` and raises no event, and naming either, even the one
+        // the inode has, raises `IN_ATTRIB`.
+        let set =
+            { AttributesSet.none with
+                Owner = user.IsSome || group.IsSome
+                Mode = changed <> bits
+            }
+
+        match
+            UnixMachineState.tryCommitFileSystem (ChangeNotice.SetAttributes (through, set)) mutation system.Machine
+        with
+        | Error refusal -> Error (AttributeChangeRefusal.UnplacedChange refusal)
+        | Ok machine ->
 
         Ok (
             SyscallAnswer.Completed 0L,
@@ -1499,12 +1597,12 @@ module UnixPathResolution =
         // remaining path rows answer as `chown`'s do. `chmod-chown-at.c`
         // (LCHOWN): `fchownat` with AT_SYMLINK_NOFOLLOW answers every one of
         // those as `lchown` does.
-        match resolvePath directory policy path system with
+        match resolvePathReached directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
-        | Ok inode ->
-            changeOwnerOf inode user group system
-            |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
+        | Ok (inode, through) ->
+            changeOwnerOf through inode user group system
+            |> Result.mapError (attributeChangeRefusal ChOwnRefusal.UnmeasuredOwnerChange ChOwnRefusal.UnplacedChange)
 
     /// `chown`, with a refusal answered as the `Error` rather than raised.
     let internal tryChown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1600,8 +1698,8 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
-            changeOwnerOf inode user group system
-            |> Result.mapError FChOwnRefusal.UnmeasuredOwnerChange
+            changeOwnerOf ReachedThrough.Descriptor inode user group system
+            |> Result.mapError (attributeChangeRefusal FChOwnRefusal.UnmeasuredOwnerChange FChOwnRefusal.UnplacedChange)
         // An epoll instance (Linux) and a kqueue (Darwin).
         | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
         | Some (OpenFileObject.Kqueue _) -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
@@ -1716,8 +1814,13 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             tryFchmod fd mode system |> Result.mapError FChModAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            changeModeOf system.Process.CurrentDirectoryInode mode system
-            |> Result.mapError (ChModRefusal.UnmeasuredModeChange >> FChModAtRefusal.ChMod)
+            let cwd, through = currentDirectoryReached system
+
+            changeModeOf through cwd mode system
+            |> Result.mapError (
+                attributeChangeRefusal ChModRefusal.UnmeasuredModeChange ChModRefusal.UnplacedChange
+                >> FChModAtRefusal.ChMod
+            )
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
             chmodParsed directory arguments.FinalSymlink path mode system
@@ -1796,8 +1899,13 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             tryFchown fd user group system |> Result.mapError FChOwnAtRefusal.Descriptor
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            changeOwnerOf system.Process.CurrentDirectoryInode user group system
-            |> Result.mapError (ChOwnRefusal.UnmeasuredOwnerChange >> FChOwnAtRefusal.ChOwn)
+            let cwd, through = currentDirectoryReached system
+
+            changeOwnerOf through cwd user group system
+            |> Result.mapError (
+                attributeChangeRefusal ChOwnRefusal.UnmeasuredOwnerChange ChOwnRefusal.UnplacedChange
+                >> FChOwnAtRefusal.ChOwn
+            )
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
             chownParsed directory arguments.FinalSymlink path user group system
@@ -1838,6 +1946,7 @@ module UnixPathResolution =
     /// sets: Linux's EINVAL for a nanosecond field it does not accept, then
     /// the permission check, then the change.
     let private setTimesOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (through : ReachedThrough)
         (object : OpenFileObject)
         (access : TimestampRequest)
         (modification : TimestampRequest)
@@ -1911,13 +2020,25 @@ module UnixPathResolution =
             let times =
                 TimestampChangeRules.changed flavour range now asNow access modification entry.Times
 
+            let set =
+                { AttributesSet.none with
+                    AccessTime = access <> TimestampRequest.Omit
+                    ModificationTime = modification <> TimestampRequest.Omit
+                }
+
+            match
+                UnixMachineState.tryCommitFileSystem
+                    (ChangeNotice.SetAttributes (through, set))
+                    (VirtualFileSystem.setTimes inode times system.Machine.FileSystem)
+                    system.Machine
+            with
+            | Error refusal -> Error (UTimensAtRefusal.UnplacedChange refusal)
+            | Ok machine ->
+
             Ok (
                 SyscallAnswer.Completed 0L,
                 { system with
-                    Machine =
-                        UnixMachineState.commitFileSystem
-                            (VirtualFileSystem.setTimes inode times system.Machine.FileSystem)
-                            system.Machine
+                    Machine = machine
                 }
             )
         | OpenFileObject.Socket socket -> Error (UTimensAtRefusal.Socket socket)
@@ -2034,7 +2155,7 @@ module UnixPathResolution =
         =
         match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
-        | Some object -> setTimesOf object access modification system
+        | Some object -> setTimesOf ReachedThrough.Descriptor object access modification system
 
     /// `utimensat` once the times are read: screen the flag word, copy the
     /// path in (the null pointer is EFAULT here), and set the times of what
@@ -2073,7 +2194,8 @@ module UnixPathResolution =
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
             setDescriptorTimes fd access modification system
         | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
-            setTimesOf (OpenFileObject.File system.Process.CurrentDirectoryInode) access modification system
+            let cwd, through = currentDirectoryReached system
+            setTimesOf through (OpenFileObject.File cwd) access modification system
         | EmptyPathMeaning.NamesStartingPoint, _
         | EmptyPathMeaning.Walked, _ ->
 
@@ -2081,10 +2203,10 @@ module UnixPathResolution =
         // ENOTDIR and "ld/" the directory with or without
         // AT_SYMLINK_NOFOLLOW, and a dangling link is ENOENT unless it is not
         // followed, as `resolvePath` answers.
-        match resolvePath directory arguments.FinalSymlink path system with
+        match resolvePathReached directory arguments.FinalSymlink path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (UTimensAtRefusal.Path refusal)
-        | Ok inode -> setTimesOf (OpenFileObject.File inode) access modification system
+        | Ok (inode, through) -> setTimesOf through (OpenFileObject.File inode) access modification system
 
     /// `utimensat`, with a refusal answered as the `Error` rather than raised.
     let internal tryUtimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

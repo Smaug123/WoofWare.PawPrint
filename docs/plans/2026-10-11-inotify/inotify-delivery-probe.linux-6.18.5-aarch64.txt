@@ -1,0 +1,65 @@
+6.18.5 aarch64
+V	all-both	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+V	all-null	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+V	all-atime-only	wd=1 mask=ACCESS cookie=0 len=16 name="f"
+V	all-mtime-only	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+V	all-atime-now-only	wd=1 mask=ACCESS cookie=0 len=16 name="f"
+V	all-mtime-now-only	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+V	all-neither	(none)
+V	all-watched-dir	wd=1 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+V	dotnet-both	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+V	dotnet-null	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+V	dotnet-atime-only	(none)
+V	dotnet-mtime-only	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+V	dotnet-atime-now-only	(none)
+V	dotnet-mtime-now-only	wd=1 mask=MODIFY cookie=0 len=16 name="f"
+V	dotnet-neither	(none)
+V	dotnet-watched-dir	wd=1 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+Z	truncate	mode 6755 -> 755: wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	truncate-at-one-short	records=16384 overflows=0 (filled 16383)
+Z	open-trunc	mode 6755 -> 755: wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	open-trunc-at-one-short	records=16384 overflows=0 (filled 16383)
+Z	write	mode 6755 -> 755: wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=MODIFY cookie=0 len=16 name="f"
+Z	write-at-one-short	records=16385 overflows=1 (filled 16383)
+Z	truncate-dotnet	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	open-trunc-modify-watch	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	open-trunc-attrib-watch	wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f" | wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=1 mask=MODIFY+ATTRIB cookie=0 len=16 name="f"
+Z	write-unlinked-excl-unlink	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+Z	chown	mode 6755 -> 755: wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+Z	chown-at-one-short	records=16384 overflows=0 (filled 16383)
+Y	wds	parent=1 f=2 d=3
+Y	chmod-file	wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+Y	chmod-dir	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d" | wd=3 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+Y	truncate-file	wd=1 mask=MODIFY cookie=0 len=16 name="f" | wd=2 mask=MODIFY cookie=0 len=0 name=""
+Y	open-trunc-file	wd=1 mask=MODIFY cookie=0 len=16 name="f" | wd=2 mask=MODIFY cookie=0 len=0 name=""
+Y	utimensat-file	wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+Y	two-instances-first	wd=1 mask=ATTRIB cookie=0 len=16 name="f" | wd=2 mask=ATTRIB cookie=0 len=0 name=""
+Y	two-instances-second	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+X	wds	parent=1 f=2
+X	link	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=CREATE cookie=0 len=16 name="g"
+X	unlink-other-name	wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=1 mask=DELETE cookie=0 len=16 name="g"
+X	mkdir-in-watched-dir	wd=3: wd=3 mask=CREATE+ISDIR cookie=0 len=16 name="sub"
+X	rmdir-in-watched-dir	wd=3 mask=DELETE+ISDIR cookie=0 len=16 name="sub"
+R	wds	parent=1 b=2 td=3
+R	over-watched-file	wd=1 mask=MOVED_FROM cookie=k1 len=16 name="a" | wd=1 mask=MOVED_TO cookie=k1 len=16 name="b" | wd=2 mask=ATTRIB cookie=0 len=0 name="" | wd=2 mask=DELETE_SELF cookie=0 len=0 name="" | wd=2 mask=IGNORED cookie=0 len=0 name=""
+R	over-watched-empty-dir	wd=1 mask=MOVED_FROM+ISDIR cookie=k2 len=16 name="sd" | wd=1 mask=MOVED_TO+ISDIR cookie=k2 len=16 name="td" | wd=3 mask=ATTRIB+ISDIR cookie=0 len=0 name="" | wd=3 mask=DELETE_SELF cookie=0 len=0 name="" | wd=3 mask=IGNORED cookie=0 len=0 name=""
+R	over-watched-open-file	wd=4: wd=1 mask=MOVED_FROM cookie=k3 len=16 name="c" | wd=1 mask=MOVED_TO cookie=k3 len=16 name="e" | wd=4 mask=ATTRIB cookie=0 len=0 name=""
+R	close-displaced	wd=4 mask=DELETE_SELF cookie=0 len=0 name="" | wd=4 mask=IGNORED cookie=0 len=0 name=""
+P	wds	p=1 d=2
+P	chmod-through-symlink	wd=2 mask=ATTRIB cookie=0 len=16 name="f"
+P	chmod-dot	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d" | wd=2 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+P	chmod-dotdot	wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="d" | wd=2 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+P	chmod-trailing-slash	wd=2 mask=ATTRIB+ISDIR cookie=0 len=16 name="e"
+P	chmod-mount-point	root=1 dev=2: wd=2 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+P	rmdir-of-current	p=1 gone=2: wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="gone"
+P	chmod-removed-current	chmod=0: wd=1 mask=ATTRIB+ISDIR cookie=0 len=16 name="gone" | wd=2 mask=ATTRIB+ISDIR cookie=0 len=0 name=""
+T	creat-trunc-new	wd=1 mask=CREATE cookie=0 len=16 name="new"
+T	creat-existing	(none)
+T	creat-trunc-existing	wd=1 mask=MODIFY cookie=0 len=16 name="existing"
+T	trunc-empty	wd=1 mask=MODIFY cookie=0 len=16 name="empty"
+T	rdonly-trunc	open=1: wd=1 mask=MODIFY cookie=0 len=16 name="existing"
+C	chown-neither	(none)
+C	chown-same	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+C	chown-same-user-only	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+C	chmod-same	wd=1 mask=ATTRIB cookie=0 len=16 name="f"
+M	child-changes	wd=1 mask=CREATE cookie=0 len=16 name="x" | wd=1 mask=MODIFY cookie=0 len=16 name="x" | wd=1 mask=CREATE+ISDIR cookie=0 len=16 name="d" | wd=1 mask=MOVED_FROM cookie=k4 len=16 name="x" | wd=1 mask=MOVED_TO cookie=k4 len=16 name="y" | wd=1 mask=ATTRIB cookie=0 len=16 name="y" | wd=1 mask=DELETE cookie=0 len=16 name="y" | wd=1 mask=DELETE+ISDIR cookie=0 len=16 name="d"

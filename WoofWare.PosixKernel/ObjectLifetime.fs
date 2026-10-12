@@ -164,6 +164,7 @@ module ObjectLifetime =
             { system with
                 Machine =
                     UnixMachineState.commitFileSystem
+                        ChangeNotice.Names
                         (VirtualFileSystem.forget inode system.Machine.FileSystem)
                         system.Machine
             }

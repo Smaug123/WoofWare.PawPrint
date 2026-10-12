@@ -1075,7 +1075,7 @@ module UnixNamespace =
                     $"UnixNamespace.openPath: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
             | Ok (inode, mutation) ->
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
                 }
                 // A file this open created is not one it truncated, whatever
                 // `O_TRUNC` asked: measured on Darwin (`fcntl-dup.c`, WRITTEN
@@ -1183,12 +1183,17 @@ module UnixNamespace =
         let truncated =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
-                match UnixDescriptor.truncateAt inode 0L system with
+                let through = ReachedThrough.ofResolved resolution.Target system.Machine.FileSystem
+
+                match UnixDescriptor.truncateAt through inode 0L system with
                 | Ok system -> Ok (true, system)
                 | Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal)) ->
                     Error (OpenRefusal.UnmeasuredSetIdChange (inode, refusal))
-                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal) ->
-                    // Truncating to zero cannot exceed a length limit.
+                // Truncating to zero cannot exceed a length limit, and a
+                // truncation through a path reaches the file by a name this
+                // kernel keeps.
+                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal)
+                | Error (TruncationRefusal.UnplacedChange _ as refusal) ->
                     failwith
                         $"UnixNamespace.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
             | InodeContent.RegularFile _
@@ -1780,7 +1785,7 @@ module UnixNamespace =
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
             }
         )
 
@@ -1943,7 +1948,7 @@ module UnixNamespace =
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
             }
         )
 
@@ -2091,7 +2096,7 @@ module UnixNamespace =
             ObjectLifetime.forgetIfUnheld
                 target
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
                 }
         )
 
@@ -2196,7 +2201,7 @@ module UnixNamespace =
             ObjectLifetime.forgetIfUnheld
                 target
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
                 }
         )
 
@@ -2607,7 +2612,7 @@ module UnixNamespace =
         // the current directory itself.
         let moved =
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
             }
 
         // The destination name may have been the displaced inode's last, and
@@ -2969,7 +2974,7 @@ module UnixNamespace =
             Ok (
                 SyscallAnswer.Completed 0L,
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
                 }
             )
 
@@ -3152,7 +3157,7 @@ module UnixNamespace =
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
             }
         )
 
@@ -3456,7 +3461,7 @@ module UnixNamespace =
         Ok (
             SyscallAnswer.Completed 0L,
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = UnixMachineState.commitFileSystem ChangeNotice.Names mutation system.Machine
             }
         )
 

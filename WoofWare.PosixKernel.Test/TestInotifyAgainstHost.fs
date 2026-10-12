@@ -17,8 +17,8 @@ open WoofWare.PosixKernel
 /// temporary directory and over the model holding the same files, must answer
 /// alike, and the bytes each read returns must be equal.
 ///
-/// Nothing in a sequence changes the filesystem: this kernel reports no change
-/// to a watch yet, so the only records are the `IN_IGNORED` of a removed watch.
+/// Nothing in a sequence changes the filesystem, so the only records are the
+/// `IN_IGNORED` of a removed watch.
 /// It also holds `dup`, `lseek` and `write` through an instance to the host.
 /// Linux only: CI's x86-64 is what checks the record layout on the other
 /// architecture the library models. Elsewhere the tests are ignored.

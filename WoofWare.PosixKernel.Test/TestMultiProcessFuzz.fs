@@ -85,6 +85,26 @@ module TestMultiProcessFuzz =
         | Kqueue
         | KeventAdd of kqueue : int * fd : int * write : bool
         | KeventWait of kqueue : int * timeout : int
+        | InotifyInit of nonBlocking : bool
+        /// `inotify_add_watch` of `standing.[dir]` on an instance, asking for
+        /// every event this kernel raises.
+        | InotifyWatch of inotify : int * dir : int
+        | InotifyRmWatch of inotify : int * wd : int
+        | InotifyRead of inotify : int
+        /// A blocking `inotify_init1`, a watch of `standing.[dir]` on it as
+        /// `InotifyWatch` asks, and a read of it, which sleeps, since a new
+        /// instance holds nothing: an instance `InotifyRead`'s index seldom
+        /// picks out with nothing queued and a blocking description.
+        | InotifyAwait of dir : int
+        /// An `InotifyWatch` on the newest instance the process holds, which
+        /// `InotifyWatch`'s index seldom picks out.
+        | InotifyWatchNewest of dir : int
+        /// An `InotifyRead` of the newest instance the process holds.
+        | InotifyReadNewest
+        /// `chmod` of `files.[path]` or of `dirs.[path]`.
+        | Chmod of path : int * directory : bool
+        /// `unlink` of `files.[path]`.
+        | Unlink of path : int
         /// A `poll` of `fds` for IN, and for OUT too unless `readOnly`.
         | Poll of fds : int list * timeout : int * readOnly : bool
         /// `poll` for readability on the process's listener at
@@ -193,6 +213,16 @@ module TestMultiProcessFuzz =
             4, Gen.map2 (fun e t -> Op.EpollWait (e, t)) small timeout
         ]
 
+    let private inotifyOps : (int * Gen<Op>) list =
+        [
+            1, Gen.map Op.InotifyInit (Gen.elements [ true ; false ])
+            2, Gen.map2 (fun i d -> Op.InotifyWatch (i, d)) small small
+            1, Gen.map2 (fun i w -> Op.InotifyRmWatch (i, w)) small small
+            2, Gen.map Op.InotifyRead small
+            2, Gen.map2 (fun p d -> Op.Chmod (p, d)) small (Gen.elements [ true ; false ])
+            1, Gen.map Op.Unlink small
+        ]
+
     let private kqueueOps : (int * Gen<Op>) list =
         [
             2, Gen.constant Op.Kqueue
@@ -224,7 +254,11 @@ module TestMultiProcessFuzz =
 
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            Gen.frequency (common (sockets @ transferOps @ fileOps @ epollOps) @ exit @ signals)
+            Gen.frequency (
+                common (sockets @ transferOps @ fileOps @ epollOps @ inotifyOps)
+                @ exit
+                @ signals
+            )
         | SimulatedUnixFlavour.Darwin ->
             Gen.frequency (common (sockets @ transferOps @ fileOps @ kqueueOps) @ exit @ signals)
 
@@ -286,6 +320,41 @@ module TestMultiProcessFuzz =
                                 byFirst (Op.ChDir (1 + dir % dirs.Length))
                                 bySecond (Op.RmDir dir)
                             ]
+                        // The first watches the root with a new non-blocking
+                        // instance; the second makes a directory or a file
+                        // there and changes its mode; the first reads what
+                        // that queued.
+                        2,
+                        Gen.constant (
+                            match SimulatedUnixPlatform.flavour platform with
+                            | SimulatedUnixFlavour.Darwin -> []
+                            | SimulatedUnixFlavour.Linux ->
+                                [
+                                    byFirst (Op.InotifyInit true)
+                                    byFirst (Op.InotifyWatchNewest 0)
+                                    (if dir % 2 = 0 then
+                                         bySecond (Op.MkDir dir)
+                                     else
+                                         bySecond (Op.Open dir))
+                                    bySecond (Op.Chmod (dir, dir % 2 = 0))
+                                    byFirst Op.InotifyReadNewest
+                                ]
+                        )
+                        // The first sleeps reading an inotify instance watching
+                        // the root; the second makes a directory there, if
+                        // there is none, and changes its mode, or makes a file
+                        // there and removes it. Darwin has no inotify.
+                        2,
+                        Gen.constant (
+                            match SimulatedUnixPlatform.flavour platform with
+                            | SimulatedUnixFlavour.Darwin -> []
+                            | SimulatedUnixFlavour.Linux ->
+                                byFirst (Op.InotifyAwait 0)
+                                :: (if dir % 2 = 0 then
+                                        [ bySecond (Op.MkDir dir) ; bySecond (Op.Chmod (dir, true)) ]
+                                    else
+                                        [ bySecond (Op.Open dir) ; bySecond (Op.Unlink dir) ])
+                        )
                         // The first sleeps on its event queue, which a prepared
                         // process has watching its listener at `ports.[first]`;
                         // the second connects to that port. Only a prepared case
@@ -503,6 +572,12 @@ module TestMultiProcessFuzz =
         /// A `QueuedClientReset` that made a read asleep in the client's
         /// process wakeable.
         | QueuedClientResetWakesRead
+        /// A read of an inotify instance that returned records.
+        | InotifyRecordRead
+        /// A read of an inotify instance that slept.
+        | InotifyReadPark
+        /// A read of an inotify instance, woken, that returned records.
+        | InotifyReadFinish
         /// A step refused, which tested nothing.
         | Refusal
         | Call
@@ -550,6 +625,30 @@ module TestMultiProcessFuzz =
         match target with
         | OpenFileTarget.Kqueue _ -> true
         | _ -> false
+
+    let private isInotify (target : OpenFileTarget) : bool =
+        match target with
+        | OpenFileTarget.Inotify _ -> true
+        | _ -> false
+
+    /// Every event this kernel raises.
+    let private inotifyEvents : uint32 = 0xFC6u
+
+    /// The descriptor of `view` naming the inotify instance made last, by the
+    /// order of description IDs, if it holds one.
+    let private newestInotify (view : UnixSystem<int, string>) : int option =
+        let registry = UnixSystemState.fileDescriptors view
+
+        FileDescriptorRegistry.fds registry
+        |> Map.toList
+        |> List.filter (fun (fd, _) ->
+            match FileDescriptorRegistry.tryFindTarget fd registry with
+            | Some target -> isInotify target
+            | None -> false
+        )
+        |> List.sortBy snd
+        |> List.tryLast
+        |> Option.map fst
 
     /// The descriptors of `view` naming a socket `accept` admits: each call
     /// draws from the sockets it can do something with, so few steps are
@@ -824,6 +923,21 @@ module TestMultiProcessFuzz =
                 Made.Sleeps after
             | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
             | Error refusal -> failwith $"a write to a connected socket was refused: %s{WriteRefusal.describe refusal}"
+
+        // A read of the inotify instance `fd` names, if there is one.
+        let inotifyRead (fd : int option) : Made =
+            match fd with
+            | None -> Made.Answered view
+            | Some fd ->
+                match UnixReadWrite.tryRead task fd UserBuffer.Mapped 4096UL view with
+                | Ok (ReadOutcome.WouldBlock _, after) ->
+                    cover FuzzLabel.InotifyReadPark
+                    Made.Sleeps after
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), after) ->
+                    cover FuzzLabel.InotifyRecordRead
+                    Made.Answered after
+                | Ok (_, after) -> Made.Answered after
+                | Error _ -> Made.Refused
 
         // `task` returns to user mode from a call that left the process as
         // `after`. The only signals sent are `fatal`'s, at their defaults, and
@@ -1182,6 +1296,59 @@ module TestMultiProcessFuzz =
                 | other -> failwith $"pthread_kill of a blocked %O{signal} answered %A{other}"
             | made -> made
         | Op.Unblock signal -> mask SignalMaskChange.Unblock fatal.[signal % fatal.Length] view
+        | Op.InotifyInit nonBlocking ->
+            match UnixInotify.tryInotifyInit1 (if nonBlocking then 0x800 else 0) view with
+            | Ok (Ok (_, after)) -> Made.Answered after
+            | Ok (Error _) -> Made.Answered view
+            | Error _ -> Made.Refused
+        | Op.InotifyWatch (inotify, dir) ->
+            match pick inotify (ofKind isInotify view) with
+            | None -> Made.Answered view
+            | Some fd ->
+                UnixInotify.tryInotifyAddWatch fd (PathArg.ofText standing.[dir % standing.Length]) inotifyEvents view
+                |> answered
+        | Op.InotifyRmWatch (inotify, wd) ->
+            match pick inotify (ofKind isInotify view) with
+            | None -> Made.Answered view
+            | Some fd -> UnixInotify.tryInotifyRmWatch fd (1 + wd % 4) view |> answered
+        | Op.InotifyRead inotify -> inotifyRead (pick inotify (ofKind isInotify view))
+        | Op.InotifyReadNewest -> inotifyRead (newestInotify view)
+        | Op.InotifyWatchNewest dir ->
+            match newestInotify view with
+            | None -> Made.Answered view
+            | Some fd ->
+                UnixInotify.tryInotifyAddWatch fd (PathArg.ofText standing.[dir % standing.Length]) inotifyEvents view
+                |> answered
+        | Op.InotifyAwait dir ->
+            match UnixInotify.tryInotifyInit1 0 view with
+            | Error _ -> Made.Refused
+            | Ok (Error _) -> Made.Answered view
+            | Ok (Ok (fd, view)) ->
+
+            match
+                UnixInotify.tryInotifyAddWatch fd (PathArg.ofText standing.[dir % standing.Length]) inotifyEvents view
+            with
+            | Error _ -> Made.Refused
+            | Ok (_, view) ->
+
+            match UnixReadWrite.tryRead task fd UserBuffer.Mapped 4096UL view with
+            | Ok (ReadOutcome.WouldBlock _, after) ->
+                cover FuzzLabel.InotifyReadPark
+                Made.Sleeps after
+            | Ok (outcome, _) -> failwith $"a read of a new blocking instance answered %A{outcome}"
+            | Error _ -> Made.Refused
+        | Op.Chmod (path, directory) ->
+            let path =
+                if directory then
+                    dirs.[path % dirs.Length]
+                else
+                    files.[path % files.Length]
+
+            UnixPathResolution.tryChmod (PathArg.ofText path) (if directory then 0o755 else 0o644) view
+            |> answered
+        | Op.Unlink path ->
+            UnixNamespace.tryUnlink (PathArg.ofText files.[path % files.Length]) view
+            |> answered
         | Op.Exit status -> Made.Ended (UnixTaskLifecycle.exitGroup task status view)
 
     /// The call `task` of the view `view` is asleep in, finished.
@@ -1213,10 +1380,17 @@ module TestMultiProcessFuzz =
             | Ok (SyscallOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
-        | Some (ParkedSyscall.PipeRead _)
+        | Some (ParkedSyscall.PipeRead _) ->
+            match UnixReadWrite.tryFinishRead task view with
+            | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
+            | Ok (_, after) -> Made.Answered after
+            | Error _ -> Made.Refused
         | Some (ParkedSyscall.InotifyRead _) ->
             match UnixReadWrite.tryFinishRead task view with
             | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), after) ->
+                cover FuzzLabel.InotifyReadFinish
+                Made.Answered after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
         | Some (ParkedSyscall.ConnectionRead _) ->
@@ -1862,6 +2036,9 @@ module TestMultiProcessFuzz =
         coverage.Count FuzzLabel.QueuedClientReset |> shouldBeGreaterThan 145
         coverage.Count FuzzLabel.CrossQueuedClientReset |> shouldBeGreaterThan 136
         coverage.Count FuzzLabel.QueuedClientResetWakesRead |> shouldBeGreaterThan 80
+        coverage.Count FuzzLabel.InotifyRecordRead |> shouldBeGreaterThan 80
+        coverage.Count FuzzLabel.InotifyReadPark |> shouldBeGreaterThan 90
+        coverage.Count FuzzLabel.InotifyReadFinish |> shouldBeGreaterThan 63
 
         let crossWakes (kind : string) : int =
             coverage.Count (FuzzLabel.CrossWakeKind kind)
@@ -1874,6 +2051,7 @@ module TestMultiProcessFuzz =
         crossWakes "DescriptorReady" |> shouldBeGreaterThan 56
         crossWakes "ConnectionReadable" |> shouldBeGreaterThan 52
         crossWakes "ConnectionWritable" |> shouldBeGreaterThan 73
+        crossWakes "InotifyRecordQueued" |> shouldBeGreaterThan 64
         // Refusals are steps that tested nothing; they must stay rare in the
         // fixed sample.
         coverage.Count FuzzLabel.Refusal * 10

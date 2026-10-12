@@ -3910,7 +3910,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixDescriptor.truncateAt inode -1L system
+                UnixDescriptor.truncateAt ReachedThrough.Descriptor inode -1L system
                 |> ignore<Result<UnixSystem<int, string>, TruncationRefusal>>
             )
 

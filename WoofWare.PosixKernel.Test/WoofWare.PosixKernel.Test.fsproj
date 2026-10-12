@@ -219,10 +219,15 @@
     <Compile Include="TestEpollCtl.fs" />
     <Compile Include="TestEpollCreate1.fs" />
     <Compile Include="TestEpollWait.fs" />
+    <Compile Include="InotifyReplay.fs" />
     <Compile Include="TestInotifyQueue.fs" />
     <Compile Include="TestInotifyMeasured.fs" />
     <Compile Include="TestInotifyAgainstHost.fs" />
     <Compile Include="TestInotifyInvariants.fs" />
+    <Compile Include="TestInotifyDeliveryMeasured.fs" />
+    <Compile Include="TestInotifyDelivery.fs" />
+    <Compile Include="TestInotifyDeliveryAgainstHost.fs" />
+    <Compile Include="TestInotifyRefusals.fs" />
     <Compile Include="TestKqueue.fs" />
     <Compile Include="KeventWorld.fs" />
     <Compile Include="TestKeventMeasured.fs" />
@@ -284,6 +289,7 @@
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotify.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-instance-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyInstance.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-descriptor-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDescriptor.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-11-inotify\inotify-delivery-probe.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.inotifyDelivery.linux.txt" />
   </ItemGroup>
 
   <ItemGroup>

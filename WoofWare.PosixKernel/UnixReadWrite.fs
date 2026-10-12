@@ -277,6 +277,9 @@ type internal WriteRefusal =
     /// A write of `count` bytes to `/dev/urandom`, more than a page, by a task
     /// with a signal pending that it would take on its return to user mode.
     | SignalAtPageBoundary of count : int
+    /// An inotify watch could hear of the write, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal WriteRefusal =
@@ -321,6 +324,7 @@ module internal WriteRefusal =
             $"the descriptor is %s{BrokenWriteTarget.describe target}, so the write answers EPIPE and raises SIGPIPE; but which task would take that signal is not modelled: %s{SignalReceiverRefusal.describe refusal}"
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
         | WriteRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
+        | WriteRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : WriteRefusal) : RefusalKind =
@@ -338,6 +342,7 @@ module internal WriteRefusal =
         | WriteRefusal.SignalReceiver (_, inner) -> SignalReceiverRefusal.kind inner
         | WriteRefusal.InitProcess _ -> RefusalKind.Unmodelled
         | WriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+        | WriteRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer a `recv(2)`.
 ///
@@ -514,6 +519,9 @@ type internal PWriteRefusal =
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
     /// As `WriteRefusal.SignalAtPageBoundary`.
     | SignalAtPageBoundary of count : int
+    /// An inotify watch could hear of the write, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal PWriteRefusal =
@@ -530,6 +538,7 @@ module internal PWriteRefusal =
         | PWriteRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
         | PWriteRefusal.SignalAtPageBoundary count -> WriteRefusal.describeSignalAtPageBoundary count
+        | PWriteRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : PWriteRefusal) : RefusalKind =
@@ -538,6 +547,7 @@ module internal PWriteRefusal =
         | PWriteRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
         | PWriteRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
         | PWriteRefusal.SignalAtPageBoundary _ -> RefusalKind.Unmodelled
+        | PWriteRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// Why this kernel will not answer a `copy_file_range(2)`.
 [<RequireQualifiedAccess>]
@@ -553,6 +563,9 @@ type internal CopyFileRangeRefusal =
     /// What writing to the destination at `inode` would do to its set-ID bits
     /// has not been measured for this writer.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+    /// An inotify watch could hear of the copy, through a name this kernel
+    /// does not keep.
+    | UnplacedChange of UnplacedChangeRefusal
 
 [<RequireQualifiedAccess>]
 module internal CopyFileRangeRefusal =
@@ -568,6 +581,7 @@ module internal CopyFileRangeRefusal =
             WriteRefusal.describeExceedsRepresentableLength inode offset count
         | CopyFileRangeRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
+        | CopyFileRangeRefusal.UnplacedChange refusal -> UnplacedChangeRefusal.describe refusal
 
     /// Which exception a public entry point raises this refusal as.
     let kind (refusal : CopyFileRangeRefusal) : RefusalKind =
@@ -576,6 +590,7 @@ module internal CopyFileRangeRefusal =
         | CopyFileRangeRefusal.UnmeasuredFileSystem _ -> RefusalKind.Unmodelled
         | CopyFileRangeRefusal.ExceedsRepresentableLength _ -> RefusalKind.Unmodelled
         | CopyFileRangeRefusal.UnmeasuredSetIdChange (_, inner) -> SetIdChangeRefusal.kind inner
+        | CopyFileRangeRefusal.UnplacedChange inner -> UnplacedChangeRefusal.kind inner
 
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -3387,6 +3402,10 @@ module UnixReadWrite =
         // The commit comes first, so the advance cannot overflow: a write that
         // would carry the offset past what the model can represent has already
         // been refused there.
+        match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+        | Error refusal -> Error (WriteRefusal.UnplacedChange refusal)
+        | Ok machine ->
+
         returns
             (WriteAnswer.Completed (int64 bytes.Length))
             (UnixSystemState.withFileDescriptors
@@ -3395,7 +3414,7 @@ module UnixReadWrite =
                     (offset + int64 bytes.Length)
                     (UnixSystemState.fileDescriptors system))
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = machine
                 })
 
     /// `write`, with a refusal answered as the `Error` rather than raised.
@@ -4129,7 +4148,8 @@ module UnixReadWrite =
         | WriteRefusal.ExceedsRepresentableLength _
         | WriteRefusal.UnmeasuredSetIdChange _
         | WriteRefusal.Interruption _
-        | WriteRefusal.SignalAtPageBoundary _ ->
+        | WriteRefusal.SignalAtPageBoundary _
+        | WriteRefusal.UnplacedChange _ ->
             failwith
                 $"UnixReadWrite: a send to a connected socket was refused with %A{refusal}, which only a write to another object, or a woken write, gives (this is a bug in this library)."
 
@@ -4628,12 +4648,16 @@ module UnixReadWrite =
             Error (PWriteRefusal.UnmeasuredSetIdChange (inode, refusal))
         | Ok mutation ->
 
+        match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+        | Error refusal -> Error (PWriteRefusal.UnplacedChange refusal)
+        | Ok machine ->
+
         // The description is left exactly where it was — the whole of what
         // `pwrite` does differently from `write`, and measured on both flavours.
         Ok (
             WriteAnswer.Completed (int64 bytes.Length),
             { system with
-                Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                Machine = machine
             }
         )
 
@@ -4827,6 +4851,10 @@ module UnixReadWrite =
                 Error (CopyFileRangeRefusal.UnmeasuredSetIdChange (destinationInode, refusal))
             | Ok mutation ->
 
+            match UnixMachineState.tryCommitFileSystem ChangeNotice.Written mutation system.Machine with
+            | Error refusal -> Error (CopyFileRangeRefusal.UnplacedChange refusal)
+            | Ok machine ->
+
             let registry =
                 registry
                 |> FileDescriptorRegistry.setOffset inFd (sourceOffset + int64 count)
@@ -4835,7 +4863,7 @@ module UnixReadWrite =
             Ok (
                 SyscallAnswer.Completed (int64 count),
                 { system with
-                    Machine = UnixMachineState.commitFileSystem mutation system.Machine
+                    Machine = machine
                 }
                 |> UnixSystemState.withFileDescriptors registry
             )

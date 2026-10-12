@@ -281,6 +281,23 @@ module internal VfsMutation =
     /// What the mutator changed, in the order it changed it.
     let changes (mutation : VfsMutation) : FsChange list = mutation.Changes
 
+    /// `first` and then `second`, as one mutation: for a syscall that makes
+    /// two changes a watcher hears of as one, as `chown(2)` changes the owner
+    /// and then clears the set-ID bits. `second` must have been made from
+    /// `first`'s graph.
+    let andThen (second : VfsMutation) (first : VfsMutation) : VfsMutation =
+        // By reference, as `CommittedFileSystem.commit` compares: a mutation
+        // of any other graph would lose whatever `first` made.
+        if not (LanguagePrimitives.PhysicalEquality second.Before first.After) then
+            failwith
+                "VfsMutation.andThen: the second mutation was made from a graph other than the one the first left (this is a bug in this library)."
+
+        {
+            Before = first.Before
+            After = second.After
+            Changes = first.Changes @ second.Changes
+        }
+
 /// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
 [<RequireQualifiedAccess>]
 type internal MountFault =

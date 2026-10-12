@@ -94,9 +94,11 @@ module internal InotifyAddWatchRefusal =
 /// records from it (`UnixReadWrite.read`), `poll(2)` and epoll report it
 /// readable while it holds one, and `ioctl(FIONREAD)` reports their bytes.
 ///
-/// In this version no filesystem change is reported to a watch, so the only
-/// records an instance queues are the `IN_IGNORED` of a removed watch and an
-/// `IN_Q_OVERFLOW`.
+/// A change to the filesystem, by any process, queues records on the instances
+/// watching it; a watched inode's own deletion and rename are not reported.
+/// A change made through a descriptor, or through "." to a directory `rmdir`
+/// removed, throws `UnmodelledException` where a watch could hear of it:
+/// Linux reports it through a name this kernel does not keep.
 [<RequireQualifiedAccess>]
 module UnixInotify =
 
