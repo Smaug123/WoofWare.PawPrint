@@ -1,0 +1,24 @@
+#	Darwin 27.0.0 arm64
+S	closed-slot	RD	-1 EBADF
+S	closed-slot	WR	-1 EBADF
+S	closed-slot	RDWR	-1 EBADF
+S	closed-slot	how=3	-1 EBADF
+S	closed-slot	how=-1	-1 EBADF
+S	int-max	RD	-1 EBADF
+S	int-max	WR	-1 EBADF
+S	int-max	RDWR	-1 EBADF
+S	int-max	how=3	-1 EBADF
+S	int-max	how=-1	-1 EBADF
+A	start(soft=1048576)	dup2	-1 EBADF
+A	start(soft=1048576)	F_DUPFD	-1 EINVAL
+L	soft=hard	0
+A	hard(soft=9223372036854775807)	dup2	-1 EBADF
+A	hard(soft=9223372036854775807)	F_DUPFD	-1 EINVAL
+L	infinity	0
+A	highest(soft=9223372036854775807)	dup2	-1 EBADF
+A	highest(soft=9223372036854775807)	F_DUPFD	-1 EINVAL
+S	int-max-raised	RD	-1 EBADF
+S	int-max-raised	WR	-1 EBADF
+S	int-max-raised	RDWR	-1 EBADF
+S	int-max-raised	how=3	-1 EBADF
+S	int-max-raised	how=-1	-1 EBADF
