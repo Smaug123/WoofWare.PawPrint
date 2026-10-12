@@ -207,10 +207,67 @@ module TestInotifyDeliveryAgainstHost =
 
     /// Half the sequences open by watching every directory of the pool, on
     /// both instances, for every event, so that most changes reach a watch.
+    /// A file with two names, watched itself, opened through one or both or
+    /// one twice, then its names unlinked or renamed over in some order and
+    /// its descriptors closed; or a directory, watched, opened, removed and
+    /// closed: when each goes for inotify depends on what holds its names.
+    let private selfEpisodeGen : Gen<Op list> =
+        gen {
+            let path = Gen.choose (0, paths.Length - 1)
+            let! p = path
+            let! q = path
+            let! other = path
+            let! instance = Gen.choose (0, 1)
+            let! events = Gen.elements [ 0xC00u ; 0x400u ; 0x4u ; List.fold (|||) 0u eventBits ]
+
+            let! opens =
+                Gen.elements [ [] ; [ p ] ; [ q ] ; [ p ; q ] ; [ p ; p ] ; [ q ; p ; q ] ]
+                |> Gen.map (List.map (fun opened -> Op.Open (opened, false)))
+
+            let! removals =
+                Gen.elements
+                    [
+                        [ Op.Unlink p ; Op.Unlink q ]
+                        [ Op.Unlink q ; Op.Unlink p ]
+                        [ Op.Unlink p ; Op.Rename (other, q) ]
+                        [
+                            Op.Unlink q
+                            Op.Link (p, q)
+                            Op.Open (q, false)
+                            Op.Unlink p
+                            Op.Unlink q
+                        ]
+                    ]
+
+            let! closes = Gen.listOfLength 4 (Gen.map Op.Close (Gen.choose (0, 3)))
+            let! directory = Gen.frequency [ 3, Gen.constant false ; 1, Gen.constant true ]
+
+            if directory then
+                return
+                    [
+                        Op.MkDir p
+                        Op.AddWatch (instance, p, events)
+                        Op.Open (p, true)
+                        Op.RmDir p
+                        Op.Close 0
+                    ]
+            else
+                return
+                    [ Op.Create (p, false) ; Op.Link (p, q) ; Op.AddWatch (instance, p, events) ]
+                    @ opens
+                    @ removals
+                    @ closes
+        }
+
     let private caseGen : Gen<Op list> =
         gen {
             let! opening = Gen.elements [ true ; false ]
-            let! ops = Gen.listOf opGen |> Gen.resize 40
+
+            let! ops =
+                Gen.frequency [ 6, Gen.map List.singleton opGen ; 1, selfEpisodeGen ]
+                |> Gen.listOf
+                |> Gen.resize 40
+                |> Gen.map List.concat
 
             let watchAll =
                 [
