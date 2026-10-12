@@ -83,7 +83,7 @@ type OwnerChangeRule =
     ///
     /// What a privileged caller may do, and what a call clears where an
     /// ordinary user cannot set up the inode to ask, have not been measured;
-    /// `chown` refuses those rows (`OwnerChangeRefusal`).
+    /// `chown` refuses those rows.
     ///
     /// This is Darwin.
     | ClearsSetIdWhenAnIdIsNamed

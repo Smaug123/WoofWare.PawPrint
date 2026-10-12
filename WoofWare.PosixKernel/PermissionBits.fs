@@ -123,8 +123,8 @@ type SetGroupIdOnWrite =
     ///
     /// Only a writer who owns the file has been measured, and only a writer in the file's
     /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
-    /// on behalf of any other writer, privileged or not, the write is refused
-    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c>) rather than guessed at.
+    /// on behalf of any other writer, privileged or not, the write is refused rather than
+    /// guessed at.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -159,7 +159,7 @@ type SetIdBitsOnTruncation =
     /// Only a truncating process that owns the file has been measured, and only one in the
     /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
     /// file on behalf of any other process, privileged or not, the truncation is refused
-    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c>) rather than guessed at.
+    /// rather than guessed at.
     /// </remarks>
     /// <example>
     /// Darwin behaves this way.
@@ -240,8 +240,7 @@ type PrivilegedExecution =
     /// This is Linux.
     | NeedsAnExecuteBit
     /// What a privileged caller is granted has not been measured, so a call
-    /// that asks is refused (`ExecutionRefusal.UnmeasuredPrivilegedCaller`)
-    /// rather than guessed at.
+    /// that asks is refused rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
     | Unmeasured
@@ -279,8 +278,7 @@ type LinkReadRule =
     | ModeIgnored
     /// An unprivileged caller is refused unless the triple its standing
     /// selects has the read bit. What a privileged caller is granted has not
-    /// been measured, so a call that asks is refused
-    /// (`LinkReadRefusal.UnmeasuredPrivilegedCaller`) rather than guessed at.
+    /// been measured, so a call that asks is refused rather than guessed at.
     ///
     /// This is Darwin, where measuring the privileged caller needs root.
     | ReadBitOfSelectedTriple
@@ -320,8 +318,7 @@ type PrivilegedModeChange =
     /// This is Linux.
     | SetsRequestedBits
     /// What a privileged caller's mode change does has not been measured, so
-    /// the change is refused (`ModeChangeRefusal.UnmeasuredPrivilegedCaller`)
-    /// rather than guessed at.
+    /// the change is refused rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
     | Unmeasured

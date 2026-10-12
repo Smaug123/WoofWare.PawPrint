@@ -367,8 +367,8 @@ module SimulatedMachine =
     /// which started one past the first process's ID, and the leader's thread
     /// ID is the next from the 64-bit thread ID counter.
     ///
-    /// Refuses a launch `LaunchRefusal` describes, and a machine with no
-    /// process ID left to hand out.
+    /// Refuses a launch `UnixBootImage.boot` would refuse, and a machine with
+    /// no process ID left to hand out.
     /// </summary>
     /// <exception cref="T:System.ArgumentException">The path does not resolve in the seeded filesystem at all. Carries what the walk answered. The walk refused the path as too long. Distinguished from `DoesNotResolve` because the directory may well be present: it is a *length* that is unusable, and the remedy is to shorten something rather than to go looking for a missing directory.  Which length is deliberately not said, because the walk does not say: `ENAMETOOLONG` is one errno covering a component past this flavour's `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a symbolic link whose expansion would carry the whole path past `PATH_MAX`. A real kernel conflates them too. Splitting the case would need the path walk to report which limit it hit, which every other caller of the walk would pay for.  Carries the flavour so that a fault which outlives the call still says whose limits were in force -- 255 CJK characters name a directory a Darwin process can start in and a Linux one cannot, and only Darwin re-checks a splice at all. The path resolves, to something that is not a directory. The launch puts its leader on the logical processor `cpu`, and the machine has `processorCount`, numbered from 0, which do not include it. Contradictory: no kernel runs a task on a processor it does not have.</exception>
     /// <exception cref="T:System.InvalidOperationException">The launch was described for the platform `launch`, and the machine is `machine`: the description was checked against the wrong platform's rules.</exception>
@@ -692,8 +692,7 @@ module SimulatedMachine =
     /// the descriptor goes with it. The process ID, thread IDs and current
     /// directory are let go of with the tasks.
     ///
-    /// Refuses (`ProcessEndRefusal`) where a close would be refused. The
-    /// machine is then as it was.
+    /// Refuses where a close would be refused.
     ///
     /// Fails loudly, as `unfocus` does, if the view the process ended in
     /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.

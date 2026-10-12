@@ -4,7 +4,7 @@ open System.Collections.Immutable
 
 /// A bit of `open(2)`'s flag word that the simulated flavour defines and this
 /// kernel does not model. `UnixNamespace.openPath` refuses a word holding any
-/// of them (`OpenRefusal.UnmodelledFlags`) rather than ignore what the caller
+/// of them rather than ignore what the caller
 /// asked for.
 [<RequireQualifiedAccess>]
 type UnmodelledOpenFlag =
@@ -1284,7 +1284,7 @@ module UnixNamespace =
     /// which differs between Linux's architectures as well as between
     /// flavours. A bit the flavour does not define is ignored, as both
     /// kernels ignore it. A bit it defines is either one this kernel models
-    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
+    /// or a refusal naming it, never silently
     /// dropped.
     ///
     /// The word is screened before the path is copied in, so its EINVAL comes
@@ -1305,7 +1305,7 @@ module UnixNamespace =
     /// exactly as the platform's own mask drops it.
     ///
     /// Refused, before anything is read or changed, for a flag word this kernel
-    /// does not model (see `OpenRefusal`), for an `O_TRUNC` open whose effect
+    /// does not model, for an `O_TRUNC` open whose effect
     /// on set-ID bits is unmeasured, and when no descriptor below the bound
     /// (`SimulatedUnixPlatform.descriptorBound`) is free: under Darwin ahead of
     /// every errno, and under Linux after the word's and the copy-in's (an
@@ -1539,7 +1539,7 @@ module UnixNamespace =
     /// (`SimulatedUnixPlatform.linkReadRule`): never on Linux, and on Darwin a
     /// caller whose standing selects a triple without the read bit gets
     /// EACCES, ahead of a size of zero and of the buffer. A privileged Darwin
-    /// caller is refused an answer (`ReadLinkRefusal.UnmeasuredLinkRead`).
+    /// caller is refused an answer.
     ///
     /// `path` is the argument's bytes, copied in after that screen and before
     /// anything else: EFAULT if they were unreadable, ENAMETOOLONG if they run
@@ -1811,7 +1811,7 @@ module UnixNamespace =
     /// directory's permissions actually are depends on the umask and, on one
     /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
     ///
-    /// Refuses only a path this kernel will not resolve (see `PathRefusal`):
+    /// Refuses only a path this kernel will not resolve:
     /// every other outcome is a success or an errno, the rules having been
     /// measured on both flavours.
     ///
@@ -2004,8 +2004,7 @@ module UnixNamespace =
     /// make a FIFO, a socket or a device node, none of which this library
     /// models, but answers Linux's EPERM to a caller without privilege who
     /// asks for a device. Refuses Darwin's FIFO, which is `mkfifo(2)`, and
-    /// Darwin's privileged caller before the path is read. See
-    /// `MkNodRefusal`.
+    /// Darwin's privileged caller before the path is read.
     let mknodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
@@ -2111,8 +2110,8 @@ module UnixNamespace =
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
-    /// resolve the path, and where the name is on the device filesystem; see
-    /// `RemovalRefusal`. A refusal changes nothing.
+    /// resolve the path, and where the name is on the device filesystem. A
+    /// refusal changes nothing.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -2216,8 +2215,8 @@ module UnixNamespace =
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
-    /// resolve the path, and where the name is on the device filesystem; see
-    /// `RemovalRefusal`. A refusal changes nothing.
+    /// resolve the path, and where the name is on the device filesystem. A
+    /// refusal changes nothing.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -2266,8 +2265,8 @@ module UnixNamespace =
     /// call's does, and nothing else about the call changes.
     ///
     /// Refuses a flag word carrying flags the flavour accepts and this library
-    /// does not model, and whatever `unlink` or `rmdir` refuses; see
-    /// `UnlinkAtRefusal`. A refusal changes nothing.
+    /// does not model, and whatever `unlink` or `rmdir` refuses. A refusal
+    /// changes nothing.
     let unlinkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
@@ -2629,8 +2628,8 @@ module UnixNamespace =
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
     /// resolve a path, where a path names a mount point in an unmeasured way,
-    /// and where the source is on the device filesystem; see `RenameRefusal`.
-    /// A refusal changes nothing.
+    /// and where the source is on the device filesystem. A refusal changes
+    /// nothing.
     let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : PathArgumentBytes)
         (paused : PausedRename<'Task, 'Handler>)
@@ -2663,7 +2662,7 @@ module UnixNamespace =
     /// `olddirfd` and `newdirfd` are raw, in this platform's own numbering.
     /// Each side's starting directory is looked up where that side's walk
     /// begins, and nothing else about the call changes: `rename` is this from
-    /// `AT_FDCWD` on both sides. Refuses what `RenameRefusal` lists.
+    /// `AT_FDCWD` on both sides. Refuses what `rename` refuses.
     let renameat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (olddirfd : int)
         (oldpath : PathArgumentBytes)
@@ -3170,7 +3169,8 @@ module UnixNamespace =
     /// status-change times move.
     ///
     /// Refuses a pathname this kernel will not resolve, and a call that would
-    /// create a link with an empty target; see `SymlinkRefusal`.
+    /// create a link with an empty target, which this library does not
+    /// represent.
     let symlinkWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (paused : PausedSymlink<'Task, 'Handler>)
@@ -3500,12 +3500,15 @@ module UnixNamespace =
     /// in: Linux answers EINVAL for any flag beyond `AT_SYMLINK_FOLLOW` (0x400)
     /// and `AT_EMPTY_PATH` (0x1000), and Darwin for any beyond
     /// `AT_SYMLINK_FOLLOW` (0x40) and the three it accepts and this library
-    /// does not model, which are refused (`LinkRefusal`).
+    /// does not model, which are refused.
     /// The pathnames are the arguments' bytes, copied in source first: a client
     /// that has yet to read the second should call `linkatSourcePhase` and
     /// `linkWithDestination` instead.
     ///
-    /// Refuses what `LinkRefusal` lists.
+    /// Refuses a path this kernel will not resolve, Linux's `AT_EMPTY_PATH`
+    /// where its answer turns on the credentials the descriptor was opened
+    /// with, a nameless source, and a source on a filesystem whose rules for
+    /// `link(2)` have not been measured.
     let linkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (olddirfd : int)
         (oldpath : PathArgumentBytes)

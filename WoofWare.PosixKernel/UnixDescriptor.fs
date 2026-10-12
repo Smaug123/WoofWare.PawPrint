@@ -1022,8 +1022,9 @@ module UnixDescriptor =
     /// On a directory, the position is where the next read of its entries
     /// resumes, and offset 0 rewinds to the first of them.
     ///
-    /// Refuses the inputs whose answer this kernel cannot state; see
-    /// `LSeekRefusal`.
+    /// Refuses the inputs whose answer this kernel cannot state: `SEEK_DATA`
+    /// and `SEEK_HOLE`, `SEEK_END` on a directory whose size it cannot state,
+    /// and `SEEK_CUR` on a directory read part of the way through.
     let lseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
@@ -1439,7 +1440,8 @@ module UnixDescriptor =
     /// `fd`'s open file description.
     ///
     /// Models Linux's rules and refuses under Darwin rather than guessing, for
-    /// each of the divergences `FLockRefusal` names.
+    /// each measured divergence: a malformed operation, a pipe, a kqueue, a
+    /// socket, and an acquisition by a description that already holds a lock.
     ///
     /// A blocking acquisition that another description's lock stands in the way
     /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
@@ -2425,8 +2427,7 @@ module UnixDescriptor =
     /// close under a sleeping call is served, and the call sleeps on: the
     /// description goes when the call returns, which is when its finishing call
     /// releases it. That is refused for a connected socket whose `SO_LINGER`
-    /// is on (`CloseRefusal.LingeringCloseDeferredToCall`), whose close this
-    /// kernel may refuse when the call returns. Under Darwin a close of the
+    /// is on, whose close this kernel may refuse when the call returns. Under Darwin a close of the
     /// descriptor a `kevent` sleeps through is served too, and drains the
     /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
     /// the kqueue; the kqueue goes as the last of them returns, if no
@@ -2445,17 +2446,16 @@ module UnixDescriptor =
     /// (`SleepTarget.EndedByClose`): the description goes at the close if no
     /// descriptor names it, the pipe's timestamps move as the call's return
     /// moves them, an ended write's `SIGPIPE` is generated for the process
-    /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
+    /// (refused where that would end the process),
     /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
-    /// already woken is refused (`CloseRefusal.DarwinWokenTransfer`).
+    /// already woken is refused.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
     /// the process owns (`KqueueState.Owner`) and in the kqueue of every
     /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
     /// then reports nothing.
     ///
-    /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
-    /// to answer at all.
+    /// EBADF is its only errno.
     let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2711,7 +2711,7 @@ module UnixDescriptor =
     ///   and `O_DSYNC` too, and ignores every other bit the flavour does not
     ///   change, the access mode included; so a word `F_GETFL` reported may be
     ///   given back. A word that would set `O_APPEND` or `O_ASYNC`, or Linux's
-    ///   `O_DIRECT` or `O_NOATIME`, is refused (`FcntlRefusal.UnmodelledStatusFlags`).
+    ///   `O_DIRECT` or `O_NOATIME`, is refused.
     ///   On a Darwin kqueue the flags are stored and the call answers `ENOTTY`.
     /// - `F_GETFD` answers the descriptor's `FD_CLOEXEC` (1), and on Darwin its
     ///   `FD_CLOFORK` (2); `F_SETFD` sets them from those bits of `argument`
@@ -2722,10 +2722,8 @@ module UnixDescriptor =
     ///   `EINVAL`.
     ///
     /// An `F_DUPFD` whose descriptor would lie at or above the bound
-    /// (`SimulatedUnixPlatform.descriptorBound`) is refused
-    /// (`FcntlRefusal.DescriptorLimit`), after `EBADF` and a negative
-    /// argument's `EINVAL`. Every other command is refused
-    /// (`FcntlRefusal.UnmodelledCommand`).
+    /// (`SimulatedUnixPlatform.descriptorBound`) is refused, after `EBADF` and
+    /// a negative argument's `EINVAL`. Every other command is refused.
     let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (command : int)
@@ -2808,12 +2806,12 @@ module UnixDescriptor =
     /// changes nothing. `dup2(fd, fd)` of an open `fd` answers `fd` and changes
     /// nothing, its flags included. An open `newFd` is closed first as
     /// `close(2)` closes it, with everything that does to the description it
-    /// named and to calls asleep through it, and is refused where `close` is
-    /// (`Dup2Refusal.ClosingTarget`); so is one naming the same description as
+    /// named and to calls asleep through it, and is refused where `close` is;
+    /// so is one naming the same description as
     /// `oldFd`, whose flags the `dup2` then clears.
     ///
     /// A `newFd` at or above the bound (`SimulatedUnixPlatform.descriptorBound`)
-    /// is refused (`Dup2Refusal.DescriptorLimit`), after the `EBADF`s.
+    /// is refused, after the `EBADF`s.
     let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)

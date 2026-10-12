@@ -198,8 +198,8 @@ type GetCwdDestinationFault =
     /// executed in the caller's own context, so a destination it cannot write
     /// kills the process instead of producing an errno.
     ///
-    /// A kernel cannot answer this, and neither can this library: see
-    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
+    /// A kernel cannot answer this, and neither can this library, so
+    /// `UnixPathResolution.getcwd` refuses it.
     | FatalToTheProcess
 
 /// What a `getsockname(2)` that faults copying the address out has already put
@@ -532,8 +532,8 @@ module SimulatedUnixPlatform =
 
     /// The number every descriptor this kernel hands out lies below: the soft
     /// `RLIMIT_NOFILE` it assumes the process has at least. A call that would
-    /// put a descriptor at or above it is refused (`DescriptorLimitRefusal`),
-    /// since what it answers depends on a limit this kernel does not model.
+    /// put a descriptor at or above it is refused, since what it answers
+    /// depends on a limit this kernel does not model.
     ///
     /// It is the flavour's default soft limit at process start, so a process
     /// is below it only if its parent lowered the limit.
@@ -719,8 +719,8 @@ module SimulatedUnixPlatform =
     /// The only thing about a write's effect on the mode that the two Unixes
     /// disagree about: `S_ISUID` goes on both whatever the execute bits say, and
     /// the sticky bit is left alone by both. On Linux the answer also depends on
-    /// whether the writer is in the file's group, which is why the rule takes a
-    /// `Standing`. So this is a lone value rather than
+    /// whether the writer is in the file's group, which is why the rule takes
+    /// the writer's standing towards the file. So this is a lone value rather than
     /// a `CreatingOpenRules`-shaped record, for the reason
     /// `setIdBitsOnTruncation` above gives.
     ///

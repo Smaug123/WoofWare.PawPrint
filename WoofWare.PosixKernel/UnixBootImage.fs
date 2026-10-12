@@ -1189,8 +1189,8 @@ module UnixBootImage =
     /// measured default of this machine's flavour.
     ///
     /// Under Linux a value must be positive. Under Darwin it must be one whose
-    /// buffer a connection's handshake sizes once and for all (see
-    /// `TcpReceiveSpaceRefusal`).
+    /// buffer a connection's handshake sizes once and for all, since this
+    /// library does not model a receive buffer that grows as data arrives.
     /// </summary>
     /// <exception cref="T:System.ArgumentOutOfRangeException">The value is not positive, and Linux refuses such a `net.ipv4.tcp_rmem` default. Contradictory.</exception>
     let withTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

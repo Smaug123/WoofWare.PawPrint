@@ -251,8 +251,8 @@ module UnixPipe =
     /// descriptors out, answering EFAULT for an unmapped destination and
     /// leaving no pipe and no descriptor behind (measured: the next descriptor
     /// allocated is the one the pipe would have taken). Darwin's C library
-    /// stores them itself, so an unmapped destination there is refused (see
-    /// `Pipe2Refusal.FatalToTheProcess`).
+    /// stores them itself, so an unmapped destination there kills the process,
+    /// which this kernel cannot answer, and is refused.
     ///
     /// The read end takes the lowest descriptor not in use and the write end
     /// the next. Both are owned by

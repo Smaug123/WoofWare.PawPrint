@@ -1105,9 +1105,9 @@ module UnixSocket =
     /// The sockets created are stream and datagram sockets in `AF_INET` and
     /// `AF_INET6` (TCP and UDP), and in `AF_UNIX` stream and datagram sockets,
     /// and on Linux seqpacket ones. Linux makes an `AF_UNIX` `SOCK_RAW` request
-    /// a datagram socket. Anything else is the errno the flavour answers, or a
-    /// `SocketRefusal` where that answer depends on what this kernel does not
-    /// model. A failure changes nothing.
+    /// a datagram socket. Anything else is the errno the flavour answers, or is
+    /// refused where that answer depends on what this kernel does not model. A
+    /// failure changes nothing.
     let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (domain : int)
         (socketType : int)
@@ -2563,8 +2563,8 @@ module UnixSocket =
     ///   set answers EINVAL on both, after the copy.
     /// - `SO_LINGER` takes a `struct linger`. On Linux an `l_onoff` of zero
     ///   turns lingering off and keeps the linger time, and a non-zero one
-    ///   turns it on with `l_linger` seconds; a negative time is refused (see
-    ///   `SocketOptionRefusal.Reason.NegativeLingerTime`). On Darwin,
+    ///   turns it on with `l_linger` seconds; a negative time is refused. On
+    ///   Darwin,
     ///   `l_linger` is hundredths of a second (`SO_LINGER_SEC` takes seconds);
     ///   a set turning lingering on answers EDOM, changing nothing, unless the
     ///   time is between 0 and 32767 hundredths, and every other set stores
@@ -2574,13 +2574,11 @@ module UnixSocket =
     /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
     /// belongs with `close`, which does not model it yet. A close
     /// of a connected socket that it changes is refused: with a time of zero,
-    /// a reset rather than an orderly shutdown
-    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
-    /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
-    /// is and on Darwin through a blocking description
-    /// (`DescriptionReleaseRefusal.LingeringClose`). So is any close of its
+    /// a reset rather than an orderly shutdown; with a positive time, a wait
+    /// for bytes still in the send buffer, on Linux whatever `O_NONBLOCK` is
+    /// and on Darwin through a blocking description. So is any close of its
     /// last descriptor while a call in flight that the close does not end
-    /// holds it, whatever the time (`CloseRefusal.LingeringCloseDeferredToCall`).
+    /// holds it, whatever the time.
     /// Every other close is the one it would be anyway: a FIN, or a reset if
     /// bytes were left unread.
     ///
@@ -2589,8 +2587,10 @@ module UnixSocket =
     /// a connection already waiting to be accepted: the socket `accept(2)`
     /// makes for one holds the options the listener had when it completed (see
     /// `QueuedConnection`). A Linux change of `SO_REUSEADDR` on a connected
-    /// socket in `TIME_WAIT` is refused; see
-    /// `SocketOptionRefusal.Reason.LinuxReuseAddressInTimeWait`.
+    /// socket in `TIME_WAIT` is refused: Linux judges a later bind of the
+    /// endpoint by the flag as it stood when the end entered `TIME_WAIT`, and
+    /// this kernel by the socket's flag, which agrees only while it has not
+    /// changed.
     let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)

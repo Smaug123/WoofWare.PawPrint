@@ -433,8 +433,7 @@ module UnixInotify =
     /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
     /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
     /// succeed asking for an event this kernel does not raise, or with
-    /// `IN_ONESHOT`, is refused (`InotifyAddWatchRefusal.UnmodelledEvents`,
-    /// `InotifyAddWatchRefusal.OneShot`); one that fails answers its errno.
+    /// `IN_ONESHOT`, is refused; one that fails answers its errno.
     ///
     /// Adding a watch queues nothing. Under the Darwin flavour every call is
     /// refused.

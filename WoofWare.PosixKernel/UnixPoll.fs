@@ -752,7 +752,7 @@ module UnixPoll =
     /// mask makes the registration pending at once, and a `MOD` of an entry
     /// already pending leaves its place alone. An `ADD` or `MOD` that would
     /// succeed with one of the modes this library does not model, and an
-    /// `ADD` of another epoll instance, are refused (see `EpollCtlRefusal`).
+    /// `ADD` of another epoll instance, are refused.
     /// Under the Darwin flavour every call is refused: Darwin has no epoll.
     /// </summary>
     /// <exception cref="T:System.PlatformNotSupportedException">This kernel is not Linux-flavoured, and only Linux has epoll.</exception>
@@ -1395,8 +1395,8 @@ module UnixPoll =
     /// of none of those bits reports nothing, even for a descriptor that is not
     /// open; one descriptor named by several entries reports into the last of
     /// them alone; and a reported hang-up suppresses `POLLOUT`. A call with
-    /// more than 10240 entries fails with `EINVAL`. Refused (see
-    /// `PollRefusal`): more than 1024 entries and at most 10240; a socket
+    /// more than 10240 entries fails with `EINVAL`. Refused: more than 1024
+    /// entries and at most 10240; a socket
     /// whose filters are not modelled; a kqueue asked for a read bit; and a
     /// call that would sleep with a vnode filter registered, or with a
     /// negative timeout other than -1.
@@ -1653,7 +1653,7 @@ module UnixPoll =
     ///
     /// A call that delivers events copies them out to `buffer`, which must be
     /// `Mapped`: this library does not answer for a copy that faults or a buffer
-    /// whose bytes it cannot hold (see `EpollWaitRefusal`). A call that delivers
+    /// whose bytes it cannot hold, and refuses it. A call that delivers
     /// nothing never looks at the buffer past the screen.
     ///
     /// Of several tasks parked on one epoll instance, one event wakes one of them (see

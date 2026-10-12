@@ -336,7 +336,7 @@ module UnixTaskLifecycle =
     /// `pid_max` is in use, leaving the system as it was.
     ///
     /// Refuses a spawn on Darwin once the machine's thread ID counter has
-    /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
+    /// reached the top of its range, which has not been measured.
     ///
     /// Fails loudly if `parent` names no task or is parked in a syscall, if
     /// `child` already names a task, or if `cpu` is not one of the machine's

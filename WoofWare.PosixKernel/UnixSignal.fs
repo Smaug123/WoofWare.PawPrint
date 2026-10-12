@@ -293,7 +293,7 @@ module UnixSignal =
     /// under Linux's, which leaves one the leader blocks pending on the
     /// process until another task takes it and discards it.
     ///
-    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
+    /// Refuses a signal sent to the process that only
     /// a task other than the leader could receive, where it is caught, or,
     /// under Linux's numbering, ignored; and, under
     /// Darwin's numbering, a standard signal it would leave pending on the
@@ -819,8 +819,7 @@ module UnixSignal =
     /// both.
     ///
     /// Refuses, on Darwin, a call that would unblock a pending signal for a
-    /// task other than the caller (see
-    /// `SigprocmaskRefusal.DarwinUnblockedForAnotherTask`), changing nothing.
+    /// task other than the caller, changing nothing.
     /// The caller's own pending signals it unblocks are deliverable to it as it
     /// returns from the call, as `pthreadSigmask` describes.
     ///
@@ -955,7 +954,7 @@ module UnixSignal =
     /// unblocks, is discarded then, and the call sleeps on, as Linux's does
     /// after a stop and continue.
     ///
-    /// Refuses (see `SigsuspendRefusal`): a signal whose default stops the
+    /// Refuses: a signal whose default stops the
     /// process, which the task would take; under Darwin, a SIGCONT the task
     /// could take, ignored or at its default; and whatever `onReturnToUser`
     /// refuses. A refusal changes nothing.

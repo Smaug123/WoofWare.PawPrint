@@ -749,7 +749,7 @@ module UnixKqueue =
     /// Every waiter on one kqueue is woken by an event to report and by the
     /// close that drains it, and a deadline or a signal is each waiter's own.
     ///
-    /// Refused are a change this library does not apply (see `KeventRefusal`),
+    /// Refused are a change this library does not apply,
     /// a copy of events to an eventlist that is not `Mapped`, and an echo into
     /// an `Opaque` or `Addressless` one.
     /// `task` must not already be parked. Under the Linux flavour every call

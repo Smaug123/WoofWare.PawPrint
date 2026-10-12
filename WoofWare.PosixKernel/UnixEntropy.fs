@@ -249,7 +249,7 @@ module UnixEntropy =
     ///
     /// `task` is the task making the call, which must be one of the process's.
     /// A request that moves more than a page, by a task with a signal pending,
-    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
+    /// is refused: a real one stops
     /// short at the first page boundary.
     /// </summary>
     /// <exception cref="T:System.PlatformNotSupportedException">The simulated kernel has no `getrandom` system call.</exception>

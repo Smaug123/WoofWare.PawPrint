@@ -2004,8 +2004,7 @@ module UnixReadWrite =
     /// connected stream socket answers from its connection: the bytes waiting, end of file, a reset's error,
     /// or `EAGAIN`; a blocking read with nothing to answer sleeps
     /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
-    /// copy bytes into an unmapped buffer is refused
-    /// (`ReadRefusal.ConnectionFault`). A socket
+    /// copy bytes into an unmapped buffer is refused. A socket
     /// with a datagram peer, or with a refused connection's error, is refused,
     /// except for Linux's zero-length read, which is 0 in every phase.
     ///
@@ -2015,7 +2014,7 @@ module UnixReadWrite =
     /// `O_NONBLOCK` on the description while it sleeps does not wake it.
     ///
     /// A read of `/dev/urandom` longer than a page, by a task with a signal
-    /// pending, is refused (`ReadRefusal.SignalAtPageBoundary`).
+    /// pending, is refused.
     ///
     /// A read of an inotify instance takes as many whole queued records as fit
     /// in `count`, oldest first, and answers `EINVAL` if the oldest does not
@@ -2354,12 +2353,12 @@ module UnixReadWrite =
     /// something to answer, what the same call made then would: the bytes
     /// waiting, up to its count (left queued by `MSG_PEEK`), end of file, or
     /// a reset's error, which it takes unless it is a Darwin peek; a buffer
-    /// naming no storage, with bytes to copy, is refused
-    /// (`ReadRefusal.ConnectionFault`). A signal is as for a pipe: under Linux
+    /// naming no storage, with bytes to copy, is refused. A signal is as for a
+    /// pipe: under Linux
     /// the answer beats it, and under Darwin both at once are refused; with
     /// nothing to answer, it ends the read, `Restarts` or `Failed EINTR`. With
     /// neither, the read sleeps again, refused instead if its description has
-    /// become non-blocking (`ReadRefusal.ConnectionBecameNonBlocking`). One a
+    /// become non-blocking. One a
     /// close has ended, under Darwin, answers `EBADF`.
     ///
     /// A read of an inotify instance answers, once the instance holds a
@@ -2503,8 +2502,8 @@ module UnixReadWrite =
     ///   description says.
     /// - **`MSG_NOSIGNAL`** changes nothing.
     ///
-    /// Every other flag is refused (`ReceiveRefusal.UnmodelledFlags`), as is a
-    /// count above `INT_MAX` and a socket that is not an end of a connection.
+    /// Every other flag is refused, as is a count above `INT_MAX` and a socket
+    /// that is not an end of a connection.
     /// A call that sleeps is finished by `finishRead`, as a `read` is.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
@@ -2720,7 +2719,7 @@ module UnixReadWrite =
     ///
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a read of `/dev/urandom` asks whether it has
-    /// a signal pending (`PReadRefusal.SignalAtPageBoundary`).
+    /// a signal pending, and refuses one longer than a page if it does.
     let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
@@ -3185,8 +3184,8 @@ module UnixReadWrite =
     /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
     /// no room for the whole of takes what fits and sleeps for the rest, as
     /// one into a pipe does. One that would copy from an unmapped buffer is
-    /// refused (`WriteRefusal.ConnectionFault`). A socket with a datagram
-    /// peer, or with a refused connection's error, is refused.
+    /// refused. A socket with a datagram peer, or with a refused connection's
+    /// error, is refused.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
@@ -3922,10 +3921,9 @@ module UnixReadWrite =
     ///   beats room; under Darwin, room beside it is refused.
     /// - **There is room**, as a write made now would take:
     ///   `WriteResumption.Transfer` names the bytes to pass to `finishWrite`.
-    ///   A buffer naming no storage is refused (`WriteRefusal.ConnectionFault`).
+    ///   A buffer naming no storage is refused.
     /// - **Neither**: the task sleeps again, refused instead if its
-    ///   description has become non-blocking
-    ///   (`WriteRefusal.ConnectionBecameNonBlocking`).
+    ///   description has become non-blocking.
     /// - **A close has ended it**, under Darwin: `EBADF`, whatever it had
     ///   taken.
     ///
@@ -4030,8 +4028,7 @@ module UnixReadWrite =
     /// set on the description while the call slept, ends it with the count it
     /// has put in by now, and with neither, it sleeps again for the rest. A
     /// write to a connected socket sleeps again for the rest, or is refused if
-    /// its description has become non-blocking
-    /// (`WriteRefusal.ConnectionBecameNonBlocking`); a signal never reaches
+    /// its description has become non-blocking; a signal never reaches
     /// it here, `admitFinishWrite` having answered one first.
     ///
     /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
@@ -4236,8 +4233,8 @@ module UnixReadWrite =
     /// - **No description is marked written** (Darwin's `FWASWRITTEN`, which
     ///   a `write` that moves bytes sets).
     ///
-    /// Every other flag is refused (`SendRefusal.UnmodelledFlags`), as is a
-    /// count above `INT_MAX` and a socket that is not an end of a connection.
+    /// Every other flag is refused, as is a count above `INT_MAX` and a socket
+    /// that is not an end of a connection.
     /// A call that sleeps is finished by `admitFinishWrite` and `finishWrite`,
     /// as a `write` is.
     ///
@@ -4555,7 +4552,7 @@ module UnixReadWrite =
     ///
     /// `task` is the task making the call, which must be one of the process's
     /// and not asleep in another; a write to `/dev/urandom` asks whether it
-    /// has a signal pending (`PWriteRefusal.SignalAtPageBoundary`).
+    /// has a signal pending, and refuses one longer than a page if it does.
     let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)

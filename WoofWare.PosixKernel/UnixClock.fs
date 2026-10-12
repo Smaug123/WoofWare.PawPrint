@@ -216,7 +216,7 @@ module UnixClock =
     ///
     /// The numbering is the flavour's own: `CLOCK_MONOTONIC` is 1 on Linux and 6
     /// on Darwin. An id that names no clock on the flavour is `EINVAL`, and an id
-    /// that names a clock this kernel does not model is a `ClockGettimeRefusal`.
+    /// that names a clock this kernel does not model is refused.
     ///
     /// Every answered id reads one of two clocks. `CLOCK_REALTIME`, and Linux's
     /// `CLOCK_REALTIME_COARSE`, read the realtime clock (`UnixSystem.realtime`),

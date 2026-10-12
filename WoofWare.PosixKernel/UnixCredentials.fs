@@ -315,8 +315,8 @@ module UnixCredentials =
     /// answered `EPERM` with nothing changed.
     ///
     /// Refused on Darwin, which has no such call, and for a process that writes
-    /// core dumps when its effective user ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
+    /// core dumps when its effective user ID would change: whether it still
+    /// writes one turns on `fs.suid_dumpable`, which this kernel does not model.
     /// </summary>
     /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`.</exception>
     let setresuid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -378,8 +378,8 @@ module UnixCredentials =
     /// changed. Privilege is the effective *user* ID's, as everywhere else.
     ///
     /// Refused on Darwin, which has no such call, and for a process that writes
-    /// core dumps when its effective group ID would change (see
-    /// `SetIdsRefusal.DumpabilityUnmodelled`).
+    /// core dumps when its effective group ID would change: whether it still
+    /// writes one turns on `fs.suid_dumpable`, which this kernel does not model.
     /// </summary>
     /// <exception cref="T:System.PlatformNotSupportedException">This flavour has no such call: Darwin declares neither `setresuid` nor `setresgid`.</exception>
     let setresgid<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

@@ -2115,8 +2115,7 @@ module UnixConnection =
     /// descriptor or another, and leaves the listener drained
     /// (`ListenState.Drained`); see `UnixDescriptor.close`. A later accept on
     /// it that finds a connection queued takes it, and a non-blocking one that
-    /// finds none answers `EAGAIN`; one that would sleep is refused
-    /// (`AcceptRefusal.Reason.DarwinDrainedListener`).
+    /// finds none answers `EAGAIN`; one that would sleep is refused.
     ///
     /// The accepted descriptor inherits `O_NONBLOCK` from the description this
     /// call was made through, on the flavours whose kernels do that: see
@@ -2381,8 +2380,9 @@ module UnixConnection =
     /// docs/plans/2026-10-08-tcp-shutdown-linger, section U): EBADF, then
     /// ENOTSOCK, then EINVAL for any other `how`, then the socket's state.
     /// An IPv4 or IPv6 socket with no connection answers ENOTCONN under
-    /// Darwin, and is refused under Linux
-    /// (`ShutdownRefusal.Reason.LinuxUnconnected`).
+    /// Darwin, and is refused under Linux, which still marks the sides `how`
+    /// names shut, for a later connection, where this kernel keeps no shut
+    /// sides on a socket without a connection.
     ///
     /// On a connected stream socket the call shuts the sides `how` names, by
     /// each flavour's rules: shutting the send side

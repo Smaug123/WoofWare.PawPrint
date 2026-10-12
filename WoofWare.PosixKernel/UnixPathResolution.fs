@@ -960,7 +960,7 @@ module UnixPathResolution =
     ///
     /// Refuses for a directory on an NFS mount and for the device filesystem's
     /// root, whose size and link count this kernel cannot state, and for a
-    /// path this kernel will not resolve; see `StatRefusal`. The three
+    /// path this kernel will not resolve. The three
     /// descriptor kinds `fstat` also refuses for are unreachable from here:
     /// every inode a path resolves to is one this filesystem holds, since a
     /// name for an inode-free object cannot be created in it.
@@ -1092,7 +1092,7 @@ module UnixPathResolution =
     /// Refuses for a descriptor this kernel holds no inode for — an event
     /// queue, a socket — and for an end of a pipe the process was launched with,
     /// whose owner and timestamps are the launcher's. That is a limit of the
-    /// model rather than an absent kernel answer; see `FStatRefusal`. Also
+    /// model rather than an absent kernel answer. Also
     /// refuses for a directory on an NFS mount and for the device filesystem's
     /// root, as `stat` does.
     let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1174,7 +1174,7 @@ module UnixPathResolution =
     ///
     /// Refuses the flags this library does not model, a pathname this
     /// kernel cannot read under `AT_EMPTY_PATH`, and whatever `stat` or
-    /// `fstat` refuses of what the call reaches; see `FStatAtRefusal`.
+    /// `fstat` refuses of what the call reaches.
     let fstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
@@ -1294,8 +1294,7 @@ module UnixPathResolution =
     /// changes and a dangling link is ENOENT. Every other failure but EPERM is
     /// the path resolution's own.
     ///
-    /// Refuses where the mode change has not been measured for this caller; see
-    /// `ChModRefusal`.
+    /// Refuses where the mode change has not been measured for this caller.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -1392,8 +1391,8 @@ module UnixPathResolution =
     /// plays no part: a descriptor open only for reading will do.
     ///
     /// A descriptor naming something other than a regular file or a directory
-    /// answers as its flavour does, which on Linux can be a refusal; see
-    /// `FChModRefusal`.
+    /// answers as its flavour does, which on Linux can be a refusal: a socket
+    /// or an end of a launched pipe, whose mode this kernel does not hold.
     let fchmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (mode : int)
@@ -1531,8 +1530,7 @@ module UnixPathResolution =
     /// the path resolution's own, and comes first: a path through a directory
     /// the caller may not search is EACCES whatever it asks.
     ///
-    /// Refuses where the change has not been measured for this caller; see
-    /// `ChOwnRefusal`.
+    /// Refuses where the change has not been measured for this caller.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -1673,8 +1671,8 @@ module UnixPathResolution =
     /// access mode plays no part: a descriptor open only for reading will do.
     ///
     /// A descriptor naming something other than a regular file or a directory
-    /// answers as its flavour does, which on Linux can be a refusal; see
-    /// `FChOwnRefusal`.
+    /// answers as its flavour does, which on Linux can be a refusal: a socket
+    /// or an end of a launched pipe, whose owner this kernel does not hold.
     let fchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (user : UserId option)
@@ -1757,7 +1755,7 @@ module UnixPathResolution =
     /// absent.
     ///
     /// Refuses the flags the screen does not model, and whatever `chmod` or
-    /// `fchmod` refuses of what the call reaches; see `FChModAtRefusal`.
+    /// `fchmod` refuses of what the call reaches.
     let fchmodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
@@ -1823,7 +1821,7 @@ module UnixPathResolution =
     /// absent.
     ///
     /// Refuses the flags the screen does not model, and whatever `chown` or
-    /// `fchown` refuses of what the call reaches; see `FChOwnAtRefusal`.
+    /// `fchown` refuses of what the call reaches.
     let fchownat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : PathArgumentBytes)
@@ -2174,7 +2172,7 @@ module UnixPathResolution =
     ///
     /// Refuses the flags the screen does not model, a socket's times, an end
     /// of a pipe the process was launched with, a time on an NFS mount, and
-    /// what Darwin's rules leave unmeasured; see `UTimensAtRefusal`.
+    /// what Darwin's rules leave unmeasured.
     let utimensat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
         (path : NullablePathArgument)
@@ -2231,7 +2229,7 @@ module UnixPathResolution =
     /// resolution's own, as for `stat(2)`.
     ///
     /// Changes nothing and returns no system. Refuses a path this kernel will
-    /// not resolve (see `PathRefusal`), and throws for a machine whose platform
+    /// not resolve, and throws for a machine whose platform
     /// and mount do not describe one machine, whatever the path.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
@@ -2523,7 +2521,7 @@ module UnixPathResolution =
     /// <c>path</c> is the argument's bytes, copied in before anything else: <c>EFAULT</c> if they
     /// were unreadable, <c>ENAMETOOLONG</c> if they run past <c>PATH_MAX</c>.
     ///
-    /// Refuses a path this kernel will not resolve; see <c>PathRefusal</c>.
+    /// Refuses a path this kernel will not resolve.
     /// </remarks>
     let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
@@ -2754,7 +2752,7 @@ module UnixPathResolution =
     /// Refuses Darwin's extended rights and the flags Darwin accepts without this library
     /// modelling them, a privileged caller's execute question under a flavour where that is
     /// unmeasured, and Linux's <c>AT_EMPTY_PATH</c> with a <c>dirfd</c> naming a pipe, a socket
-    /// or an event queue; see <c>AccessRefusal</c>.
+    /// or an event queue.
     /// </remarks>
     let faccessat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
