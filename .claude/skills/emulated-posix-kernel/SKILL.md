@@ -9,7 +9,8 @@ PawPrint models a Unix kernel as *data*, never as a host read: a replay must not
 depend on the machine that produced it. The kernel itself is the NuGet package
 `WoofWare.PosixKernel`, developed at
 https://github.com/Smaug123/WoofWare.PosixKernel and pinned to one version in
-`WoofWare.PawPrint.fsproj` and `WoofWare.PawPrint.Test.fsproj`. This skill is
+`WoofWare.PawPrint.fsproj`, which every project referencing it takes the kernel
+through. This skill is
 about PawPrint's side of that boundary: the `Native/` handlers that answer a
 guest's call by asking the kernel, the `*Pal.fs` adapters that translate between
 the kernel's POSIX values and .NET's encodings, and `EmulatedKernel` with its
@@ -173,8 +174,7 @@ PawPrint needs a syscall, a field or a fact the package does not provide:
 
 1. Make the change in the kernel's repository, with its own tests (its skill
    says which tier), and get it released to NuGet.
-2. Bump the version in **both** `WoofWare.PawPrint/WoofWare.PawPrint.fsproj` and
-   `WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj`, and regenerate
+2. Bump the version in `WoofWare.PawPrint/WoofWare.PawPrint.fsproj`, and regenerate
    `nix/deps.json` with `nix build .#default.fetch-deps && ./result nix/deps.json`.
 3. Wire it up here, in a PR of its own.
 

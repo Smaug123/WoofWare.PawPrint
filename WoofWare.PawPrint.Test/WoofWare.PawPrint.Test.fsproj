@@ -504,8 +504,5 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.5"/>
-    <!-- Referenced directly because these tests open WoofWare.PosixKernel themselves; the version
-         is WoofWare.PawPrint's, and must move with it. -->
-    <PackageReference Include="WoofWare.PosixKernel" Version="0.1.302" />
   </ItemGroup>
 </Project>
