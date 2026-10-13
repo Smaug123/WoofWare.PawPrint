@@ -271,16 +271,16 @@ module SignalFuzz =
         let rec returnToUser () : unit =
             match UnixSignal.tryOnReturnToUser leader system with
             | Error refusal -> raise (Refusal $"onReturnToUser refused: %O{refusal}")
-            | Ok (ReturnToUserOutcome.Resumes after) -> system <- after
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, after)) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, after)) -> system <- after
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after)) ->
                 system <- after
                 runFrames frames
-            | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded ended) ->
                 match EndedProcess.termination ended with
                 | ProcessTermination.Signaled (killedBy, _) -> raise (Died (signo killedBy))
                 | other -> failwith $"a return to user mode ended the process with %O{other}"
-            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped _, _) as other)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, _) as other) ->
                 raise (Refusal $"onReturnToUser answered %A{other}")
 
         and runFrames (frames : HandlerFrame<int, unit> list) : unit =
@@ -334,24 +334,26 @@ module SignalFuzz =
                 | Ok (Error errno) ->
                     events.Add
                         $"f%d{UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) errno}"
-                | Ok (Ok (KillOutcome.ProcessContinues after)) -> system <- after
-                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) -> system <- after
+                | Ok (Ok (ProcessFate.ProcessEnded ended)) ->
                     match ended.Termination with
                     | ProcessTermination.Signaled (killedBy, _) -> raise (Died (signo killedBy))
                     | other -> failwith $"kill ended the process with %O{other}"
-                | Ok (Ok (KillOutcome.ProcessStopped _)) -> raise (Refusal "a stop signal was sent")
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped _, _))) ->
+                    raise (Refusal "a stop signal was sent")
             | SignalFuzzOp.Raise s ->
                 match UnixSignal.tryPthreadKill leader s system with
                 | Error refusal -> raise (Refusal $"raise refused: %O{refusal}")
                 | Ok (Error errno) ->
                     events.Add
                         $"f%d{UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) errno}"
-                | Ok (Ok (KillOutcome.ProcessContinues after)) -> system <- after
-                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) -> system <- after
+                | Ok (Ok (ProcessFate.ProcessEnded ended)) ->
                     match ended.Termination with
                     | ProcessTermination.Signaled (killedBy, _) -> raise (Died (signo killedBy))
                     | other -> failwith $"raise ended the process with %O{other}"
-                | Ok (Ok (KillOutcome.ProcessStopped _)) -> raise (Refusal "a stop signal was raised")
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped _, _))) ->
+                    raise (Refusal "a stop signal was raised")
 
             returnToUser ()
 

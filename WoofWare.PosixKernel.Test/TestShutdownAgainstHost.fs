@@ -1602,15 +1602,13 @@ module TestShutdownAgainstHost =
             let bytes = ImmutableArray.Create (payload, 0, count)
 
             match WriteOutcomes.admitThenWrite system.Leader (this.Fd e) UserBuffer.Mapped bytes system with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, after)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Completed written, after)) ->
                 system <- after
                 Ok (int written)
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, after)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Failed error, after)) ->
                 system <- after
                 Error (rendered error)
-            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, entry, after)) when
-                entry.Signal = Signal.SIGPIPE
-                ->
+            | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, entry, after)) when entry.Signal = Signal.SIGPIPE ->
                 system <- after
                 Error (rendered error + "+SIGPIPE")
             | other -> failwith $"a write of %d{count}: %A{other}"
@@ -1625,7 +1623,7 @@ module TestShutdownAgainstHost =
                 let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
                 match
-                    UnixSocket.tryGetsockopt
+                    UnixSocket.tryGetsockoptLength
                         (this.Fd e)
                         level
                         optionName
@@ -1922,7 +1920,14 @@ module TestShutdownAgainstHost =
                 let name = SimulatedUnixPlatform.reuseAddressOption platform
 
                 match
-                    UnixSocket.tryGetsockopt (this.Fd e) level name UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+                    UnixSocket.tryGetsockoptLength
+                        (this.Fd e)
+                        level
+                        name
+                        UserBuffer.Mapped
+                        UserBuffer.Mapped
+                        (Some 4u)
+                        system
                 with
                 | Ok (answer, after) ->
                     system <- after

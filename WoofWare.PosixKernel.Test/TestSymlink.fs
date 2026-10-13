@@ -254,7 +254,7 @@ module TestSymlink =
         let target, path, created = symlinkRow envelope label
         let system = probeCell envelope
 
-        match UnixNamespace.trySymlink target path system with
+        match UnixNamespace.trySymlinkEager target path system with
         | Error SymlinkRefusal.EmptyTarget -> "refused: empty target"
         | Error refusal -> $"refused: %s{SymlinkRefusal.describe refusal}"
         | Ok (answer, after) ->
@@ -353,7 +353,7 @@ module TestSymlink =
                             probe
 
                     let actual =
-                        UnixNamespace.trySymlinkat
+                        UnixNamespace.trySymlinkatEager
                             (orderTarget envelope targetLabel)
                             dirfd
                             (orderName envelope nameLabel)
@@ -403,7 +403,8 @@ module TestSymlink =
                 let label = row.[0]
                 let target, path = permRow label
 
-                let actual = UnixNamespace.trySymlink target path (probeCell envelope) |> rendered
+                let actual =
+                    UnixNamespace.trySymlinkEager target path (probeCell envelope) |> rendered
 
                 let expected = probeAnswer row.[1]
 
@@ -445,7 +446,7 @@ module TestSymlink =
                         Convert.ToInt32 (row.[1].Substring (row.[1].IndexOf "mode=" + "mode=".Length), 8)
 
                     let system =
-                        UnixNamespace.trySymlink (text "t") (text "n") (boot envelope umask (cell None 0o755))
+                        UnixNamespace.trySymlinkEager (text "t") (text "n") (boot envelope umask (cell None 0o755))
                         |> created
 
                     umask, modeOf "n" system, mode
@@ -474,7 +475,7 @@ module TestSymlink =
                 let seed = cell (Some directoryGroup) (if setgid then 0o2777 else 0o777)
 
                 let system =
-                    UnixNamespace.trySymlink (text "t") (text "e/n") (boot envelope 0o022 seed)
+                    UnixNamespace.trySymlinkEager (text "t") (text "e/n") (boot envelope 0o022 seed)
                     |> created
 
                 let group =
@@ -501,7 +502,7 @@ module TestSymlink =
             let envelope = if darwin then darwinUser else linuxUser
 
             let system =
-                UnixNamespace.trySymlink (ofBytes target) (text "n") (probeCell envelope)
+                UnixNamespace.trySymlinkEager (ofBytes target) (text "n") (probeCell envelope)
                 |> created
 
             match UnixNamespace.tryReadlink (text "n") UserBuffer.Mapped 4096 system with
@@ -528,7 +529,7 @@ module TestSymlink =
                 let system = probeCell envelope
 
                 let direct =
-                    match UnixNamespace.trySymlinkat (text target) atFdCwd (text path) system with
+                    match UnixNamespace.trySymlinkatEager (text target) atFdCwd (text path) system with
                     | Ok (answer, after) -> Ok (SyscallOutcome.Answered answer, after)
                     | Error refusal -> Error (SyscallRefusal.Symlink refusal)
 

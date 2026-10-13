@@ -156,7 +156,7 @@ module TestInotifyMeasured =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText path) mask system with
+        match UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText path) mask system with
         | Ok answered -> answered
         | Error refusal ->
             failwith
@@ -484,7 +484,7 @@ module TestInotifyMeasured =
         )
 
         let badFd =
-            match UnixInotify.tryInotifyAddWatch 999 (PathArg.ofText "w/d1") modelledEvents system with
+            match UnixInotify.tryInotifyAddWatchEager 999 (PathArg.ofText "w/d1") modelledEvents system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -496,7 +496,7 @@ module TestInotifyMeasured =
         system <- s
 
         let onRegular =
-            match UnixInotify.tryInotifyAddWatch regular (PathArg.ofText "w/d1") modelledEvents system with
+            match UnixInotify.tryInotifyAddWatchEager regular (PathArg.ofText "w/d1") modelledEvents system with
             | Ok (answer, _) -> rc answer
             | Error refusal -> failwith $"%A{refusal}"
 
@@ -592,7 +592,7 @@ module TestInotifyMeasured =
         let system = boot root [ "w", directory 0o755 [ "d1", directory 0o755 [] ] ]
         let fd, system = init1 nonblock system
 
-        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") 0xFFFu system
+        UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText "w/d1") 0xFFFu system
         |> shouldEqual (
             Error (
                 InotifyAddWatchRefusal.UnmodelledEvents
@@ -606,14 +606,14 @@ module TestInotifyMeasured =
         )
 
         // An add that fails anyway answers its errno.
-        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/missing") 0xFFFu system with
+        match UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText "w/missing") 0xFFFu system with
         | Ok (SyscallAnswer.Failed UnixError.ENOENT, _) -> ()
         | other -> failwith $"%A{other}"
 
-        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x80000000u) system
+        UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText "w/d1") (create ||| 0x80000000u) system
         |> shouldEqual (Error InotifyAddWatchRefusal.OneShot)
 
-        UnixInotify.tryInotifyAddWatch fd (PathArg.ofText "w/d1") (create ||| 0x2000u) system
+        UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText "w/d1") (create ||| 0x2000u) system
         |> shouldEqual (Error (InotifyAddWatchRefusal.UnmodelledEvents [ InotifyEvent.Unmount ]))
 
     [<Test>]
@@ -860,7 +860,7 @@ module TestInotifyMeasured =
         // The handler runs and returns, and the client issues the read again.
         let s =
             match UnixSignal.tryOnReturnToUser reader s with
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, s)) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, s)) ->
                 (s, frames)
                 ||> List.fold (fun s frame -> UnixSignal.sigreturn reader frame.Id s)
             | other -> failwith $"%A{other}"
@@ -966,7 +966,7 @@ module TestInotifyMeasured =
         system <- s
 
         let add (on : int) (path : PathArgumentBytes) (mask : uint32) =
-            match UnixInotify.tryInotifyAddWatch on path mask system with
+            match UnixInotify.tryInotifyAddWatchEager on path mask system with
             | Ok (answer, s) ->
                 system <- s
                 rc answer
@@ -1006,7 +1006,7 @@ module TestInotifyMeasured =
         child <- s
 
         let addAs (path : string) (mask : uint32) =
-            match UnixInotify.tryInotifyAddWatch cfd (p path) mask child with
+            match UnixInotify.tryInotifyAddWatchEager cfd (p path) mask child with
             | Ok (answer, s) ->
                 child <- s
                 rc answer
@@ -1045,9 +1045,9 @@ module TestInotifyMeasured =
 
     /// The screen phase alone, for a call that must be over before the path.
     let private screened (on : int) (mask : uint32) (system : UnixSystem<int, string>) : string =
-        match UnixInotify.tryInotifyAddWatchScreenPhase on mask system with
-        | Ok (InotifyAddWatchProgress.Answered answer) -> rc answer
-        | Ok (InotifyAddWatchProgress.NeedsPath _) ->
+        match UnixInotify.tryInotifyAddWatch on mask system with
+        | Ok (CallProgress.Answered (answer, _)) -> rc answer
+        | Ok (CallProgress.NeedsCopyIn _) ->
             $"add(%d{on}, _, 0x%x{mask}) reached the path, where Linux answers without it"
         | Error refusal -> failwith $"%A{refusal}"
 
@@ -1122,18 +1122,21 @@ module TestInotifyMeasured =
 
         for on in [ -1 ; 999 ; fd ; regular ; epoll ] do
             for mask in masks do
-                match UnixInotify.tryInotifyAddWatchScreenPhase on mask system with
+                match UnixInotify.tryInotifyAddWatch on mask system with
                 | Error refusal -> failwith $"add(%d{on}, _, 0x%x{mask}) refused: %A{refusal}"
-                | Ok (InotifyAddWatchProgress.Answered answer) ->
-                    // Over before the path: the one-shot call answers the
-                    // same whatever path it is handed, and changes nothing.
+                | Ok (CallProgress.Answered (answer, unchanged)) ->
+                    obj.ReferenceEquals (unchanged, system) |> shouldEqual true
+
+                    // Over before the path: the call given its path up front
+                    // answers the same whatever path it is handed, and changes
+                    // nothing.
                     for path in [ unreadable ; readable ] do
-                        match UnixInotify.tryInotifyAddWatch on path mask system with
+                        match UnixInotify.tryInotifyAddWatchEager on path mask system with
                         | Ok (composed, after) ->
                             (on, mask, composed) |> shouldEqual (on, mask, answer)
                             obj.ReferenceEquals (after, system) |> shouldEqual true
                         | Error refusal -> failwith $"add(%d{on}, _, 0x%x{mask}) refused: %A{refusal}"
-                | Ok (InotifyAddWatchProgress.NeedsPath paused) ->
+                | Ok (CallProgress.NeedsCopyIn paused) ->
                     reachedPath <- reachedPath + 1
 
                     // Reached the copy-in, which is the first thing done
@@ -1189,7 +1192,7 @@ module TestInotifyMeasured =
         for i, (case, mask) in List.indexed masks do
             let expected = measured |> List.find (fun (c, _) -> c = case) |> snd
 
-            match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText $"m/%d{i}") mask system with
+            match UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText $"m/%d{i}") mask system with
             | Error (InotifyAddWatchRefusal.UnmodelledEvents [ InotifyEvent.Unmount ]) when case = "UNMOUNT" -> ()
             | Error InotifyAddWatchRefusal.OneShot when case = "ONESHOT" -> ()
             | Ok (SyscallAnswer.Failed UnixError.EINVAL, _) -> expected |> shouldEqual "-1 EINVAL"

@@ -306,7 +306,7 @@ module TestSocketAddress =
                         match domain, v6Only with
                         | SocketDomain.Inet6, Some value ->
                             match
-                                UnixSocket.trySetsockopt
+                                UnixSocket.trySetsockoptBytes
                                     fd
                                     (SimulatedUnixPlatform.ipv6OptionLevel platform)
                                     (SimulatedUnixPlatform.ipv6OnlyOption platform)

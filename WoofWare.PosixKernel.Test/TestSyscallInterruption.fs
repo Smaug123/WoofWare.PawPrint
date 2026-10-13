@@ -612,8 +612,8 @@ module TestSyscallInterruption =
                     |> Set.ofList
 
                 match UnixSignal.tryOnReturnToUser task after with
-                | Ok (ReturnToUserOutcome.Resumes _) -> caught |> shouldEqual Set.empty
-                | Ok (ReturnToUserOutcome.RunHandlers (frames, _)) ->
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, _)) -> caught |> shouldEqual Set.empty
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, _)) ->
                     frames
                     |> List.map (fun frame -> frame.Entry.Signal)
                     |> Set.ofList
@@ -901,7 +901,7 @@ module TestSyscallInterruption =
 
             let system =
                 match UnixSignal.tryKill self 10 system with
-                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                 | other -> failwith $"unexpected kill: %A{other}"
 
             UnixWait.wakes (Set.singleton 0) system

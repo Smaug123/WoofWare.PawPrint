@@ -589,9 +589,9 @@ module TestAccess =
 
                             let actual =
                                 if effective || kind = Kind.Link then
-                                    UnixPathResolution.tryFaccessat linuxAtFdCwd (bytes target) amode flags system
+                                    UnixPathResolution.tryFaccessatEager linuxAtFdCwd (bytes target) amode flags system
                                 else
-                                    UnixPathResolution.tryAccess (bytes target) amode system
+                                    UnixPathResolution.tryAccessEager (bytes target) amode system
 
                             // Compared as values rather than through `answered`,
                             // whose rendering of an errno costs more than the
@@ -631,8 +631,9 @@ module TestAccess =
             let target = bytes "walk_owner_0700/f"
 
             (label,
-             UnixPathResolution.tryAccess target 0 system |> answered,
-             UnixPathResolution.tryFaccessat linuxAtFdCwd target 0 0x200 system |> answered)
+             UnixPathResolution.tryAccessEager target 0 system |> answered,
+             UnixPathResolution.tryFaccessatEager linuxAtFdCwd target 0 0x200 system
+             |> answered)
             |> shouldEqual (label, viaAccess, viaEAccess)
 
     // ------------------------------------------------------------- Darwin, end to end
@@ -671,10 +672,10 @@ module TestAccess =
                         else
                             grantedAnswer
 
-                    let viaAccess = UnixPathResolution.tryAccess (bytes target) amode system
+                    let viaAccess = UnixPathResolution.tryAccessEager (bytes target) amode system
 
                     let viaEAccess =
-                        UnixPathResolution.tryFaccessat darwinAtFdCwd (bytes target) amode 0x10 system
+                        UnixPathResolution.tryFaccessatEager darwinAtFdCwd (bytes target) amode 0x10 system
 
                     if viaAccess <> expected || viaEAccess <> expected then
                         failwith
@@ -692,7 +693,7 @@ module TestAccess =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 Owners.root "/t" vfs
         let rootStanding = Standing.toward Owners.root (owner 501u 20u)
 
-        UnixPathResolution.tryAccess (bytes "f") 1 system
+        UnixPathResolution.tryAccessEager (bytes "f") 1 system
         |> shouldEqual (
             Error (
                 AccessRefusal.UnmeasuredExecution (
@@ -704,7 +705,7 @@ module TestAccess =
 
         // Through a link it is the target that is asked about; of the link
         // itself, it is the link.
-        UnixPathResolution.tryAccess (bytes "l") 5 system
+        UnixPathResolution.tryAccessEager (bytes "l") 5 system
         |> shouldEqual (
             Error (
                 AccessRefusal.UnmeasuredExecution (
@@ -714,7 +715,7 @@ module TestAccess =
             )
         )
 
-        UnixPathResolution.tryFaccessat darwinAtFdCwd (bytes "l") 1 0x20 system
+        UnixPathResolution.tryFaccessatEager darwinAtFdCwd (bytes "l") 1 0x20 system
         |> shouldEqual (
             Error (
                 AccessRefusal.UnmeasuredExecution (
@@ -726,11 +727,11 @@ module TestAccess =
 
         // Search is not execution: root searching a directory is the same
         // question every path walk asks.
-        UnixPathResolution.tryAccess (bytes "d") 1 system
+        UnixPathResolution.tryAccessEager (bytes "d") 1 system
         |> answered
         |> shouldEqual "ok"
         // The path is resolved before the question is refused.
-        UnixPathResolution.tryAccess (bytes "nx") 1 system
+        UnixPathResolution.tryAccessEager (bytes "nx") 1 system
         |> answered
         |> shouldEqual "ENOENT"
 
@@ -744,29 +745,29 @@ module TestAccess =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 u501 "/" vfs
 
         // ORDER: bit 9 and bit 21 against a path that does not resolve.
-        UnixPathResolution.tryAccess (bytes "/nx") (1 <<< 9) system
+        UnixPathResolution.tryAccessEager (bytes "/nx") (1 <<< 9) system
         |> answered
         |> shouldEqual "ENOENT"
 
-        UnixPathResolution.tryAccess (bytes "/nx") (1 <<< 21) system
+        UnixPathResolution.tryAccessEager (bytes "/nx") (1 <<< 21) system
         |> answered
         |> shouldEqual "ENOENT"
 
-        UnixPathResolution.tryAccess (bytes "f/x") (1 <<< 21) system
+        UnixPathResolution.tryAccessEager (bytes "f/x") (1 <<< 21) system
         |> answered
         |> shouldEqual "ENOTDIR"
 
         for bit in 9..21 do
-            UnixPathResolution.tryAccess (bytes "f") ((1 <<< bit) ||| 4) system
+            UnixPathResolution.tryAccessEager (bytes "f") ((1 <<< bit) ||| 4) system
             |> shouldEqual (Error (AccessRefusal.ExtendedRights (inodeAt vfs "/f", 1 <<< bit)))
 
         // MODE-BIT and IGNORED-SWEEP: the rest change nothing.
         for bit in List.append [ 3..8 ] [ 22..31 ] do
-            UnixPathResolution.tryAccess (bytes "z") (1 <<< bit) system
+            UnixPathResolution.tryAccessEager (bytes "z") (1 <<< bit) system
             |> answered
             |> shouldEqual "ok"
 
-            UnixPathResolution.tryAccess (bytes "z") ((1 <<< bit) ||| 4) system
+            UnixPathResolution.tryAccessEager (bytes "z") ((1 <<< bit) ||| 4) system
             |> answered
             |> shouldEqual "EACCES"
 
@@ -781,7 +782,7 @@ module TestAccess =
                  |> file "/f" (owner 501u 20u) 0o777)
 
         for flag in [ 0x800 ; 0x2000 ; 0x8000 ] do
-            UnixPathResolution.tryFaccessat darwinAtFdCwd (bytes "/f") 0 flag system
+            UnixPathResolution.tryFaccessatEager darwinAtFdCwd (bytes "/f") 0 flag system
             |> shouldEqual (Error (AccessRefusal.UnmodelledFlags flag))
 
     // ------------------------------------------------------------- paths
@@ -845,10 +846,12 @@ module TestAccess =
                 let label = if p = longName then "<299 a>" else p
 
                 (label,
-                 UnixPathResolution.tryAccess (bytes p) 0 system |> answered,
-                 UnixPathResolution.tryAccess (bytes p) 2 system |> answered,
-                 UnixPathResolution.tryFaccessat atFdCwd (bytes p) 0 noFollow system |> answered,
-                 UnixPathResolution.tryFaccessat atFdCwd (bytes p) 2 noFollow system |> answered)
+                 UnixPathResolution.tryAccessEager (bytes p) 0 system |> answered,
+                 UnixPathResolution.tryAccessEager (bytes p) 2 system |> answered,
+                 UnixPathResolution.tryFaccessatEager atFdCwd (bytes p) 0 noFollow system
+                 |> answered,
+                 UnixPathResolution.tryFaccessatEager atFdCwd (bytes p) 2 noFollow system
+                 |> answered)
                 |> shouldEqual (label, existsAnswer, writeAnswer, existsNoFollow, writeNoFollow)
 
     [<Test>]
@@ -863,7 +866,7 @@ module TestAccess =
             let system = systemOn SimulatedUnixPlatform.linuxX64 credentials "/" vfs
 
             for amode in 0..7 do
-                UnixPathResolution.tryFaccessat linuxAtFdCwd (bytes "/l") amode 0x100 system
+                UnixPathResolution.tryFaccessatEager linuxAtFdCwd (bytes "/l") amode 0x100 system
                 |> answered
                 |> shouldEqual "ok"
 
@@ -929,7 +932,8 @@ module TestAccess =
 
         for label, dirfd, expected in linuxRows do
             let ask (p : string) (amode : int) (flags : int) =
-                UnixPathResolution.tryFaccessat dirfd (bytes p) amode flags linux |> answered
+                UnixPathResolution.tryFaccessatEager dirfd (bytes p) amode flags linux
+                |> answered
 
             (label,
              [
@@ -958,7 +962,7 @@ module TestAccess =
 
         for label, dirfd, expected in darwinRows do
             let ask (p : string) =
-                UnixPathResolution.tryFaccessat dirfd (bytes p) 0 0 darwin |> answered
+                UnixPathResolution.tryFaccessatEager dirfd (bytes p) 0 0 darwin |> answered
 
             (label, [ ask "/b/screen_f" ; ask "screen_f" ; ask "screen_nx" ; ask "" ])
             |> shouldEqual (label, expected)
@@ -976,7 +980,7 @@ module TestAccess =
             (flags : int)
             : string
             =
-            UnixPathResolution.tryFaccessat dirfd p amode flags system |> answered
+            UnixPathResolution.tryFaccessatEager dirfd p amode flags system |> answered
 
         let tooLong (platform : SimulatedUnixPlatform) : PathArgumentBytes =
             let length = PathLimits.pathMaxBytes (SimulatedUnixPlatform.pathLimits platform)
@@ -989,16 +993,16 @@ module TestAccess =
         let null' = PathArgumentBytes.Unreadable
 
         [
-            UnixPathResolution.tryAccess nx 8 linux |> answered
+            UnixPathResolution.tryAccessEager nx 8 linux |> answered
             row linux -100 nx 8 0
             row linux -100 nx 0 0x40000000
             row linux -100 f 8 0x40000000
             row linux 12345 (bytes "screen_f") 8 0
             row linux 12345 (bytes "screen_f") 0 0x40000000
             row linux 12345 (bytes "nx") 0 0
-            UnixPathResolution.tryAccess (bytes "") 8 linux |> answered
-            UnixPathResolution.tryAccess null' 8 linux |> answered
-            UnixPathResolution.tryAccess null' 0 linux |> answered
+            UnixPathResolution.tryAccessEager (bytes "") 8 linux |> answered
+            UnixPathResolution.tryAccessEager null' 8 linux |> answered
+            UnixPathResolution.tryAccessEager null' 0 linux |> answered
             row linux -100 null' 0 0
             row linux -100 null' 8 0
             row linux -100 null' 0 0x40000000
@@ -1052,16 +1056,16 @@ module TestAccess =
         let darwinTooLong = tooLong SimulatedUnixPlatform.macOsArm64
 
         [
-            UnixPathResolution.tryAccess nx 8 darwin |> answered
+            UnixPathResolution.tryAccessEager nx 8 darwin |> answered
             row darwin -2 nx 8 0
             row darwin -2 nx 0 0x40000000
             row darwin -2 f 8 0x40000000
             row darwin 12345 (bytes "screen_f") 8 0
             row darwin 12345 (bytes "screen_f") 0 0x40000000
             row darwin 12345 (bytes "nx") 0 0
-            UnixPathResolution.tryAccess (bytes "") 8 darwin |> answered
-            UnixPathResolution.tryAccess null' 8 darwin |> answered
-            UnixPathResolution.tryAccess null' 0 darwin |> answered
+            UnixPathResolution.tryAccessEager (bytes "") 8 darwin |> answered
+            UnixPathResolution.tryAccessEager null' 8 darwin |> answered
+            UnixPathResolution.tryAccessEager null' 0 darwin |> answered
             row darwin -2 null' 0 0
             row darwin -2 null' 8 0
             row darwin -2 null' 0 0x40000000
@@ -1117,7 +1121,7 @@ module TestAccess =
 
         [ 0 ; 4 ; 2 ; 1 ]
         |> List.map (fun amode ->
-            UnixPathResolution.tryFaccessat linuxAtFdCwd (bytes "") amode 0x1000 system
+            UnixPathResolution.tryFaccessatEager linuxAtFdCwd (bytes "") amode 0x1000 system
             |> answered
         )
         |> shouldEqual [ "ok" ; "ok" ; "EACCES" ; "ok" ]
@@ -1140,22 +1144,22 @@ module TestAccess =
                 | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
                 | other -> failwith $"pipe2 did not make a pipe: %A{other}"
 
-            UnixPathResolution.tryFaccessat readFd (bytes "screen_f") 0 0 system
+            UnixPathResolution.tryFaccessatEager readFd (bytes "screen_f") 0 0 system
             |> shouldEqual (Ok (SyscallAnswer.Failed expected))
 
             // Linux's AT_EMPTY_PATH would ask about the pipe itself, which is
             // unmeasured.
             if atFdCwd = linuxAtFdCwd then
-                UnixPathResolution.tryFaccessat readFd (bytes "") 0 0x1000 system
+                UnixPathResolution.tryFaccessatEager readFd (bytes "") 0 0x1000 system
                 |> shouldEqual (Error (AccessRefusal.Path (PathRefusal.UnmodelledStartingObject readFd)))
 
             // An absolute path never looks at the dirfd.
-            UnixPathResolution.tryFaccessat readFd (bytes "/b/screen_f") 0 0 system
+            UnixPathResolution.tryFaccessatEager readFd (bytes "/b/screen_f") 0 0 system
             |> answered
             |> shouldEqual "ok"
 
             // Neither does AT_FDCWD's path, of course.
-            UnixPathResolution.tryFaccessat atFdCwd (bytes "screen_f") 0 0 system
+            UnixPathResolution.tryFaccessatEager atFdCwd (bytes "screen_f") 0 0 system
             |> answered
             |> shouldEqual "ok"
 
@@ -1171,8 +1175,8 @@ module TestAccess =
             let system =
                 systemOn platform credentials "/pd" (pathTree (InodeOwner.ofProcess credentials))
 
-            UnixPathResolution.tryAccess (bytes p) amode system
-            |> shouldEqual (UnixPathResolution.tryFaccessat atFdCwd (bytes p) amode 0 system)
+            UnixPathResolution.tryAccessEager (bytes p) amode system
+            |> shouldEqual (UnixPathResolution.tryFaccessatEager atFdCwd (bytes p) amode 0 system)
 
         let paths =
             Gen.elements [ "f" ; "sub" ; "lf" ; "dang" ; "cyc" ; "nx" ; "" ; "/pd/f" ; "f/" ; "/" ]
@@ -1211,11 +1215,11 @@ module TestAccess =
 
     [<Test>]
     let ``the screen phase answers a bad word before the path is read, and otherwise asks for it`` () : unit =
-        let progress (result : Result<AccessProgress<int, string>, AccessRefusal>) : string =
+        let progress (result : Result<CallProgress<PausedAccess<int, string>, SyscallAnswer>, AccessRefusal>) : string =
             match result with
-            | Ok (AccessProgress.Answered (SyscallAnswer.Failed error)) -> string<UnixError> error
-            | Ok (AccessProgress.Answered other) -> failwith $"answered %A{other} without a path"
-            | Ok (AccessProgress.NeedsPath _) -> "needs the path"
+            | Ok (CallProgress.Answered (SyscallAnswer.Failed error)) -> string<UnixError> error
+            | Ok (CallProgress.Answered other) -> failwith $"answered %A{other} without a path"
+            | Ok (CallProgress.NeedsCopyIn _) -> "needs the path"
             | Error refusal -> $"refused: %s{AccessRefusal.describe refusal}"
 
         let linuxCredentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
@@ -1231,18 +1235,16 @@ module TestAccess =
             systemOn SimulatedUnixPlatform.macOsArm64 u501 "/b" (screenTree (owner 501u 20u))
 
         [
-            UnixPathResolution.tryAccessScreenPhase 8 linux |> progress
-            UnixPathResolution.tryFaccessatScreenPhase linuxAtFdCwd 0 0x40000000 linux
-            |> progress
-            UnixPathResolution.tryAccessScreenPhase 4 linux |> progress
-            UnixPathResolution.tryAccessScreenPhase 8 darwin |> progress
-            UnixPathResolution.tryFaccessatScreenPhase darwinAtFdCwd 0 0x40000000 darwin
-            |> progress
+            UnixPathResolution.tryAccess 8 linux |> progress
+            UnixPathResolution.tryFaccessat linuxAtFdCwd 0 0x40000000 linux |> progress
+            UnixPathResolution.tryAccess 4 linux |> progress
+            UnixPathResolution.tryAccess 8 darwin |> progress
+            UnixPathResolution.tryFaccessat darwinAtFdCwd 0 0x40000000 darwin |> progress
         ]
         |> shouldEqual [ "EINVAL" ; "EINVAL" ; "needs the path" ; "needs the path" ; "EINVAL" ]
 
-        match UnixPathResolution.tryFaccessatScreenPhase 12345 4 0 linux with
-        | Ok (AccessProgress.NeedsPath paused) ->
+        match UnixPathResolution.tryFaccessat 12345 4 0 linux with
+        | Ok (CallProgress.NeedsCopyIn paused) ->
             UnixPathResolution.tryAccessWithPath (bytes "/b/screen_f") paused
             |> answered
             |> shouldEqual "ok"

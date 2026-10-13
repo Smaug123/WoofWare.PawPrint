@@ -389,7 +389,7 @@ module TestDeviceFileSystem =
         // devtmpfs holds.
         for system in [ booted linux ; bootedAsRoot linux ] do
             let rename (source : string) (destination : string) =
-                UnixNamespace.tryRename (PathArg.ofText source) (PathArg.ofText destination) system
+                UnixNamespace.tryRenameEager (PathArg.ofText source) (PathArg.ofText destination) system
 
             for source, destination in
                 [
@@ -418,7 +418,7 @@ module TestDeviceFileSystem =
             | Error refusal -> failwith $"refused: %s{RemovalRefusal.describe refusal}"
 
         let renamed (system : UnixSystem<int, string>) (destination : string) =
-            match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText destination) system with
+            match UnixNamespace.tryRenameEager (PathArg.ofText "/dev") (PathArg.ofText destination) system with
             | Ok answer -> failed answer
             | Error refusal -> failwith $"refused: %s{RenameRefusal.describe refusal}"
 
@@ -442,7 +442,7 @@ module TestDeviceFileSystem =
         renamed root "/devx" |> shouldEqual (Some UnixError.EBUSY)
 
         // Unmeasured: the mount point as the thing displaced.
-        match UnixNamespace.tryRename (PathArg.ofText "/d") (PathArg.ofText "/dev") root with
+        match UnixNamespace.tryRenameEager (PathArg.ofText "/d") (PathArg.ofText "/dev") root with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"rename /d -> /dev: expected a refusal, got %A{other}"
 
@@ -456,12 +456,12 @@ module TestDeviceFileSystem =
         // "/dev/." are on the device filesystem whatever they reach.
         for system in [ booted linux ; bootedAsRoot linux ] do
             for source in [ "/dev/.." ; "/dev/." ] do
-                match UnixNamespace.tryRename (PathArg.ofText source) (PathArg.ofText "/d/x") system with
+                match UnixNamespace.tryRenameEager (PathArg.ofText source) (PathArg.ofText "/d/x") system with
                 | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
                 | Error refusal -> failwith $"rename %s{source}: refused: %s{RenameRefusal.describe refusal}"
 
             // And "/d/.." is on the root filesystem though it reaches the root.
-            match UnixNamespace.tryRename (PathArg.ofText "/d/..") (PathArg.ofText "/dev/x") system with
+            match UnixNamespace.tryRenameEager (PathArg.ofText "/d/..") (PathArg.ofText "/dev/x") system with
             | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
             | Error refusal -> failwith $"rename /d/..: refused: %s{RenameRefusal.describe refusal}"
 
@@ -487,11 +487,11 @@ module TestDeviceFileSystem =
             | Error (RemovalRefusal.MountPoint _) -> ()
             | other -> failwith $"removing /dev from a sticky root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText "/devx") sticky with
+        match UnixNamespace.tryRenameEager (PathArg.ofText "/dev") (PathArg.ofText "/devx") sticky with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"renaming /dev in a sticky root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.tryRename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (bootedAsRoot linux) with
+        match UnixNamespace.tryRenameEager (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (bootedAsRoot linux) with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"moving /dev to another directory: expected a refusal, got %A{other}"
 
@@ -509,11 +509,13 @@ module TestDeviceFileSystem =
         | Error (RemovalRefusal.DeviceFileSystem (_, removed)) -> removed |> shouldEqual (name "null")
         | other -> failwith $"unlink /dev/null as root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.tryRename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") root with
+        match UnixNamespace.tryRenameEager (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") root with
         | Error (RenameRefusal.DeviceFileSystem _) -> ()
         | other -> failwith $"rename within /dev as root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.tryRename (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") unprivileged with
+        match
+            UnixNamespace.tryRenameEager (PathArg.ofText "/dev/null") (PathArg.ofText "/dev/urandom") unprivileged
+        with
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.EACCES)
         | Error refusal -> failwith $"refused: %s{RenameRefusal.describe refusal}"
 
@@ -584,10 +586,10 @@ module TestDeviceFileSystem =
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.ENOTDIR)
         | Error refusal -> failwith $"refused: %s{OpenRefusal.describe refusal}"
 
-        UnixPathResolution.tryAccess (PathArg.ofText "/dev/urandom") 6 system
+        UnixPathResolution.tryAccessEager (PathArg.ofText "/dev/urandom") 6 system
         |> shouldEqual (Ok (SyscallAnswer.Completed 0L))
 
-        UnixPathResolution.tryAccess (PathArg.ofText "/dev/urandom") 1 system
+        UnixPathResolution.tryAccessEager (PathArg.ofText "/dev/urandom") 1 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EACCES))
 
         UnixNamespace.tryReadlink (PathArg.ofText "/dev/null") UserBuffer.Mapped 16 system

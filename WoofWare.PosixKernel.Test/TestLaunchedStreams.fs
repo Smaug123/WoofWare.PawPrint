@@ -127,12 +127,12 @@ module TestLaunchedStreams =
         =
         match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
         | Error refusal -> Error (Some refusal)
-        | Ok (WriteOutcome.Returns (answer, after))
-        | Ok (WriteOutcome.ReturnsRaising (answer, _, after)) -> Ok (answer, after)
-        | Ok (WriteOutcome.ProcessEnded _ as outcome) ->
+        | Ok (WriteStep.Returns (answer, after))
+        | Ok (WriteStep.ReturnsRaising (answer, _, after)) -> Ok (answer, after)
+        | Ok (WriteStep.ProcessEnded _ as outcome) ->
             failwith $"a write ended the process, whose SIGPIPE is ignored: %A{outcome}"
-        | Ok (WriteOutcome.WouldBlock _) -> Error None
-        | Ok (WriteOutcome.Restarts _ as outcome) -> failwith $"a write that never slept restarted: %A{outcome}"
+        | Ok (WriteStep.WouldBlock _) -> Error None
+        | Ok (WriteStep.Restarts _ as outcome) -> failwith $"a write that never slept restarted: %A{outcome}"
 
     /// What the earlier standard streams answered, if the descriptor named one
     /// (`None` for a descriptor the reference does not model), and the

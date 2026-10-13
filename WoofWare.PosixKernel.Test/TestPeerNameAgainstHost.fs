@@ -508,7 +508,7 @@ module TestPeerNameAgainstHost =
                     let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
                     match
-                        UnixSocket.tryGetsockopt
+                        UnixSocket.tryGetsockoptLength
                             client
                             level
                             optionName

@@ -473,7 +473,7 @@ module TestInotifyDeliveryAgainstHost =
                             answered
                                 op
                                 (hostAnswer (hostLink (onHost paths.[existing], onHost paths.[path])))
-                                (UnixNamespace.tryLink
+                                (UnixNamespace.tryLinkEager
                                     (PathArg.ofText paths.[existing])
                                     (PathArg.ofText paths.[path])
                                     system.Value)
@@ -481,7 +481,7 @@ module TestInotifyDeliveryAgainstHost =
                             answered
                                 op
                                 (hostAnswer (hostSymlink (bytes targets.[target], onHost paths.[path])))
-                                (UnixNamespace.trySymlink
+                                (UnixNamespace.trySymlinkEager
                                     (PathArg.ofText targets.[target])
                                     (PathArg.ofText paths.[path])
                                     system.Value)
@@ -489,7 +489,7 @@ module TestInotifyDeliveryAgainstHost =
                             answered
                                 op
                                 (hostAnswer (hostRename (onHost paths.[source], onHost paths.[destination])))
-                                (UnixNamespace.tryRename
+                                (UnixNamespace.tryRenameEager
                                     (PathArg.ofText paths.[source])
                                     (PathArg.ofText paths.[destination])
                                     system.Value)
@@ -549,7 +549,7 @@ module TestInotifyDeliveryAgainstHost =
                             answered
                                 op
                                 (hostAnswer (hostAddWatch (hostFds.[instance], onHost paths.[path], mask)))
-                                (UnixInotify.tryInotifyAddWatch
+                                (UnixInotify.tryInotifyAddWatchEager
                                     modelFds.[instance]
                                     (PathArg.ofText paths.[path])
                                     mask

@@ -89,7 +89,7 @@ module TestListenerTeardown =
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.trySetsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+        UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
 
     let private lingerZero (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match setLinger fd 1 0 system with
@@ -134,9 +134,9 @@ module TestListenerTeardown =
         let bytes = ImmutableArray.Create<byte> (Array.zeroCreate<byte> count)
 
         match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> answer (Ok written), system
-        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> answer (Error error), system
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
+        | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> answer (Ok written), system
+        | Ok (WriteStep.Returns (WriteAnswer.Failed error, system)) -> answer (Error error), system
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
             answer (Error error) + "+SIGPIPE", system
         | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
 

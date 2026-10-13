@@ -1118,8 +1118,8 @@ module TestBlockingAccept =
 
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixSignal.tryOnReturnToUser task system with
-        | Ok (ReturnToUserOutcome.Resumes system) -> system
-        | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> system
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
             (system, frames)
             ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
             |> returnToUser task
@@ -1255,7 +1255,7 @@ module TestBlockingAccept =
                         Some (System.Collections.Immutable.ImmutableArray.Create (value, 0, count))
                     | other -> failwith $"setsockopt of %A{change} through fd %d{fd} was admitted as %A{other}"
 
-                UnixSocket.trySetsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+                UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
 
             // The accepted socket must hold what its client's connection
             // completed with, and is then closed at once, its linger turned off

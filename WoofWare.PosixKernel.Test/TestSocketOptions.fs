@@ -58,8 +58,8 @@ module TestSocketOptions =
         =
         NewSocket.create domain kind SocketProtocol.Default system
 
-    /// A set as a client makes it: the admission, then the bytes the copy takes
-    /// from `value`.
+    /// A set as a client makes it: stopping at the copy, then the bytes the copy
+    /// takes from `value`.
     let private set
         (option : Option)
         (fd : int)
@@ -70,15 +70,8 @@ module TestSocketOptions =
         : Result<SetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
         =
         let level, name = numbered system.Machine.UnixPlatform option
-
-        let supplied =
-            match UnixSocket.tryAdmitSetSockOpt fd level name buffer length system with
-            | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
-            | Ok SetSockOptAdmission.NoCopy
-            | Ok (SetSockOptAdmission.Answered _)
-            | Error _ -> None
-
-        UnixSocket.trySetsockopt fd level name buffer length supplied system
+        let contents (count : int) = ImmutableArray.Create (value, 0, count)
+        SockOptCalls.set fd level name buffer length contents system
 
     /// A set through real storage at the option's own size, which must succeed.
     let private setOk (option : Option) (fd : int) (value : ImmutableArray<byte>) (system : UnixSystem<int, string>) =
@@ -97,12 +90,7 @@ module TestSocketOptions =
         =
         let level, name = numbered system.Machine.UnixPlatform option
 
-        let read =
-            match UnixSocket.tryAdmitGetSockOpt fd level name value length system with
-            | Ok GetSockOptAdmission.ReadLength -> Some declared
-            | _ -> None
-
-        match UnixSocket.tryGetsockopt fd level name value length read system with
+        match SockOptCalls.get fd level name value length declared system with
         | Ok (answer, _) -> answer
         | Error refusal -> failwith $"getsockopt refused: %s{SocketOptionRefusal.describe refusal}"
 
@@ -741,7 +729,7 @@ module TestSocketOptions =
 
         let short =
             Assert.Throws<exn> (fun () ->
-                UnixSocket.trySetsockopt fd level name UserBuffer.Mapped 8u (Some (OptionValue.ofInt 1)) system
+                UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped 8u (Some (OptionValue.ofInt 1)) system
                 |> ignore<_>
             )
 

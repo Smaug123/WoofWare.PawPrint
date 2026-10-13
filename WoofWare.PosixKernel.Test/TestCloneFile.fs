@@ -181,7 +181,7 @@ module TestCloneFile =
         (system : UnixSystem<int, string>)
         : Result<SyscallAnswer * UnixSystem<int, string>, CloneFileRefusal>
         =
-        UnixNamespace.tryCloneFile (argument source) (argument destination) flags system
+        UnixNamespace.tryCloneFileEager (argument source) (argument destination) flags system
 
     let private answerText (result : Result<SyscallAnswer * UnixSystem<int, string>, CloneFileRefusal>) : string =
         match result with
@@ -298,16 +298,16 @@ module TestCloneFile =
     let ``bad flags are answered before either pathname is read, and the source before the destination`` () : unit =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 u501 tree
 
-        UnixNamespace.tryCloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable (1 <<< 20) system
+        UnixNamespace.tryCloneFileEager PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable (1 <<< 20) system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EINVAL, system))
 
-        UnixNamespace.tryCloneFile PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFileEager PathArgumentBytes.Unreadable PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, system))
 
-        UnixNamespace.tryCloneFile (argument "nx") PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFileEager (argument "nx") PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, system))
 
-        UnixNamespace.tryCloneFile (argument "f") PathArgumentBytes.Unreadable 0x4 system
+        UnixNamespace.tryCloneFileEager (argument "f") PathArgumentBytes.Unreadable 0x4 system
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, system))
 
     [<Test>]

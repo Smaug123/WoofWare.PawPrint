@@ -65,12 +65,18 @@ module EndedProcess =
         =
         ended.EndedIn
 
-/// What a syscall that can end the whole process did.
+/// What a syscall that can end the whole process did to it: the call's own
+/// outcome and the system it left the process in, or the process ended.
+///
+/// `'Outcome` is what the call says besides, which never includes the process
+/// ending: a `WriteOutcome` for a write, a `KillOutcome` for `kill(2)`, a
+/// `ReturnToUserOutcome` for a return to user mode, and `unit` for a thread's
+/// exit, which says nothing more.
 [<RequireQualifiedAccess>]
-type TaskOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-    /// The process carries on, as this system.
-    | Continues of UnixSystem<'Task, 'Handler>
-    /// The process has ended.
+type ProcessFate<'Outcome, 'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// The process carries on, as `system`.
+    | Continues of outcome : 'Outcome * system : UnixSystem<'Task, 'Handler>
+    /// The process has ended, and never returns from the call.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
 
 /// Why this library will not answer a task's thread exit: a case it does not
@@ -205,7 +211,7 @@ module UnixTaskLifecycle =
         (task : 'Task)
         (status : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<TaskOutcome<'Task, 'Handler>, ThreadExitRefusal<'Task>>
+        : Result<ProcessFate<unit, 'Task, 'Handler>, ThreadExitRefusal<'Task>>
         =
         let state = UnixTaskTable.get task system.Tasks
 
@@ -230,12 +236,13 @@ module UnixTaskLifecycle =
                 let termination =
                     ProcessTermination.Exited (ExitStatus.ofExitArgument SimulatedUnixFlavour.Linux status)
 
-                Ok (TaskOutcome.ProcessEnded (endProcess termination system))
+                Ok (ProcessFate.ProcessEnded (endProcess termination system))
             | SimulatedUnixFlavour.Darwin -> Error (ThreadExitRefusal.LastTaskOnDarwin task)
         else
 
         Ok (
-            TaskOutcome.Continues
+            ProcessFate.Continues (
+                (),
                 { system with
                     Machine =
                         { system.Machine with
@@ -248,6 +255,7 @@ module UnixTaskLifecycle =
                         }
                     Tasks = Map.remove task system.Tasks
                 }
+            )
         )
 
     /// <summary>
@@ -273,7 +281,7 @@ module UnixTaskLifecycle =
         (task : 'Task)
         (status : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : TaskOutcome<'Task, 'Handler>
+        : ProcessFate<unit, 'Task, 'Handler>
         =
         tryExitThread task status system
         |> Refusal.orRaise "UnixTaskLifecycle.exitThread" ThreadExitRefusal.kind ThreadExitRefusal.describe

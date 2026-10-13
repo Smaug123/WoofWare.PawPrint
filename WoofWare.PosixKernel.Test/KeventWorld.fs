@@ -116,7 +116,7 @@ module KeventWorld =
             | Ok (GetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        match UnixSocket.tryGetsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockoptLength fd level optionName UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok answer -> answer
         | Error refusal -> failwith $"getsockopt refused: %s{SocketOptionRefusal.describe refusal}"
 

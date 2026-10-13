@@ -2849,7 +2849,7 @@ module TestVirtualFileSystemAgainstHost =
                 let bytes (path : string) = PathArg.ofText path
 
                 match
-                    UnixNamespace.tryRename (bytes source) (bytes destination) (renameModelSystem (buildModel ()))
+                    UnixNamespace.tryRenameEager (bytes source) (bytes destination) (renameModelSystem (buildModel ()))
                 with
                 | Ok (SyscallAnswer.Completed 0L, _) -> RenameRefusal.Succeeded
                 | Ok (SyscallAnswer.Failed error, _) -> RenameRefusal.Refused (hostErrno error)

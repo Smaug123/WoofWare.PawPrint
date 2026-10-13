@@ -102,38 +102,35 @@ module internal SigprocmaskRefusal =
         | SigprocmaskRefusal.DarwinUnblockedForAnotherTask _ -> RefusalKind.Unmodelled
 
 /// What a `kill(2)` or `pthread_kill(3)` the kernel answered did to the
-/// calling process.
+/// calling process, if it did not end it (see `ProcessFate`).
 [<RequireQualifiedAccess>]
-type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-    /// The process carries on, as this system: the signal is pending, or was
-    /// discarded, or there was no signal to send.
-    | ProcessContinues of UnixSystem<'Task, 'Handler>
-    /// The signal stops the whole process, which is this system.
-    | ProcessStopped of signal : Signal * UnixSystem<'Task, 'Handler>
-    /// The signal killed the process.
-    | ProcessEnded of EndedProcess<'Task, 'Handler>
+type KillOutcome =
+    /// The process runs on: the signal is pending, or was discarded, or there
+    /// was no signal to send.
+    | ProcessRuns
+    /// The signal stops the whole process.
+    | ProcessStopped of signal : Signal
 
 /// What a task's return to user mode did, as `UnixSignal.onReturnToUser`
-/// answers it: run the handlers of the caught signals it took, or apply a
-/// signal's kernel default.
+/// answers it, if it did not end the process (see `ProcessFate`): run the
+/// handlers of the caught signals it took, or apply a signal's kernel default.
 [<RequireQualifiedAccess>]
 type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-    /// The task took nothing the client acts on, and runs its own code next,
-    /// in this system.
-    | Resumes of UnixSystem<'Task, 'Handler>
+    /// The task took nothing the client acts on, and runs its own code next.
+    | Resumes
     /// A frame for every caught signal the task takes now, pushed all at once,
-    /// innermost first, in this system: the head's handler runs first, and
+    /// innermost first: the head's handler runs first, and
     /// each handler's `UnixSignal.sigreturn` is followed by another
     /// `UnixSignal.onReturnToUser`, which may push more frames before the next
     /// one down runs. Never empty.
-    | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list * UnixSystem<'Task, 'Handler>
+    | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list
     /// No handler claims the signal and its kernel default is to suspend the
-    /// whole process, which is this system. The library holds no stopped
-    /// state, so the client acts on it.
-    | ProcessStopped of signal : Signal * UnixSystem<'Task, 'Handler>
+    /// whole process. The library holds no stopped state, so the client acts
+    /// on it.
+    | ProcessStopped of signal : Signal
     /// No handler claims the signal, its kernel default is to resume a stopped
     /// process, and the task does not block it: the kernel discarded it as it
-    /// was delivered, and the process carries on, as this system. A blocked
+    /// was delivered, and the process carries on. A blocked
     /// one stays pending, as any other signal does, and `sigpending` reports
     /// it.
     ///
@@ -154,16 +151,7 @@ type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : 
     /// answered as `KillOutcome.ProcessStopped` or `ProcessStopped`, for the
     /// client to act on), so the generation has nothing to do, and what
     /// remains is the pending signal, gated by the mask like any other.
-    | ContinueDiscarded of signal : Signal * UnixSystem<'Task, 'Handler>
-    /// No handler claims the signal and its kernel default is to terminate
-    /// the process, which it did: `EndedProcess.termination` is
-    /// `ProcessTermination.Signaled` with the signal and the core flag. A
-    /// parent's `wait` reports the process as killed by the signal
-    /// (`WIFSIGNALED`, `WTERMSIG`), with the core flag set iff a core was
-    /// dumped; `128 + signo` is only how a shell renders that as an exit
-    /// status. No handler runs, not even one whose frame was pushed for
-    /// another signal at the same return.
-    | ProcessEnded of EndedProcess<'Task, 'Handler>
+    | ContinueDiscarded of signal : Signal
 
 /// What became of a `sigsuspend(2)` or `pause(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -202,7 +190,7 @@ module UnixSignal =
         (pid : int32)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<KillOutcome<'Task, 'Handler>, UnixError>, KillRefusal>
+        : Result<Result<ProcessFate<KillOutcome, 'Task, 'Handler>, UnixError>, KillRefusal>
         =
         let self = ProcessId.toInt32 (UnixSystem.processId system)
 
@@ -219,7 +207,7 @@ module UnixSignal =
         elif self = 1 then
             Error KillRefusal.InitProcess
         elif signo = 0 then
-            Ok (Ok (KillOutcome.ProcessContinues system))
+            Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)))
         else
 
         match Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo with
@@ -247,14 +235,14 @@ module UnixSignal =
             match generation with
             | Error refusal -> Error (KillRefusal.Receiver refusal)
             | Ok (SignalGeneration.ProcessContinues signals) ->
-                Ok (Ok (KillOutcome.ProcessContinues (withSignals signals)))
+                Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, withSignals signals)))
             | Ok (SignalGeneration.ProcessStopped (signal, signals)) ->
-                Ok (Ok (KillOutcome.ProcessStopped (signal, withSignals signals)))
+                Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped signal, withSignals signals)))
             | Ok (SignalGeneration.ProcessTerminated (signal, coreDumped)) ->
                 let ended =
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
 
-                Ok (Ok (KillOutcome.ProcessEnded ended))
+                Ok (Ok (ProcessFate.ProcessEnded ended))
 
     /// `kill(2)`, sent by the calling process to `pid`, with `signo` read under
     /// the process's own signal numbering.
@@ -268,7 +256,7 @@ module UnixSignal =
     /// library generates one (`pthreadKill`, and the `SIGPIPE` a write raises):
     ///   * at its default disposition, where some task could receive it, it
     ///     takes that default at once: it terminates the process
-    ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
+    ///     (`ProcessFate.ProcessEnded`, with the core flag set if its default
     ///     dumps core and the process's `CoreDumps` allows a dump), stops it
     ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it
     ///     or to continue the process (SIGCONT, which has no stopped process to
@@ -307,7 +295,7 @@ module UnixSignal =
         (pid : int32)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<KillOutcome<'Task, 'Handler>, UnixError>
+        : Result<ProcessFate<KillOutcome, 'Task, 'Handler>, UnixError>
         =
         tryKill pid signo system
         |> Refusal.orRaise "UnixSignal.kill" KillRefusal.kind KillRefusal.describe
@@ -338,7 +326,7 @@ module UnixSignal =
     let internal tryOnReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReturnToUserOutcome<'Task, 'Handler>, SignalReceiverRefusal>
+        : Result<ProcessFate<ReturnToUserOutcome<'Task, 'Handler>, 'Task, 'Handler>, SignalReceiverRefusal>
         =
         // Looked up rather than asked of `UnixTaskTable.parkedFor`, so that a
         // name that is no task is left to `SignalState.onReturnToUser`'s own
@@ -356,15 +344,18 @@ module UnixSignal =
             let after = withSignals signals system
 
             match delivery with
-            | None -> ReturnToUserOutcome.Resumes after
-            | Some (SignalDelivery.RunHandlers frames) -> ReturnToUserOutcome.RunHandlers (frames, after)
-            | Some (SignalDelivery.DefaultStop signal) -> ReturnToUserOutcome.ProcessStopped (signal, after)
-            | Some (SignalDelivery.DefaultContinue signal) -> ReturnToUserOutcome.ContinueDiscarded (signal, after)
+            | None -> ProcessFate.Continues (ReturnToUserOutcome.Resumes, after)
+            | Some (SignalDelivery.RunHandlers frames) ->
+                ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after)
+            | Some (SignalDelivery.DefaultStop signal) ->
+                ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped signal, after)
+            | Some (SignalDelivery.DefaultContinue signal) ->
+                ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded signal, after)
             | Some (SignalDelivery.DefaultTerminate (signal, coreDumped)) ->
                 // Ended as the walk left it: the signal that kills it is taken,
                 // so it is not pending in the process's final state, as one
                 // `kill` applies at once never is.
-                ReturnToUserOutcome.ProcessEnded (
+                ProcessFate.ProcessEnded (
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) after
                 )
         )
@@ -431,8 +422,14 @@ module UnixSignal =
     /// restore included.
     ///
     /// A signal whose default terminates the process ends it here, and the
-    /// answer is then the ended process rather than a system to make another
-    /// call in, as `kill` answers one that kills at once.
+    /// answer is then the ended process (`ProcessFate.ProcessEnded`) rather
+    /// than a system to make another call in, as `kill` answers one that kills
+    /// at once. `EndedProcess.termination` is `ProcessTermination.Signaled`
+    /// with the signal and the core flag: a parent's `wait` reports the process
+    /// as killed by the signal (`WIFSIGNALED`, `WTERMSIG`), with the core flag
+    /// set iff a core was dumped; `128 + signo` is only how a shell renders
+    /// that as an exit status. No handler runs, not even one whose frame was
+    /// pushed for another signal at the same return.
     ///
     /// A task asleep in a syscall is not in user mode, and returns to it only
     /// once the syscall has answered. A signal ends that sleep through the
@@ -444,7 +441,7 @@ module UnixSignal =
     let onReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : ReturnToUserOutcome<'Task, 'Handler>
+        : ProcessFate<ReturnToUserOutcome<'Task, 'Handler>, 'Task, 'Handler>
         =
         tryOnReturnToUser task system
         |> Refusal.orRaise "UnixSignal.onReturnToUser" SignalReceiverRefusal.kind SignalReceiverRefusal.describe
@@ -470,7 +467,7 @@ module UnixSignal =
         (target : 'Task)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<KillOutcome<'Task, 'Handler>, UnixError>, ThreadKillRefusal>
+        : Result<Result<ProcessFate<KillOutcome, 'Task, 'Handler>, UnixError>, ThreadKillRefusal>
         =
         if not (Map.containsKey target system.Tasks) then
             failwith
@@ -488,7 +485,7 @@ module UnixSignal =
         if ProcessId.toInt32 (UnixSystem.processId system) = 1 then
             Error ThreadKillRefusal.InitProcess
         elif signo = 0 then
-            Ok (Ok (KillOutcome.ProcessContinues system))
+            Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)))
         else
 
         match Signal.ofRawSignoUnder numbering signo with
@@ -509,14 +506,14 @@ module UnixSignal =
             match generation with
             | Error refusal -> Error (ThreadKillRefusal.Receiver refusal)
             | Ok (SignalGeneration.ProcessContinues signals) ->
-                Ok (Ok (KillOutcome.ProcessContinues (withSignals signals system)))
+                Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, withSignals signals system)))
             | Ok (SignalGeneration.ProcessStopped (signal, signals)) ->
-                Ok (Ok (KillOutcome.ProcessStopped (signal, withSignals signals system)))
+                Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped signal, withSignals signals system)))
             | Ok (SignalGeneration.ProcessTerminated (signal, coreDumped)) ->
                 let ended =
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
 
-                Ok (Ok (KillOutcome.ProcessEnded ended))
+                Ok (Ok (ProcessFate.ProcessEnded ended))
 
     /// `pthread_kill(3)`, sent by the calling process to `target`, one of its
     /// own tasks, with `signo` read under the process's own signal numbering.
@@ -541,7 +538,7 @@ module UnixSignal =
         (target : 'Task)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<KillOutcome<'Task, 'Handler>, UnixError>
+        : Result<ProcessFate<KillOutcome, 'Task, 'Handler>, UnixError>
         =
         tryPthreadKill target signo system
         |> Refusal.orRaise "UnixSignal.pthreadKill" ThreadKillRefusal.kind ThreadKillRefusal.describe
