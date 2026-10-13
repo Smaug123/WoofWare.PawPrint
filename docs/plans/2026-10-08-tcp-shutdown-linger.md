@@ -690,6 +690,24 @@ been rebased onto main (with #1790).
    - Tests: the reference model gains `abort`; L's rows without shutdown are
      replayed from the embedded probe output; a host-equality test covers L
      and G.
+
+   Done, after stages 2 to 4 had built `TcpTransfer.abort` and its rules.
+   `releaseDestroyed` aborts under {1, 0}, and so does a Linux accept that
+   drops its connection; `AbortiveClose` and `AbortiveDrop` are gone.
+   Darwin's close after its own FIN was queued before the peer's arrived
+   is refused (`DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin`), as
+   `TcpTransfer.abortRefused` already said. Darwin frees the closer's
+   endpoint after an abortive close once both FINs have arrived, even where
+   its FIN was first (L, `bothfin-cfirst`), which the ordinary close does
+   not: `TcpTransferRules.Darwin` keeps the ends so released. A client that
+   resets while its connection is still in the accept queue was unmeasured;
+   `queued-client-reset.c` measured that the accept returns it on both
+   flavours, as a reset socket, which is what the existing rules give.
+   Tests: `TestShutdownAgainstHost` replays all of L, the closer's endpoint
+   included, against the host (where the probe sets the linger before both
+   FINs, so does the replay) and against the kernel under both flavours;
+   `TestListenerTeardown` replays `queued-client-reset.c`; the dual-mode
+   probe's R3 rows are compared. G stays covered by `TestConnectedTransfer`.
 2. **Listener teardown.**
    - Releasing a listener aborts every queued connection, and
      `ListenerWouldResetUnacceptedClient` goes.

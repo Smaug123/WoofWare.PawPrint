@@ -6,7 +6,8 @@
 // writes 100 bytes, optionally sets SO_LINGER {1, 0}, and closes; nothing has
 // accepted yet. Then: the listener's readiness, a bind of the client's
 // endpoint, the accept, and if it returns a socket, two reads of 4096 bytes,
-// SO_ERROR, getpeername, a write of 100 bytes, and a further read.
+// SO_ERROR, getpeername, a write of 100 bytes, and, once what the write set
+// in motion has arrived, a further read and SO_ERROR.
 //
 // Build and run, from this directory:
 //   Darwin: clang -Wall -O1 -o /tmp/queued-client-reset queued-client-reset.c && /tmp/queued-client-reset
@@ -20,6 +21,10 @@
 // reads what was sent, then ECONNRESET, then end of file, its write answers
 // EPIPE, and getpeername answers ENOTCONN on Linux and EINVAL on Darwin; and
 // the reset frees the client's endpoint at once, where a FIN leaves it held.
+// After a FIN, the server's write is taken and resets the connection, which
+// Linux reports as EPIPE pending behind end of file and Darwin as ECONNRESET
+// at the next read, as for any write after the peer's close. Without the pause
+// before that read, Darwin's read can come before the reset and answer 0.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -152,11 +157,15 @@ int main(void)
         int pe = errno;
         long w = write(a, buf, 100);
         int we = errno;
+        settle();
         long r3 = read(a, buf, sizeof buf);
         int e3 = errno;
-        printf("Q\t%s\tlistener-poll=0x%x %s accept=ok read=%s,%s soerr=%s getpeername=%s write100=%s read=%s\n",
+        int soerr2 = 0;
+        sl = sizeof soerr2;
+        getsockopt(a, SOL_SOCKET, SO_ERROR, &soerr2, &sl);
+        printf("Q\t%s\tlistener-poll=0x%x %s accept=ok read=%s,%s soerr=%s getpeername=%s write100=%s read=%s soerr=%s\n",
                names[row], pl.revents, b, ans(r1, e1), ans(r2, e2), soerr ? ename(soerr) : "0",
-               pn == 0 ? "ok" : ename(pe), ans(w, we), ans(r3, e3));
+               pn == 0 ? "ok" : ename(pe), ans(w, we), ans(r3, e3), soerr2 ? ename(soerr2) : "0");
         close(a);
         close(l);
     }

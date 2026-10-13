@@ -501,9 +501,21 @@ module TestListenerTeardown =
     /// writes 100 bytes if the row says `wrote`, sets `SO_LINGER` {1, 0} if it
     /// says `reset`, and closes while its connection is still queued; then
     /// the listener's readiness, a bind of the client's endpoint, the accept,
-    /// and what the accepted socket answers, printed as the probe prints them.
+    /// and what the accepted socket answers, a write and the read and
+    /// `SO_ERROR` after it included, printed as the probe prints them.
     let private kernelQueuedClient (flavour : SimulatedUnixFlavour) (row : string) : string =
         let system = systemOn (platformOf flavour)
+
+        // The probe ignores SIGPIPE.
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals =
+                            SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore system.Process.Signals
+                    }
+            }
+
         let listener, system = listenerAt system
         let client, system = connectTo system
 
@@ -567,12 +579,13 @@ module TestListenerTeardown =
 
         let w, system = write accepted 100 system
         let r3, system = read accepted system
+        let soerr2, system = socketError accepted system
         UnixSystem.checkInvariants system |> shouldEqual []
 
         // The probe ignores SIGPIPE, so its write reports no signal.
         let w = w.Replace ("+SIGPIPE", "")
 
-        $"Q\t%s{row}\tlistener-poll=0x%x{listenerPoll} %s{bound} accept=ok read=%s{r1},%s{r2} soerr=%s{soerr} getpeername=%s{peer} write100=%s{w} read=%s{r3}"
+        $"Q\t%s{row}\tlistener-poll=0x%x{listenerPoll} %s{bound} accept=ok read=%s{r1},%s{r2} soerr=%s{soerr} getpeername=%s{peer} write100=%s{w} read=%s{r3} soerr=%s{soerr2}"
 
     /// Measured on both (`queued-client-reset.c`): a connection whose client
     /// closes while it waits in the accept queue is still accepted, and the
@@ -589,7 +602,11 @@ module TestListenerTeardown =
                 [ "fin" ; "fin-wrote" ; "reset" ; "reset-wrote" ]
                 |> List.map (kernelQueuedClient flavour)
 
-            replayed |> shouldEqual (resource "queuedClientReset" flavour)
+            let measured = resource "queuedClientReset" flavour
+            measured |> List.length |> shouldEqual 4
+
+            for replayed, measured in List.zip replayed measured do
+                replayed |> shouldEqual measured
 
     // ------------------------------------------------------------------
     // A client whose connect has not reported its completion

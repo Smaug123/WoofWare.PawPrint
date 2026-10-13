@@ -340,7 +340,7 @@ type UnixSystemDefect<'Task> =
     /// No descriptor names the open file description of the connected stream
     /// socket `socket`, whose `SO_LINGER` is on, and only syscalls in flight
     /// hold it. The socket is closed when the last of those calls returns, and
-    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin`,
     /// `DescriptionReleaseRefusal.LingeringClose`), which a call's return has
     /// no way to answer. `close` refuses the close that would leave the socket
     /// so (`CloseRefusal.LingeringCloseDeferredToCall`).

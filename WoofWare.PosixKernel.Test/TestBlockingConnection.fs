@@ -136,6 +136,10 @@ module TestBlockingConnection =
             Marked : Set<ConnectionEnd>
             /// Each end's `SO_LINGER` time, while it is on.
             Linger : Map<ConnectionEnd, int>
+            /// The ends a Darwin close under `SO_LINGER` {1, 0} released the
+            /// endpoint of once both FINs had arrived, whichever was first
+            /// (`tcp-shutdown.c` section L, `bothfin-cfirst`).
+            AbortReleased : Set<ConnectionEnd>
         }
 
     let private endOf (call : Call) : ConnectionEnd =
@@ -171,11 +175,21 @@ module TestBlockingConnection =
                 r
             else
                 let abortive = Map.tryFind connectionEnd r.Linger = Some 0
+
+                let exchangeComplete =
+                    r.Model.Ends.[ConnectionEnd.Client].FinArrived
+                    && r.Model.Ends.[ConnectionEnd.Server].FinArrived
+
                 let _, model = TcpTransferReference.close abortive connectionEnd r.Model
 
                 { r with
                     Model = model
                     Gone = Set.add connectionEnd r.Gone
+                    AbortReleased =
+                        if abortive && not r.Model.Linux && exchangeComplete then
+                            Set.add connectionEnd r.AbortReleased
+                        else
+                            r.AbortReleased
                 }
         )
 
@@ -1087,6 +1101,7 @@ module TestBlockingConnection =
                     Gone = Set.empty
                     Marked = Set.empty
                     Linger = Map.empty
+                    AbortReleased = Set.empty
                 }
 
             // Both ends' capacities are the same, so one pair describes both.
@@ -1743,7 +1758,9 @@ module TestBlockingConnection =
                     // until a reset reaches the connection or the end's own
                     // FIN, made after the peer's had arrived, has arrived,
                     // whether its socket is open or closed
-                    // (`bind-held-endpoint.c`); and forgotten with the
+                    // (`bind-held-endpoint.c`), or, on Darwin, its socket
+                    // closed under linger zero once both FINs had arrived;
+                    // and forgotten with the
                     // connection once both sockets have gone, where a real
                     // kernel's `TIME_WAIT` would go on holding an active
                     // closer's, which this library does not model. The pair's
@@ -1758,6 +1775,7 @@ module TestBlockingConnection =
                             && not ends.[ConnectionEnd.Client].GotReset
                             && not ends.[ConnectionEnd.Server].GotReset
                             && not (own.FinArrived && own.FinPassive)
+                            && not (Set.contains connectionEnd reference.AbortReleased)
 
                         for reuse in [ false ; true ] do
                             let refused = bindRefused reuse endPort system

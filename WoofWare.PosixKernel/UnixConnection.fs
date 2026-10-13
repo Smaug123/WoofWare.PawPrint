@@ -110,15 +110,6 @@ type internal AcceptRefusal =
     /// sleeps on through it. This kernel wakes a sleeping accept while a
     /// connection is queued, which would wake that second sleeper too.
     | DarwinDrainedListener of listener : SocketId
-    /// The accept fails after taking `connection` off `listener`'s queue, which
-    /// closes the connection's server end at once, and that end has the
-    /// `SO_LINGER` the listener had when the connection completed, on with a
-    /// time of zero, while the client is still open. A real kernel resets the connection, and the client reads
-    /// ECONNRESET; this kernel models no abortive close. See
-    /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
-    /// the drop is the ordinary close, since the server end has written
-    /// nothing that could still be in its send buffer.
-    | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module internal AcceptRefusal =
@@ -136,8 +127,6 @@ module internal AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
-        | AcceptRefusal.AbortiveDrop (listener, connection) ->
-            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the SO_LINGER the listener had when the connection completed, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
@@ -151,7 +140,6 @@ module internal AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault _ -> RefusalKind.Unmodelled
         | AcceptRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
         | AcceptRefusal.DarwinDrainedListener _ -> RefusalKind.Unmodelled
-        | AcceptRefusal.AbortiveDrop _ -> RefusalKind.Unmodelled
 
 /// What `shutdown(2)` answered.
 [<RequireQualifiedAccess>]
@@ -1905,17 +1893,21 @@ module UnixConnection =
             )
 
         // The server end closes as `close` closes it: a FIN, or a reset if the
-        // client had written to it. It keeps the SO_REUSEADDR its socket would
-        // have held, the listener's when the connection completed
+        // client had written to it, and abortively under the `SO_LINGER` {1, 0}
+        // its connection completed with (measured, `queued-options.c` section
+        // D: the client reads ECONNRESET). It keeps the SO_REUSEADDR its socket
+        // would have held, the listener's when the connection completed
         // (`QueuedConnection.ReuseAddress`, measured for the socket an accept
         // returns); that a dropped connection's end keeps it too is inferred
         // from Linux's source (`sk_clone_lock` in `tcp_create_openreq_child`),
         // not measured.
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
         let wakes, transfer =
-            TcpTransfer.close
-                ConnectionEnd.Server
-                queued.ReuseAddress
-                (UnixMachineState.connection connectionId system.Machine).Transfer
+            if queued.Options.Linger.Enabled && queued.Options.Linger.Hundredths = 0L then
+                TcpTransfer.abort ConnectionEnd.Server queued.ReuseAddress transfer
+            else
+                TcpTransfer.close ConnectionEnd.Server queued.ReuseAddress transfer
 
         let connections =
             if List.isEmpty clients then
@@ -1984,33 +1976,8 @@ module UnixConnection =
             SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
             && int declaredLength < 0
 
-        // The dropped server end has the options its connection completed
-        // with, so with lingering on for no time it would reset a client still
-        // open. Measured (`queued-options.c`, section D): a change to the
-        // listener's linger after the connection completed does not reach it.
         let dropped () : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal> =
-            let head =
-                match (UnixMachineState.socket socketId system.Machine).Phase with
-                | SocketPhase.Listening {
-                                            Queue = queued :: _
-                                        } -> queued
-                | phase ->
-                    failwith
-                        $"UnixConnection.handOver: socket %O{socketId} is in %A{phase}, not listening with a connection queued (this is a bug in this library)."
-
-            let clientOpen =
-                system.Machine.Sockets
-                |> Map.exists (fun _ socket ->
-                    match socket.Phase with
-                    | SocketPhase.Established (c, _)
-                    | SocketPhase.EstablishedPendingReport c -> c = head.Connection
-                    | _ -> false
-                )
-
-            if head.Options.Linger.Enabled && head.Options.Linger.Hundredths = 0L && clientOpen then
-                Error (AcceptRefusal.AbortiveDrop (socketId, head.Connection))
-            else
-                Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
 
         match linuxNegative, destination with
         | true, UserBuffer.Addressless ->

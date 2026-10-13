@@ -1,4 +1,4 @@
-Q	fin	listener-poll=0x1 bind-EADDRINUSE accept=ok read=0,0 soerr=0 getpeername=ok write100=100 read=0
-Q	fin-wrote	listener-poll=0x1 bind-EADDRINUSE accept=ok read=100,0 soerr=0 getpeername=ok write100=100 read=0
-Q	reset	listener-poll=0x1 bind-ok accept=ok read=-1 ECONNRESET,0 soerr=0 getpeername=EINVAL write100=-1 EPIPE read=0
-Q	reset-wrote	listener-poll=0x1 bind-ok accept=ok read=100,-1 ECONNRESET soerr=0 getpeername=EINVAL write100=-1 EPIPE read=0
+Q	fin	listener-poll=0x1 bind-EADDRINUSE accept=ok read=0,0 soerr=0 getpeername=ok write100=100 read=-1 ECONNRESET soerr=0
+Q	fin-wrote	listener-poll=0x1 bind-EADDRINUSE accept=ok read=100,0 soerr=0 getpeername=ok write100=100 read=-1 ECONNRESET soerr=0
+Q	reset	listener-poll=0x1 bind-ok accept=ok read=-1 ECONNRESET,0 soerr=0 getpeername=EINVAL write100=-1 EPIPE read=0 soerr=0
+Q	reset-wrote	listener-poll=0x1 bind-ok accept=ok read=100,-1 ECONNRESET soerr=0 getpeername=EINVAL write100=-1 EPIPE read=0 soerr=0

@@ -1689,21 +1689,32 @@ module TestShutdownAgainstHost =
                     system <- after
                     fds <- Map.remove e fds
                     "0"
-                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _)) ->
+                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _))
+                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin _)) ->
                     refused <- true
                     ""
                 | other -> failwith $"close: %A{other}"
 
             member this.SetLingerZero e =
+                let fd = this.Fd e
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let name = lingerOption flavour
+                let value = OptionValue.ofLinger 1 0
+
+                // The kernel copies the value only where it reads it at all:
+                // Darwin answers EINVAL first once both directions are shut.
+                let supplied =
+                    match
+                        UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system
+                    with
+                    | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
+                    | Ok SetSockOptAdmission.NoCopy
+                    | Ok (SetSockOptAdmission.Answered _) -> None
+                    | Error refusal ->
+                        failwith $"setsockopt(SO_LINGER) refused: %s{SocketOptionRefusal.describe refusal}"
+
                 match
-                    UnixSocket.trySetsockoptBytes
-                        (this.Fd e)
-                        (SimulatedUnixPlatform.socketOptionLevel platform)
-                        (lingerOption flavour)
-                        UserBuffer.Mapped
-                        8u
-                        (Some (OptionValue.ofLinger 1 0))
-                        system
+                    UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
                 with
                 | Ok (answer, after) ->
                     system <- after

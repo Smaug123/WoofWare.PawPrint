@@ -104,7 +104,12 @@ type internal TcpTransferRules =
     /// its send buffer, how many: they are never delivered, but Darwin goes on
     /// counting them against the end's send space, where Linux discards them.
     /// An end's entry goes when it closes, and no entry is zero.
-    | Darwin of stranded : Map<ConnectionEnd, int>
+    /// `abortReleased` holds each end whose socket closed under `SO_LINGER`
+    /// {1, 0} once both FINs had arrived: the close was the ordinary one, but
+    /// Darwin frees the end's endpoint at once even where its FIN was made
+    /// first, which an ordinary close holds (measured, `tcp-shutdown.c`
+    /// section L, `bothfin-cfirst`).
+    | Darwin of stranded : Map<ConnectionEnd, int> * abortReleased : Set<ConnectionEnd>
 
 /// What travels over one TCP connection, in both directions, and the rules
 /// of the flavour the connection was made under.
@@ -249,7 +254,7 @@ module internal TcpTransfer =
             Rules =
                 match flavour with
                 | SimulatedUnixFlavour.Linux -> TcpTransferRules.Linux Set.empty
-                | SimulatedUnixFlavour.Darwin -> TcpTransferRules.Darwin Map.empty
+                | SimulatedUnixFlavour.Darwin -> TcpTransferRules.Darwin (Map.empty, Set.empty)
         }
 
     /// The bytes travelling towards `receiver`, and its state.
@@ -296,28 +301,32 @@ module internal TcpTransfer =
     let private strandedBy (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
         match transfer.Rules with
         | TcpTransferRules.Linux _ -> 0
-        | TcpTransferRules.Darwin stranded -> Map.tryFind sender stranded |> Option.defaultValue 0
+        | TcpTransferRules.Darwin (stranded, _) -> Map.tryFind sender stranded |> Option.defaultValue 0
 
     /// A reset strands `count` more bytes in `sender`'s send buffer: Darwin
     /// keeps counting them, and Linux discards them.
     let private strand (sender : ConnectionEnd) (count : int) (transfer : TcpTransfer) : TcpTransfer =
         match transfer.Rules with
         | TcpTransferRules.Linux _ -> transfer
-        | TcpTransferRules.Darwin stranded ->
+        | TcpTransferRules.Darwin (stranded, abortReleased) ->
             if count = 0 then
                 transfer
             else
                 { transfer with
-                    Rules = TcpTransferRules.Darwin (Map.add sender (strandedBy sender transfer + count) stranded)
+                    Rules =
+                        TcpTransferRules.Darwin (
+                            Map.add sender (strandedBy sender transfer + count) stranded,
+                            abortReleased
+                        )
                 }
 
     /// `sender` has closed, so nothing counts its send buffer any more.
     let private forgetStranded (sender : ConnectionEnd) (transfer : TcpTransfer) : TcpTransfer =
         match transfer.Rules with
         | TcpTransferRules.Linux _ -> transfer
-        | TcpTransferRules.Darwin stranded ->
+        | TcpTransferRules.Darwin (stranded, abortReleased) ->
             { transfer with
-                Rules = TcpTransferRules.Darwin (Map.remove sender stranded)
+                Rules = TcpTransferRules.Darwin (Map.remove sender stranded, abortReleased)
             }
 
     /// Whether `receiver`'s receive side is shut: by its own
@@ -378,6 +387,14 @@ module internal TcpTransfer =
         | TcpFin.Arrived false
         | TcpFin.Queued _
         | TcpFin.NotSent -> false
+
+    /// Whether `sender`'s socket closed under `SO_LINGER` {1, 0} once both
+    /// FINs had arrived, under Darwin, which frees its endpoint whichever FIN
+    /// was made first.
+    let abortReleased (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        match transfer.Rules with
+        | TcpTransferRules.Linux _ -> false
+        | TcpTransferRules.Darwin (_, abortReleased) -> Set.contains sender abortReleased
 
     /// Every way `transfer` breaks the rules the functions here keep, as text;
     /// empty when it breaks none.
@@ -456,8 +473,16 @@ module internal TcpTransfer =
                         | TcpEndState.Open _ -> ()
                         | other -> $"%A{sender}'s send-space wake is armed, but it is in %A{other} and cannot write"
                 ]
-            | TcpTransferRules.Darwin stranded ->
+            | TcpTransferRules.Darwin (stranded, abortReleased) ->
                 [
+                    for released in abortReleased do
+                        match (towards released transfer).Receiver with
+                        | TcpEndState.Closed _ -> ()
+                        | other -> $"%A{released} is marked released by an abortive close, but it is in %A{other}"
+
+                        if not (exchangeComplete transfer) then
+                            $"%A{released} is marked released by an abortive close, but the exchange of FINs is not complete"
+
                     for KeyValue (sender, count) in stranded do
                         let outbound = towards (otherEnd sender) transfer
 
@@ -1385,6 +1410,17 @@ module internal TcpTransfer =
                 transfer
                 |> strand peer (ByteQueue.length own.Sending)
                 |> withTowards closer closedOwn
+
+            // An abortive close reaches this branch only once the exchange
+            // is complete.
+            let transfer =
+                match transfer.Rules with
+                | TcpTransferRules.Darwin (stranded, abortReleased) when abortive ->
+                    { transfer with
+                        Rules = TcpTransferRules.Darwin (stranded, Set.add closer abortReleased)
+                    }
+                | TcpTransferRules.Darwin _
+                | TcpTransferRules.Linux _ -> transfer
 
             wakes, keepingRules context transfer
 
