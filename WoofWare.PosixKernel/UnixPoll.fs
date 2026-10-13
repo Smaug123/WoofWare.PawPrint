@@ -1102,6 +1102,7 @@ module UnixPoll =
                 Error (PollRefusal.UnmodelledSocket (fd, socket.Domain, socket.Kind))
         | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Write -> Ok DarwinRegistration.Fails
         | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Read -> Error (PollRefusal.UnmodelledTarget fd)
+        | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Timer -> ReservedTimerFilter.fail "UnixPoll.poll"
         | Some (OpenFileTarget.Epoll _), _ ->
             failwith
                 $"UnixPoll.poll: fd %d{fd} names an epoll instance, which a Darwin-flavoured kernel cannot hold (this is a bug in the caller's state construction)."

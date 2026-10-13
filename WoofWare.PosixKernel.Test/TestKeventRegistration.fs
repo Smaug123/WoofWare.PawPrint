@@ -97,6 +97,7 @@ module TestKeventRegistration =
                 | KqueueFilter.Read -> 0L
                 // A refused socket's send buffer, measured.
                 | KqueueFilter.Write -> 2048L
+                | KqueueFilter.Timer -> failwith "the model registers no timer: kevent refuses EVFILT_TIMER"
 
             Some (data, true, errno)
         | _ -> None
@@ -316,6 +317,7 @@ module TestKeventRegistration =
                     match filter with
                     | KqueueFilter.Read -> -1s
                     | KqueueFilter.Write -> -2s
+                    | KqueueFilter.Timer -> failwith "the model registers no timer: kevent refuses EVFILT_TIMER"
                 Flags =
                     0x1us
                     ||| (if registration.Clear then 0x20us else 0us)

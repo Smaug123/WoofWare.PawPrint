@@ -2470,7 +2470,7 @@ module UnixDescriptor =
     /// releases it. That is refused for a connected socket whose `SO_LINGER`
     /// is on, whose close this kernel may refuse when the call returns. Under Darwin a close of the
     /// descriptor a `kevent` sleeps through is served too, and drains the
-    /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
+    /// kqueue, which ends that wait and every other on
     /// the kqueue; the kqueue goes as the last of them returns, if no
     /// descriptor names it by then.
     ///
@@ -2492,7 +2492,7 @@ module UnixDescriptor =
     /// already woken is refused.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
-    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
+    /// the process owns and in the kqueue of every
     /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
     /// then reports nothing.
     ///
