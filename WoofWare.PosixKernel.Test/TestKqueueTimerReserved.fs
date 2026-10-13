@@ -125,6 +125,8 @@ module TestKqueueTimerReserved =
                 (Gen.choose (0, 4) |> Gen.bind (fun n -> Gen.listOfLength n changeGen))
                 (Gen.choose (-1, 4))
 
+        let mutable registered = 0
+
         let property (calls : (bool * Kevent list * int) list) : unit =
             (system, calls)
             ||> List.fold (fun system (second, changes, room) ->
@@ -149,16 +151,36 @@ module TestKqueueTimerReserved =
                     | Error _ -> system
 
                 noTimerAnywhere after
+
+                if kqueues after |> List.exists (fun state -> not (Map.isEmpty state.Registrations)) then
+                    registered <- registered + 1
+
                 after
             )
             |> ignore
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.listOf callGen)) property)
 
+        // Not vacuous: many calls left a kqueue holding a registration to inspect.
+        registered |> shouldBeGreaterThan 50
+
     [<Test>]
     let ``no sleeping poll registers or queues a timer, and its queries read what it holds`` () : unit =
         let fds, kq, _, system = world.Force ()
         let listener = List.head fds
+
+        // A uniform mask nearly always holds one of the `EVFILT_VNODE` bits, which fails on a
+        // socket or a pipe and so answers at once; and a kqueue's read filter is refused. So
+        // most entries are built from the read and write bits alone, on a socket or a pipe,
+        // which is what lets the call sleep.
+        let eventsGen : Gen<int16> =
+            Gen.frequency
+                [
+                    1, Gen.choose (0, 0xFFFF) |> Gen.map (uint16 >> int16)
+                    4,
+                    Gen.subListOf [ 0x0001s ; 0x0002s ; 0x0004s ; 0x0040s ; 0x0080s ; 0x0100s ]
+                    |> Gen.map (List.fold (|||) 0s)
+                ]
 
         let entryGen : Gen<PollEntry> =
             Gen.map2
@@ -168,8 +190,8 @@ module TestKqueueTimerReserved =
                         Events = events
                     }
                 )
-                (Gen.elements (-1 :: 900 :: kq :: fds))
-                (Gen.choose (0, 0xFFFF) |> Gen.map (uint16 >> int16))
+                (Gen.frequency [ 1, Gen.elements [ -1 ; 900 ; kq ] ; 8, Gen.elements fds ])
+                eventsGen
 
         let queries (queue : PollQueue) : unit =
             PollQueue.registered queue |> shouldEqual (List.ofSeq (Map.keys queue.Registrations))
@@ -181,9 +203,12 @@ module TestKqueueTimerReserved =
             for filter in [ KqueueFilter.Read ; KqueueFilter.Write ; KqueueFilter.Timer ] do
                 PollQueue.entry 900 filter queue |> shouldEqual None
 
+        let mutable slept = 0
+
         let property (entries : PollEntry list) (connect : bool) : unit =
             match UnixPoll.tryPoll 2 entries 1000 system with
             | Ok (PollOutcome.WouldBlock _, parked) ->
+                slept <- slept + 1
                 noTimerAnywhere parked
                 Map.iter (fun _ queue -> queries queue) parked.Machine.PollQueues
 
@@ -205,6 +230,9 @@ module TestKqueueTimerReserved =
                 property entries connect
             )
         )
+
+        // Not vacuous: a good share of the calls slept, and so made a queue to inspect.
+        slept |> shouldBeGreaterThan 50
 
         // A control, so that the queries above cannot pass by never seeing a queue: a poll
         // of the listener alone sleeps, registers its read filter, and a connection queues it.

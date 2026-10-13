@@ -38,7 +38,7 @@ type WakePrimitive =
     | EpollEventDeliverable of epoll : OpenFileDescriptionId
     /// The kqueue the open file description `kqueue` names has been drained:
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
-    /// has ended every wait on it (see `KqueueState.Drained`).
+    /// has ended every wait on it (see `UnixDescriptor.close`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
     /// A wait for events on the kqueue the open file description `kqueue`
     /// names would report at least one now.
