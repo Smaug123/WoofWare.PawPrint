@@ -1521,6 +1521,8 @@ module UnixDescriptor =
             | Some (ParkedSyscall.Sleep _ as other)
             | Some (ParkedSyscall.Select _ as other)
             | Some (ParkedSyscall.SignalWait _ as other)
+            | Some (ParkedSyscall.DatagramReceive _ as other)
+            | Some (ParkedSyscall.DatagramSend _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -2006,6 +2008,8 @@ module UnixDescriptor =
                     | ParkedSyscall.Sleep _
                     | ParkedSyscall.Select _
                     | ParkedSyscall.SignalWait _
+                    | ParkedSyscall.DatagramReceive _
+                    | ParkedSyscall.DatagramSend _
                     // No descriptor names a FIFO open's description until the call
                     // installs it, so no close reaches it.
                     | ParkedSyscall.FifoOpen _
@@ -2049,6 +2053,8 @@ module UnixDescriptor =
                 | ParkedSyscall.Sleep _
                 | ParkedSyscall.Select _
                 | ParkedSyscall.SignalWait _
+                | ParkedSyscall.DatagramReceive _
+                | ParkedSyscall.DatagramSend _
                 | ParkedSyscall.FifoOpen _
                 | ParkedSyscall.InotifyRead _
                 | ParkedSyscall.ConnectionRead _
@@ -2087,6 +2093,8 @@ module UnixDescriptor =
                    | ParkedSyscall.Sleep _
                    | ParkedSyscall.Select _
                    | ParkedSyscall.SignalWait _
+                   | ParkedSyscall.DatagramReceive _
+                   | ParkedSyscall.DatagramSend _
                    | ParkedSyscall.FifoOpen _
                    | ParkedSyscall.InotifyRead _
                    | ParkedSyscall.ConnectionRead _
@@ -2173,6 +2181,11 @@ module UnixDescriptor =
             // selected descriptor will end it, with EBADF (measured,
             // `docs/probes/select-park` row E1); Linux's leaves it asleep.
             | ParkedSyscall.Select _
+            // Reserved too. Darwin's close will end a receive, with EBADF
+            // (measured, `docs/probes/datagram-park` row R3); Linux's leaves it
+            // asleep.
+            | ParkedSyscall.DatagramReceive _
+            | ParkedSyscall.DatagramSend _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2319,6 +2332,8 @@ module UnixDescriptor =
                     | ParkedSyscall.Sleep _
                     | ParkedSyscall.Select _
                     | ParkedSyscall.SignalWait _
+                    | ParkedSyscall.DatagramReceive _
+                    | ParkedSyscall.DatagramSend _
                     | ParkedSyscall.FifoOpen _
                     | ParkedSyscall.InotifyRead _
                     | ParkedSyscall.KqueuePoll _ -> false
@@ -2424,6 +2439,8 @@ module UnixDescriptor =
                         | ParkedSyscall.Sleep _
                         | ParkedSyscall.Select _
                         | ParkedSyscall.SignalWait _
+                        | ParkedSyscall.DatagramReceive _
+                        | ParkedSyscall.DatagramSend _
                         | ParkedSyscall.FifoOpen _
                         | ParkedSyscall.InotifyRead _
                         | ParkedSyscall.ConnectionRead _

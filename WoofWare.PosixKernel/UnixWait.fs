@@ -333,6 +333,12 @@ module UnixWait =
                 | Some {
                            Syscall = ParkedSyscall.Select _
                        }
+                | Some {
+                           Syscall = ParkedSyscall.DatagramReceive _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.DatagramSend _
+                       }
                 | None -> None
             )
             |> Set.ofSeq

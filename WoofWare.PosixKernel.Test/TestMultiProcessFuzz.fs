@@ -1444,6 +1444,10 @@ module TestMultiProcessFuzz =
         | Some (ParkedSyscall.SignalWait _ as parked) ->
             failwith
                 $"task %d{task} is woken in %A{parked}, but nothing parks a task in a signal wait yet, so there is no finishSignalWait to finish it with"
+        | Some (ParkedSyscall.DatagramReceive _ as parked)
+        | Some (ParkedSyscall.DatagramSend _ as parked) ->
+            failwith
+                $"task %d{task} is woken in %A{parked}, but nothing parks a task in a datagram transfer yet, so there is no finishing call to finish it with"
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.
