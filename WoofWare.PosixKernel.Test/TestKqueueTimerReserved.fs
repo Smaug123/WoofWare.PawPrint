@@ -19,7 +19,22 @@ module TestKqueueTimerReserved =
     /// Every `EVFILT_*` number in Darwin 27's `<sys/event.h>`, `EVFILT_TIMER` (-7) among them,
     /// and one past the last.
     let private filterNumbers : int16 list =
-        [ -1s ; -2s ; -3s ; -4s ; -5s ; -6s ; -7s ; -8s ; -9s ; -10s ; -12s ; -15s ; -19s ; -20s ]
+        [
+            -1s
+            -2s
+            -3s
+            -4s
+            -5s
+            -6s
+            -7s
+            -8s
+            -9s
+            -10s
+            -12s
+            -15s
+            -19s
+            -20s
+        ]
 
     /// `EV_ADD`, alone and with `EV_CLEAR` and `EV_RECEIPT`; `EV_DELETE`, alone and with
     /// `EV_RECEIPT`; and `EV_ADD | EV_ONESHOT`, which is refused.
@@ -70,7 +85,13 @@ module TestKqueueTimerReserved =
     let ``kevent refuses EVFILT_TIMER, whatever its ident`` () : unit =
         let fds, kq, _, system = world.Force ()
 
-        for ident in [ yield! List.map uint64 fds ; 900UL ; 0x1_0000_0003UL ; System.UInt64.MaxValue ] do
+        for ident in
+            [
+                yield! List.map uint64 fds
+                900UL
+                0x1_0000_0003UL
+                System.UInt64.MaxValue
+            ] do
             let timer =
                 {
                     Ident = ident
@@ -81,7 +102,13 @@ module TestKqueueTimerReserved =
                     UserData = 0UL
                 }
 
-            for change in [ timer ; { timer with Data = 0L } ] do
+            for change in
+                [
+                    timer
+                    { timer with
+                        Data = 0L
+                    }
+                ] do
                 match
                     UnixKqueue.tryKevent 4 kq 1 [ change ] 1 UserBuffer.Mapped (KeventTimeout.Readable (0L, 0L)) system
                 with
@@ -152,7 +179,10 @@ module TestKqueueTimerReserved =
 
                 noTimerAnywhere after
 
-                if kqueues after |> List.exists (fun state -> not (Map.isEmpty state.Registrations)) then
+                if
+                    kqueues after
+                    |> List.exists (fun state -> not (Map.isEmpty state.Registrations))
+                then
                     registered <- registered + 1
 
                 after
@@ -194,7 +224,9 @@ module TestKqueueTimerReserved =
                 eventsGen
 
         let queries (queue : PollQueue) : unit =
-            PollQueue.registered queue |> shouldEqual (List.ofSeq (Map.keys queue.Registrations))
+            PollQueue.registered queue
+            |> shouldEqual (List.ofSeq (Map.keys queue.Registrations))
+
             PollQueue.activated queue |> shouldEqual queue.Active
 
             for KeyValue ((fd, filter), registration) in queue.Registrations do
@@ -226,9 +258,9 @@ module TestKqueueTimerReserved =
 
         Check.One (
             config,
-            Prop.forAll (Arb.fromGen (Gen.zip entriesGen (Gen.elements [ false ; true ]))) (fun (entries, connect) ->
-                property entries connect
-            )
+            Prop.forAll
+                (Arb.fromGen (Gen.zip entriesGen (Gen.elements [ false ; true ])))
+                (fun (entries, connect) -> property entries connect)
         )
 
         // Not vacuous: a good share of the calls slept, and so made a queue to inspect.
@@ -236,7 +268,18 @@ module TestKqueueTimerReserved =
 
         // A control, so that the queries above cannot pass by never seeing a queue: a poll
         // of the listener alone sleeps, registers its read filter, and a connection queues it.
-        match UnixPoll.tryPoll 2 [ { Fd = listener ; Events = 0x0001s } ] 1000 system with
+        match
+            UnixPoll.tryPoll
+                2
+                [
+                    {
+                        Fd = listener
+                        Events = 0x0001s
+                    }
+                ]
+                1000
+                system
+        with
         | Ok (PollOutcome.WouldBlock _, parked) ->
             let queue = Seq.exactlyOne parked.Machine.PollQueues.Values
             PollQueue.registered queue |> shouldEqual [ listener, KqueueFilter.Read ]
