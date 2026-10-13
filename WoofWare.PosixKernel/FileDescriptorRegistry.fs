@@ -287,6 +287,23 @@ type RefusalError =
     /// `SO_ERROR` read, and nothing is pending.
     | Reported
 
+/// A TCP connect in flight: what a socket in `SocketPhase.Connecting` holds.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `SocketPhase.Connecting`.
+[<RequireQualifiedAccess>]
+type ConnectAttempt =
+    internal
+        {
+            // What else it must hold is the design of the connect that stays in
+            // flight: the SYN retransmit schedule (the attempt, the next
+            // deadline), and what readiness and `SO_ERROR` report meanwhile
+            // (`docs/probes/connect-park`, rows T2 and T3).
+            /// Where the connect is aimed.
+            Destination : SocketAddress
+        }
+
 /// Where a socket is in its connection lifecycle. One value, rather than an
 /// `IsListening` flag beside a connection field, because the states are
 /// mutually exclusive in the kernel being modelled: a listening socket cannot
@@ -339,6 +356,16 @@ type SocketPhase =
     /// `UnixSystem.checkInvariants` checks. This kernel connects only an IPv4
     /// datagram socket, so the peer is always a `SocketAddress.Inet`.
     | DatagramPeer of peer : SocketAddress
+    /// A TCP connect is in flight: under Linux, one to a listener whose accept
+    /// queue was full, which retransmits its SYN until the listener has room.
+    /// A non-blocking connect leaves the socket here, answering `EINPROGRESS`,
+    /// and so does a blocking one a signal interrupts without `SA_RESTART`;
+    /// either completes at a later retransmit.
+    ///
+    /// Reserved: nothing puts a socket here yet, since a connect to a full
+    /// listener is refused. `UnixSystem.checkInvariants` reports a socket here
+    /// as a defect.
+    | Connecting of attempt : ConnectAttempt
 
 [<RequireQualifiedAccess>]
 module SocketPhase =
@@ -351,7 +378,8 @@ module SocketPhase =
         | SocketPhase.EstablishedPendingReport _
         | SocketPhase.Established _
         | SocketPhase.Refused _
-        | SocketPhase.DatagramPeer _ -> false
+        | SocketPhase.DatagramPeer _
+        | SocketPhase.Connecting _ -> false
 
     /// The connection a connected stream socket is one end of, and which end:
     /// `EstablishedPendingReport` is the client end, as only `connect(2)`
@@ -364,7 +392,24 @@ module SocketPhase =
         | SocketPhase.Idle
         | SocketPhase.Listening _
         | SocketPhase.Refused _
-        | SocketPhase.DatagramPeer _ -> None
+        | SocketPhase.DatagramPeer _
+        // A connect in flight has no connection yet.
+        | SocketPhase.Connecting _ -> None
+
+/// The loud failure of a call that meets a socket in `SocketPhase.Connecting`,
+/// which is reserved, where what the call does to a connect in flight is
+/// behaviour this library does not model.
+[<RequireQualifiedAccess>]
+module internal ReservedConnecting =
+    /// `call` met the socket `socket`, which is in `SocketPhase.Connecting`.
+    let fail (call : string) (socket : SocketId) : 'a =
+        failwith
+            $"%s{call}: socket %O{socket} has a connect in flight, and what this call does to one is not modelled. Nothing in this version puts a socket in SocketPhase.Connecting, which is reserved until a connect to a full listener is modelled, and UnixSystem.checkInvariants reports a socket in it as ReservedSocketPhase (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+    /// `call` met a socket in `SocketPhase.Connecting`, without its identity.
+    let failOfPhase (call : string) : 'a =
+        failwith
+            $"%s{call}: a socket has a connect in flight, and what this call does to one is not modelled. Nothing in this version puts a socket in SocketPhase.Connecting, which is reserved until a connect to a full listener is modelled, and UnixSystem.checkInvariants reports a socket in it as ReservedSocketPhase (this is a bug in this library, or in a caller that assembled the state by hand)."
 
 /// What holds an endpoint against a `bind(2)`, as far as the bind's conflict
 /// rule (`SimulatedUnixPlatform.bindConflict`) asks.
@@ -390,6 +435,10 @@ module internal EndpointHolder =
         | SocketPhase.Idle
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> EndpointHolder.Unconnected
+        // Linux hashes a connect in flight by its four-tuple, as it does an
+        // established end; how that holds the endpoint against a bind is
+        // unmeasured.
+        | SocketPhase.Connecting _ -> ReservedConnecting.failOfPhase "EndpointHolder.ofPhase"
 
 /// A socket's domain, with its `IPV6_V6ONLY` where it is an IPv6 socket, and
 /// the local address it holds, typed in the domain's own addresses.

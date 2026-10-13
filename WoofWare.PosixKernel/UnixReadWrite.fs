@@ -1278,6 +1278,7 @@ module UnixReadWrite =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixReadWrite.write" socketId
         | SocketPhase.Idle
         | SocketPhase.Listening _ ->
             // The binding a write makes before it answers, if any: a port
@@ -1917,6 +1918,7 @@ module UnixReadWrite =
             let socket = UnixMachineState.socket socketId system.Machine
 
             match socket.Phase with
+            | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixReadWrite.read" socketId
             | SocketPhase.Idle
             | SocketPhase.Listening _ ->
                 // No peer, so no byte can be on its way: a socket fresh from
