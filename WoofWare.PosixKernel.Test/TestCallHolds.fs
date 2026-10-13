@@ -330,6 +330,7 @@ module TestCallHolds =
         | ParkedSyscall.Sleep _ -> 11
         | ParkedSyscall.FifoOpen _ -> 12
         | ParkedSyscall.InotifyRead _ -> 13
+        | ParkedSyscall.Select _ -> 14
 
     /// The recorded facts against the model: each description's holds, which
     /// descriptions exist, and which thread IDs are live.

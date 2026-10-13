@@ -291,6 +291,7 @@ module WakeCondition =
         | Some (ParkedSyscall.FifoOpen _)
         // Only Linux has inotify, and its close leaves the read asleep.
         | Some (ParkedSyscall.InotifyRead _)
+        | Some (ParkedSyscall.Select _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -623,6 +624,12 @@ module WakeCondition =
             // inotify.
             | ParkedSyscall.InotifyRead read ->
                 [ WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued read.Instance) ]
+            // Its deadline, or a signal. The descriptors it waits on join this
+            // when something parks a task in it.
+            | ParkedSyscall.Select select ->
+                select.Deadline
+                |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                |> Option.toList
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

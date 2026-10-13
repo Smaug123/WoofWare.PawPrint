@@ -1519,6 +1519,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -2002,6 +2003,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
                     | ParkedSyscall.Sleep _
+                    | ParkedSyscall.Select _
                     // No descriptor names a FIFO open's description until the call
                     // installs it, so no close reaches it.
                     | ParkedSyscall.FifoOpen _
@@ -2043,6 +2045,7 @@ module UnixDescriptor =
                 | ParkedSyscall.PipeWrite _
                 | ParkedSyscall.SigSuspend
                 | ParkedSyscall.Sleep _
+                | ParkedSyscall.Select _
                 | ParkedSyscall.FifoOpen _
                 | ParkedSyscall.InotifyRead _
                 | ParkedSyscall.ConnectionRead _
@@ -2079,6 +2082,7 @@ module UnixDescriptor =
                    | ParkedSyscall.PipeWrite _
                    | ParkedSyscall.SigSuspend
                    | ParkedSyscall.Sleep _
+                   | ParkedSyscall.Select _
                    | ParkedSyscall.FifoOpen _
                    | ParkedSyscall.InotifyRead _
                    | ParkedSyscall.ConnectionRead _
@@ -2160,6 +2164,10 @@ module UnixDescriptor =
             // Only Linux has inotify, and its close leaves the read asleep
             // (measured, `inotify-probe.c` row B close-under-read).
             | ParkedSyscall.InotifyRead _
+            // Reserved: nothing parks a task in it yet. Darwin's close of a
+            // selected descriptor will end it, with EBADF (measured,
+            // `docs/probes/select-park` row E1); Linux's leaves it asleep.
+            | ParkedSyscall.Select _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2304,6 +2312,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
                     | ParkedSyscall.Sleep _
+                    | ParkedSyscall.Select _
                     | ParkedSyscall.FifoOpen _
                     | ParkedSyscall.InotifyRead _
                     | ParkedSyscall.KqueuePoll _ -> false
@@ -2407,6 +2416,7 @@ module UnixDescriptor =
                         | ParkedSyscall.PipeWrite _
                         | ParkedSyscall.SigSuspend
                         | ParkedSyscall.Sleep _
+                        | ParkedSyscall.Select _
                         | ParkedSyscall.FifoOpen _
                         | ParkedSyscall.InotifyRead _
                         | ParkedSyscall.ConnectionRead _

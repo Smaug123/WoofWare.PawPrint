@@ -125,6 +125,7 @@ class Program
                 | Some (ParkedSyscall.Sleep _)
                 | Some (ParkedSyscall.FifoOpen _)
                 | Some (ParkedSyscall.InotifyRead _)
+                | Some (ParkedSyscall.Select _)
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)
