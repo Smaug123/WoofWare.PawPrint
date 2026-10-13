@@ -10,6 +10,9 @@ open WoofWare.PosixKernel
 /// interleavings; each test here changes one input of the memo's alone, as no
 /// random interleaving does, and checks that the memo does not answer.
 ///
+/// In a Debug build, the memo also counts the answers it has given since its sweep, which decide
+/// the ones it checks against a sweep (`WakeSweepMemo.crossChecks`).
+///
 /// Some of those states are forged: every syscall that changes a process's
 /// task table or the set of processes changes the machine state too, so only
 /// a hand-made state changes one without the other. The memo must not rely on
@@ -259,3 +262,70 @@ module TestWakeSweepMemo =
             )
             |> shouldEqual true
         | other -> failwith $"expected task 0 alone to wake for its deadline, but %A{other} woke"
+
+    [<Test>]
+    let ``the cross-check takes every one of the first answers after a sweep, and at least one in every so many after``
+        ()
+        : unit
+        =
+        let hits = 100_000
+        let checkedHits = [ 0 .. hits - 1 ] |> List.filter WakeSweepMemo.crossChecks
+
+        checkedHits
+        |> List.take WakeSweepMemo.CrossCheckedFirst
+        |> shouldEqual [ 0 .. WakeSweepMemo.CrossCheckedFirst - 1 ]
+
+        // No run of `CrossCheckedEvery` answers in a row goes unchecked.
+        (checkedHits @ [ hits ])
+        |> List.pairwise
+        |> List.forall (fun (before, after) -> after - before <= WakeSweepMemo.CrossCheckedEvery)
+        |> shouldEqual true
+
+        // And no more are checked than that needs.
+        checkedHits.Length
+        |> shouldBeSmallerThan (WakeSweepMemo.CrossCheckedFirst + hits / WakeSweepMemo.CrossCheckedEvery + 2)
+
+    [<Test>]
+    let ``a memo counts the answers it has given since its sweep, from none after each sweep`` () : unit =
+#if DEBUG
+        let pid, machine = behindAWokenAccepter ()
+        let asleep = Map.ofList [ pid, Set.singleton 1 ]
+
+        let woken, swept = remembering WakeSweepMemo.empty asleep machine
+        woken |> shouldEqual []
+        swept.HitsSinceSweep |> shouldEqual 0
+
+        let answered =
+            (swept, [ 1..5 ])
+            ||> List.fold (fun memo expected ->
+                let woken, memo = remembering memo asleep machine
+                woken |> shouldEqual []
+                memo.HitsSinceSweep |> shouldEqual expected
+                memo
+            )
+
+        // The process's tasks, the same tasks in another map: the memo does not answer, and the
+        // sweep wakes nobody, so the memo remembers it afresh.
+        let slot = machine.Processes.[pid]
+
+        let copied =
+            { machine with
+                Processes =
+                    Map.add
+                        pid
+                        { slot with
+                            Tasks = Map.ofList (Map.toList slot.Tasks)
+                        }
+                        machine.Processes
+            }
+
+        let woken, reswept = remembering answered asleep copied
+        woken |> shouldEqual []
+        reswept.HitsSinceSweep |> shouldEqual 0
+
+        let woken, memo = remembering reswept asleep copied
+        woken |> shouldEqual []
+        memo.HitsSinceSweep |> shouldEqual 1
+#else
+        Assert.Ignore "A memo counts its answers only in a Debug build, which cross-checks some of them."
+#endif

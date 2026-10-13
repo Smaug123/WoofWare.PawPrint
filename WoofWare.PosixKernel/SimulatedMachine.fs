@@ -59,6 +59,12 @@ type WakeSweepMemo<'Task, 'Handler when 'Task : comparison and 'Handler : equali
     internal
         {
             Remembered : RememberedSweep<'Task, 'Handler> voption
+#if DEBUG
+            /// How many answers `SimulatedMachine.wakesRemembering` has given from `Remembered`
+            /// since it was swept, which decides the ones it checks against a sweep
+            /// (`WakeSweepMemo.crossChecks`).
+            HitsSinceSweep : int
+#endif
         }
 
 [<RequireQualifiedAccess>]
@@ -67,7 +73,31 @@ module WakeSweepMemo =
     let empty<'Task, 'Handler when 'Task : comparison and 'Handler : equality> : WakeSweepMemo<'Task, 'Handler> =
         {
             Remembered = ValueNone
+#if DEBUG
+            HitsSinceSweep = 0
+#endif
         }
+
+    /// How many of the first answers after a sweep a Debug build checks every one of: see
+    /// `crossChecks`.
+    [<Literal>]
+    let internal CrossCheckedFirst : int = 8
+
+    /// After the first `CrossCheckedFirst`, a Debug build checks one answer in this many: see
+    /// `crossChecks`.
+    [<Literal>]
+    let internal CrossCheckedEvery : int = 64
+
+    /// Whether a Debug build checks against a sweep the answer a memo gives when it has already
+    /// given `hits` since its sweep: every one of the first `CrossCheckedFirst`, and one in every
+    /// `CrossCheckedEvery` after them. A count rather than a draw, so that which answers are
+    /// checked is the same on every run.
+    ///
+    /// A memo that answers wrongly goes on answering wrongly until something it compares changes,
+    /// so a check one in every `CrossCheckedEvery` answers still catches it, within that many
+    /// answers, unless something changes first.
+    let internal crossChecks (hits : int) : bool =
+        hits < CrossCheckedFirst || hits % CrossCheckedEvery = 0
 
     /// Whether `machine` holds the machine state and every process's state
     /// and tasks that `remembered` read, the same values rather than equal
@@ -796,6 +826,10 @@ module SimulatedMachine =
     ///
     /// The answer is always `wakes`'s, and `memo` decides only how much work it
     /// takes. Fails loudly where `wakes` does.
+    ///
+    /// A Debug build checks some of the answers the memo gives against a sweep,
+    /// failing loudly if they differ, and answers a new memo after each of them,
+    /// which counts them.
     let wakesRemembering<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (memo : WakeSweepMemo<'Task, 'Handler>)
         (asleep : Map<ProcessId, Set<'Task>>)
@@ -807,13 +841,20 @@ module SimulatedMachine =
             WakeSweepMemo.covers remembered asleep machine.Machine machine.Scheduling machine.Processes
             ->
 #if DEBUG
-            match wakes asleep machine with
-            | [] -> ()
-            | woken ->
-                failwith
-                    $"SimulatedMachine.wakesRemembering: the memo says the machine wakes no task, but a sweep wakes %A{woken} (this is a bug in this library)."
-#endif
+            if WakeSweepMemo.crossChecks memo.HitsSinceSweep then
+                match wakes asleep machine with
+                | [] -> ()
+                | woken ->
+                    failwith
+                        $"SimulatedMachine.wakesRemembering: the memo says the machine wakes no task, but a sweep wakes %A{woken}, at answer %d{memo.HitsSinceSweep} since the memo's sweep (this is a bug in this library)."
+
+            [],
+            { memo with
+                HitsSinceSweep = memo.HitsSinceSweep + 1
+            }
+#else
             [], memo
+#endif
         | ValueSome _
         | ValueNone ->
 
@@ -850,6 +891,9 @@ module SimulatedMachine =
                             Asleep = asleep
                             EarliestDeadline = earliest
                         }
+#if DEBUG
+                HitsSinceSweep = 0
+#endif
             }
 
     /// Every way `machine` fails to be a machine any kernel could be in: the
