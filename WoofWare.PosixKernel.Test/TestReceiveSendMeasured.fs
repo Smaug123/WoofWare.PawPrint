@@ -188,7 +188,7 @@ module TestReceiveSendMeasured =
                     let bytes = ImmutableArray.CreateRange (Seq.replicate count 'x'B)
 
                     match WriteOutcomes.admitThenSend 0 fd buffer bytes 0 system with
-                    | Ok (WriteOutcome.Returns (answer, after)) ->
+                    | Ok (WriteStep.Returns (answer, after)) ->
                         let sent =
                             match answer with
                             | WriteAnswer.Completed n -> Ok n

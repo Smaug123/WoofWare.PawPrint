@@ -860,8 +860,8 @@ module TestFcntlMeasured =
         match
             WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped (ImmutableArray.CreateRange bytes) system
         with
-        | Ok (WriteOutcome.Returns (answer, system))
-        | Ok (WriteOutcome.ReturnsRaising (answer, _, system)) ->
+        | Ok (WriteStep.Returns (answer, system))
+        | Ok (WriteStep.ReturnsRaising (answer, _, system)) ->
             match answer with
             | WriteAnswer.Completed written -> $"ok %d{written}", system
             | WriteAnswer.Failed error -> $"%A{error}", system
@@ -914,7 +914,12 @@ module TestFcntlMeasured =
                         | "write0 rdwr" -> Some (writeOf fd [||] system)
                         | "pwrite rdwr" ->
                             match
-                                UnixReadWrite.tryPwrite system.Leader fd (ImmutableArray.CreateRange "x"B) 3L system
+                                UnixReadWrite.tryPwriteBytes
+                                    system.Leader
+                                    fd
+                                    (ImmutableArray.CreateRange "x"B)
+                                    3L
+                                    system
                             with
                             | Ok (WriteAnswer.Completed n, system) -> Some ($"ok %d{n}", system)
                             | other -> failwith $"pwrite: %A{other}"
@@ -1096,7 +1101,7 @@ module TestFcntlMeasured =
 
         let system =
             match WriteOutcomes.admitThenWrite 1 w UserBuffer.Mapped bytes system with
-            | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+            | Ok (WriteStep.WouldBlock (_, system)) -> system
             | other -> failwith $"a write larger than the pipe: %A{other}"
 
         $"blocking pipe write asleep part way\tdup's F_GETFL %s{FcntlWorld.statusFlags kept system}"
@@ -1109,9 +1114,8 @@ module TestFcntlMeasured =
 
         let answer =
             match UnixReadWrite.tryAdmitFinishWrite 1 system with
-            | Ok (WriteOutcome.Returns (WriteResumption.Answered (WriteAnswer.Failed error), _))
-            | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered (WriteAnswer.Failed error), _, _)) ->
-                $"%A{error}"
+            | Ok (WriteStep.Returns (WriteResumption.Answered (WriteAnswer.Failed error), _))
+            | Ok (WriteStep.ReturnsRaising (WriteResumption.Answered (WriteAnswer.Failed error), _, _)) -> $"%A{error}"
             | other -> failwith $"finishing the ended write: %A{other}"
 
         $"blocking pipe write part way, ended by a close\tcall %s{answer}\tdup's F_GETFL %s{FcntlWorld.statusFlags kept system}"
@@ -1231,7 +1235,7 @@ module TestFcntlMeasured =
 
             let system =
                 match WriteOutcomes.admitThenWrite 1 w UserBuffer.Mapped bytes system with
-                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                | Ok (WriteStep.WouldBlock (_, system)) -> system
                 | other -> failwith $"a write larger than the pipe: %A{other}"
 
             let system = signalled 1 system
@@ -1239,7 +1243,7 @@ module TestFcntlMeasured =
 
             let answer, system =
                 match UnixReadWrite.tryAdmitFinishWrite 1 system with
-                | Ok (WriteOutcome.Returns (WriteResumption.Answered (WriteAnswer.Completed n), system)) ->
+                | Ok (WriteStep.Returns (WriteResumption.Answered (WriteAnswer.Completed n), system)) ->
                     $"ok %d{n}", system
                 | other -> failwith $"%s{run.Name}: the interrupted write: %A{other}"
 
@@ -1321,7 +1325,7 @@ module TestFcntlMeasured =
 
             let mutable system =
                 match WriteOutcomes.admitThenWrite 1 w UserBuffer.Mapped bytes system with
-                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                | Ok (WriteStep.WouldBlock (_, system)) -> system
                 | other -> failwith $"a write larger than the pipe: %A{other}"
 
             let mutable answer = None
@@ -1336,14 +1340,14 @@ module TestFcntlMeasured =
 
                 if not (List.isEmpty (UnixWait.wakes (Set.singleton 1) system)) then
                     match UnixReadWrite.tryAdmitFinishWrite 1 system with
-                    | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                    | Ok (WriteStep.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
                         match
-                            UnixReadWrite.tryFinishWrite 1 (ImmutableArray.Create (bytes, offset, count)) admitted
+                            UnixReadWrite.tryFinishWriteBytes 1 (ImmutableArray.Create (bytes, offset, count)) admitted
                         with
-                        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after)) ->
+                        | Ok (WriteStep.Returns (WriteAnswer.Completed n, after)) ->
                             answer <- Some $"ok %d{n}"
                             system <- after
-                        | Ok (WriteOutcome.WouldBlock (_, after)) -> system <- after
+                        | Ok (WriteStep.WouldBlock (_, after)) -> system <- after
                         | other -> failwith $"%s{run.Name}: finishing the write: %A{other}"
                     | other -> failwith $"%s{run.Name}: resuming the write: %A{other}"
 

@@ -300,7 +300,7 @@ Before 1.0, any version may change anything.
 
 ### The syscalls
 
-In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, and `WriteOutcome<WriteAnswer>` is `WriteOutcome<WriteAnswer, 'Task, 'Handler>`.
+In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, `PausedWrite` is `PausedWrite<'Task, 'Handler>`, and `ProcessFate<WriteOutcome>` is `ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>`.
 A path is the argument's bytes (`PathArgumentBytes`), which the kernel copies in where the call's kernel does.
 A buffer is a `UserBuffer` (see "User memory"), which says whether the address the caller passed is mapped; the bytes it holds cross the API separately.
 
@@ -396,14 +396,13 @@ The cases exist so that a client's matches already handle them when pathname soc
 | `read(2)` | `UnixReadWrite.read (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `ReadOutcome * UnixSystem` |
 | `recv(2)` | `UnixReadWrite.recv (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `ReadOutcome * UnixSystem` |
 | `pread(2)` | `UnixReadWrite.pread (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `ReadAnswer * UnixSystem` |
-| `write(2)`, before the copy | `UnixReadWrite.admitWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `WriteOutcome<WriteAdmission>` |
-| `write(2)`, given the bytes | `UnixReadWrite.write (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
-| `write(2)`, given the first bytes of a write that then sleeps | `UnixReadWrite.writeThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
-| `send(2)`, before the copy | `UnixReadWrite.admitSend (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `WriteOutcome<WriteAdmission>` |
-| `send(2)`, given the bytes | `UnixReadWrite.send (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
-| `send(2)`, given the first bytes of a send that then sleeps | `UnixReadWrite.sendThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
-| `pwrite(2)`, before the copy | `UnixReadWrite.admitPWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `PWriteAdmission` |
-| `pwrite(2)`, given the bytes | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (offset : int64)` | `WriteAnswer * UnixSystem` |
+| `write(2)` | `UnixReadWrite.write (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `CallProgress<PausedWrite, ProcessFate<WriteOutcome>>` |
+| `write(2)` or `send(2)`, woken | `UnixReadWrite.finishWrite (task : 'Task)` | `CallProgress<PausedWrite, ProcessFate<WriteOutcome>>` |
+| `write(2)`, given the bytes | `UnixReadWrite.writeWithBytes (bytes : ImmutableArray<byte>) (paused : PausedWrite)` | `ProcessFate<WriteOutcome>` |
+| `send(2)` | `UnixReadWrite.send (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `CallProgress<PausedSend, ProcessFate<WriteOutcome>>` |
+| `send(2)`, given the bytes | `UnixReadWrite.sendWithBytes (bytes : ImmutableArray<byte>) (paused : PausedSend)` | `ProcessFate<WriteOutcome>` |
+| `pwrite(2)` | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `CallProgress<PausedPWrite, WriteAnswer * UnixSystem>` |
+| `pwrite(2)`, given the bytes | `UnixReadWrite.pwriteWithBytes (bytes : ImmutableArray<byte>) (paused : PausedPWrite)` | `WriteAnswer * UnixSystem` |
 | `copy_file_range(2)` | `UnixReadWrite.copyFileRange (inFd : int) (outFd : int) (length : uint64) (flags : int)` | `SyscallAnswer * UnixSystem` |
 | `pipe2(2)`, and `pipe(2)` as `pipe2` with no flags | `UnixPipe.pipe2 (flags : int) (destination : UserBuffer)` | `Pipe2Answer * UnixSystem` |
 
@@ -538,10 +537,11 @@ These calls have no function, and a client should refuse them rather than guess:
 #### Calls that copy in from the caller's memory
 
 A real kernel copies an argument in from the caller's memory at a point in the call, and what happens before that point is observable: a bad descriptor is `EBADF` whatever the buffer holds.
-So each call that copies bytes in comes as two functions.
-The first, an admission, answers either the call's answer, reached before the copy, or how many bytes to copy; the second takes exactly those bytes.
-`UnixReadWrite.admitPWrite`, `UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt` and `UnixSocket.admitGetSockOpt` change nothing, and answer no system.
-`UnixReadWrite.admitWrite` and `UnixReadWrite.admitSend` answer a `WriteOutcome`, which carries the system the admission left: a blocking write with no room has parked the task, a write into a broken pipe has raised `SIGPIPE`, and on Darwin a write can move a pipe's timestamps without taking a byte. The client carries on from that system, as from any other call's (see "Moving bytes").
+So a call that copies bytes in stops there.
+`UnixReadWrite.write`, `UnixReadWrite.send`, `UnixReadWrite.finishWrite` and `UnixReadWrite.pwrite` answer a `CallProgress`: the call's answer, reached before the copy (`CallProgress.Answered`), or the call stopped at the copy (`CallProgress.NeedsCopyIn`), holding the system and everything the call has decided.
+The paused call's `copyRange` says which bytes of the caller's buffer to copy, and its resume function (`UnixReadWrite.writeWithBytes`, `sendWithBytes`, `pwriteWithBytes`) takes exactly those and finishes the call, answering the same type `CallProgress.Answered` carries.
+Nothing else can be done to the system in between, since the paused call holds it.
+`UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt` and `UnixSocket.admitGetSockOpt` are admissions instead, which change nothing, and answer either the call's answer or how many bytes to copy; the call itself takes exactly those bytes.
 
 Calls that copy in two pathnames come as phases too, for a client that reads its arguments out of a live process, where reading the second pathname too early is itself observable: `UnixNamespace.renameatSourcePhase` or `UnixNamespace.renameSourcePhase` then `UnixNamespace.renameWithDestination`; `UnixNamespace.linkatSourcePhase` or `UnixNamespace.linkSourcePhase` then `UnixNamespace.linkWithDestination`; `UnixNamespace.symlinkatTargetPhase` or `UnixNamespace.symlinkTargetPhase` then `UnixNamespace.symlinkWithPath`; `UnixNamespace.cloneFileFlagsPhase`, `UnixNamespace.cloneFileSourcePhase` then `UnixNamespace.cloneFileWithDestination`; `UnixPathResolution.faccessatScreenPhase` or `UnixPathResolution.accessScreenPhase` then `UnixPathResolution.accessWithPath`; and `UnixInotify.inotifyAddWatchScreenPhase` then `UnixInotify.inotifyAddWatchWithPath`, since Linux answers a bad mask or descriptor without reading the path.
 A client that holds every argument already, such as a replayer, uses the one-shot functions in the tables.
@@ -573,22 +573,19 @@ A call that moves bytes takes them or returns them, and the client copies them t
 `ReadOutcome.Answered` holds a `ReadAnswer`: the bytes read (`ReadAnswer.Completed`), for the client to copy into the caller's buffer, and whose length the call returns; or, for `/dev/urandom`, a draw from the entropy pool (`ReadAnswer.Drawn`), whose bytes the client takes with `EntropyDraw.bytes` and whose length is `EntropyDraw.count`; or an errno (`ReadAnswer.Failed`).
 `ReadOutcome.WouldBlock` is a read that sleeps, and `ReadOutcome.Restarts` one a signal handler interrupted, which the client issues again once the handlers have run.
 
-**Writing.** A write is up to four calls.
+**Writing.** A write stops where the kernel copies from the caller's buffer, as every call that copies in does (see "Calls that copy in from the caller's memory").
 
-1. `UnixReadWrite.admitWrite` answers a `WriteAdmission`, before the kernel reads the caller's buffer:
-   * `WriteAdmission.Answered` is the call's answer, with no bytes read.
-   * `WriteAdmission.Transfer count`: copy exactly `count` bytes from the start of the caller's buffer and pass them to `UnixReadWrite.write`.
-   * `WriteAdmission.TransferThenSleep (count, total)`: a blocking write of `total` bytes, of which only `count` fit now. Copy those `count` and pass them to `UnixReadWrite.writeThenSleep`, which puts them in and sleeps for the rest. A blocking write of more than a pipe holds (64 KiB on Linux) reaches this at once.
-2. A write that sleeps answers `WriteOutcome.WouldBlock`, from whichever of these functions it reached. Once `UnixWait.wakes` wakes it, `UnixReadWrite.admitFinishWrite` answers a `WriteResumption`: the call's answer (`WriteResumption.Answered`), or `WriteResumption.Transfer (offset, count)`, the next `count` bytes of the caller's buffer from `offset` on, which the client passes to `UnixReadWrite.finishWrite`. That may sleep again, and the client repeats this step.
+1. `UnixReadWrite.write` answers a `CallProgress`, before the kernel reads the caller's buffer: `CallProgress.Answered` is the call's answer, with no bytes read, and `CallProgress.NeedsCopyIn paused` is the call stopped at the copy. `PausedWrite.copyRange paused` says which bytes: the client copies exactly those from the caller's buffer and passes them to `UnixReadWrite.writeWithBytes`, which finishes the call. A blocking write with room for only part of it copies that part, and sleeps for the rest; a blocking write of more than a pipe holds (64 KiB on Linux) does that at once.
+2. A write that sleeps answers `WriteOutcome.WouldBlock`, before or after the copy. Once `UnixWait.wakes` wakes it, `UnixReadWrite.finishWrite` answers a `CallProgress` again: the call's answer, or the call stopped at the copy of its next bytes, which start `copyRange.Offset` bytes into the caller's buffer, past those already written. That may sleep again, and the client repeats this step.
 
-Every step answers a `WriteOutcome`, whose cases besides `WouldBlock` are:
+Every answer is a `ProcessFate<WriteOutcome>`: the process ended (`ProcessFate.ProcessEnded ended`), because the write raised `SIGPIPE` at its default (see "Ending the process"), or it carries on with one of these, and the system:
 
-* `WriteOutcome.Returns (answer, system)`: the call answers.
-* `WriteOutcome.ReturnsRaising (answer, signal, system)`: the call answers, and raised `signal`, which is now pending (or was discarded). The one signal a write raises is `SIGPIPE`, with `EPIPE`, for a write into a pipe with no reader, into a Linux stream socket with no peer, or to a connection that was reset.
-* `WriteOutcome.ProcessEnded ended`: that `SIGPIPE`, at its default, killed the process (see "Ending the process").
-* `WriteOutcome.Restarts system`: a signal handler interrupted the sleep before anything was written, and the client issues the `write` again once the handlers have run. Only `admitFinishWrite` answers this.
+* `WriteOutcome.Returns answer`: the call answers.
+* `WriteOutcome.ReturnsRaising (answer, signal)`: the call answers, and raised `signal`, which is now pending (or was discarded). The one signal a write raises is `SIGPIPE`, with `EPIPE`, for a write into a pipe with no reader, into a Linux stream socket with no peer, or to a connection that was reset.
+* `WriteOutcome.WouldBlock condition`: the call sleeps, as above.
+* `WriteOutcome.Restarts`: a signal handler interrupted the sleep before anything was written, and the client issues the `write` again once the handlers have run. Only `finishWrite` answers this.
 
-`send` is the same with `UnixReadWrite.admitSend`, `UnixReadWrite.send` and `UnixReadWrite.sendThenSleep`, and `pwrite` with `UnixReadWrite.admitPWrite` and `UnixReadWrite.pwrite`, which never sleeps.
+`send` is the same with `UnixReadWrite.send` and `UnixReadWrite.sendWithBytes`, and is woken with `finishWrite` as a write is; `pwrite` with `UnixReadWrite.pwrite` and `UnixReadWrite.pwriteWithBytes`, never sleeps or raises a signal, and answers `WriteAnswer * UnixSystem`.
 
 **Buffers.** Where a real kernel would check a buffer's address, the client describes the address as a `UserBuffer`, and the library decides whether and when the call answers `EFAULT`, against the limit set by `UnixBootImage.withUserAddressLimit`.
 A client with a flat address space uses `UserBuffer.Mapped` for an address whose bytes it can read or write and `UserBuffer.Unmapped address` for one it cannot.
@@ -616,7 +613,7 @@ A woken task finishes its call through its family's finishing function, which ma
 | `ParkedSyscall.Kevent` | `UnixKqueue.finishKevent (task : 'Task)` |
 | `ParkedSyscall.Accept` | `UnixConnection.finishAccept (task : 'Task)` |
 | `ParkedSyscall.PipeRead`, `ParkedSyscall.ConnectionRead`, `ParkedSyscall.InotifyRead` (a `read` or `recv`) | `UnixReadWrite.finishRead (task : 'Task)` |
-| `ParkedSyscall.PipeWrite`, `ParkedSyscall.ConnectionWrite` (a `write` or `send`) | `UnixReadWrite.admitFinishWrite (task : 'Task)`, then `UnixReadWrite.finishWrite (task : 'Task) (bytes : ImmutableArray<byte>)` |
+| `ParkedSyscall.PipeWrite`, `ParkedSyscall.ConnectionWrite` (a `write` or `send`) | `UnixReadWrite.finishWrite (task : 'Task)`, then, if it stops at the copy, `UnixReadWrite.writeWithBytes (bytes : ImmutableArray<byte>) (paused : PausedWrite)` |
 | `ParkedSyscall.SigSuspend` (a `sigsuspend`, `rt_sigsuspend` or `pause`) | `UnixSignal.finishSigsuspend (task : 'Task)` |
 
 Each answers what the call that parked answered, as in the tables above.
@@ -671,19 +668,21 @@ let asleep, parked =
     | ReadOutcome.WouldBlock _, system -> Set.singleton 1, system
     | outcome, _ -> failwith $"expected the read to sleep: %A{outcome}"
 
-// Task 0 writes "hello": admitWrite says how many bytes the call takes from
-// the caller's buffer, and write takes them.
+// Task 0 writes "hello": the call stops where the kernel copies from the
+// caller's buffer, and writeWithBytes takes the bytes copyRange names.
 let written =
     let payload = "hello"B
 
-    match UnixReadWrite.admitWrite 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked with
-    | WriteOutcome.Returns (WriteAdmission.Transfer count, system) ->
-        match UnixReadWrite.write 0 writeFd (ImmutableArray.Create (payload, 0, count)) system with
-        | WriteOutcome.Returns (WriteAnswer.Completed n, system) ->
+    match UnixReadWrite.write 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked with
+    | CallProgress.NeedsCopyIn paused ->
+        let range = PausedWrite.copyRange paused
+
+        match UnixReadWrite.writeWithBytes (ImmutableArray.Create (payload, range.FirstByte, range.ByteCount)) paused with
+        | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed n), system) ->
             printfn "task 0 wrote %d bytes" n
             resume 0 system
         | outcome -> failwith $"unexpected write: %A{outcome}"
-    | outcome -> failwith $"unexpected admission: %A{outcome}"
+    | CallProgress.Answered outcome -> failwith $"unexpected before the copy: %A{outcome}"
 
 // The write woke task 1, and finishRead finishes its call.
 let woken =

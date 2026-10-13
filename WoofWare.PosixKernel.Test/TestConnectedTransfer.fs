@@ -83,7 +83,7 @@ module TestConnectedTransfer =
         (fd : int)
         (count : int)
         (system : UnixSystem<int, string>)
-        : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>
+        : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>
         =
         WriteOutcomes.admitThenWrite
             system.Leader
@@ -94,7 +94,7 @@ module TestConnectedTransfer =
 
     let private sent (fd : int) (count : int) (system : UnixSystem<int, string>) : int64 * UnixSystem<int, string> =
         match send fd count system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> written, system
+        | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> written, system
         | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
 
     let private sentAll (fd : int) (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -126,8 +126,8 @@ module TestConnectedTransfer =
     let private fill (fd : int) (system : UnixSystem<int, string>) : int64 * UnixSystem<int, string> =
         let rec go (total : int64) (system : UnixSystem<int, string>) =
             match send fd 65536 system with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> go (total + written) system
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> total, system
+            | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> go (total + written) system
+            | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> total, system
             | other -> failwith $"filling fd %d{fd}: %A{other}"
 
         go 0L system
@@ -196,9 +196,9 @@ module TestConnectedTransfer =
 
     [<Test>]
     let ``a blocking transfer that would sleep sleeps, and one that need not is answered`` () : unit =
-        let sleeps (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) : unit =
+        let sleeps (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) : unit =
             match outcome with
-            | Ok (WriteOutcome.WouldBlock _) -> ()
+            | Ok (WriteStep.WouldBlock _) -> ()
             | other -> failwith $"expected the write to sleep, got %A{other}"
 
         for platform in Machines.platforms do
@@ -264,7 +264,7 @@ module TestConnectedTransfer =
             UnixReadWrite.tryAdmitWrite system.Leader client unmapped 0UL system
             |> Result.map (fun outcome ->
                 match outcome with
-                | WriteOutcome.Returns (admission, _) -> admission
+                | WriteStep.Returns (admission, _) -> admission
                 | other -> failwith $"%A{other}"
             )
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
@@ -868,10 +868,10 @@ module TestConnectedTransfer =
     /// bytes each way, from each state a close can leave the writer in.
     [<Test>]
     let ``a write that skips its admission answers a connection as one that makes it`` () : unit =
-        let summary (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) =
+        let summary (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) =
             match outcome with
-            | Ok (WriteOutcome.Returns (answer, system)) -> (answer, None), system
-            | Ok (WriteOutcome.ReturnsRaising (answer, entry, system)) -> (answer, Some entry.Signal), system
+            | Ok (WriteStep.Returns (answer, system)) -> (answer, None), system
+            | Ok (WriteStep.ReturnsRaising (answer, entry, system)) -> (answer, Some entry.Signal), system
             | other -> failwith $"%A{other}"
 
         for platform in Machines.platforms do
@@ -886,7 +886,7 @@ module TestConnectedTransfer =
                     | _ -> system
 
                 let thrice
-                    (write : UnixSystem<int, string> -> Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>)
+                    (write : UnixSystem<int, string> -> Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>)
                     =
                     ((system, []), [ 1..3 ])
                     ||> List.fold (fun (system, seen) _ ->
@@ -899,7 +899,7 @@ module TestConnectedTransfer =
 
                 let direct =
                     thrice (fun system ->
-                        UnixReadWrite.tryWrite system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
+                        UnixReadWrite.tryWriteBytes system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
                     )
 
                 (build, direct) |> shouldEqual (build, admitted)

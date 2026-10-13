@@ -239,7 +239,7 @@ module TestPeerName =
                     (ImmutableArray.Create<byte> (Array.zeroCreate 10))
                     system
             with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 10L, system)) -> system
+            | Ok (WriteStep.Returns (WriteAnswer.Completed 10L, system)) -> system
             | other -> failwith $"the client's write answered %A{other}"
 
         // Measured on both (T9): the server closes over the ten bytes it has

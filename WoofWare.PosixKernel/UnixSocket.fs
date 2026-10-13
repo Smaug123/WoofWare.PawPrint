@@ -13,7 +13,7 @@ type SockaddrCopySyscall =
 /// Whether a syscall taking a `struct sockaddr` reaches the point at which the
 /// kernel copies it in.
 ///
-/// The question exists for the reason `WriteAdmission`'s does: a caller may not
+/// The question exists for the reason `CallProgress` does: a caller may not
 /// be able to produce the bytes without failing, so every answer available
 /// *without* reading the sockaddr comes first. It matters more here than for a
 /// write, because whether the copy happens at all is a measured per-flavour rule

@@ -155,7 +155,7 @@ module TestDeviceDescriptors =
         : WriteAdmission * UnixSystem<int, string>
         =
         match UnixReadWrite.tryAdmitWrite task fd buffer count system with
-        | Ok (WriteOutcome.Returns (admission, system)) -> admission, system
+        | Ok (WriteStep.Returns (admission, system)) -> admission, system
         | other -> failwith $"admitWrite(%d{fd}, %A{buffer}, %d{count}): expected an admission, got %A{other}"
 
     // ------------------------------------------------------------------ open
@@ -554,7 +554,7 @@ module TestDeviceDescriptors =
                 | Error other -> failwith $"admitPWrite: %A{other}"
 
                 // The commit asks too, for a caller that skipped the admission.
-                match UnixReadWrite.tryPwrite task fd bytes 0L system with
+                match UnixReadWrite.tryPwriteBytes task fd bytes 0L system with
                 | Error (PWriteRefusal.SignalAtPageBoundary _) -> refused |> shouldEqual true
                 | Ok (answer, _) ->
                     refused |> shouldEqual false
@@ -565,7 +565,7 @@ module TestDeviceDescriptors =
                 | Error (WriteRefusal.SignalAtPageBoundary refusedCount) ->
                     refused |> shouldEqual true
                     refusedCount |> shouldEqual count
-                | Ok (WriteOutcome.Returns (admission, _)) ->
+                | Ok (WriteStep.Returns (admission, _)) ->
                     refused |> shouldEqual false
 
                     match admission with
@@ -574,9 +574,9 @@ module TestDeviceDescriptors =
                     | WriteAdmission.TransferThenSleep _ -> failwith "a device write never sleeps"
                 | other -> failwith $"admitWrite: %A{other}"
 
-                match UnixReadWrite.tryWrite task fd bytes system with
+                match UnixReadWrite.tryWriteBytes task fd bytes system with
                 | Error (WriteRefusal.SignalAtPageBoundary _) -> refused |> shouldEqual true
-                | Ok (WriteOutcome.Returns (answer, _)) ->
+                | Ok (WriteStep.Returns (answer, _)) ->
                     refused |> shouldEqual false
                     answer |> shouldEqual (WriteAnswer.Completed (int64 count))
                 | other -> failwith $"write: %A{other}"
@@ -746,7 +746,7 @@ module TestDeviceDescriptors =
                 buffer |> shouldEqual UserBuffer.Opaque
                 count |> shouldNotEqual 0UL
             | Error refusal -> failwith $"admitWrite refused: %A{refusal}"
-            | Ok (WriteOutcome.Returns (admission, after)) ->
+            | Ok (WriteStep.Returns (admission, after)) ->
                 after |> shouldEqual system
 
                 match admission with
@@ -762,8 +762,8 @@ module TestDeviceDescriptors =
 
                     let bytes = ImmutableArray.CreateRange (Seq.init transfer byte)
 
-                    match UnixReadWrite.tryWrite task fd bytes after with
-                    | Ok (WriteOutcome.Returns (answer, written)) ->
+                    match UnixReadWrite.tryWriteBytes task fd bytes after with
+                    | Ok (WriteStep.Returns (answer, written)) ->
                         answer |> shouldEqual (WriteAnswer.Completed (int64 transfer))
                         // Bytes written to the device are not what it reads back:
                         // the next read is the one the write did not precede.
@@ -823,7 +823,7 @@ module TestDeviceDescriptors =
                 transfer |> shouldEqual (int count)
                 let bytes = ImmutableArray.CreateRange (Seq.init transfer byte)
 
-                match UnixReadWrite.tryPwrite 0 fd bytes offset system with
+                match UnixReadWrite.tryPwriteBytes 0 fd bytes offset system with
                 | Ok (answer, after) ->
                     answer |> shouldEqual (WriteAnswer.Completed (int64 transfer))
                     after |> shouldEqual system

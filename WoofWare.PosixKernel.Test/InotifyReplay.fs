@@ -250,7 +250,7 @@ module internal InotifyReplay =
         =
         let bytes = ImmutableArray.CreateRange (Encoding.ASCII.GetBytes text)
 
-        match UnixReadWrite.tryPwrite 0 fd bytes offset system with
+        match UnixReadWrite.tryPwriteBytes 0 fd bytes offset system with
         | Ok (WriteAnswer.Completed _, system) -> system
         | other -> failwith $"pwrite(%d{fd}): %A{other}"
 

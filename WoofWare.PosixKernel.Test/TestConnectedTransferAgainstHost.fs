@@ -655,9 +655,9 @@ module TestConnectedTransferAgainstHost =
         let bytes = System.Collections.Immutable.ImmutableArray.Create (payload, 0, count)
 
         match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> Seen.Returned written, system
-        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Seen.Failed (error, false), system
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
+        | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> Seen.Returned written, system
+        | Ok (WriteStep.Returns (WriteAnswer.Failed error, system)) -> Seen.Failed (error, false), system
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
             Seen.Failed (error, true), system
         | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
 

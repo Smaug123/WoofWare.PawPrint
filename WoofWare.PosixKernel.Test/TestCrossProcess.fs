@@ -742,9 +742,8 @@ module TestCrossProcess =
         Machines.doIn
             pid
             (fun view ->
-                match UnixReadWrite.tryWrite 0 fd bytes view with
-                | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, view)) when int written = bytes.Length ->
-                    view
+                match UnixReadWrite.tryWriteBytes 0 fd bytes view with
+                | Ok (WriteStep.Returns (WriteAnswer.Completed written, view)) when int written = bytes.Length -> view
                 | other -> failwith $"write %d{fd} %s{text}: %A{other}"
             )
             machine
@@ -1527,11 +1526,11 @@ module TestCrossProcess =
                 (fun view ->
                     let view =
                         match write 0 writer 65536 view with
-                        | Ok (WriteOutcome.Returns (WriteAnswer.Completed 65536L, view)) -> view
+                        | Ok (WriteStep.Returns (WriteAnswer.Completed 65536L, view)) -> view
                         | other -> failwith $"filling the pipe: %A{other}"
 
                     match write 1 writer 1 view with
-                    | Ok (WriteOutcome.WouldBlock (_, view)) -> view
+                    | Ok (WriteStep.WouldBlock (_, view)) -> view
                     | other -> failwith $"the write: expected to sleep, got %A{other}"
                 )
                 machine
@@ -1545,7 +1544,7 @@ module TestCrossProcess =
 
         let ended =
             match UnixReadWrite.tryAdmitFinishWrite 1 (Machines.viewOf a machine) with
-            | Ok (WriteOutcome.ProcessEnded ended) -> ended
+            | Ok (WriteStep.ProcessEnded ended) -> ended
             | other -> failwith $"finishing the write: expected the process to end, got %A{other}"
 
         match SimulatedMachine.tryEndProcess ended machine with

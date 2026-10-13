@@ -643,10 +643,9 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     /// Whether `outcome` is a process ended by `SIGPIPE`'s default action.
-    let private endedBySigPipe (outcome : Result<WriteOutcome<'Answer, int, string>, WriteRefusal>) : bool =
+    let private endedBySigPipe (outcome : Result<WriteStep<'Answer, int, string>, WriteRefusal>) : bool =
         match outcome with
-        | Ok (WriteOutcome.ProcessEnded ended) ->
-            ended.Termination = ProcessTermination.Signaled (Signal.SIGPIPE, false)
+        | Ok (WriteStep.ProcessEnded ended) -> ended.Termination = ProcessTermination.Signaled (Signal.SIGPIPE, false)
         | _ -> false
 
     [<Test>]
@@ -716,7 +715,7 @@ module TestUnixSystemStep =
             |> endedBySigPipe
             |> shouldEqual true
 
-        UnixReadWrite.tryWrite idle.Leader fd (ImmutableArray.CreateRange [ 1uy ]) idle
+        UnixReadWrite.tryWriteBytes idle.Leader fd (ImmutableArray.CreateRange [ 1uy ]) idle
         |> endedBySigPipe
         |> shouldEqual true
 
@@ -749,7 +748,7 @@ module TestUnixSystemStep =
                     UnixReadWrite.tryAdmitWrite system.Leader fd UserBuffer.Mapped count system
                     |> shouldEqual refused
 
-                UnixReadWrite.tryWrite system.Leader fd (ImmutableArray.CreateRange [ 1uy ]) system
+                UnixReadWrite.tryWriteBytes system.Leader fd (ImmutableArray.CreateRange [ 1uy ]) system
                 |> shouldEqual refused
 
     [<Test>]
@@ -1173,7 +1172,7 @@ module TestUnixSystemStep =
                 | Ok (_, system) -> system
                 | other -> failwith $"could not advance the offset: %A{other}"
 
-            match UnixReadWrite.tryPwrite 0 fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
+            match UnixReadWrite.tryPwriteBytes 0 fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
             | Ok (WriteAnswer.Completed written, after) ->
                 written |> shouldEqual 2L
 
@@ -1193,7 +1192,7 @@ module TestUnixSystemStep =
     let ``a pwrite past the end of the file extends it`` () : unit =
         let fd, system = withOpenFile linux
 
-        match UnixReadWrite.tryPwrite 0 fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
+        match UnixReadWrite.tryPwriteBytes 0 fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 1L
 
@@ -1433,18 +1432,18 @@ module TestUnixSystemStep =
         // an inconsistent one, which is what lets the second call take no buffer.
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        UnixReadWrite.tryPwrite 0 7 bytes 0L linux
+        UnixReadWrite.tryPwriteBytes 0 7 bytes 0L linux
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
 
         let fd, system = withReadOnlyFile linux
 
-        UnixReadWrite.tryPwrite 0 fd bytes 0L system
+        UnixReadWrite.tryPwriteBytes 0 fd bytes 0L system
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
         // Including the negative offset, which precedes them all.
         let good, goodSystem = withOpenFile linux
 
-        UnixReadWrite.tryPwrite 0 good bytes -1L goodSystem
+        UnixReadWrite.tryPwriteBytes 0 good bytes -1L goodSystem
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EINVAL, goodSystem))
 
     [<Test>]
@@ -1455,12 +1454,12 @@ module TestUnixSystemStep =
         // measured, `pwrite(f, buf, 0, 100000)` on a five-byte file leaves it five
         // bytes long.
         for offset in [ 0L ; 100000L ] do
-            UnixReadWrite.tryPwrite 0 fd ImmutableArray<byte>.Empty offset system
+            UnixReadWrite.tryPwriteBytes 0 fd ImmutableArray<byte>.Empty offset system
             |> shouldEqual (Ok (WriteAnswer.Completed 0L, system))
 
         let readOnlyFd, readOnly = withReadOnlyFile linux
 
-        UnixReadWrite.tryPwrite 0 readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
+        UnixReadWrite.tryPwriteBytes 0 readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     [<Test>]
@@ -1472,7 +1471,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        match UnixReadWrite.tryPwrite 0 fd bytes VirtualFileSystem.maxFileLength system with
+        match UnixReadWrite.tryPwriteBytes 0 fd bytes VirtualFileSystem.maxFileLength system with
         | Error (PWriteRefusal.ExceedsRepresentableLength (_, offset, count)) ->
             offset |> shouldEqual VirtualFileSystem.maxFileLength
             count |> shouldEqual 1
@@ -1487,7 +1486,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixReadWrite.tryPwrite 0 fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
+                UnixReadWrite.tryPwriteBytes 0 fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
                 |> ignore<Result<WriteAnswer * UnixSystem<int, string>, PWriteRefusal>>
             )
 

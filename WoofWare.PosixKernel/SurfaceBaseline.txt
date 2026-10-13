@@ -296,6 +296,25 @@ WoofWare.PosixKernel.CallerPrivilege.IsUnprivileged [property]: [read-only] bool
 WoofWare.PosixKernel.CallerPrivilege.Privileged [static property]: [read-only] WoofWare.PosixKernel.CallerPrivilege
 WoofWare.PosixKernel.CallerPrivilege.Tag [property]: [read-only] int
 WoofWare.PosixKernel.CallerPrivilege.Unprivileged [static property]: [read-only] WoofWare.PosixKernel.CallerPrivilege
+WoofWare.PosixKernel.CallProgress`2 inherit obj, implements WoofWare.PosixKernel.CallProgress<'Paused, 'Answer> System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CallProgress<'Paused, 'Answer> System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
+WoofWare.PosixKernel.CallProgress`2+Answered inherit WoofWare.PosixKernel.CallProgress<'Paused, 'Answer>
+WoofWare.PosixKernel.CallProgress`2+Answered.answer [property]: [read-only] 'Answer
+WoofWare.PosixKernel.CallProgress`2+Answered.get_answer [method]: unit -> 'Answer
+WoofWare.PosixKernel.CallProgress`2+NeedsCopyIn inherit WoofWare.PosixKernel.CallProgress<'Paused, 'Answer>
+WoofWare.PosixKernel.CallProgress`2+NeedsCopyIn.get_paused [method]: unit -> 'Paused
+WoofWare.PosixKernel.CallProgress`2+NeedsCopyIn.paused [property]: [read-only] 'Paused
+WoofWare.PosixKernel.CallProgress`2+Tags inherit obj
+WoofWare.PosixKernel.CallProgress`2+Tags.Answered [static field]: int = 0
+WoofWare.PosixKernel.CallProgress`2+Tags.NeedsCopyIn [static field]: int = 1
+WoofWare.PosixKernel.CallProgress`2.Equals [method]: (WoofWare.PosixKernel.CallProgress<'Paused, 'Answer>, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.CallProgress`2.get_IsAnswered [method]: unit -> bool
+WoofWare.PosixKernel.CallProgress`2.get_IsNeedsCopyIn [method]: unit -> bool
+WoofWare.PosixKernel.CallProgress`2.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.CallProgress`2.IsAnswered [property]: [read-only] bool
+WoofWare.PosixKernel.CallProgress`2.IsNeedsCopyIn [property]: [read-only] bool
+WoofWare.PosixKernel.CallProgress`2.NewAnswered [static method]: 'Answer -> WoofWare.PosixKernel.CallProgress<'Paused, 'Answer>
+WoofWare.PosixKernel.CallProgress`2.NewNeedsCopyIn [static method]: 'Paused -> WoofWare.PosixKernel.CallProgress<'Paused, 'Answer>
+WoofWare.PosixKernel.CallProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.CharacterDevice inherit obj, implements WoofWare.PosixKernel.CharacterDevice System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CharacterDevice System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 5 cases
 WoofWare.PosixKernel.CharacterDevice+Tags inherit obj
 WoofWare.PosixKernel.CharacterDevice+Tags.Null [static field]: int = 0
@@ -439,6 +458,13 @@ WoofWare.PosixKernel.ConnectOutcome.IsCompleted [property]: [read-only] bool
 WoofWare.PosixKernel.ConnectOutcome.IsFailed [property]: [read-only] bool
 WoofWare.PosixKernel.ConnectOutcome.NewFailed [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.ConnectOutcome
 WoofWare.PosixKernel.ConnectOutcome.Tag [property]: [read-only] int
+WoofWare.PosixKernel.CopyRange inherit obj, implements WoofWare.PosixKernel.CopyRange System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CopyRange System.IComparable, System.IComparable, System.Collections.IStructuralComparable
+WoofWare.PosixKernel.CopyRange..ctor [constructor]: (int, int)
+WoofWare.PosixKernel.CopyRange.ByteCount [property]: [read-only] int
+WoofWare.PosixKernel.CopyRange.Equals [method]: (WoofWare.PosixKernel.CopyRange, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.CopyRange.FirstByte [property]: [read-only] int
+WoofWare.PosixKernel.CopyRange.get_ByteCount [method]: unit -> int
+WoofWare.PosixKernel.CopyRange.get_FirstByte [method]: unit -> int
 WoofWare.PosixKernel.CoreDumps inherit obj, implements WoofWare.PosixKernel.CoreDumps System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CoreDumps System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.CoreDumps+Tags inherit obj
 WoofWare.PosixKernel.CoreDumps+Tags.Suppressed [static field]: int = 0
@@ -3087,8 +3113,20 @@ WoofWare.PosixKernel.PausedCloneFileSource`2 inherit obj
 WoofWare.PosixKernel.PausedInotifyAddWatch`2 inherit obj, implements WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
 WoofWare.PosixKernel.PausedInotifyAddWatch`2.Equals [method]: (WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PausedLink`2 inherit obj
+WoofWare.PosixKernel.PausedPWrite inherit obj
+WoofWare.PosixKernel.PausedPWrite.copyRange [static method]: WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
+WoofWare.PosixKernel.PausedPWrite`2 inherit obj, implements WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
+WoofWare.PosixKernel.PausedPWrite`2.Equals [method]: (WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PausedRename`2 inherit obj
+WoofWare.PosixKernel.PausedSend inherit obj
+WoofWare.PosixKernel.PausedSend.copyRange [static method]: WoofWare.PosixKernel.PausedSend<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
+WoofWare.PosixKernel.PausedSend`2 inherit obj, implements WoofWare.PosixKernel.PausedSend<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
+WoofWare.PosixKernel.PausedSend`2.Equals [method]: (WoofWare.PosixKernel.PausedSend<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PausedSymlink`2 inherit obj
+WoofWare.PosixKernel.PausedWrite inherit obj
+WoofWare.PosixKernel.PausedWrite.copyRange [static method]: WoofWare.PosixKernel.PausedWrite<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
+WoofWare.PosixKernel.PausedWrite`2 inherit obj, implements WoofWare.PosixKernel.PausedWrite<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
+WoofWare.PosixKernel.PausedWrite`2.Equals [method]: (WoofWare.PosixKernel.PausedWrite<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PendingSignal`1 inherit obj, implements 'Task WoofWare.PosixKernel.PendingSignal System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.PendingSignal System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.PendingSignal`1..ctor [constructor]: (WoofWare.PosixKernel.Signal, 'Task Microsoft.FSharp.Core.FSharpValueOption)
 WoofWare.PosixKernel.PendingSignal`1.Equals [method]: ('Task WoofWare.PosixKernel.PendingSignal, System.Collections.IEqualityComparer) -> bool
@@ -3392,25 +3430,6 @@ WoofWare.PosixKernel.ProtectedFiles.Symlinks [property]: [read-only] WoofWare.Po
 WoofWare.PosixKernel.ProtectedFilesModule inherit obj
 WoofWare.PosixKernel.ProtectedFilesModule.get_off [static method]: unit -> WoofWare.PosixKernel.ProtectedFiles
 WoofWare.PosixKernel.ProtectedFilesModule.off [static property]: [read-only] WoofWare.PosixKernel.ProtectedFiles
-WoofWare.PosixKernel.PWriteAdmission inherit obj, implements WoofWare.PosixKernel.PWriteAdmission System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PWriteAdmission System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.PWriteAdmission+Answered inherit WoofWare.PosixKernel.PWriteAdmission
-WoofWare.PosixKernel.PWriteAdmission+Answered.answer [property]: [read-only] WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.PWriteAdmission+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.PWriteAdmission+Tags inherit obj
-WoofWare.PosixKernel.PWriteAdmission+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.PWriteAdmission+Tags.Transfer [static field]: int = 1
-WoofWare.PosixKernel.PWriteAdmission+Transfer inherit WoofWare.PosixKernel.PWriteAdmission
-WoofWare.PosixKernel.PWriteAdmission+Transfer.count [property]: [read-only] int
-WoofWare.PosixKernel.PWriteAdmission+Transfer.get_count [method]: unit -> int
-WoofWare.PosixKernel.PWriteAdmission.Equals [method]: (WoofWare.PosixKernel.PWriteAdmission, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.PWriteAdmission.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.PWriteAdmission.get_IsTransfer [method]: unit -> bool
-WoofWare.PosixKernel.PWriteAdmission.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.PWriteAdmission.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.PWriteAdmission.IsTransfer [property]: [read-only] bool
-WoofWare.PosixKernel.PWriteAdmission.NewAnswered [static method]: WoofWare.PosixKernel.WriteAnswer -> WoofWare.PosixKernel.PWriteAdmission
-WoofWare.PosixKernel.PWriteAdmission.NewTransfer [static method]: int -> WoofWare.PosixKernel.PWriteAdmission
-WoofWare.PosixKernel.PWriteAdmission.Tag [property]: [read-only] int
 WoofWare.PosixKernel.QueuedConnection inherit obj, implements WoofWare.PosixKernel.QueuedConnection System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.QueuedConnection System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.QueuedConnection..ctor [constructor]: (WoofWare.PosixKernel.ConnectionId, bool, WoofWare.PosixKernel.SocketOptions)
 WoofWare.PosixKernel.QueuedConnection.Connection [property]: [read-only] WoofWare.PosixKernel.ConnectionId
@@ -6350,21 +6369,18 @@ WoofWare.PosixKernel.UnixPoll.finishEpollWait [static method]: 'Task -> WoofWare
 WoofWare.PosixKernel.UnixPoll.finishPoll [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.PollOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPoll.poll [static method]: 'Task -> WoofWare.PosixKernel.PollEntry list -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.PollOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixReadWrite inherit obj
-WoofWare.PosixKernel.UnixReadWrite.admitFinishWrite [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteResumption, 'Task, 'Handler>
-WoofWare.PosixKernel.UnixReadWrite.admitPWrite [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> System.Int64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.PWriteAdmission
-WoofWare.PosixKernel.UnixReadWrite.admitSend [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAdmission, 'Task, 'Handler>
-WoofWare.PosixKernel.UnixReadWrite.admitWrite [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAdmission, 'Task, 'Handler>
 WoofWare.PosixKernel.UnixReadWrite.copyFileRange [static method]: int -> int -> System.UInt64 -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixReadWrite.finishRead [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.ReadOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixReadWrite.finishWrite [static method]: 'Task -> System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAnswer, 'Task, 'Handler>
+WoofWare.PosixKernel.UnixReadWrite.finishWrite [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedWrite<'Task, 'Handler>, WoofWare.PosixKernel.ProcessFate<'Task WoofWare.PosixKernel.WriteOutcome, 'Task, 'Handler>>
 WoofWare.PosixKernel.UnixReadWrite.pread [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> System.Int64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.ReadAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixReadWrite.pwrite [static method]: 'Task -> int -> System.Byte System.Collections.Immutable.ImmutableArray -> System.Int64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.WriteAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
+WoofWare.PosixKernel.UnixReadWrite.pwrite [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> System.Int64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler>, (WoofWare.PosixKernel.WriteAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
+WoofWare.PosixKernel.UnixReadWrite.pwriteWithBytes [static method]: System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler> -> (WoofWare.PosixKernel.WriteAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixReadWrite.read [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.ReadOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixReadWrite.recv [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.ReadOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixReadWrite.send [static method]: 'Task -> int -> System.Byte System.Collections.Immutable.ImmutableArray -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAnswer, 'Task, 'Handler>
-WoofWare.PosixKernel.UnixReadWrite.sendThenSleep [static method]: 'Task -> int -> int -> System.Byte System.Collections.Immutable.ImmutableArray -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAnswer, 'Task, 'Handler>
-WoofWare.PosixKernel.UnixReadWrite.write [static method]: 'Task -> int -> System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAnswer, 'Task, 'Handler>
-WoofWare.PosixKernel.UnixReadWrite.writeThenSleep [static method]: 'Task -> int -> int -> System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<WoofWare.PosixKernel.WriteAnswer, 'Task, 'Handler>
+WoofWare.PosixKernel.UnixReadWrite.send [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedSend<'Task, 'Handler>, WoofWare.PosixKernel.ProcessFate<'Task WoofWare.PosixKernel.WriteOutcome, 'Task, 'Handler>>
+WoofWare.PosixKernel.UnixReadWrite.sendWithBytes [static method]: System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.PausedSend<'Task, 'Handler> -> WoofWare.PosixKernel.ProcessFate<'Task WoofWare.PosixKernel.WriteOutcome, 'Task, 'Handler>
+WoofWare.PosixKernel.UnixReadWrite.write [static method]: 'Task -> int -> WoofWare.PosixKernel.UserBuffer -> System.UInt64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedWrite<'Task, 'Handler>, WoofWare.PosixKernel.ProcessFate<'Task WoofWare.PosixKernel.WriteOutcome, 'Task, 'Handler>>
+WoofWare.PosixKernel.UnixReadWrite.writeWithBytes [static method]: System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.PausedWrite<'Task, 'Handler> -> WoofWare.PosixKernel.ProcessFate<'Task WoofWare.PosixKernel.WriteOutcome, 'Task, 'Handler>
 WoofWare.PosixKernel.UnixScheduling inherit obj
 WoofWare.PosixKernel.UnixScheduling.dispatch [static method]: 'Task -> WoofWare.PosixKernel.CpuId -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.UnixScheduling.getcpu [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.GetCpuAnswer
@@ -6950,34 +6966,6 @@ WoofWare.PosixKernel.WatchDescriptor.Tag [property]: [read-only] int
 WoofWare.PosixKernel.WatchDescriptor.value [property]: [read-only] int
 WoofWare.PosixKernel.WatchDescriptorModule inherit obj
 WoofWare.PosixKernel.WatchDescriptorModule.toInt [static method]: WoofWare.PosixKernel.WatchDescriptor -> int
-WoofWare.PosixKernel.WriteAdmission inherit obj, implements WoofWare.PosixKernel.WriteAdmission System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WriteAdmission System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
-WoofWare.PosixKernel.WriteAdmission+Answered inherit WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission+Answered.answer [property]: [read-only] WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.WriteAdmission+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.WriteAdmission+Tags inherit obj
-WoofWare.PosixKernel.WriteAdmission+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.WriteAdmission+Tags.Transfer [static field]: int = 1
-WoofWare.PosixKernel.WriteAdmission+Tags.TransferThenSleep [static field]: int = 2
-WoofWare.PosixKernel.WriteAdmission+Transfer inherit WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission+Transfer.count [property]: [read-only] int
-WoofWare.PosixKernel.WriteAdmission+Transfer.get_count [method]: unit -> int
-WoofWare.PosixKernel.WriteAdmission+TransferThenSleep inherit WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission+TransferThenSleep.count [property]: [read-only] int
-WoofWare.PosixKernel.WriteAdmission+TransferThenSleep.get_count [method]: unit -> int
-WoofWare.PosixKernel.WriteAdmission+TransferThenSleep.get_total [method]: unit -> int
-WoofWare.PosixKernel.WriteAdmission+TransferThenSleep.total [property]: [read-only] int
-WoofWare.PosixKernel.WriteAdmission.Equals [method]: (WoofWare.PosixKernel.WriteAdmission, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.WriteAdmission.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.WriteAdmission.get_IsTransfer [method]: unit -> bool
-WoofWare.PosixKernel.WriteAdmission.get_IsTransferThenSleep [method]: unit -> bool
-WoofWare.PosixKernel.WriteAdmission.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.WriteAdmission.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.WriteAdmission.IsTransfer [property]: [read-only] bool
-WoofWare.PosixKernel.WriteAdmission.IsTransferThenSleep [property]: [read-only] bool
-WoofWare.PosixKernel.WriteAdmission.NewAnswered [static method]: WoofWare.PosixKernel.WriteAnswer -> WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission.NewTransfer [static method]: int -> WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission.NewTransferThenSleep [static method]: (int, int) -> WoofWare.PosixKernel.WriteAdmission
-WoofWare.PosixKernel.WriteAdmission.Tag [property]: [read-only] int
 WoofWare.PosixKernel.WriteAnswer inherit obj, implements WoofWare.PosixKernel.WriteAnswer System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WriteAnswer System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.WriteAnswer+Completed inherit WoofWare.PosixKernel.WriteAnswer
 WoofWare.PosixKernel.WriteAnswer+Completed.get_written [method]: unit -> System.Int64
@@ -6997,72 +6985,36 @@ WoofWare.PosixKernel.WriteAnswer.IsFailed [property]: [read-only] bool
 WoofWare.PosixKernel.WriteAnswer.NewCompleted [static method]: System.Int64 -> WoofWare.PosixKernel.WriteAnswer
 WoofWare.PosixKernel.WriteAnswer.NewFailed [static method]: WoofWare.PosixKernel.UnixError -> WoofWare.PosixKernel.WriteAnswer
 WoofWare.PosixKernel.WriteAnswer.Tag [property]: [read-only] int
-WoofWare.PosixKernel.WriteOutcome`3 inherit obj, implements WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 5 cases
-WoofWare.PosixKernel.WriteOutcome`3+ProcessEnded inherit WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+ProcessEnded.get_Item [method]: unit -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+ProcessEnded.Item [property]: [read-only] WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Restarts inherit WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Restarts.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Restarts.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Returns inherit WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Returns.answer [property]: [read-only] 'Answer
-WoofWare.PosixKernel.WriteOutcome`3+Returns.get_answer [method]: unit -> 'Answer
-WoofWare.PosixKernel.WriteOutcome`3+Returns.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Returns.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising inherit WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.answer [property]: [read-only] 'Answer
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.get_answer [method]: unit -> 'Answer
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.get_signal [method]: unit -> 'Task WoofWare.PosixKernel.PendingSignal
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.signal [property]: [read-only] 'Task WoofWare.PosixKernel.PendingSignal
-WoofWare.PosixKernel.WriteOutcome`3+ReturnsRaising.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+Tags inherit obj
-WoofWare.PosixKernel.WriteOutcome`3+Tags.ProcessEnded [static field]: int = 2
-WoofWare.PosixKernel.WriteOutcome`3+Tags.Restarts [static field]: int = 4
-WoofWare.PosixKernel.WriteOutcome`3+Tags.Returns [static field]: int = 0
-WoofWare.PosixKernel.WriteOutcome`3+Tags.ReturnsRaising [static field]: int = 1
-WoofWare.PosixKernel.WriteOutcome`3+Tags.WouldBlock [static field]: int = 3
-WoofWare.PosixKernel.WriteOutcome`3+WouldBlock inherit WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+WouldBlock.condition [property]: [read-only] WoofWare.PosixKernel.WakeCondition
-WoofWare.PosixKernel.WriteOutcome`3+WouldBlock.get_condition [method]: unit -> WoofWare.PosixKernel.WakeCondition
-WoofWare.PosixKernel.WriteOutcome`3+WouldBlock.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3+WouldBlock.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.Equals [method]: (WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_IsProcessEnded [method]: unit -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_IsRestarts [method]: unit -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_IsReturns [method]: unit -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_IsReturnsRaising [method]: unit -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_IsWouldBlock [method]: unit -> bool
-WoofWare.PosixKernel.WriteOutcome`3.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.WriteOutcome`3.IsProcessEnded [property]: [read-only] bool
-WoofWare.PosixKernel.WriteOutcome`3.IsRestarts [property]: [read-only] bool
-WoofWare.PosixKernel.WriteOutcome`3.IsReturns [property]: [read-only] bool
-WoofWare.PosixKernel.WriteOutcome`3.IsReturnsRaising [property]: [read-only] bool
-WoofWare.PosixKernel.WriteOutcome`3.IsWouldBlock [property]: [read-only] bool
-WoofWare.PosixKernel.WriteOutcome`3.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.NewRestarts [static method]: WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.NewReturns [static method]: ('Answer, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.NewReturnsRaising [static method]: ('Answer, 'Task WoofWare.PosixKernel.PendingSignal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.NewWouldBlock [static method]: (WoofWare.PosixKernel.WakeCondition, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.WriteOutcome<'Answer, 'Task, 'Handler>
-WoofWare.PosixKernel.WriteOutcome`3.Tag [property]: [read-only] int
-WoofWare.PosixKernel.WriteResumption inherit obj, implements WoofWare.PosixKernel.WriteResumption System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WriteResumption System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
-WoofWare.PosixKernel.WriteResumption+Answered inherit WoofWare.PosixKernel.WriteResumption
-WoofWare.PosixKernel.WriteResumption+Answered.answer [property]: [read-only] WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.WriteResumption+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.WriteAnswer
-WoofWare.PosixKernel.WriteResumption+Tags inherit obj
-WoofWare.PosixKernel.WriteResumption+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.WriteResumption+Tags.Transfer [static field]: int = 1
-WoofWare.PosixKernel.WriteResumption+Transfer inherit WoofWare.PosixKernel.WriteResumption
-WoofWare.PosixKernel.WriteResumption+Transfer.count [property]: [read-only] int
-WoofWare.PosixKernel.WriteResumption+Transfer.get_count [method]: unit -> int
-WoofWare.PosixKernel.WriteResumption+Transfer.get_offset [method]: unit -> int
-WoofWare.PosixKernel.WriteResumption+Transfer.offset [property]: [read-only] int
-WoofWare.PosixKernel.WriteResumption.Equals [method]: (WoofWare.PosixKernel.WriteResumption, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.WriteResumption.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.WriteResumption.get_IsTransfer [method]: unit -> bool
-WoofWare.PosixKernel.WriteResumption.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.WriteResumption.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.WriteResumption.IsTransfer [property]: [read-only] bool
-WoofWare.PosixKernel.WriteResumption.NewAnswered [static method]: WoofWare.PosixKernel.WriteAnswer -> WoofWare.PosixKernel.WriteResumption
-WoofWare.PosixKernel.WriteResumption.NewTransfer [static method]: (int, int) -> WoofWare.PosixKernel.WriteResumption
-WoofWare.PosixKernel.WriteResumption.Tag [property]: [read-only] int
+WoofWare.PosixKernel.WriteOutcome`1 inherit obj, implements 'Task WoofWare.PosixKernel.WriteOutcome System.IEquatable, System.Collections.IStructuralEquatable, 'Task WoofWare.PosixKernel.WriteOutcome System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
+WoofWare.PosixKernel.WriteOutcome`1+Returns inherit 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1+Returns.answer [property]: [read-only] WoofWare.PosixKernel.WriteAnswer
+WoofWare.PosixKernel.WriteOutcome`1+Returns.get_answer [method]: unit -> WoofWare.PosixKernel.WriteAnswer
+WoofWare.PosixKernel.WriteOutcome`1+ReturnsRaising inherit 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1+ReturnsRaising.answer [property]: [read-only] WoofWare.PosixKernel.WriteAnswer
+WoofWare.PosixKernel.WriteOutcome`1+ReturnsRaising.get_answer [method]: unit -> WoofWare.PosixKernel.WriteAnswer
+WoofWare.PosixKernel.WriteOutcome`1+ReturnsRaising.get_signal [method]: unit -> 'Task WoofWare.PosixKernel.PendingSignal
+WoofWare.PosixKernel.WriteOutcome`1+ReturnsRaising.signal [property]: [read-only] 'Task WoofWare.PosixKernel.PendingSignal
+WoofWare.PosixKernel.WriteOutcome`1+Tags inherit obj
+WoofWare.PosixKernel.WriteOutcome`1+Tags.Restarts [static field]: int = 3
+WoofWare.PosixKernel.WriteOutcome`1+Tags.Returns [static field]: int = 0
+WoofWare.PosixKernel.WriteOutcome`1+Tags.ReturnsRaising [static field]: int = 1
+WoofWare.PosixKernel.WriteOutcome`1+Tags.WouldBlock [static field]: int = 2
+WoofWare.PosixKernel.WriteOutcome`1+WouldBlock inherit 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1+WouldBlock.condition [property]: [read-only] WoofWare.PosixKernel.WakeCondition
+WoofWare.PosixKernel.WriteOutcome`1+WouldBlock.get_condition [method]: unit -> WoofWare.PosixKernel.WakeCondition
+WoofWare.PosixKernel.WriteOutcome`1.Equals [method]: ('Task WoofWare.PosixKernel.WriteOutcome, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.WriteOutcome`1.get_IsRestarts [method]: unit -> bool
+WoofWare.PosixKernel.WriteOutcome`1.get_IsReturns [method]: unit -> bool
+WoofWare.PosixKernel.WriteOutcome`1.get_IsReturnsRaising [method]: unit -> bool
+WoofWare.PosixKernel.WriteOutcome`1.get_IsWouldBlock [method]: unit -> bool
+WoofWare.PosixKernel.WriteOutcome`1.get_Restarts [static method]: unit -> 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.WriteOutcome`1.IsRestarts [property]: [read-only] bool
+WoofWare.PosixKernel.WriteOutcome`1.IsReturns [property]: [read-only] bool
+WoofWare.PosixKernel.WriteOutcome`1.IsReturnsRaising [property]: [read-only] bool
+WoofWare.PosixKernel.WriteOutcome`1.IsWouldBlock [property]: [read-only] bool
+WoofWare.PosixKernel.WriteOutcome`1.NewReturns [static method]: WoofWare.PosixKernel.WriteAnswer -> 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1.NewReturnsRaising [static method]: (WoofWare.PosixKernel.WriteAnswer, 'Task WoofWare.PosixKernel.PendingSignal) -> 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1.Restarts [static property]: [read-only] 'Task WoofWare.PosixKernel.WriteOutcome
+WoofWare.PosixKernel.WriteOutcome`1.Tag [property]: [read-only] int

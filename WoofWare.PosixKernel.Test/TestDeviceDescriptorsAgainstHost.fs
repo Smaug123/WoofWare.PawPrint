@@ -182,10 +182,12 @@ module TestDeviceDescriptorsAgainstHost =
 
         let admitWrite (buffer : UserBuffer) (count : uint64) : Answer =
             match UnixReadWrite.tryAdmitWrite 0 fd buffer count system with
-            | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, _)) -> ofWrite answer
-            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, after)) ->
-                match UnixReadWrite.tryWrite 0 fd (ImmutableArray.CreateRange (Array.zeroCreate<byte> count)) after with
-                | Ok (WriteOutcome.Returns (answer, _)) -> ofWrite answer
+            | Ok (WriteStep.Returns (WriteAdmission.Answered answer, _)) -> ofWrite answer
+            | Ok (WriteStep.Returns (WriteAdmission.Transfer count, after)) ->
+                match
+                    UnixReadWrite.tryWriteBytes 0 fd (ImmutableArray.CreateRange (Array.zeroCreate<byte> count)) after
+                with
+                | Ok (WriteStep.Returns (answer, _)) -> ofWrite answer
                 | other -> failwith $"the model's write: %A{other}"
             | other -> failwith $"the model's admitWrite: %A{other}"
 
@@ -236,7 +238,7 @@ module TestDeviceDescriptorsAgainstHost =
                      | Ok (PWriteAdmission.Answered answer) -> ofWrite answer
                      | Ok (PWriteAdmission.Transfer count) ->
                          match
-                             UnixReadWrite.tryPwrite
+                             UnixReadWrite.tryPwriteBytes
                                  0
                                  fd
                                  (ImmutableArray.CreateRange (Array.zeroCreate<byte> count))

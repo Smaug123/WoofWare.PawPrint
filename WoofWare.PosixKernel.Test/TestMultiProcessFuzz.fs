@@ -832,14 +832,14 @@ module TestMultiProcessFuzz =
         /// The library refused it, which changes nothing.
         | Refused
 
-    let private ofWrite (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) : Made =
+    let private ofWrite (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) : Made =
         match outcome with
         | Error _ -> Made.Refused
-        | Ok (WriteOutcome.Returns (_, view))
-        | Ok (WriteOutcome.ReturnsRaising (_, _, view))
-        | Ok (WriteOutcome.Restarts view) -> Made.Answered view
-        | Ok (WriteOutcome.WouldBlock (_, view)) -> Made.Sleeps view
-        | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+        | Ok (WriteStep.Returns (_, view))
+        | Ok (WriteStep.ReturnsRaising (_, _, view))
+        | Ok (WriteStep.Restarts view) -> Made.Answered view
+        | Ok (WriteStep.WouldBlock (_, view)) -> Made.Sleeps view
+        | Ok (WriteStep.ProcessEnded ended) -> Made.Ended ended
 
     /// One call by `task` of the process `pid`, in its view `view`, on `machine`
     /// as it stood before.
@@ -905,20 +905,20 @@ module TestMultiProcessFuzz =
             let bytes = ImmutableArray.Create<byte> (Array.init size byte)
 
             match WriteOutcomes.admitThenWrite task fd UserBuffer.Mapped bytes view with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, after)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Completed written, after)) ->
                 if written < int64 size then
                     cover FuzzLabel.ShortWrite
 
                 Made.Answered after
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, after)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EAGAIN, after)) ->
                 cover FuzzLabel.ShortWrite
                 Made.Answered after
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.ECONNRESET, _))
-            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _))
-            | Ok (WriteOutcome.ProcessEnded _) as outcome ->
+            | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.ECONNRESET, _))
+            | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _))
+            | Ok (WriteStep.ProcessEnded _) as outcome ->
                 cover FuzzLabel.Reset
                 ofWrite outcome
-            | Ok (WriteOutcome.WouldBlock (_, after)) ->
+            | Ok (WriteStep.WouldBlock (_, after)) ->
                 cover FuzzLabel.ConnectionWritePark
                 Made.Sleeps after
             | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
@@ -1410,17 +1410,17 @@ module TestMultiProcessFuzz =
             let made =
                 match UnixReadWrite.tryAdmitFinishWrite task view with
                 | Error _ -> Made.Refused
-                | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-                    UnixReadWrite.tryFinishWrite
+                | Ok (WriteStep.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                    UnixReadWrite.tryFinishWriteBytes
                         task
                         (ImmutableArray.Create<byte> (Array.init count (fun i -> byte (offset + i))))
                         admitted
                     |> ofWrite
-                | Ok (WriteOutcome.Returns (WriteResumption.Answered _, after))
-                | Ok (WriteOutcome.ReturnsRaising (_, _, after))
-                | Ok (WriteOutcome.Restarts after) -> Made.Answered after
-                | Ok (WriteOutcome.WouldBlock (_, after)) -> Made.Sleeps after
-                | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+                | Ok (WriteStep.Returns (WriteResumption.Answered _, after))
+                | Ok (WriteStep.ReturnsRaising (_, _, after))
+                | Ok (WriteStep.Restarts after) -> Made.Answered after
+                | Ok (WriteStep.WouldBlock (_, after)) -> Made.Sleeps after
+                | Ok (WriteStep.ProcessEnded ended) -> Made.Ended ended
 
             match made with
             | Made.Answered _ when connection -> cover FuzzLabel.ConnectionFinish

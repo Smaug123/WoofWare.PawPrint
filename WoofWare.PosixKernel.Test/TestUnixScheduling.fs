@@ -385,7 +385,7 @@ module TestUnixScheduling =
                             match
                                 WriteOutcomes.admitThenWrite 0 4 UserBuffer.Mapped (ImmutableArray.Create 1uy) view
                             with
-                            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, view)) -> view
+                            | Ok (WriteStep.Returns (WriteAnswer.Completed 1L, view)) -> view
                             | other -> failwith $"write: %A{other}"
                         )
 

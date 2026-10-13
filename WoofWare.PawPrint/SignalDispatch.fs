@@ -250,36 +250,37 @@ module SignalDispatch =
         // there, and the kernel answers for whatever that is.
         let leader = state.Kernel.Leader
 
-        let describe (outcome : WriteOutcome<'Answer, ThreadId, NativeSignalHandler>) : string =
-            match outcome with
-            | WriteOutcome.Returns (answer, _) -> $"%O{answer}"
-            | WriteOutcome.ReturnsRaising (answer, raised, _) -> $"%O{answer}, raising %O{raised.Signal}"
-            | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
-            | WriteOutcome.WouldBlock _ -> "that the write sleeps, the pipe being full"
-            | WriteOutcome.Restarts _ -> "a restart"
+        let describe (fate : ProcessFate<WriteOutcome<ThreadId>, ThreadId, NativeSignalHandler>) : string =
+            match fate with
+            | ProcessFate.Continues (WriteOutcome.Returns answer, _) -> $"%O{answer}"
+            | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, raised), _) ->
+                $"%O{answer}, raising %O{raised.Signal}"
+            | ProcessFate.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
+            | ProcessFate.Continues (WriteOutcome.WouldBlock _, _) -> "that the write sleeps, the pipe being full"
+            | ProcessFate.Continues (WriteOutcome.Restarts, _) -> "a restart"
 
         let refused (e : exn) : 'a =
             KernelRefusal.fail
                 $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which it was given as its signal pipe's write end, and the kernel will not answer the write; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither"
                 e
 
-        let admission =
+        let progress =
             try
-                UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system
+                UnixReadWrite.write leader pipe.WriteEnd UserBuffer.Mapped 1UL system
             with :? UnmodelledException as e ->
                 refused e
 
-        match admission with
-        | WriteOutcome.Returns (WriteAdmission.Transfer _, system) ->
+        match progress with
+        | CallProgress.NeedsCopyIn paused ->
 
             let outcome =
                 try
-                    UnixReadWrite.write leader pipe.WriteEnd bytes system
+                    UnixReadWrite.writeWithBytes bytes paused
                 with :? UnmodelledException as e ->
                     refused e
 
             match outcome with
-            | WriteOutcome.Returns (WriteAnswer.Completed 1L, written) ->
+            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), written) ->
                 // A byte that reached a pipe the host drains, one of the
                 // standard output streams, is guest-visible output, which only
                 // a step's effect streams; this poll has no step to carry one.
@@ -292,7 +293,7 @@ module SignalDispatch =
 
                 state.MapKernel (EmulatedKernel.withUnix written) |> SignalPoll.Continues
             | outcome -> refuse $"the kernel answers %s{describe outcome}"
-        | outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
+        | CallProgress.Answered outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
     /// Whether the leader may take a signal on its return to user mode: one is pending, and
     /// the leader is not asleep in a syscall. Read from the process's own state alone.

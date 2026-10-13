@@ -523,15 +523,15 @@ module TestBlockingPipe =
         | Error (ReadRefusal.Interruption _) -> Seen.Refused, None
         | Error refusal -> failwith $"read refused: %A{refusal}"
 
-    let private fromWrite (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) =
+    let private fromWrite (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) =
         match outcome with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after))
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Completed n, _, after)) -> Seen.Wrote n, Some after
-        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, after))
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, _, after)) -> Seen.Failed error, Some after
-        | Ok (WriteOutcome.WouldBlock (_, after)) -> Seen.Sleeps, Some after
-        | Ok (WriteOutcome.Restarts after) -> Seen.Restarts, Some after
-        | Ok (WriteOutcome.ProcessEnded _ as outcome) -> failwith $"a write ended the process: %A{outcome}"
+        | Ok (WriteStep.Returns (WriteAnswer.Completed n, after))
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Completed n, _, after)) -> Seen.Wrote n, Some after
+        | Ok (WriteStep.Returns (WriteAnswer.Failed error, after))
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, _, after)) -> Seen.Failed error, Some after
+        | Ok (WriteStep.WouldBlock (_, after)) -> Seen.Sleeps, Some after
+        | Ok (WriteStep.Restarts after) -> Seen.Restarts, Some after
+        | Ok (WriteStep.ProcessEnded _ as outcome) -> failwith $"a write ended the process: %A{outcome}"
         | Error (WriteRefusal.Interruption _) -> Seen.Refused, None
         | Error refusal -> failwith $"write refused: %A{refusal}"
 
@@ -549,34 +549,15 @@ module TestBlockingPipe =
             else
                 UserBuffer.Unmapped 8UL
 
-        match UnixReadWrite.tryAdmitWrite task fd buffer (uint64 (List.length bytes)) system with
-        | Error refusal -> Error refusal
-        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
-            UnixReadWrite.tryWrite task fd (ImmutableArray.CreateRange (List.take n bytes)) admitted
-        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
-            total |> shouldEqual (List.length bytes)
-            UnixReadWrite.tryWriteThenSleep task fd total (ImmutableArray.CreateRange (List.take n bytes)) admitted
-        | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
-        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
-            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
-        | Ok (WriteOutcome.WouldBlock (condition, after)) -> Ok (WriteOutcome.WouldBlock (condition, after))
-        | Ok other -> failwith $"admitWrite: %A{other}"
+        WriteOutcomes.admitThenWrite task fd buffer (ImmutableArray.CreateRange bytes) system
 
-    /// The woken write of `task`, finished: admitted, and given the bytes of
-    /// `payload` it asks for.
+    /// The woken write of `task`, finished, and given the bytes of `payload` it
+    /// asks for.
     let private libraryFinishWrite (task : int) (payload : byte list) (system : UnixSystem<int, string>) =
-        match UnixReadWrite.tryAdmitFinishWrite task system with
-        | Error refusal -> Error refusal
-        | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-            let bytes = payload |> List.skip offset |> List.take count
-            UnixReadWrite.tryFinishWrite task (ImmutableArray.CreateRange bytes) admitted
-        | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
-            Ok (WriteOutcome.Returns (answer, after))
-        | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, signal, after)) ->
-            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
-        | Ok (WriteOutcome.WouldBlock (condition, after)) -> Ok (WriteOutcome.WouldBlock (condition, after))
-        | Ok (WriteOutcome.Restarts after) -> Ok (WriteOutcome.Restarts after)
-        | Ok other -> failwith $"admitFinishWrite: %A{other}"
+        let bytesAt (offset : int) (count : int) =
+            payload |> List.skip offset |> List.take count |> ImmutableArray.CreateRange
+
+        WriteOutcomes.finishWrite task bytesAt system
 
     /// `task` returns to user mode: every handler it takes runs and returns.
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -1346,7 +1327,7 @@ module TestBlockingPipe =
                         (ImmutableArray.CreateRange (payload 99 (min remaining 4096)))
                         system
                 with
-                | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system)) -> fill (remaining - int n) system
+                | Ok (WriteStep.Returns (WriteAnswer.Completed n, system)) -> fill (remaining - int n) system
                 | other -> failwith $"filling: %A{other}"
 
         let system = fill prefill system
@@ -1360,7 +1341,7 @@ module TestBlockingPipe =
 
     let private writerAsleep (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match libraryWrite sleeper 4 (payload 7 count) true system with
-        | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+        | Ok (WriteStep.WouldBlock (_, system)) -> system
         | other -> failwith $"expected the write of %d{count} to sleep, got %A{other}"
 
     let private leaderReads (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -1377,7 +1358,7 @@ module TestBlockingPipe =
                 (ImmutableArray.CreateRange (payload 3 count))
                 system
         with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system)) when int n = count -> system
+        | Ok (WriteStep.Returns (WriteAnswer.Completed n, system)) when int n = count -> system
         | other -> failwith $"expected to write %d{count}, got %A{other}"
 
     let private closed (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -1552,7 +1533,7 @@ module TestBlockingPipe =
                         ||> List.fold (fun system task ->
                             if writing then
                                 match libraryWrite task 4 [ byte task ] true system with
-                                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                                | Ok (WriteStep.WouldBlock (_, system)) -> system
                                 | other -> failwith $"%A{other}"
                             else
                                 match UnixReadWrite.tryRead task 3 UserBuffer.Mapped 1UL system with
@@ -1673,11 +1654,11 @@ module TestBlockingPipe =
 
             let system =
                 match UnixReadWrite.tryAdmitWrite sleeper 4 (UserBuffer.Unmapped 1UL) 100UL system with
-                | Ok (WriteOutcome.WouldBlock (_, system)) -> leaderReads 4096 system
+                | Ok (WriteStep.WouldBlock (_, system)) -> leaderReads 4096 system
                 | other -> failwith $"%A{other}"
 
             match UnixReadWrite.tryAdmitFinishWrite sleeper system with
-            | Ok (WriteOutcome.Returns (WriteResumption.Answered (WriteAnswer.Failed UnixError.EFAULT), system)) ->
+            | Ok (WriteStep.Returns (WriteResumption.Answered (WriteAnswer.Failed UnixError.EFAULT), system)) ->
                 PipeBuffer.held (UnixMachineState.pipe (PipeId 3L) system.Machine).Buffer
                 |> shouldEqual 61440
             | other -> failwith $"%O{platform}: %A{other}"
@@ -1693,8 +1674,8 @@ module TestBlockingPipe =
                 (ImmutableArray.CreateRange (payload 5 count))
                 system
         with
-        | Ok (WriteOutcome.Returns (answer, system))
-        | Ok (WriteOutcome.ReturnsRaising (answer, _, system)) -> answer, system
+        | Ok (WriteStep.Returns (answer, system))
+        | Ok (WriteStep.ReturnsRaising (answer, _, system)) -> answer, system
         | other -> failwith $"expected the write to return, got %A{other}"
 
     let private descriptionExists (description : OpenFileDescriptionId) (system : UnixSystem<int, string>) : bool =
@@ -1788,7 +1769,7 @@ module TestBlockingPipe =
 
             let system =
                 match libraryFinishWrite sleeper (payload 7 1) system with
-                | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> returnToUser sleeper system
+                | Ok (WriteStep.Returns (WriteAnswer.Completed 1L, system)) -> returnToUser sleeper system
                 | other -> failwith $"dup kept %b{dupKept}: expected the write to return 1, got %A{other}"
 
             descriptionExists writer system |> shouldEqual dupKept
@@ -1890,7 +1871,7 @@ module TestBlockingPipe =
 
                 let system =
                     match libraryFinishWrite sleeper (payload 7 count) system with
-                    | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, raised, system)) ->
+                    | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, raised, system)) ->
                         raised
                         |> shouldEqual
                             {
@@ -1923,7 +1904,7 @@ module TestBlockingPipe =
                             (ImmutableArray.CreateRange (payload 5 1))
                             system
                     with
-                    | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, _)) -> ()
+                    | Ok (WriteStep.Returns (WriteAnswer.Completed 1L, _)) -> ()
                     | other -> failwith $"a later write through the dup: %A{other}"
 
     /// The condition a sleeping call was handed as it went to sleep still says
@@ -2102,7 +2083,7 @@ module TestBlockingPipe =
             pipeHolding platform false 65536 |> writerAsleep 1 |> closed 3 |> closed 4
 
         match libraryFinishWrite sleeper (payload 7 1) system with
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _)) -> ()
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _)) -> ()
         | other -> failwith $"expected EPIPE, got %A{other}"
 
     /// The write a close ends returns before the close does, raising SIGPIPE
@@ -2127,7 +2108,7 @@ module TestBlockingPipe =
         SignalState.pending system.Process.Signals |> shouldEqual []
 
         match libraryFinishWrite sleeper (payload 7 1) system with
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, after)) ->
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, after)) ->
             SignalState.pending after.Process.Signals |> shouldEqual []
         | other -> failwith $"expected EPIPE, the process carrying on, got %A{other}"
 
@@ -2186,8 +2167,7 @@ module TestBlockingPipe =
         (modification, change) |> shouldEqual (closedAt, closedAt)
 
         match libraryFinishWrite sleeper (payload 7 1) (later system) with
-        | Ok (WriteOutcome.ReturnsRaising (_, _, after)) ->
-            times duplicate after |> shouldEqual (times duplicate system)
+        | Ok (WriteStep.ReturnsRaising (_, _, after)) -> times duplicate after |> shouldEqual (times duplicate system)
         | other -> failwith $"%A{other}"
 
     [<Test>]
@@ -2253,10 +2233,10 @@ module TestBlockingPipe =
                     | other -> failwith $"%s{name}: %A{other}"
                 | Some payload ->
                     match libraryFinishWrite sleeper payload ended with
-                    | Ok (WriteOutcome.WouldBlock _) -> failwith $"%s{name}: slept again"
-                    | Ok (WriteOutcome.Returns (_, after))
-                    | Ok (WriteOutcome.ReturnsRaising (_, _, after))
-                    | Ok (WriteOutcome.Restarts after) -> after
+                    | Ok (WriteStep.WouldBlock _) -> failwith $"%s{name}: slept again"
+                    | Ok (WriteStep.Returns (_, after))
+                    | Ok (WriteStep.ReturnsRaising (_, _, after))
+                    | Ok (WriteStep.Restarts after) -> after
                     | other -> failwith $"%s{name}: %A{other}"
 
             let access, modification, change = times fd after
@@ -2271,16 +2251,16 @@ module TestBlockingPipe =
             let system = pipeHolding platform false 0
 
             match UnixReadWrite.tryAdmitWrite sleeper 4 UserBuffer.Mapped 200000UL system with
-            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (65536, 200000), admitted)) ->
+            | Ok (WriteStep.Returns (WriteAdmission.TransferThenSleep (65536, 200000), admitted)) ->
                 match
-                    UnixReadWrite.tryWriteThenSleep
+                    UnixReadWrite.tryWriteBytesThenSleep
                         sleeper
                         4
                         200000
                         (ImmutableArray.CreateRange (payload 7 65536))
                         admitted
                 with
-                | Ok (WriteOutcome.WouldBlock (_, asleep)) ->
+                | Ok (WriteStep.WouldBlock (_, asleep)) ->
                     match UnixTaskTable.parkedFor sleeper asleep.Tasks with
                     | Some (ParkedSyscall.PipeWrite parked) ->
                         (parked.Count, parked.Written) |> shouldEqual (200000, 65536)
@@ -2356,7 +2336,7 @@ module TestBlockingPipe =
                 let sleep (task : int) (system : UnixSystem<int, string>) =
                     if writing then
                         match libraryWrite task 4 (payload task 4096) true system with
-                        | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                        | Ok (WriteStep.WouldBlock (_, system)) -> system
                         | other -> failwith $"%A{other}"
                     else
                         match UnixReadWrite.tryRead task 3 UserBuffer.Mapped 1UL system with
