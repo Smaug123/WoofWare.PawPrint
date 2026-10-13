@@ -561,6 +561,35 @@ public static class ContextCases
     // `Type ==` calls `Equals` only when neither operand is a RuntimeType.
     public static bool SameType() => typeof(string) == typeof(object);
 
+    // `ThrowIfNull` throws only for a null argument, which its callers here decide.
+    static void Check(object o) => ArgumentNullException.ThrowIfNull(o);
+
+    static object Make() => new object();
+
+    public static void ThrowsIfNullOnNew() => ArgumentNullException.ThrowIfNull(new object());
+
+    public static void ChecksNew() => Check(new object());
+
+    public static void ChecksString() => Check("s");
+
+    public static void ChecksMade() => Check(Make());
+
+    public static void ChecksNull() => Check(null);
+
+    public static void ChecksEither(bool b) => Check(b ? new object() : null);
+
+    public static void ChecksParameter(object o) => Check(o);
+
+    static object Unset;
+
+    // A field may hold null.
+    public static void ChecksField() => Check(Unset);
+
+    static object First(object[] xs) => xs[0];
+
+    // An element may be null, so what returns one may too.
+    public static void ChecksElement() => Check(First(new object[1]));
+
 }
 
 public sealed class Sealed
@@ -1070,6 +1099,44 @@ public static class SR
             }
             { expect "Fixture.ContextCases" "ConstructsQuiet" with
                 Excludes = [ "=Fixture.Bark" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ThrowsIfNullOnNew" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksNew" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksString" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            // What a call returns is never null when every `ret` of what it reaches returns an
+            // object `newobj` made.
+            { expect "Fixture.ContextCases" "ChecksMade" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksNull" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksEither" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksParameter" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksField" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksElement" with
+                Contains = [ "=System.ArgumentNullException" ]
                 Unknown = Some false
             }
             { expect "Fixture.ContextCases" "SameType" with

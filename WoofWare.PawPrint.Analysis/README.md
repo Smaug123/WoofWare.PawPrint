@@ -17,10 +17,13 @@ method) may add more:
   return, in the instance the call reaches, which may be narrower than its declared return type
   (`Encoding.UTF8` returns a field of a sealed class); a return that depends on itself is only its
   declared type. An argument is of the classes the call reaching the method passes it, where the
-  caller decides them: a method's summary is computed for each combination of classes its callers
-  pass as the arguments its body uses as a receiver, returns or passes on, so a helper called with a
-  `new Dog()` runs `Dog`'s overrides there. Asked about by itself, a method may be passed any object
-  its parameter types admit, and so may one whose body stores to the argument or takes its address;
+  caller decides them, and is null or not as the caller decides that: a method's summary is
+  computed for each combination of objects its callers pass as the arguments its body uses as a
+  receiver, returns, passes on or tests, so a helper called with a `new Dog()` runs `Dog`'s
+  overrides there, and `ArgumentNullException.ThrowIfNull` called with a `new object()` throws
+  nothing. An object a call returns is null or not as the callee's `ret`s return it. Asked about by
+  itself, a method may be passed null or any object its parameter types admit, and so may one
+  whose body stores to the argument or takes its address;
 * `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
 * a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
   no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught
@@ -44,13 +47,16 @@ method) may add more:
   CoreCLR runs to make it. A `newobj` of a constructor of
   `System.String`, which is native, calls the `String.Ctor` CoreCLR runs in its place
   (`StringConstructor`);
-* code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
-  `IsHardwareAccelerated` that answers a constant (`IntrinsicBody.constantResult`) is branched on
-  straight away (`brtrue` or `brfalse`, which nothing else reaches), only the way the answer goes is
-  followed (`ControlFlow.mayExecute`); every other branch is followed both ways. A handler counts
-  only if something in its protected block does. Tokens in code left out are still bound, below,
-  which reports more than the JIT does: it folds such a branch, even under MinOpts, and never binds
-  what only the other way reaches;
+* code that a capability query rules out on that CPU, or that a test of whether an object is null
+  rules out, is left out. Where a call to an `IsSupported` or `IsHardwareAccelerated` that answers
+  a constant (`IntrinsicBody.constantResult`) is branched on straight away (`brtrue` or `brfalse`,
+  which nothing else reaches), only the way the answer goes is followed (`ControlFlow.mayExecute`),
+  and so it is where the value branched on straight away is an object known to be null or not: one
+  `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
+  null. Every other branch is followed both ways. A handler counts only if something in its
+  protected block does. Tokens in code left out are still bound, below, which for a capability
+  query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
+  binds what only the other way reaches;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
