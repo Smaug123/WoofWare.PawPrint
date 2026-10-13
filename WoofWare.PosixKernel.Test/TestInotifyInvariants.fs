@@ -653,8 +653,8 @@ module TestInotifyInvariants =
 
                     // Its handler runs and returns, as the client would see to.
                     match UnixSignal.tryOnReturnToUser 1 system with
-                    | Ok (ReturnToUserOutcome.Resumes after) -> system <- after
-                    | Ok (ReturnToUserOutcome.RunHandlers (frames, after)) ->
+                    | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, after)) -> system <- after
+                    | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after)) ->
                         system <-
                             (after, frames)
                             ||> List.fold (fun system frame -> UnixSignal.sigreturn 1 frame.Id system)

@@ -63,8 +63,8 @@ type SignalPoll =
 /// and the refusal fails the run.
 ///
 /// A default action the leader's return applies is refused loudly when it
-/// terminates or stops (`ReturnToUserOutcome`'s `ProcessEnded` and
-/// `ProcessStopped`): such a default is applied when the signal is generated
+/// terminates or stops (`ProcessFate.ProcessEnded` and
+/// `ReturnToUserOutcome.ProcessStopped`): such a default is applied when the signal is generated
 /// (see `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this
 /// poll only by becoming receivable later, as a handler frame's mask is popped
 /// or a mask call unblocks it, and applying it at delivery is not modelled.
@@ -343,7 +343,10 @@ module SignalDispatch =
             SignalPoll.Continues state
         else
 
-        let returnToUser (state : IlMachineState) : ReturnToUserOutcome<ThreadId, NativeSignalHandler> =
+        let returnToUser
+            (state : IlMachineState)
+            : ProcessFate<ReturnToUserOutcome<ThreadId, NativeSignalHandler>, ThreadId, NativeSignalHandler>
+            =
             try
                 UnixSignal.onReturnToUser leader state.Kernel.System
             with :? UnmodelledException as e ->
@@ -399,14 +402,15 @@ module SignalDispatch =
 
         and returnToUserThen (continuation : IlMachineState -> SignalPoll) (state : IlMachineState) : SignalPoll =
             match returnToUser state with
-            | ReturnToUserOutcome.Resumes after -> continuation (persist after state)
-            | ReturnToUserOutcome.RunHandlers (frames, after) ->
+            | ProcessFate.Continues (ReturnToUserOutcome.Resumes, after) -> continuation (persist after state)
+            | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after) ->
                 match runFrames frames (persist after state) with
                 | SignalPoll.Continues state -> continuation state
                 | killed -> killed
             // The kernel has discarded it: the process was never stopped, so
             // there is nothing to resume. The return goes on.
-            | ReturnToUserOutcome.ContinueDiscarded (_, after) -> returnToUserThen continuation (persist after state)
+            | ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, after) ->
+                returnToUserThen continuation (persist after state)
             // A pending signal at its default disposition, whose kernel default
             // is to terminate or stop the process. `SignalState.generate`
             // applies such a default at generation whenever some thread can
@@ -415,10 +419,10 @@ module SignalDispatch =
             // since unblocked it. Applying a default at delivery is refused
             // rather than half-modelled, a termination's included, though the
             // kernel has ended the process.
-            | ReturnToUserOutcome.ProcessEnded ended ->
+            | ProcessFate.ProcessEnded ended ->
                 failwith
                     $"SignalDispatch.poll: a pending signal at its default disposition, whose kernel default is to terminate, ended the process as the leader took it (%O{EndedProcess.termination ended}); applying a default disposition at delivery rather than at generation is not modelled."
-            | ReturnToUserOutcome.ProcessStopped (signal, _) ->
+            | ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped signal, _) ->
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 

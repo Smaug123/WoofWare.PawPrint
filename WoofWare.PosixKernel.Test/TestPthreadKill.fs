@@ -203,14 +203,15 @@ module TestPthreadKill =
                     |> shouldEqual system
 
                 match outcome, expected with
-                | KillOutcome.ProcessContinues after, SignalGeneration.ProcessContinues signals ->
+                | ProcessFate.Continues (KillOutcome.ProcessRuns, after), SignalGeneration.ProcessContinues signals ->
                     after.Process.Signals |> shouldEqual signals
                     survivor after
-                | KillOutcome.ProcessStopped (stoppedBy, after), SignalGeneration.ProcessStopped (signal, signals) ->
+                | ProcessFate.Continues (KillOutcome.ProcessStopped stoppedBy, after),
+                  SignalGeneration.ProcessStopped (signal, signals) ->
                     stoppedBy |> shouldEqual signal
                     after.Process.Signals |> shouldEqual signals
                     survivor after
-                | KillOutcome.ProcessEnded ended, SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+                | ProcessFate.ProcessEnded ended, SignalGeneration.ProcessTerminated (signal, coreDumped) ->
                     ended.Termination
                     |> shouldEqual (ProcessTermination.Signaled (signal, coreDumped))
 
@@ -238,8 +239,8 @@ module TestPthreadKill =
 
             match UnixSignal.tryOnReturnToUser task system with
             | Error refusal -> failwith $"onReturnToUser %O{task} refused: %O{refusal}"
-            | Ok (ReturnToUserOutcome.Resumes system) -> count, system
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> count, system
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
                 let ofSignal =
                     frames |> List.filter (fun frame -> frame.Entry.Signal = signal) |> List.length
 
@@ -248,9 +249,9 @@ module TestPthreadKill =
                     ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
 
                 go (count + ofSignal) (rounds + 1) system
-            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other)
-            | Ok (ReturnToUserOutcome.ProcessEnded _ as other) -> failwith $"onReturnToUser %O{task} answered %A{other}"
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped _, _) as other)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, _) as other)
+            | Ok (ProcessFate.ProcessEnded _ as other) -> failwith $"onReturnToUser %O{task} answered %A{other}"
 
         go 0 0 system
 
@@ -300,9 +301,12 @@ module TestPthreadKill =
                 }
         }
 
-    let private continues (what : string) (answer : Result<Result<KillOutcome<int, string>, UnixError>, 'Refusal>) =
+    let private continues
+        (what : string)
+        (answer : Result<Result<ProcessFate<KillOutcome, int, string>, UnixError>, 'Refusal>)
+        =
         match answer with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
         | other -> failwith $"%s{what}: %O{other}"
 
     /// The probe's `handler` rows: a caught signal raised by either thread runs
@@ -445,12 +449,12 @@ module TestPthreadKill =
                         match target with
                         | None ->
                             match UnixSignal.tryKill (self system) signo system with
-                            | Ok (Ok (KillOutcome.ProcessContinues system)) -> Ok system
+                            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> Ok system
                             | Error (KillRefusal.Receiver refusal) -> Error refusal
                             | other -> failwith $"kill: %O{other}"
                         | Some task ->
                             match UnixSignal.tryPthreadKill task signo system with
-                            | Ok (Ok (KillOutcome.ProcessContinues system)) -> Ok system
+                            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> Ok system
                             | Error (ThreadKillRefusal.Receiver refusal) -> Error refusal
                             | other -> failwith $"pthread_kill: %O{other}"
 
@@ -506,7 +510,7 @@ module TestPthreadKill =
         let system = systemOn SimulatedUnixFlavour.Darwin |> pendingOnProcess Signal.SIGTERM
 
         match UnixSignal.tryPthreadKill leader 15 system with
-        | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+        | Ok (Ok (ProcessFate.ProcessEnded ended)) ->
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGTERM, false))
         | other -> failwith $"raise SIGTERM: %O{other}"

@@ -412,7 +412,7 @@ module TestUnblockForAnotherTask =
                 |> Result.mapError (fun refusal -> $"%A{refusal}")
 
         match outcome with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
         | other -> failwith $"%A{case}: generating the signal answered %A{other}"
 
     /// What the unblocker's call answered.

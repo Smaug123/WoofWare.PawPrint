@@ -1643,8 +1643,8 @@ module EmulatedKernel =
             | :? System.InvalidOperationException as e -> KernelRefusal.fail "EmulatedKernel.exitThread" e
 
         match outcome with
-        | TaskOutcome.Continues system -> withUnix system kernel
-        | TaskOutcome.ProcessEnded ended ->
+        | ProcessFate.Continues ((), system) -> withUnix system kernel
+        | ProcessFate.ProcessEnded ended ->
             failwith
                 $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
 
@@ -1729,7 +1729,7 @@ module EmulatedKernel =
                 KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
 
         match raised with
-        | Ok (KillOutcome.ProcessEnded ended) ->
+        | Ok (ProcessFate.ProcessEnded ended) ->
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
             | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"

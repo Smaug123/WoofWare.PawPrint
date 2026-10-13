@@ -204,7 +204,7 @@ module TestSignalDispatch =
             let signo = Signal.toRawSignoUnder (numberingOf state) signal
 
             match UnixSignal.kill pid signo kernel.System with
-            | Ok (KillOutcome.ProcessContinues system) -> EmulatedKernel.withUnix system kernel
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
             | other ->
                 let masks =
                     UnixSystem.tasks kernel.System

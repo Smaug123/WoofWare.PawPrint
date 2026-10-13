@@ -81,7 +81,7 @@ module TestWakeSweepMemo =
                 pid
                 (fun view ->
                     match UnixSignal.tryPthreadKill 1 10 view with
-                    | Ok (Ok (KillOutcome.ProcessContinues view)) -> view
+                    | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, view))) -> view
                     | other -> failwith $"pthread_kill: %A{other}"
                 )
                 machine

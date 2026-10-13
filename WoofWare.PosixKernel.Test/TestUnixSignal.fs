@@ -66,7 +66,7 @@ module TestUnixSignal =
         let system = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGUSR1)
 
         match UnixSignal.tryKill self 9 system with
-        | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+        | Ok (Ok (ProcessFate.ProcessEnded ended)) ->
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGKILL, false))
 
@@ -89,7 +89,7 @@ module TestUnixSignal =
 
                 let death (signo : int) : ProcessTermination =
                     match UnixSignal.tryKill self signo system with
-                    | Ok (Ok (KillOutcome.ProcessEnded ended)) -> ended.Termination
+                    | Ok (Ok (ProcessFate.ProcessEnded ended)) -> ended.Termination
                     | other -> failwith $"kill(self, %d{signo}) under %O{flavour}: %O{other}"
 
                 death 3
@@ -103,7 +103,7 @@ module TestUnixSignal =
             let system = systemOn flavour
 
             UnixSignal.tryKill self 0 system
-            |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues system)))
+            |> shouldEqual (Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))))
 
     [<Test>]
     let ``a signal the calling process cannot yet receive is left pending`` () : unit =
@@ -112,7 +112,7 @@ module TestUnixSignal =
         let blocking = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGTERM)
 
         match UnixSignal.tryKill self 15 blocking with
-        | Ok (Ok (KillOutcome.ProcessContinues after)) ->
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) ->
             SignalState.pending after.Process.Signals
             |> shouldEqual
                 [
@@ -136,7 +136,7 @@ module TestUnixSignal =
 
         // The same pid is the caller's own once the process is configured with it.
         UnixSignal.tryKill (self + 1) 0 (linuxWithPid (self + 1))
-        |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (linuxWithPid (self + 1)))))
+        |> shouldEqual (Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, (linuxWithPid (self + 1))))))
 
     [<Test>]
     let ``kill by an init process is refused`` () : unit =
@@ -230,14 +230,15 @@ module TestUnixSignal =
                     |> shouldEqual system
 
                 match outcome, expected with
-                | KillOutcome.ProcessContinues after, SignalGeneration.ProcessContinues signals ->
+                | ProcessFate.Continues (KillOutcome.ProcessRuns, after), SignalGeneration.ProcessContinues signals ->
                     after.Process.Signals |> shouldEqual signals
                     survivor after
-                | KillOutcome.ProcessStopped (stoppedBy, after), SignalGeneration.ProcessStopped (signal, signals) ->
+                | ProcessFate.Continues (KillOutcome.ProcessStopped stoppedBy, after),
+                  SignalGeneration.ProcessStopped (signal, signals) ->
                     stoppedBy |> shouldEqual signal
                     after.Process.Signals |> shouldEqual signals
                     survivor after
-                | KillOutcome.ProcessEnded ended, SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+                | ProcessFate.ProcessEnded ended, SignalGeneration.ProcessTerminated (signal, coreDumped) ->
                     ended.Termination
                     |> shouldEqual (ProcessTermination.Signaled (signal, coreDumped))
 
@@ -308,14 +309,14 @@ module TestUnixSignal =
             | Error errno -> failwith $"pthread_sigmask: %O{errno}"
 
         match UnixSignal.tryKill self (Signal.toRawSignoUnder numbering signal) system with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
         | other -> failwith $"kill(self, %O{signal}) under %O{flavour}: %O{other}"
 
     /// The process `before` was, ended by `onReturnToUser` of its only task,
     /// and then ended on its machine: the termination each reports.
     let private endedOnReturn (before : UnixSystem<int, string>) : ProcessTermination * ProcessTermination =
         match UnixSignal.tryOnReturnToUser 0 before with
-        | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+        | Ok (ProcessFate.ProcessEnded ended) ->
             let onMachine, machine =
                 match SimulatedMachine.tryEndProcess ended (SimulatedMachine.ofSystem (EndedProcess.endedIn ended)) with
                 | Ok ended -> ended
@@ -519,9 +520,9 @@ module TestUnixSignal =
                         |> Result.mapError (fun refusal -> $"%O{refusal}")
 
                 match answer with
-                | Ok (Ok (KillOutcome.ProcessContinues system)) -> Some system
-                | Ok (Ok (KillOutcome.ProcessStopped _))
-                | Ok (Ok (KillOutcome.ProcessEnded _)) -> None
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> Some system
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped _, _)))
+                | Ok (Ok (ProcessFate.ProcessEnded _)) -> None
                 // A signal the leader blocks and another task does not is
                 // refused; the send is skipped.
                 | Error _ -> Some system
@@ -560,21 +561,22 @@ module TestUnixSignal =
 
             match UnixSignal.tryOnReturnToUser case.Returning system, decided with
             | Error refusal, Error expected -> refusal |> shouldEqual expected
-            | Ok (ReturnToUserOutcome.Resumes after), Ok (None, signals) -> after |> shouldEqual (withSignals signals)
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, after)),
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, after)), Ok (None, signals) ->
+                after |> shouldEqual (withSignals signals)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after)),
               Ok (Some (SignalDelivery.RunHandlers expected), signals) ->
                 cover ReturnLabel.RanHandlers
                 frames |> shouldEqual expected
                 after |> shouldEqual (withSignals signals)
-            | Ok (ReturnToUserOutcome.ProcessStopped (signal, after)),
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped signal, after)),
               Ok (Some (SignalDelivery.DefaultStop expected), signals) ->
                 signal |> shouldEqual expected
                 after |> shouldEqual (withSignals signals)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded (signal, after)),
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded signal, after)),
               Ok (Some (SignalDelivery.DefaultContinue expected), signals) ->
                 signal |> shouldEqual expected
                 after |> shouldEqual (withSignals signals)
-            | Ok (ReturnToUserOutcome.ProcessEnded death),
+            | Ok (ProcessFate.ProcessEnded death),
               Ok (Some (SignalDelivery.DefaultTerminate (signal, coreDumped)), signals) ->
                 cover ReturnLabel.Ended
 

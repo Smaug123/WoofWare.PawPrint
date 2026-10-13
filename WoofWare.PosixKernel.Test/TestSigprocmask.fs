@@ -281,11 +281,11 @@ module TestSigprocmask =
         | Error errno -> failwith $"sigaction failed with %O{errno}"
 
     let private sent
-        (result : Result<Result<KillOutcome<int, string>, UnixError>, 'refusal>)
+        (result : Result<Result<ProcessFate<KillOutcome, int, string>, UnixError>, 'refusal>)
         : UnixSystem<int, string>
         =
         match result with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
         | other -> failwith $"expected the process to carry on, got %A{other}"
 
     let private self (system : UnixSystem<int, string>) : int =
@@ -327,7 +327,7 @@ module TestSigprocmask =
                     )
 
                 match UnixSignal.tryOnReturnToUser 0 system with
-                | Ok (ReturnToUserOutcome.Resumes _) -> ()
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, _)) -> ()
                 | other -> failwith $"%O{flavour}: expected nothing taken while blocked, got %A{other}"
 
                 UnixSignal.sigpending 0 system |> shouldEqual mask
@@ -335,7 +335,7 @@ module TestSigprocmask =
                 let unblocked = sigprocmask 0 (unblock flavour) (Some mask) system |> orFail
 
                 match UnixSignal.tryOnReturnToUser 0 unblocked with
-                | Ok (ReturnToUserOutcome.RunHandlers (frames, after)) ->
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after)) ->
                     (flavour, threadDirected, frames |> List.map (fun frame -> frame.Entry.Signal))
                     |> shouldEqual (flavour, threadDirected, measured flavour)
 
@@ -415,7 +415,7 @@ module TestSigprocmask =
 
                 let system =
                     match UnixSignal.tryOnReturnToUser 0 system with
-                    | Ok (ReturnToUserOutcome.Resumes system) -> system
+                    | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> system
                     | other -> failwith $"%O{flavour} %O{signal}: expected nothing taken, got %A{other}"
 
                 let expected =
@@ -432,7 +432,7 @@ module TestSigprocmask =
 
                     let returned =
                         match UnixSignal.tryOnReturnToUser 0 unblocked with
-                        | Ok (ReturnToUserOutcome.Resumes system) -> system
+                        | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> system
                         | other -> failwith $"%O{flavour} %O{signal}: expected nothing taken, got %A{other}"
 
                     let reblocked = withMask flavour 0 (SignalMask.toWord mask) returned
@@ -469,7 +469,7 @@ module TestSigprocmask =
 
             let frame, inHandler =
                 match UnixSignal.tryOnReturnToUser 0 raised with
-                | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) -> frame, system
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers [ frame ], system)) -> frame, system
                 | other -> failwith $"expected USR1's handler, got %A{other}"
 
             let inHandler =
@@ -498,8 +498,9 @@ module TestSigprocmask =
 
                     let ran, system =
                         match UnixSignal.tryOnReturnToUser 0 system with
-                        | Ok (ReturnToUserOutcome.Resumes system) -> ran, system
-                        | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) -> run ran frames system
+                        | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> ran, system
+                        | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
+                            run ran frames system
                         | other -> failwith $"expected handlers, got %A{other}"
 
                     run ran outer system
@@ -798,7 +799,7 @@ module TestSigprocmask =
 
             let frame, inHandler =
                 match UnixSignal.tryOnReturnToUser 0 system with
-                | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) -> frame, system
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers [ frame ], system)) -> frame, system
                 | other -> failwith $"expected one frame, got %A{other}"
 
             frame.SavedMask |> shouldEqual (ofList before)

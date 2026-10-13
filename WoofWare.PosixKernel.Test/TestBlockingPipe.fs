@@ -581,8 +581,8 @@ module TestBlockingPipe =
     /// `task` returns to user mode: every handler it takes runs and returns.
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixSignal.tryOnReturnToUser task system with
-        | Ok (ReturnToUserOutcome.Resumes system) -> system
-        | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> system
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
             (system, frames)
             ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
             |> returnToUser task

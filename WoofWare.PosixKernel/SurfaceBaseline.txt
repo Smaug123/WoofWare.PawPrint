@@ -2084,34 +2084,23 @@ WoofWare.PosixKernel.KeventTimeout.NewReadable [static method]: (System.Int64, S
 WoofWare.PosixKernel.KeventTimeout.Null [static property]: [read-only] WoofWare.PosixKernel.KeventTimeout
 WoofWare.PosixKernel.KeventTimeout.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KeventTimeout.Unreadable [static property]: [read-only] WoofWare.PosixKernel.KeventTimeout
-WoofWare.PosixKernel.KillOutcome`2 inherit obj, implements WoofWare.PosixKernel.KillOutcome<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 3 cases
-WoofWare.PosixKernel.KillOutcome`2+ProcessContinues inherit WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessContinues.get_Item [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessContinues.Item [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessEnded inherit WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessEnded.get_Item [method]: unit -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessEnded.Item [property]: [read-only] WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessStopped inherit WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessStopped.get_Item2 [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessStopped.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.KillOutcome`2+ProcessStopped.Item2 [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2+ProcessStopped.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.KillOutcome`2+Tags inherit obj
-WoofWare.PosixKernel.KillOutcome`2+Tags.ProcessContinues [static field]: int = 0
-WoofWare.PosixKernel.KillOutcome`2+Tags.ProcessEnded [static field]: int = 2
-WoofWare.PosixKernel.KillOutcome`2+Tags.ProcessStopped [static field]: int = 1
-WoofWare.PosixKernel.KillOutcome`2.Equals [method]: (WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KillOutcome`2.get_IsProcessContinues [method]: unit -> bool
-WoofWare.PosixKernel.KillOutcome`2.get_IsProcessEnded [method]: unit -> bool
-WoofWare.PosixKernel.KillOutcome`2.get_IsProcessStopped [method]: unit -> bool
-WoofWare.PosixKernel.KillOutcome`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.KillOutcome`2.IsProcessContinues [property]: [read-only] bool
-WoofWare.PosixKernel.KillOutcome`2.IsProcessEnded [property]: [read-only] bool
-WoofWare.PosixKernel.KillOutcome`2.IsProcessStopped [property]: [read-only] bool
-WoofWare.PosixKernel.KillOutcome`2.NewProcessContinues [static method]: WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2.NewProcessStopped [static method]: (WoofWare.PosixKernel.Signal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.KillOutcome`2.Tag [property]: [read-only] int
+WoofWare.PosixKernel.KillOutcome inherit obj, implements WoofWare.PosixKernel.KillOutcome System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KillOutcome System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
+WoofWare.PosixKernel.KillOutcome+ProcessStopped inherit WoofWare.PosixKernel.KillOutcome
+WoofWare.PosixKernel.KillOutcome+ProcessStopped.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
+WoofWare.PosixKernel.KillOutcome+ProcessStopped.signal [property]: [read-only] WoofWare.PosixKernel.Signal
+WoofWare.PosixKernel.KillOutcome+Tags inherit obj
+WoofWare.PosixKernel.KillOutcome+Tags.ProcessRuns [static field]: int = 0
+WoofWare.PosixKernel.KillOutcome+Tags.ProcessStopped [static field]: int = 1
+WoofWare.PosixKernel.KillOutcome.Equals [method]: (WoofWare.PosixKernel.KillOutcome, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.KillOutcome.get_IsProcessRuns [method]: unit -> bool
+WoofWare.PosixKernel.KillOutcome.get_IsProcessStopped [method]: unit -> bool
+WoofWare.PosixKernel.KillOutcome.get_ProcessRuns [static method]: unit -> WoofWare.PosixKernel.KillOutcome
+WoofWare.PosixKernel.KillOutcome.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.KillOutcome.IsProcessRuns [property]: [read-only] bool
+WoofWare.PosixKernel.KillOutcome.IsProcessStopped [property]: [read-only] bool
+WoofWare.PosixKernel.KillOutcome.NewProcessStopped [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.KillOutcome
+WoofWare.PosixKernel.KillOutcome.ProcessRuns [static property]: [read-only] WoofWare.PosixKernel.KillOutcome
+WoofWare.PosixKernel.KillOutcome.Tag [property]: [read-only] int
 WoofWare.PosixKernel.KqueueFilter inherit obj, implements WoofWare.PosixKernel.KqueueFilter System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueFilter System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.KqueueFilter+Tags inherit obj
 WoofWare.PosixKernel.KqueueFilter+Tags.Read [static field]: int = 0
@@ -3322,6 +3311,27 @@ WoofWare.PosixKernel.PrivilegedModeChange.IsUnmeasured [property]: [read-only] b
 WoofWare.PosixKernel.PrivilegedModeChange.SetsRequestedBits [static property]: [read-only] WoofWare.PosixKernel.PrivilegedModeChange
 WoofWare.PosixKernel.PrivilegedModeChange.Tag [property]: [read-only] int
 WoofWare.PosixKernel.PrivilegedModeChange.Unmeasured [static property]: [read-only] WoofWare.PosixKernel.PrivilegedModeChange
+WoofWare.PosixKernel.ProcessFate`3 inherit obj, implements WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 2 cases
+WoofWare.PosixKernel.ProcessFate`3+Continues inherit WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+Continues.get_outcome [method]: unit -> 'Outcome
+WoofWare.PosixKernel.ProcessFate`3+Continues.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+Continues.outcome [property]: [read-only] 'Outcome
+WoofWare.PosixKernel.ProcessFate`3+Continues.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+ProcessEnded inherit WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+ProcessEnded.get_Item [method]: unit -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+ProcessEnded.Item [property]: [read-only] WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3+Tags inherit obj
+WoofWare.PosixKernel.ProcessFate`3+Tags.Continues [static field]: int = 0
+WoofWare.PosixKernel.ProcessFate`3+Tags.ProcessEnded [static field]: int = 1
+WoofWare.PosixKernel.ProcessFate`3.Equals [method]: (WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.ProcessFate`3.get_IsContinues [method]: unit -> bool
+WoofWare.PosixKernel.ProcessFate`3.get_IsProcessEnded [method]: unit -> bool
+WoofWare.PosixKernel.ProcessFate`3.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.ProcessFate`3.IsContinues [property]: [read-only] bool
+WoofWare.PosixKernel.ProcessFate`3.IsProcessEnded [property]: [read-only] bool
+WoofWare.PosixKernel.ProcessFate`3.NewContinues [static method]: ('Outcome, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.ProcessFate<'Outcome, 'Task, 'Handler>
+WoofWare.PosixKernel.ProcessFate`3.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ProcessId inherit System.ValueType, implements WoofWare.PosixKernel.ProcessId System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ProcessId System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ProcessId.Equals [method]: (WoofWare.PosixKernel.ProcessId, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ProcessIdModule inherit obj
@@ -3627,51 +3637,36 @@ WoofWare.PosixKernel.RenameWalkOrder.IsSourceThenDestination [property]: [read-o
 WoofWare.PosixKernel.RenameWalkOrder.ParentsThenFinals [static property]: [read-only] WoofWare.PosixKernel.RenameWalkOrder
 WoofWare.PosixKernel.RenameWalkOrder.SourceThenDestination [static property]: [read-only] WoofWare.PosixKernel.RenameWalkOrder
 WoofWare.PosixKernel.RenameWalkOrder.Tag [property]: [read-only] int
-WoofWare.PosixKernel.ReturnToUserOutcome`2 inherit obj, implements WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 5 cases
+WoofWare.PosixKernel.ReturnToUserOutcome`2 inherit obj, implements WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler> System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 4 cases
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ContinueDiscarded inherit WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ContinueDiscarded.get_Item2 [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ContinueDiscarded.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ContinueDiscarded.Item2 [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ContinueDiscarded.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessEnded inherit WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessEnded.get_Item [method]: unit -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessEnded.Item [property]: [read-only] WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessStopped inherit WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessStopped.get_Item2 [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessStopped.get_signal [method]: unit -> WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessStopped.Item2 [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+ProcessStopped.signal [property]: [read-only] WoofWare.PosixKernel.Signal
-WoofWare.PosixKernel.ReturnToUserOutcome`2+Resumes inherit WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+Resumes.get_Item [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+Resumes.Item [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+RunHandlers inherit WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+RunHandlers.frames [property]: [read-only] WoofWare.PosixKernel.HandlerFrame<'Task, 'Handler> list
 WoofWare.PosixKernel.ReturnToUserOutcome`2+RunHandlers.get_frames [method]: unit -> WoofWare.PosixKernel.HandlerFrame<'Task, 'Handler> list
-WoofWare.PosixKernel.ReturnToUserOutcome`2+RunHandlers.get_Item2 [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2+RunHandlers.Item2 [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags inherit obj
 WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags.ContinueDiscarded [static field]: int = 3
-WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags.ProcessEnded [static field]: int = 4
 WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags.ProcessStopped [static field]: int = 2
 WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags.Resumes [static field]: int = 0
 WoofWare.PosixKernel.ReturnToUserOutcome`2+Tags.RunHandlers [static field]: int = 1
 WoofWare.PosixKernel.ReturnToUserOutcome`2.Equals [method]: (WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.get_IsContinueDiscarded [method]: unit -> bool
-WoofWare.PosixKernel.ReturnToUserOutcome`2.get_IsProcessEnded [method]: unit -> bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.get_IsProcessStopped [method]: unit -> bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.get_IsResumes [method]: unit -> bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.get_IsRunHandlers [method]: unit -> bool
+WoofWare.PosixKernel.ReturnToUserOutcome`2.get_Resumes [static method]: unit -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.ReturnToUserOutcome`2.IsContinueDiscarded [property]: [read-only] bool
-WoofWare.PosixKernel.ReturnToUserOutcome`2.IsProcessEnded [property]: [read-only] bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.IsProcessStopped [property]: [read-only] bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.IsResumes [property]: [read-only] bool
 WoofWare.PosixKernel.ReturnToUserOutcome`2.IsRunHandlers [property]: [read-only] bool
-WoofWare.PosixKernel.ReturnToUserOutcome`2.NewContinueDiscarded [static method]: (WoofWare.PosixKernel.Signal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2.NewProcessStopped [static method]: (WoofWare.PosixKernel.Signal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2.NewResumes [static method]: WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.ReturnToUserOutcome`2.NewRunHandlers [static method]: (WoofWare.PosixKernel.HandlerFrame<'Task, 'Handler> list, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.ReturnToUserOutcome`2.NewContinueDiscarded [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.ReturnToUserOutcome`2.NewProcessStopped [static method]: WoofWare.PosixKernel.Signal -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.ReturnToUserOutcome`2.NewRunHandlers [static method]: WoofWare.PosixKernel.HandlerFrame<'Task, 'Handler> list -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.ReturnToUserOutcome`2.Resumes [static property]: [read-only] WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.ReturnToUserOutcome`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.RmDirRules inherit obj, implements WoofWare.PosixKernel.RmDirRules System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.RmDirRules System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.RmDirRules..ctor [constructor]: (WoofWare.PosixKernel.TrailingSeparatorPolicy, WoofWare.PosixKernel.UnbindTargetEffect)
@@ -5184,25 +5179,6 @@ WoofWare.PosixKernel.SyscallOutcome.NewAnswered [static method]: WoofWare.PosixK
 WoofWare.PosixKernel.SyscallOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.SyscallOutcome
 WoofWare.PosixKernel.SyscallOutcome.Restarts [static property]: [read-only] WoofWare.PosixKernel.SyscallOutcome
 WoofWare.PosixKernel.SyscallOutcome.Tag [property]: [read-only] int
-WoofWare.PosixKernel.TaskOutcome`2 inherit obj, implements WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable - union type with 2 cases
-WoofWare.PosixKernel.TaskOutcome`2+Continues inherit WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+Continues.get_Item [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+Continues.Item [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+ProcessEnded inherit WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+ProcessEnded.get_Item [method]: unit -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+ProcessEnded.Item [property]: [read-only] WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2+Tags inherit obj
-WoofWare.PosixKernel.TaskOutcome`2+Tags.Continues [static field]: int = 0
-WoofWare.PosixKernel.TaskOutcome`2+Tags.ProcessEnded [static field]: int = 1
-WoofWare.PosixKernel.TaskOutcome`2.Equals [method]: (WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.TaskOutcome`2.get_IsContinues [method]: unit -> bool
-WoofWare.PosixKernel.TaskOutcome`2.get_IsProcessEnded [method]: unit -> bool
-WoofWare.PosixKernel.TaskOutcome`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.TaskOutcome`2.IsContinues [property]: [read-only] bool
-WoofWare.PosixKernel.TaskOutcome`2.IsProcessEnded [property]: [read-only] bool
-WoofWare.PosixKernel.TaskOutcome`2.NewContinues [static method]: WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
-WoofWare.PosixKernel.TaskOutcome`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.TaskPark inherit obj, implements WoofWare.PosixKernel.TaskPark System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.TaskPark System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.TaskPark..ctor [constructor]: (WoofWare.PosixKernel.ParkedSyscall, WoofWare.PosixKernel.ParkOrdinal)
 WoofWare.PosixKernel.TaskPark.Equals [method]: (WoofWare.PosixKernel.TaskPark, System.Collections.IEqualityComparer) -> bool
@@ -6395,10 +6371,10 @@ WoofWare.PosixKernel.UnixScheduling.getcpu [static method]: 'Task -> WoofWare.Po
 WoofWare.PosixKernel.UnixScheduling.runningOn [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CpuId option
 WoofWare.PosixKernel.UnixSignal inherit obj
 WoofWare.PosixKernel.UnixSignal.finishSigsuspend [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SigsuspendOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixSignal.kill [static method]: int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>, WoofWare.PosixKernel.UnixError>
-WoofWare.PosixKernel.UnixSignal.onReturnToUser [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.UnixSignal.kill [static method]: int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<WoofWare.PosixKernel.ProcessFate<WoofWare.PosixKernel.KillOutcome, 'Task, 'Handler>, WoofWare.PosixKernel.UnixError>
+WoofWare.PosixKernel.UnixSignal.onReturnToUser [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ProcessFate<WoofWare.PosixKernel.ReturnToUserOutcome<'Task, 'Handler>, 'Task, 'Handler>
 WoofWare.PosixKernel.UnixSignal.pause [static method]: 'Task -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SigsuspendOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixSignal.pthreadKill [static method]: 'Task -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>, WoofWare.PosixKernel.UnixError>
+WoofWare.PosixKernel.UnixSignal.pthreadKill [static method]: 'Task -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<WoofWare.PosixKernel.ProcessFate<WoofWare.PosixKernel.KillOutcome, 'Task, 'Handler>, WoofWare.PosixKernel.UnixError>
 WoofWare.PosixKernel.UnixSignal.pthreadSigmask [static method]: 'Task -> int -> WoofWare.PosixKernel.SignalMask option -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<(WoofWare.PosixKernel.SignalMask * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>), WoofWare.PosixKernel.UnixError>
 WoofWare.PosixKernel.UnixSignal.rtSigprocmask [static method]: 'Task -> int -> WoofWare.PosixKernel.SignalMask option -> System.UInt64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<(WoofWare.PosixKernel.SignalMask * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>), WoofWare.PosixKernel.UnixError>
 WoofWare.PosixKernel.UnixSignal.rtSigsuspend [static method]: 'Task -> WoofWare.PosixKernel.SignalMask -> System.UInt64 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SigsuspendOutcome * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
@@ -6516,7 +6492,7 @@ WoofWare.PosixKernel.UnixSystemDefect`1 inherit obj, implements 'Task WoofWare.P
 WoofWare.PosixKernel.UnixSystemDefect`1.Equals [method]: ('Task WoofWare.PosixKernel.UnixSystemDefect, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.UnixTaskLifecycle inherit obj
 WoofWare.PosixKernel.UnixTaskLifecycle.exitGroup [static method]: 'Task -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.EndedProcess<'Task, 'Handler>
-WoofWare.PosixKernel.UnixTaskLifecycle.exitThread [static method]: 'Task -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.TaskOutcome<'Task, 'Handler>
+WoofWare.PosixKernel.UnixTaskLifecycle.exitThread [static method]: 'Task -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ProcessFate<unit, 'Task, 'Handler>
 WoofWare.PosixKernel.UnixTaskLifecycle.spawn [static method]: 'Task -> 'Task -> WoofWare.PosixKernel.CpuId -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SpawnAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixTaskState inherit obj, implements WoofWare.PosixKernel.UnixTaskState System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.UnixTaskState System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.UnixTaskState.Equals [method]: (WoofWare.PosixKernel.UnixTaskState, System.Collections.IEqualityComparer) -> bool

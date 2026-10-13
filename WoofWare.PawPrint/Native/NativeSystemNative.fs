@@ -492,9 +492,9 @@ module NativeSystemNative =
             let system = restored.Kernel.System
 
             match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
-            | Ok (KillOutcome.ProcessContinues after) ->
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after)) ->
                 NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
-            | Ok (KillOutcome.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded ended) ->
                 match EndedProcess.termination ended with
                 | ProcessTermination.Signaled _ -> NonCanceledPosixSignal.Terminated (restored, ended)
                 | ProcessTermination.Exited _ ->

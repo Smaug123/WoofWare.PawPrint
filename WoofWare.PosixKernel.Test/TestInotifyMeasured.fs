@@ -860,7 +860,7 @@ module TestInotifyMeasured =
         // The handler runs and returns, and the client issues the read again.
         let s =
             match UnixSignal.tryOnReturnToUser reader s with
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, s)) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, s)) ->
                 (s, frames)
                 ||> List.fold (fun s frame -> UnixSignal.sigreturn reader frame.Id s)
             | other -> failwith $"%A{other}"

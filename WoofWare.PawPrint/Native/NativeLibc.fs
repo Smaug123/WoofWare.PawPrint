@@ -252,8 +252,9 @@ module NativeLibc =
         | ValueNone ->
 
         match outcome with
-        | KillOutcome.ProcessContinues after -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | KillOutcome.ProcessEnded ended ->
+        | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
+            state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
+        | ProcessFate.ProcessEnded ended ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
@@ -262,7 +263,7 @@ module NativeLibc =
             | ProcessTermination.Exited _ ->
                 failwith
                     $"%s{operation}: kill(%d{pid}, %d{signo}) ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
-        | KillOutcome.ProcessStopped (signal, _) ->
+        | ProcessFate.Continues (KillOutcome.ProcessStopped signal, _) ->
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
 
@@ -302,7 +303,7 @@ module NativeLibc =
             match
                 Signal.ofRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signo, outcome
             with
-            | ValueSome sent, KillOutcome.ProcessContinues after ->
+            | ValueSome sent, ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
                 screenRaisedSignal
                     state.Kernel.UnixPlatform
                     ctx.Thread
@@ -330,8 +331,9 @@ module NativeLibc =
         | None ->
 
         match outcome with
-        | KillOutcome.ProcessContinues after -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | KillOutcome.ProcessEnded ended ->
+        | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
+            state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
+        | ProcessFate.ProcessEnded ended ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
@@ -340,7 +342,7 @@ module NativeLibc =
             | ProcessTermination.Exited _ ->
                 failwith
                     $"%s{operation}: raise(%d{signo}) ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
-        | KillOutcome.ProcessStopped (signal, _) ->
+        | ProcessFate.Continues (KillOutcome.ProcessStopped signal, _) ->
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
 

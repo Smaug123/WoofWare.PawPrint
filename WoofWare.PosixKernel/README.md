@@ -219,6 +219,9 @@ A client replaying a record of raw system calls, such as an `strace` log, uses t
 
 A syscall answers what the kernel does: perhaps an errno (a `UnixError`), or the calling task asleep (see "Sleeping and waking"). Either way it comes with the system after the call; a failing call can still change the system, just as a real one can.
 
+A call that can end the process answers a `ProcessFate`: `ProcessFate.Continues (outcome, system)`, with the call's own outcome and the system the process carries on as, or `ProcessFate.ProcessEnded ended`, with no system, since nothing can make another call in an ended process (see "Threads, and the end of the process").
+Those calls are a write or `send` that raises `SIGPIPE`, `kill` and `pthreadKill`, the return to user mode, and a thread's exit.
+
 A few functions answer a `Result` whose `Error` is an errno: those whose own failure is a value the client reports to the process, such as `UnixSocket.socket`, `UnixPoll.epollCreate1`, `UnixSignal.kill` and `UnixClock.clockGettime`, and the four that answer nothing else, `UnixSignal.sigaction`, `UnixSignal.sigactionSyscall`, `UnixSignal.pthreadSigmask` and `UnixSignal.rtSigprocmask`.
 A function that cannot fail, such as `UnixClock.gettimeofday`, answers without a `Result` at all.
 The errors of the parsers that build a value, such as `UnixByteString.ofString`'s, say what was wrong with the input.
@@ -483,8 +486,8 @@ Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<KillOutcome, UnixError>` |
-| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<KillOutcome, UnixError>` |
+| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<ProcessFate<KillOutcome>, UnixError>` |
+| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<ProcessFate<KillOutcome>, UnixError>` |
 | `sigaction(3)` | `UnixSignal.sigaction (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `sigaction(2)`: Linux's `rt_sigaction` | `UnixSignal.sigactionSyscall (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `pthread_sigmask(3)` | `UnixSignal.pthreadSigmask (task : 'Task) (how : int) (set : SignalMask option)` | `Result<SignalMask * UnixSystem, UnixError>` |
@@ -494,7 +497,7 @@ Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 | `sigsuspend(2)` | `UnixSignal.sigsuspend (task : 'Task) (mask : SignalMask)` | `SigsuspendOutcome * UnixSystem` |
 | Linux's `rt_sigsuspend(2)` | `UnixSignal.rtSigsuspend (task : 'Task) (mask : SignalMask) (sigsetSize : uint64)` | `SigsuspendOutcome * UnixSystem` |
 | `pause(2)` | `UnixSignal.pause (task : 'Task)` | `SigsuspendOutcome * UnixSystem` |
-| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `ReturnToUserOutcome` |
+| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `ProcessFate<ReturnToUserOutcome>` |
 | `sigreturn(2)` | `UnixSignal.sigreturn (task : 'Task) (frame : HandlerFrameId)` | `UnixSystem` |
 
 A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`, `SignalMask.ofSignals`), because Darwin keeps a bit that names no signal.
@@ -517,7 +520,7 @@ A signal number is raw, under the process's own numbering: `Signal.toRawSignoUnd
 | `setresgid(2)` | `UnixCredentials.setresgid (real : GroupId option) (effective : GroupId option) (saved : GroupId option)` | `SyscallAnswer * UnixSystem` |
 | `setgroups(2)` | `UnixCredentials.setgroups (size : int) (words : GroupListWords)` | `SyscallAnswer * UnixSystem` |
 | `clone(2)` with `CLONE_THREAD`, as `pthread_create(3)` makes it | `UnixTaskLifecycle.spawn (parent : 'Task) (child : 'Task) (cpu : CpuId)` | `SpawnAnswer * UnixSystem` |
-| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `TaskOutcome` |
+| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `ProcessFate<unit>` |
 | `exit_group(2)`, as `exit(3)` and `_exit(2)` make it | `UnixTaskLifecycle.exitGroup (task : 'Task) (status : int)` | `EndedProcess` |
 | the client's report that a task runs on a processor | `UnixScheduling.dispatch (task : 'Task) (cpu : CpuId)` | `UnixSystem` |
 | where a task is running | `UnixScheduling.runningOn (task : 'Task)` | `CpuId option` |
@@ -647,7 +650,7 @@ let booted : UnixSystem<int, unit> =
 // its signals. This client installs no handler, so it expects none to run.
 let resume (task : int) (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
     match UnixSignal.onReturnToUser task system with
-    | ReturnToUserOutcome.Resumes system -> system
+    | ProcessFate.Continues (ReturnToUserOutcome.Resumes, system) -> system
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pipe2(fds, 0) by task 0. UserBuffer.Mapped: the array for the two descriptors is writable.
@@ -696,7 +699,7 @@ let woken =
 // Task 1 exits, and then task 0 calls exit_group(3), which ends the process.
 let ended =
     match UnixTaskLifecycle.exitThread 1 0 woken with
-    | TaskOutcome.Continues system -> UnixTaskLifecycle.exitGroup 0 3 system
+    | ProcessFate.Continues ((), system) -> UnixTaskLifecycle.exitGroup 0 3 system
     | other -> failwith $"task 0 is still running, so expected the process to continue: %A{other}"
 
 // The client ends the process on its machine, which closes its descriptors.
@@ -713,7 +716,7 @@ printfn "the process ended: shell status %d" (ProcessTermination.shellStatus (Si
 
 ## Signals
 
-`UnixSignal.kill` and `UnixSignal.pthreadKill` generate a signal, and answer a `KillOutcome`: the process carries on (`KillOutcome.ProcessContinues`), with the signal pending or discarded; the signal stopped it (`KillOutcome.ProcessStopped`); or the signal killed it at once (`KillOutcome.ProcessEnded`).
+`UnixSignal.kill` and `UnixSignal.pthreadKill` generate a signal, and answer a `ProcessFate<KillOutcome>`: the process runs on (`KillOutcome.ProcessRuns`), with the signal pending or discarded; the signal stopped it (`KillOutcome.ProcessStopped`); or the signal killed it at once (`ProcessFate.ProcessEnded`).
 `kill` of another process, or of a process group, is refused.
 A signal the process ignores, and a `SIGCONT` at its default, which has nothing to resume, are discarded as they are sent, unless the task they are aimed at blocks them: for a signal sent to the process, that is the leader under Linux and every task under Darwin. So such a signal never wakes a sleeping call.
 One sent while blocked stays pending, and is discarded as a task takes it.
@@ -726,16 +729,15 @@ Under Linux, `kill` of such a signal that the leader blocks while another task d
 ### The return to user mode
 
 A signal is taken as a task returns to user mode, so after each call a task makes, and before it runs any of its own code, the client asks `UnixSignal.onReturnToUser task`.
-It answers a `ReturnToUserOutcome`:
+It answers a `ProcessFate<ReturnToUserOutcome>`: the process ended (`ProcessFate.ProcessEnded ended`), because a signal whose default action terminates the process killed it (see below), or it carries on (`ProcessFate.Continues (outcome, system)`) with one of these outcomes:
 
-* `ReturnToUserOutcome.Resumes system`: the task took nothing the client acts on, and runs its own code next.
-* `ReturnToUserOutcome.RunHandlers (frames, system)`: the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore. The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame's `HandlerFrame.Id` and asks `onReturnToUser` again.
-* `ReturnToUserOutcome.ProcessEnded ended`: a signal whose default action terminates the process killed it (see below).
-* `ReturnToUserOutcome.ProcessStopped (signal, system)`: a signal whose default action stops the process stopped it (see below).
-* `ReturnToUserOutcome.ContinueDiscarded (signal, system)`: the kernel discarded a `SIGCONT` at its default, pending while the task blocked it, as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
+* `ReturnToUserOutcome.Resumes`: the task took nothing the client acts on, and runs its own code next.
+* `ReturnToUserOutcome.RunHandlers frames`: the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore. The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame's `HandlerFrame.Id` and asks `onReturnToUser` again.
+* `ReturnToUserOutcome.ProcessStopped signal`: a signal whose default action stops the process stopped it (see below).
+* `ReturnToUserOutcome.ContinueDiscarded signal`: the kernel discarded a `SIGCONT` at its default, pending while the task blocked it, as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
-A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (`KillOutcome.ProcessEnded`, and `WriteOutcome.ProcessEnded` for a write's `SIGPIPE`), and otherwise when a task that blocked it can take it, as the task returns to user mode (`ReturnToUserOutcome.ProcessEnded`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
-Either answer is the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
+A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (from `kill`, `pthreadKill`, or a write that raises `SIGPIPE`), and otherwise when a task that blocked it can take it, as the task returns to user mode (from `onReturnToUser`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
+Either answer is `ProcessFate.ProcessEnded` of the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
 
 A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `ReturnToUserOutcome.ProcessStopped`) for the client to act on.
 The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
@@ -754,12 +756,12 @@ let booted : UnixSystem<int, unit> =
 
     UnixSystem.initial platform |> UnixBootImage.boot launch
 
-let returnToUser (system : UnixSystem<int, unit>) : ReturnToUserOutcome<int, unit> =
+let returnToUser (system : UnixSystem<int, unit>) : ProcessFate<ReturnToUserOutcome<int, unit>, int, unit> =
     UnixSignal.onReturnToUser 0 system
 
-let resumed (outcome : ReturnToUserOutcome<int, unit>) : UnixSystem<int, unit> =
-    match outcome with
-    | ReturnToUserOutcome.Resumes system -> system
+let resumed (fate : ProcessFate<ReturnToUserOutcome<int, unit>, int, unit>) : UnixSystem<int, unit> =
+    match fate with
+    | ProcessFate.Continues (ReturnToUserOutcome.Resumes, system) -> system
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pthread_sigmask(how, {SIGTERM}, NULL), with `how` under Linux's numbering:
@@ -779,14 +781,14 @@ let pending =
     let signo = Signal.toRawSignoUnder numbering Signal.SIGTERM
 
     match UnixSignal.kill pid signo blocked with
-    | Ok (KillOutcome.ProcessContinues system) -> system |> returnToUser |> resumed
+    | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system |> returnToUser |> resumed
     | Ok outcome -> failwith $"unexpected kill: %A{outcome}"
     | Error errno -> failwith $"kill failed: %O{errno}"
 
 // Unblocking it: as task 0 returns to user mode it takes SIGTERM, whose
 // default action ends the process.
 match pending |> mask 1 |> returnToUser with
-| ReturnToUserOutcome.ProcessEnded ended ->
+| ProcessFate.ProcessEnded ended ->
     let termination, _ =
         SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended
 
@@ -802,7 +804,7 @@ match pending |> mask 1 |> returnToUser with
 ## Threads, and the end of the process
 
 `UnixTaskLifecycle.spawn parent child cpu` starts a task the client names `child`, on processor `cpu`, with a copy of `parent`'s signal mask, and answers its thread ID, an `OsThreadId` (`SpawnAnswer.Spawned`).
-`UnixTaskLifecycle.exitThread task status` ends one task, and answers `TaskOutcome.Continues` with the process carrying on, or `TaskOutcome.ProcessEnded` if it was the last.
+`UnixTaskLifecycle.exitThread task status` ends one task, and answers `ProcessFate.Continues` with the process carrying on, or `ProcessFate.ProcessEnded` if it was the last.
 It throws `InvalidOperationException` for a task parked in a syscall, and refuses the process's leader while any other task lives and, on Darwin, the process's last task: a Darwin client ends a process with `exitGroup`, never by its last thread exiting.
 `UnixTaskLifecycle.exitGroup task status` ends every task at once, parked ones included.
 

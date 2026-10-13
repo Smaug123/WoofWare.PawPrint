@@ -955,19 +955,19 @@ module TestMultiProcessFuzz =
                 |> Set.ofList
 
             match UnixSignal.tryOnReturnToUser task after with
-            | Ok (ReturnToUserOutcome.Resumes after) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, after)) ->
                 due |> shouldEqual Set.empty
                 Made.Answered after
-            | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded ended) ->
                 match EndedProcess.termination ended with
                 | ProcessTermination.Signaled (signal, false) when Set.contains signal due ->
                     cover FuzzLabel.SignalDeath
                     Made.Ended ended
                 | termination ->
                     failwith $"task %d{task}'s return ended the process with %O{termination}, with %O{due} due"
-            | Ok (ReturnToUserOutcome.RunHandlers _ as other)
-            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers _, _) as other)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped _, _) as other)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, _) as other) ->
                 failwith
                     $"no handler is installed and only %O{fatal} is held back, but task %d{task}'s return took %A{other}"
             | Error refusal -> failwith $"task %d{task}'s return was refused: %O{refusal}"
@@ -1292,7 +1292,7 @@ module TestMultiProcessFuzz =
                     Signal.toRawSignoUnder (SignalState.numbering blocked.Process.Signals) signal
 
                 match UnixSignal.tryPthreadKill task signo blocked with
-                | Ok (Ok (KillOutcome.ProcessContinues raised)) -> returnToUser raised
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, raised))) -> returnToUser raised
                 | other -> failwith $"pthread_kill of a blocked %O{signal} answered %A{other}"
             | made -> made
         | Op.Unblock signal -> mask SignalMaskChange.Unblock fatal.[signal % fatal.Length] view
