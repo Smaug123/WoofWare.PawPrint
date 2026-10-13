@@ -748,7 +748,7 @@ into the EILSEQ a real APFS would have given.
   `ofByteString` cannot. Its segment indices become byte offsets.
 - A directory's names now sort in unsigned byte order, not .NET's UTF-16
   ordinal order. The two differ only above the BMP, and `readdir` hands names
-  back in this order, so `docs/divergences.md` says so.
+  back in this order, so [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) says so.
 
 **Correctness oracle**:
 
@@ -903,7 +903,7 @@ The modelling gap that becomes real once bytes are representable.
 exactly the strictly-valid-UTF-8 names. That is a deliberate approximation —
 APFS also refuses Unicode noncharacters, at least one unassigned code point, and
 combining sequences over 32 characters — and the gap goes in
-`docs/divergences.md` rather than being chased. §1.1 is why: three successive
+[`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) rather than being chased. §1.1 is why: three successive
 closed forms were refuted by probing, so faithful modelling means transcribing
 XNU's converter, which is its own project.
 
@@ -996,12 +996,12 @@ regression tests above are the ones that would flip.
 
 **Dependencies**: Stage 7.
 
-- `docs/divergences.md`'s directory-enumeration entry says the order among names
+- [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md)'s directory-enumeration entry says the order among names
   is "F# ordinal (UTF-16) order" and notes that sorting by UTF-8 bytes "was
   considered … but it differs only above the BMP and buys nothing a test could
   observe". After Stage 3 the order **is** byte order, so that passage is
   rewritten — and its own argument now favours what we have.
-- A new `docs/divergences.md` entry for §1.1–§1.5, with the measured tables, and
+- A new [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) entry for §1.1–§1.5, with the measured tables, and
   a second recording §1.1.1's deliberate over-admission on the Darwin flavour.
   The second matters more: it is a standing divergence rather than a description
   of agreement, and it must say plainly that PawPrint's Darwin rule is
@@ -1021,7 +1021,7 @@ of every `rg -i "utf-?8"` hit in `docs/` and in the two `AGENTS.md` files.
 **As built.**
 
 - The directory-enumeration rewrite landed with Stage 3.
-- `docs/divergences.md` gains one entry, not two. That document catalogues
+- [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) gains one entry, not two. That document catalogues
   deliberate divergences only, so the rows where the model agrees with the
   kernels (§1.2–§1.5) are not restated there. The entry carries §1.1's refusal
   table as the evidence for the over-admission.
@@ -1065,7 +1065,7 @@ and a half-finished migration is the thing to avoid.
 **Stage 7 changes guest-visible behaviour on the Darwin flavour.** A guest that
 today gets a `failwith` will get an errno, and a guest that today creates a file
 with non-UTF-8 bytes will get EILSEQ. Both are corrections, but they are
-behaviour changes and belong in `docs/divergences.md` (Stage 8) rather than only
+behaviour changes and belong in [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) (Stage 8) rather than only
 in a commit message.
 
 **The Darwin rule is a stated approximation, and the danger is that it stops

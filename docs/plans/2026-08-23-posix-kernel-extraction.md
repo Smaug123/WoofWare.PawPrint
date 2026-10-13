@@ -2714,7 +2714,7 @@ Ordered so that each has an oracle before the next depends on it.
     *backwards* from the end of the buffer and moving it to the front once it
     fits. The residue is a function of libc's internal progress, not of anything
     a kernel decides. `GetCwdAnswer.Failed` therefore carries an errno and says
-    nothing about the destination; `docs/divergences.md` records the measured
+    nothing about the destination; [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) records the measured
     table and the reasoning, and `Interop.Sys.GetCwd` cannot observe any of it.
 
     So the `poll` asymmetry is still open, and this increment is evidence about
@@ -2935,7 +2935,7 @@ case stage 7 had to spell as a refusal: moving it here is what lets it carry the
 descriptor-table advance a real kernel makes before it sleeps, which a refusal
 cannot. PawPrint's `Program` readiness
 sweep becomes a poll of that predicate. Then: `README`, the
-`emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
+`emulated-posix-kernel` skill's paths, [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md), and the
 packaging decision from the open questions. (Of those four, one was already done
 in stage 1 and one needed nothing; see "Stage 9 packaging" at the end of this
 document for what the other two actually owed.)
@@ -3739,7 +3739,7 @@ was *checked* about them is worth recording so that nobody re-checks:
   the `nuget-pack`, `expected-pack` and `github-release-dry-run` jobs. The forward
   reference here to "the open questions" pointed at a section that does not exist in this
   document; it was stale rather than outstanding.
-* **`docs/divergences.md`** needed one line. Both of its pointers into the library
+* **[`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md)** needed one line. Both of its pointers into the library
   (`UnixPathResolution.getcwd`, `UnixSocket.getsockname`) still resolve, but it pinned its
   directory-enumeration cases on `WoofWare.PawPrint.Test/TestDirectoryEnumeration.fs`, and
   that file moved to `WoofWare.PosixKernel.Test` during the extraction. Reading the
@@ -3770,7 +3770,7 @@ What cost more:
 **Correctness oracle**: prose, so there is none beyond the suites being unchanged — with
 one exception worth having. Every repo path these documents name was resolved
 mechanically, which is what found the moved `TestDirectoryEnumeration.fs`; the remaining
-reports are upstream CoreCLR filenames and a glob, and the two `docs/divergences.md` code
+reports are upstream CoreCLR filenames and a glob, and the two [`docs/divergences.md`](https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md) code
 pointers were checked by hand. That check is a throwaway script rather than a committed
 one: it needs a list of plausible roots to resolve project-relative paths and it cannot
 tell an upstream filename from a repo one, so as a permanent check it would cry wolf.

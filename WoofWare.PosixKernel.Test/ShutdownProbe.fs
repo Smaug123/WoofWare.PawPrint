@@ -67,7 +67,10 @@ type internal IShutdownPair =
     /// `shutdown(2)` with a raw `how`.
     abstract ShutdownRaw : ConnectionEnd -> int -> string
     abstract Close : ConnectionEnd -> string
-    /// Closes the end with `SO_LINGER` set to {1, 0}.
+    /// Sets the end's `SO_LINGER` to {1, 0}: `0` or the answer.
+    abstract SetLingerZero : ConnectionEnd -> string
+    /// Closes the end with `SO_LINGER` set to {1, 0}, setting it again first,
+    /// as the probe does, whatever that answers.
     abstract Abort : ConnectionEnd -> string
     abstract Fionread : ConnectionEnd -> int
     /// What the probe's `rdy` prints.
@@ -85,6 +88,9 @@ type internal IShutdownPair =
     /// What the edge registrations report now, as the probe's `edges`
     /// prints it.
     abstract Edges : unit -> string
+    /// Whether the layer has ports and binds at all: `PortOf`, `BindFree`
+    /// and `Candidate` answer only where it has.
+    abstract BindsEndpoints : bool
     /// The port the end's socket is bound to.
     abstract PortOf : ConnectionEnd -> int
     /// Whether a fresh socket binds the loopback address at `port`:
@@ -148,6 +154,9 @@ type internal ShutdownRecorder (pair : IShutdownPair) =
     member _.Close (e : ConnectionEnd) : string =
         if pair.Refused then "" else pair.Close e
 
+    member _.SetLingerZero (e : ConnectionEnd) : string =
+        if pair.Refused then "" else pair.SetLingerZero e
+
     member _.Abort (e : ConnectionEnd) : string =
         if pair.Refused then "" else pair.Abort e
 
@@ -175,6 +184,14 @@ type internal ShutdownRecorder (pair : IShutdownPair) =
 
     member _.BindFree (port : int) : string =
         if pair.Refused then "" else pair.BindFree port
+
+    /// `text` followed by what `BindFree port` answers, or a line elsewhere
+    /// where the layer binds nothing.
+    member this.EmitBind (text : string) (port : int) : unit =
+        if pair.BindsEndpoints then
+            this.Emit (text + this.BindFree port)
+        else
+            this.EmitElsewhere ()
 
     member _.Candidate (reuse : bool) (wildcard : bool) (port : int) : string =
         if pair.Refused then
@@ -515,12 +532,24 @@ module internal ShutdownProbe =
                 for start in starts do
                     scenario (fun s ->
                         let lt = if linger then "linger0" else "nolinger"
+                        let port = s.PortOf c
 
                         let filled =
                             List.contains start [ "cunsent" ; "cunsent-afterwr" ; "cqueued-pfin" ; "pfin-cqueued" ]
 
                         if start = "cunread" then
                             s.Write p 1000 |> ignore<string>
+
+                        // Where both FINs are made before the close, the
+                        // probe sets the linger before either, since Darwin
+                        // refuses to set it once both directions are shut.
+                        if
+                            linger
+                            && List.contains
+                                start
+                                [ "bothfin-cfirst" ; "bothfin-pfirst" ; "cqueued-pfin" ; "pfin-cqueued" ]
+                        then
+                            s.SetLingerZero c |> ignore<string>
 
                         if start = "pfin-cqueued" || start = "bothfin-pfirst" then
                             s.Shutdown p TcpShutdownHow.Write |> ignore<string>
@@ -550,7 +579,7 @@ module internal ShutdownProbe =
 
                         let closed = if linger then s.Abort c else s.Close c
                         s.Emit $"L\t%s{lt}\t%s{start}\t(linger)\tclose=%s{closed} rdy(p)\t%s{s.Rdy p}"
-                        s.EmitElsewhere ()
+                        s.EmitBind $"L\t%s{lt}\t%s{start}\tclosers-endpoint at once " port
                         let r1 = s.Read p 4096
                         let r2 = s.Read p 4096
                         let w1 = s.Write p 100
@@ -565,7 +594,7 @@ module internal ShutdownProbe =
                             let n, last = s.Drain p
                             s.Emit $"L\t%s{lt}\t%s{start}\tp-drained=%d{n} last=%s{last}"
 
-                        s.EmitElsewhere ()
+                        s.EmitBind $"L\t%s{lt}\t%s{start}\tclosers-endpoint after p acted " port
                     )
         ]
 

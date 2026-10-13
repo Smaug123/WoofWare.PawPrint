@@ -251,6 +251,10 @@
         # CoreLib flavour production runs instead of the host's. See dotnet-linux-framework.
         # Tests that need it skip when it is unset, so a non-Nix checkout still works.
         DOTNET_LINUX_FRAMEWORK_DIR = dotnet-linux-framework;
+        # mkShell's stdenv puts `cc` on the path. WoofWare.PosixKernel.Test's
+        # TestSignalFuzz builds its harness with it, and fails rather than skips
+        # when this says a compiler was promised.
+        POSIXKERNEL_REQUIRE_C_COMPILER = "1";
         # Force polling-based file watcher to avoid hangs in
         # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
         # path can deadlock under load when ASP.NET hosts created in tests

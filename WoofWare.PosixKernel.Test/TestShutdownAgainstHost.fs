@@ -9,7 +9,8 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// `shutdown(2)` on connected loopback TCP sockets, and what each end then
-/// sees: sections S, T, R, P, E and F, and the connected rows of U, of
+/// sees, and `close(2)` under `SO_LINGER` {1, 0}: sections S, T, R, P, E, L
+/// and F, and the connected rows of U, of
 /// `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger), and the
 /// binds of an endpoint an end still holds, by `bind-held-endpoint.c` beside
 /// it, measured on Linux 6.18.5 aarch64 and Darwin 27.0, replayed against the
@@ -477,18 +478,26 @@ module TestShutdownAgainstHost =
                 settle ()
                 ans result errno
 
-            member this.Abort e =
+            member this.SetLingerZero e =
                 let linger = Array.append (BitConverter.GetBytes 1) (BitConverter.GetBytes 0)
 
-                hostSetSockOpt (
-                    this.Fd e,
-                    SimulatedUnixPlatform.socketOptionLevel platform,
-                    lingerOption flavour,
-                    linger,
-                    8u
-                )
-                |> ignore<int>
+                let result, errno =
+                    call (fun () ->
+                        int64 (
+                            hostSetSockOpt (
+                                this.Fd e,
+                                SimulatedUnixPlatform.socketOptionLevel platform,
+                                lingerOption flavour,
+                                linger,
+                                8u
+                            )
+                        )
+                    )
 
+                ans result errno
+
+            member this.Abort e =
+                (this :> IShutdownPair).SetLingerZero e |> ignore<string>
                 (this :> IShutdownPair).Close e
 
             member this.Fionread e =
@@ -676,6 +685,7 @@ module TestShutdownAgainstHost =
                         )
                         |> String.concat " "
 
+            member _.BindsEndpoints = true
             member this.PortOf e = portOf (this.Fd e)
 
             member _.BindFree port =
@@ -888,6 +898,13 @@ module TestShutdownAgainstHost =
     [<Test>]
     let ``this host reports edges after shutdown as measured (section E)`` () =
         hostDisagreements "E" true ShutdownProbe.sectionE |> shouldEqual []
+
+    // One scenario at a time, as for section F: each binds the closer's
+    // endpoint.
+    [<Test>]
+    let ``this host answers a close under SO_LINGER, and frees the closer's endpoint, as measured (section L)`` () =
+        withoutTimeWaitOverflow (fun () -> hostDisagreements "L" false ShutdownProbe.sectionL)
+        |> shouldEqual []
 
     // One scenario at a time: a scenario frees an endpoint and then binds it,
     // which another's connect could take in between.
@@ -1567,7 +1584,7 @@ module TestShutdownAgainstHost =
 
             let s =
                 match CopyIn.connect client UserBuffer.Mapped 16u (loopback platform port) s with
-                | Ok (ConnectOutcome.Completed, s) -> s
+                | Ok (SyscallAnswer.Completed 0L, s) -> s
                 | other -> failwith $"connect: %A{other}"
 
             let server, s =
@@ -1672,13 +1689,44 @@ module TestShutdownAgainstHost =
                     system <- after
                     fds <- Map.remove e fds
                     "0"
-                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _)) ->
+                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _))
+                | Error (CloseRefusal.Release (DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin _)) ->
                     refused <- true
                     ""
                 | other -> failwith $"close: %A{other}"
 
-            member _.Abort _ =
-                failwith "this kernel models no abortive close, so it does not replay a close under SO_LINGER {1, 0}"
+            member this.SetLingerZero e =
+                let fd = this.Fd e
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let name = lingerOption flavour
+                let value = OptionValue.ofLinger 1 0
+
+                // The kernel copies the value only where it reads it at all:
+                // Darwin answers EINVAL first once both directions are shut.
+                let supplied =
+                    match
+                        UnixSocket.tryAdmitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system
+                    with
+                    | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
+                    | Ok SetSockOptAdmission.NoCopy
+                    | Ok (SetSockOptAdmission.Answered _) -> None
+                    | Error refusal ->
+                        failwith $"setsockopt(SO_LINGER) refused: %s{SocketOptionRefusal.describe refusal}"
+
+                match
+                    UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+                with
+                | Ok (answer, after) ->
+                    system <- after
+
+                    match answer with
+                    | SetSockOptAnswer.Set -> "0"
+                    | SetSockOptAnswer.Failed error -> rendered error
+                | Error refusal -> failwith $"setsockopt(SO_LINGER) refused: %s{SocketOptionRefusal.describe refusal}"
+
+            member this.Abort e =
+                (this :> IShutdownPair).SetLingerZero e |> ignore<string>
+                (this :> IShutdownPair).Close e
 
             member this.Fionread e =
                 match UnixDescriptor.tryBytesAvailable (this.Fd e) UserBuffer.Mapped system with
@@ -1875,6 +1923,7 @@ module TestShutdownAgainstHost =
                         |> String.concat " "
                     | other -> failwith $"kevent: %A{other}"
 
+            member _.BindsEndpoints = true
             member this.PortOf e = kernelPortOf (this.Fd e) system
 
             member _.BindFree port =
@@ -1978,10 +2027,10 @@ module TestShutdownAgainstHost =
 
         let connectAnswer (fd : int) (port : int) : string =
             match CopyIn.connect fd UserBuffer.Mapped 16u (loopback platform port) system with
-            | Ok (ConnectOutcome.Completed, after) ->
+            | Ok (SyscallAnswer.Completed _, after) ->
                 system <- after
                 "0"
-            | Ok (ConnectOutcome.Failed error, after) ->
+            | Ok (SyscallAnswer.Failed error, after) ->
                 system <- after
                 $"-1 %A{error}"
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
@@ -2105,6 +2154,30 @@ module TestShutdownAgainstHost =
     [<Test>]
     let ``the kernel reports edges after shutdown as measured (section E)`` () =
         kernelDisagreements "E" ShutdownProbe.sectionE |> shouldEqual []
+
+    [<Test>]
+    let ``the kernel answers a close under SO_LINGER, and frees the closer's endpoint, as measured (section L)`` () =
+        kernelDisagreements "L" ShutdownProbe.sectionL |> shouldEqual []
+
+    [<Test>]
+    let ``the kernel refuses a close under SO_LINGER only where the probe marked the outcome as waiting on a timer``
+        ()
+        =
+        // Darwin's close under linger zero after its own FIN was queued
+        // before the peer's arrived (L, cqueued-pfin): the close, both binds,
+        // the peer's calls and its drain.
+        [
+            for flavour in flavours do
+                let measured = ShutdownProbe.measured ShutdownProbe.Probe.Shutdown flavour "L"
+                let replayed = kernelReplay flavour ShutdownProbe.sectionL
+
+                for line, modelled in List.zip measured replayed do
+                    if modelled = ShutdownLine.Refused then
+                        line.Mark |> shouldEqual ShutdownMark.Timing
+
+                flavour, replayed |> List.filter ((=) ShutdownLine.Refused) |> List.length
+        ]
+        |> shouldEqual [ SimulatedUnixFlavour.Linux, 0 ; SimulatedUnixFlavour.Darwin, 5 ]
 
     [<Test>]
     let ``the kernel frees an end's endpoint, open or closed, and answers getpeername as measured (section F)`` () =

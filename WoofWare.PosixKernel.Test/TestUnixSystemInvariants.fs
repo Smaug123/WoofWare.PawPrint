@@ -724,6 +724,25 @@ module TestUnixSystemInvariants =
 
         UnixSystem.checkInvariants sound |> shouldEqual []
 
+    /// `SocketPhase.Connecting` is reserved: nothing puts a socket in it yet, so
+    /// a socket in it is a defect, which is what makes "nothing does" checked
+    /// wherever a fuzzer checks invariants.
+    [<Test>]
+    let ``a connecting socket is a ReservedSocketPhase defect`` () : unit =
+        let destination =
+            SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us)
+
+        let phase =
+            SocketPhase.Connecting
+                {
+                    ConnectAttempt.Destination = destination
+                }
+
+        let socketId, faulty = withSocket (streamSocket (boundAt 5000us) phase)
+
+        UnixSystem.checkInvariants faulty
+        |> shouldEqual [ UnixSystemDefect.ReservedSocketPhase (socketId, phase) ]
+
     [<Test>]
     let ``a socket bound to port 0 is a defect`` () : unit =
         let socketId, faulty = withSocket (streamSocket (boundAt 0us) SocketPhase.Idle)

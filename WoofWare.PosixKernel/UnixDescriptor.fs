@@ -270,10 +270,10 @@ type internal CloseRefusal<'Task> =
     /// Under Linux a close of the last descriptor onto a socket a `read` or
     /// `write` sleeps on answers 0 and leaves the call holding the socket
     /// (measured, `tcp-blocking.c` sections R-close and W-close). This kernel
-    /// refuses some closes under `SO_LINGER` (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// refuses some closes under `SO_LINGER` (`DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin`,
     /// `DescriptionReleaseRefusal.LingeringClose`), and whether such a close
     /// would be refused depends on state that changes before the call returns:
-    /// the peer, and the bytes still unsent. A call's return has no refusal to
+    /// the peer, the FINs, and the bytes still unsent. A call's return has no refusal to
     /// answer with, so the close is refused here instead, whatever the linger
     /// time.
     | LingeringCloseDeferredToCall of socket : SocketId * task : 'Task
@@ -1523,6 +1523,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.DatagramReceive _ as other)
             | Some (ParkedSyscall.DatagramSend _ as other)
+            | Some (ParkedSyscall.Connect _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -2010,6 +2011,7 @@ module UnixDescriptor =
                     | ParkedSyscall.SignalWait _
                     | ParkedSyscall.DatagramReceive _
                     | ParkedSyscall.DatagramSend _
+                    | ParkedSyscall.Connect _
                     // No descriptor names a FIFO open's description until the call
                     // installs it, so no close reaches it.
                     | ParkedSyscall.FifoOpen _
@@ -2055,6 +2057,7 @@ module UnixDescriptor =
                 | ParkedSyscall.SignalWait _
                 | ParkedSyscall.DatagramReceive _
                 | ParkedSyscall.DatagramSend _
+                | ParkedSyscall.Connect _
                 | ParkedSyscall.FifoOpen _
                 | ParkedSyscall.InotifyRead _
                 | ParkedSyscall.ConnectionRead _
@@ -2095,6 +2098,7 @@ module UnixDescriptor =
                    | ParkedSyscall.SignalWait _
                    | ParkedSyscall.DatagramReceive _
                    | ParkedSyscall.DatagramSend _
+                   | ParkedSyscall.Connect _
                    | ParkedSyscall.FifoOpen _
                    | ParkedSyscall.InotifyRead _
                    | ParkedSyscall.ConnectionRead _
@@ -2186,6 +2190,9 @@ module UnixDescriptor =
             // asleep.
             | ParkedSyscall.DatagramReceive _
             | ParkedSyscall.DatagramSend _
+            // Reserved: nothing parks a task in it yet, and no Darwin connect
+            // sleeps.
+            | ParkedSyscall.Connect _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2334,6 +2341,7 @@ module UnixDescriptor =
                     | ParkedSyscall.SignalWait _
                     | ParkedSyscall.DatagramReceive _
                     | ParkedSyscall.DatagramSend _
+                    | ParkedSyscall.Connect _
                     | ParkedSyscall.FifoOpen _
                     | ParkedSyscall.InotifyRead _
                     | ParkedSyscall.KqueuePoll _ -> false
@@ -2441,6 +2449,7 @@ module UnixDescriptor =
                         | ParkedSyscall.SignalWait _
                         | ParkedSyscall.DatagramReceive _
                         | ParkedSyscall.DatagramSend _
+                        | ParkedSyscall.Connect _
                         | ParkedSyscall.FifoOpen _
                         | ParkedSyscall.InotifyRead _
                         | ParkedSyscall.ConnectionRead _

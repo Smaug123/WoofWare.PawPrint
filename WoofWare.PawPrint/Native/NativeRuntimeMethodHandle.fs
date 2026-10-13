@@ -1576,7 +1576,7 @@ module NativeRuntimeMethodHandle =
                         // registry representation that reaches concretization and every other
                         // MethodHandle consumer, so it is deliberately not attempted here; see
                         // `sourcesPure/MakeGenericMethodOpenArgument.cs`, which is parked in
-                        // TestPureCases.unimplemented against this gap.
+                        // TestPureCases.parkedEverywhere against this gap.
                         failwith
                             $"TODO: %s{operation}: methodInstantiation[%d{index}] is %O{target}, which is not a closed type; this is MakeGenericMethod with an open type argument, and PawPrint's MethodHandle can only bind closed method generic arguments"
                 )

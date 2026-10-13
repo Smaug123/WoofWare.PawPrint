@@ -5,7 +5,7 @@
 PawPrint aims to be behaviourally equivalent to CoreCLR for managed programs. This document catalogues the cases where it is *deliberately* not, and explains why. Each item here is something that:
 
 * a managed program can observe at runtime,
-* is not simply unimplemented (those live in the `unimplemented` set in [`WoofWare.PawPrint.Test/TestPureCases.fs`](../WoofWare.PawPrint.Test/TestPureCases.fs) and crash with a TODO `failwith`),
+* is not simply unimplemented (those are parked in [`WoofWare.PawPrint.Test/TestPureCases.fs`](../WoofWare.PawPrint.Test/TestPureCases.fs)'s `parkedEverywhere` and `onRuntime`, and crash with a TODO `failwith`),
 * and is either spec-compliant or marked here as deferred work with a tracking note.
 
 If a program of yours hits one of these, the workaround is usually to rewrite the affected code to not depend on the timing or exception type that CoreCLR's specific implementation chose. If you can't, file an issue.

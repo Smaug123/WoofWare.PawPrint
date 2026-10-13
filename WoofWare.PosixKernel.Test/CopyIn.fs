@@ -157,15 +157,17 @@ module internal CopyIn =
 
         agreeing "bind" expected actual
 
-    /// `connect(2)` as a client makes it, through the library's public
-    /// protocol, held to the internal steps it is made of, as `bind` is.
-    let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `connect(2)` as `task` makes it, through the library's public
+    /// protocol, held to the internal steps it is made of, as `bind` is, and
+    /// failing the test if the call sleeps.
+    let connectAs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
         (blob : byte[])
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         let expected =
             UnixConnection.tryConnectBytes
@@ -176,13 +178,25 @@ module internal CopyIn =
                 system
 
         let actual =
-            match UnixConnection.tryConnect fd destination declaredLength system with
+            match UnixConnection.tryConnect task fd destination declaredLength system with
             | Error refusal -> Error refusal
             | Ok (CallProgress.Answered answer) -> Ok answer
             | Ok (CallProgress.NeedsCopyIn paused) ->
                 UnixConnection.tryConnectWithAddress (copied "connect" (PausedConnect.copyRange paused) blob) paused
+            |> ConnectOutcomes.answered
 
         agreeing "connect" expected actual
+
+    /// `connect(2)` as the process's leader makes it: `connectAs`.
+    let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (blob : byte[])
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        =
+        connectAs system.Leader fd destination declaredLength blob system
 
 /// What `getsockname(2)` and `accept(2)` copy out, read back and predicted
 /// without the library's own encoder.

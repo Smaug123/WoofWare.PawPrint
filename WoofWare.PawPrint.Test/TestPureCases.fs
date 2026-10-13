@@ -20,57 +20,83 @@ open WoofWare.PosixKernel
 module TestPureCases =
     let assy = typeof<RunResult>.Assembly
 
-    let unimplemented =
+    /// The cases parked on every runtime, each with why it is parked, what would un-park it, and how it
+    /// was verified to behave on real .NET. `onRuntime` folds these into every runtime's parks.
+    let parkedEverywhere : Map<string, string> =
         [
-            "AssemblyLoadHandlerThrowIsSwallowed.cs" // An `AppDomain.AssemblyLoad` handler that throws. CoreCLR calls it from `AppDomain::RaiseLoadingAssemblyEvent` inside `EX_TRY ... EX_CATCH {}`, so the exception is discarded and `Main`'s `catch` never sees it. PawPrint marks the announcing frame `ExceptionEscape.SwallowedByRuntime` and ends the run when exception dispatch reaches it, rather than let the exception unwind into `Main`; `TestAssemblyLoadEvent` pins that refusal. Un-park when dispatch discards an exception at that boundary. Verified to exit 0 on real .NET.
-            "CustomAttributeTypeArgNested.cs" // A `System.Type`-valued attribute argument naming a nested type of the decorated assembly, "Outer+Inner". CoreLib's `TypeNameResolver` splits the name and calls `RuntimeAssembly.GetTypeCore(string, ReadOnlySpan<string> nestedTypeNames, ...)`, a `LibraryImport` whose generated stub marshals the span into a stack-allocated pointer array, and the interpreted stub stops at "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110). Measured: a guest calling `Type.GetType("Outer+Inner")` directly stops at the same instruction, so this is the nested-name path of `GetTypeCore`, not anything in the attribute decoder; `sourcesPure/CustomAttributeTypeArg.cs` covers the top-level names, which take the empty-span path. Un-park when that stub's stack buffer reads back what it wrote. Verified to exit 0 on real .NET.
-            "AssemblyGetTypeNested.cs" // `Assembly.GetType("Outer+Inner")`, and a nested type whose base lives in a framework assembly nothing else loads, which `AssemblyGetTypeUnloadedBaseAssembly.cs` cannot cover for the nested walk. It stops before the QCall, at the same nested-name marshalling gap as `CustomAttributeTypeArgNested.cs`: "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110), measured with the nested type's base plain `object` too. Un-park with that one. Verified to exit 0 on real .NET.
-            "CustomAttributeTypeArgForeign.cs" // A `System.Type`-valued attribute argument naming a type from another assembly. Roslyn writes every such name assembly-qualified -- `typeof(int)` included, measured as "System.Int32, System.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a" against the reference pack -- and CoreLib's `TypeNameResolver` then binds that assembly through `RuntimeAssembly.InternalLoad`, so the guest stops at "Unimplemented native method (PInvokeImpl QCall!AssemblyNative_InternalLoad)". The resolution itself is CoreLib's own code, reached from `CustomAttribute_CreateCustomAttributeInstance` exactly as CoreCLR reaches it, so nothing in the attribute path is what is missing; `sourcesPure/CustomAttributeTypeArg.cs` covers the names Roslyn leaves unqualified, which are the decorated assembly's own types. Un-park when `AssemblyNative_InternalLoad` binds a display name. Verified to exit 0 on real .NET.
-            "UnsafeAccessorTypeByName.cs" // `[UnsafeAccessorType("...")]` names a parameter's or the return's type by string rather than in the signature, which is how CoreLib's own accessors reach `BinaryFormatter`, `GenericPrincipal` and `MetadataReader` -- 18 of the 20 accessor declarations in the shared framework are of this shape. `MethodInfo.read` detects the attribute (`hasTypeNameOverrides`), and dispatch refuses on it rather than resolving the member against the signature's `System.Object`: "TODO: [UnsafeAccessor] .TestUnsafeAccessorTypeByName::NewHidden names at least one of its types with [UnsafeAccessorType]". Un-park when the attribute's blob is parsed and its type name resolved -- note that the name may be assembly-qualified, that an unqualified one means the accessor's own assembly (the form this file uses), and that CoreCLR emits a type check on every translated argument (`EmitTypeCheck`). Verified to exit 0 on real .NET.
-            "ValueTypeHashCodeOverlappingReferenceFields.cs" // Explicit layout may put two *reference* fields at the same offset -- the GC sees one pointer slot, so the type loads, and real .NET hashes whichever object the slot holds (measured: exits 0). PawPrint cannot reach it, and not because of anything in `ValueType_GetHashCodeStrategy`: an explicit-layout struct with overlapping reference fields has no access route at all. `CliValueType.DereferenceFieldById` sees more than one field covering the range and falls back to rendering the bytes, and `CliType.ToBytes` refuses a non-null reference because PawPrint models one as an opaque handle rather than an address. That is the same dead end as `RuntimeHelpersBoxReferenceContainingStruct.cs`, `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`. Note that answering the strategy's nullness question some other way would not be enough: the guest's own `Unsafe.As<byte, object>(ref rawData + fieldOffset)` read then hits the same wall, because the two aliased cells make `tryReadHeapValueFieldPrecise`'s uniqueness gate fail and the byte walk refuses a reference-containing payload. Un-park when a reference cell can be named through an aliased explicit-layout offset. Verified to exit 0 on real .NET.
-            "BulkMoveAcrossOverlappedStructPadding.cs" // A bulk move across padding that *two* fields cover, which explicit layout produces by overlaying identical reference-containing structs. `CliType.TryPaddingRunAt` refuses such a byte — with two fields over it there is no single one to descend through, so it cannot say whose padding it is — and that refusal is the one gap left in the padding step that `BulkMoveAcrossStructPadding.cs` covers. Parked because the refusal is currently unreachable, and measured rather than assumed: an explicit-layout struct with any overlap is stored byte-backed, a byte-backed value holding references cannot be field-accessed, and so the plain `src[i].First.N = i + 1` that *builds* the array stops in `CliType.OfBytesLike` with "non-primitive template ObjectRef None" before any copy happens. Allocating the array alone succeeds; it is the first field write that fails. Same blocker as `ReinterpretCellUnderAliasedAncestor.cs`; un-park when that lands, at which point `TryPaddingRunAt`'s two-fields-cover-it branch is first exercised and will need to learn that padding shared by fields which are padding there too is still padding.
-            "ReinterpretCellUnderAliasedAncestor.cs" // A named cell under an explicit-layout ancestor that an unrelated sibling overlaps. Parked on a gap well below cell naming: an explicit-layout struct with any overlap is stored byte-backed, so `CliValueType.DereferenceFieldById` rebuilds a field via `OfBytesLike`, which refuses non-primitive templates — so reference-containing explicit-layout structs cannot be field-accessed at all. The program fails at a plain `outer.Whole.R = ...` before reaching any reinterpret. Not a regression: that path is untouched by the cell resolver.
-            "MakeGenericMethodOpenArgument.cs" //`RuntimeMethodHandle_GetStubIfNeededSlow` (issue #743) handles `MakeGenericMethod` with closed type arguments, which is what every reachable path needs, but an argument that still contains generic parameters — `MakeGenericMethod(typeof(G<>))` or `MakeGenericMethod(someTypeParameter)` — cannot be represented. Both are legal: real .NET returns a MethodInfo with `ContainsGenericParameters = true`, inspectable but not invokable. PawPrint's `MethodHandle.MethodGenerics` is a `ConcreteTypeHandle list`, and `ConcreteTypeHandle` indexes `AllConcreteTypes`, whose entries carry only *closed* generic arguments, so the QCall fails with a precise TODO. Widening that representation reaches concretization and every other MethodHandle consumer, so it is its own change rather than part of the QCall.
-            "ReflectionInvokeConstructorOnInstanceManyArguments.cs" // `ConstructorInfo.Invoke(instance, args)` with more than four arguments, the only route to the five-argument `MethodBaseInvoker.InvokeConstructorWithoutAlloc` (MethodBaseInvoker.Constructor.cs:15). It stops before the QCall, in `MethodBaseInvoker.CopyBack`: "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (measured). That overload's `shouldCopyBack` is a bare `stackalloc bool[argCount]` with no `NativeMemory.Clear`, unlike its `InvokeWithManyArgs` sibling, which clears a block covering all three regions (MethodBaseInvoker.cs:238-243) and so passes. CoreLib is compiled `[module: SkipLocalsInit]`, so `localloc` really does leave that block uninitialised on CoreCLR too, and `CheckArguments` writes `shouldCopyBack[i]` only on the conversion paths (MethodBaseInvoker.cs:354-386) — an argument already of the signature's type leaves its slot untouched. Real .NET therefore reads the garbage and is saved by the copy-back being a no-op (`copyOfParameters[i]` is the argument it was handed); PawPrint's stack memory refuses to be read before it is written. Un-parking means deciding what an uninitialised `localloc` byte reads as, which is a question about the memory model rather than about reflection. Verified to exit 0 on real .NET.
-            "ReflectionInvokeByRefReferenceStruct.cs" // `MethodBase.Invoke` with a `ref` parameter whose element is a struct holding a reference. It never reaches the byref: `MethodBaseInvoker.CheckArguments` first copies the boxed argument with `RuntimeHelpers.Box(ref GetRawData(box), handle)` (`TryByRefFastPath`, MethodBaseInvoker.cs:391), and `BoxCache.Box`'s bytewise copy of the source stops at "boxed value byte-view read: refusing byte view over boxed value type containing object references" (measured), the same gap `RuntimeHelpersBoxReferenceContainingStruct.cs` is parked on from a local. Un-park when boxing a reference-holding struct from raw data lands. Verified to exit 0 on real .NET.
-            "RuntimeHelpersBoxReferenceContainingStruct.cs" // `RuntimeHelpers.Box` of a struct holding a reference — the one shape whose box CoreCLR fills with `Buffer.BulkMoveWithWriteBarrier` rather than `SpanHelpers.Memmove` (RuntimeType.BoxCache.cs:91). Nothing here is about `ReflectionInvocation_GetBoxInfo`, which serves this type fine: the guest never reaches `Box` at all. It dies one step earlier, in its own `Unsafe.As<WithRef, byte>(ref r)`, which is `Intrinsics.call` (Intrinsics.fs:1672) taking a byte view over a *local* — measured as "refusing byte view over value type containing object references in single-cell byref `<variable 0 …> as System.Byte`", from `validateByteAddressableCell` (IlMachineManagedByref.fs:595). That is the same "a reference-containing value type has no byte image" gap as `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`, and it forecloses *every* route a guest has to a `ref byte` over such a struct, which is why the reference-free half of this coverage lives in the active `RuntimeHelpersBox.cs` instead. The file is not satisfiable the wrong way: it checks both fields (so moving only the reference, or only the trailing int, still fails) and re-reads the box after mutating the source (so handing back a view onto the source rather than a copy fails). Un-park when a reference-containing value type can be byte-addressed.
-            "DelegateBindOpenGenericDefinitionDefaultMethod.cs" // `CreateDelegate` over a default interface method of an open variant interface definition, closed over a receiver implementing it by variance through `IChild : IContra<object>`, which overrides the default. The binding virtualises onto the receiver, and real .NET resolves the slot for the typical instantiation to the definition's own default body (11), although the closed `IContra<object>` dispatches to the override (22). PawPrint resolves through the closed instantiation, so it refuses any virtualisation that lands on a default body rather than bind the override: "TODO: Delegate_BindToMethodInfo must virtualise M of the open generic definition ... which implements it with a default interface method" (measured). Un-park when CoreCLR's default-method search for a typical instantiation is modelled. Verified to exit 0 on real .NET.
-            "DelegateBindOpenGenericDefinitionStaticVirtual.cs" // `CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET.
-            "PointerFieldAliasedWidthStore.cs" // Storing into a pointer-typed field through a byref aliased as `long*`/`double*` rather than `void**`. A pointer slot is a `CliType.RuntimePointer` cell with no byte image, so the byte-scatter writer refuses it; the sibling `PointerFieldIndirectStore.cs` fixes that for the pointer-shaped payloads by replacing the whole cell instead. That route is deliberately *not* taken here, because whole-cell replacement restamps the cell with the payload's shape: on a 64-bit runtime `stind.i8`/`stind.r8` are exact-width stores into a `void*` slot too, and taking them would leave the field holding `Numeric Int64`/`Float64`, so the next read pushes the wrong evaluation-stack kind and fails downstream (measured: `bad ceq: Int64 vs NativeInt(0)`) with a message naming neither the field nor the store. Un-parking needs a pointer cell that can hold a non-pointer bit pattern while still reading back as a pointer — i.e. the same "materialise bits late" question as the rest of the provenance model — not a wider routing predicate.
-            "MethodHandleGetFunctionPointerSharedCode.cs" // `RuntimeMethodHandle.GetFunctionPointer` on an instance method of a generic class instantiated over a reference type (or over a value type instantiated over one), or on a virtual method of a generic value type so instantiated. CoreCLR compiles every such instantiation to one body over `System.__Canon`, which reads its instantiation from `this` (or, behind a value type's unboxing stub, from the box), and reflection hands out that shared entry point rather than an instantiating stub, so `GC<string>.Inst` and `GC<object>.Inst` have one address, and calling the `GC<object>` one on a `GC<string>` answers for `string`. PawPrint does not model shared generic code: a `FunctionPointerTarget.Managed` names one exact instantiation, so it would compare unequal and run the wrong instantiation's body. `NativeRuntimeMethodHandle.functionPointerOutcome` classifies the shape as `SharedCode` and the QCall refuses it: "TODO: RuntimeMethodHandle.GetFunctionPointer on ... an instance method of a shared generic instantiation". Un-park when a function pointer can name shared code whose instantiation comes from the receiver; `ldftn` of the same shape (reachable from IL, not from C#) has the same gap but does not refuse. Verified to exit 0 on real .NET.
-            "StackTraceFromExceptionNeedFileInfo.cs" // `new StackTrace(exception, fNeedFileInfo: true)` on an exception with no captured trace. The blocker is not the frame count, which is zero and correctly reported: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` *before* the loop over frames, gated only on `fNeedFileInfo` (StackFrameHelper.cs:95-113), so an empty capture does not avoid it. `CreateStackTraceSymbols` is an `[UnsafeAccessor]` constructor whose return type is named by `[UnsafeAccessorType("System.Diagnostics.StackTraceSymbols, System.Diagnostics.StackTrace, ...")]`, and `UnsafeAccessorDispatch.resolve` refuses any accessor that names a type that way (measured: "names at least one of its types with [UnsafeAccessorType]"). Raising that refusal as a guest exception for CoreLib's surrounding `try { } catch { }` to absorb would not be faithful: `System.Diagnostics.StackTrace` ships in the shared framework, so real .NET resolves the name and constructs a `StackTraceSymbols`. Un-park with `[UnsafeAccessorType]` resolution. CoreCLR resolves the name through the managed `TypeNameResolver.GetTypeHelper` (vm/typeparse.cpp), which loads the named assembly with `RuntimeAssembly.InternalLoad`, so that needs the `AssemblyNative_InternalLoad` QCall, which PawPrint does not yet answer. This is the blocker standing between `Exception.StackTrace` (Exception.cs:232) and `ExceptionDispatchInfo.SetCurrentStackTrace` (Exception.cs:247) and working, both of which pass `fNeedFileInfo: true`. Verified to exit 0 on real .NET.
-            "MarshalOffsetOfSharedGeneric.cs" // `Marshal.OffsetOf` on a generic struct instantiated over a reference type. CoreCLR answers for the field's approximate enclosing MethodTable, which for such an instantiation is its canonical form over `System.__Canon`, so a `T` field is a `__Canon` and has no native form -- even when `[MarshalAs(ByValTStr)]` would have accepted the `string` it really holds -- while a struct not mentioning `T` in a field is answered as usual. PawPrint does not model canonical forms, so the QCall refuses every shared instantiation rather than answer for the exact one: "TODO: MarshalNative_OffsetOf: Program+Phantom`1<System.String> ... is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms" (measured). Un-park when a type's canonical form can be laid out. Verified to exit 0 on real .NET.
-        ]
-        |> Set.ofList
-
-    let expectsUnhandledException =
-        [
-            "UnhandledException.cs"
-            "EnumHasFlagMismatchUnhandled.cs"
-            "EnumHasFlagNullFlagUnhandled.cs"
-            "ArrayGetLengthOutOfRangeUnhandled.cs"
-            "CachedCctorFailureUnhandledOnFieldStore.cs"
-            "CachedCctorFailureUnhandledOnCall.cs"
-            "CachedCctorFailureUnhandledOnRunClassConstructor.cs"
-        ]
-        |> Set.ofList
-
-    let customExitCodes =
-        [
-            "ExceptionWithNoOpFinally.cs", 3
-            "ForegroundThreadExitsAfterMainReturns.cs", 7
-            "IntMainReturnOverridesExitCode.cs", 3
-            "VoidMainSetsExitCode.cs", 9
-            "ExitOverridesExitCode.cs", 2
-            "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
-            "BackgroundWorkerJoinsMainThread.cs", 4
-            "EntryThreadIsBackgroundAfterMainReturns.cs", 11
-            "ThreadStateOfEntryThreadAfterMain.cs", 11
-            "EntryThreadReforegroundedThenBackgroundAgain.cs", 3
-            "MainBackgroundBeforeStartingForegroundWorker.cs", 3
-            "MainBackgroundThenForegroundAgainBeforeWorker.cs", 3
+            "AssemblyLoadHandlerThrowIsSwallowed.cs",
+            """An `AppDomain.AssemblyLoad` handler that throws. CoreCLR calls it from `AppDomain::RaiseLoadingAssemblyEvent` inside `EX_TRY ... EX_CATCH {}`, so the exception is discarded and `Main`'s `catch` never sees it. PawPrint marks the announcing frame `ExceptionEscape.SwallowedByRuntime` and ends the run when exception dispatch reaches it, rather than let the exception unwind into `Main`; `TestAssemblyLoadEvent` pins that refusal. Un-park when dispatch discards an exception at that boundary. Verified to exit 0 on real .NET."""
+            "CustomAttributeTypeArgNested.cs",
+            """A `System.Type`-valued attribute argument naming a nested type of the decorated assembly, "Outer+Inner". CoreLib's `TypeNameResolver` splits the name and calls `RuntimeAssembly.GetTypeCore(string, ReadOnlySpan<string> nestedTypeNames, ...)`, a `LibraryImport` whose generated stub marshals the span into a stack-allocated pointer array, and the interpreted stub stops at "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110). Measured: a guest calling `Type.GetType("Outer+Inner")` directly stops at the same instruction, so this is the nested-name path of `GetTypeCore`, not anything in the attribute decoder; `sourcesPure/CustomAttributeTypeArg.cs` covers the top-level names, which take the empty-span path. Un-park when that stub's stack buffer reads back what it wrote. Verified to exit 0 on real .NET."""
+            "AssemblyGetTypeNested.cs",
+            """`Assembly.GetType("Outer+Inner")`, and a nested type whose base lives in a framework assembly nothing else loads, which `AssemblyGetTypeUnloadedBaseAssembly.cs` cannot cover for the nested walk. It stops before the QCall, at the same nested-name marshalling gap as `CustomAttributeTypeArgNested.cs`: "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110), measured with the nested type's base plain `object` too. Un-park with that one. Verified to exit 0 on real .NET."""
+            "CustomAttributeTypeArgForeign.cs",
+            """A `System.Type`-valued attribute argument naming a type from another assembly. Roslyn writes every such name assembly-qualified -- `typeof(int)` included, measured as "System.Int32, System.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a" against the reference pack -- and CoreLib's `TypeNameResolver` then binds that assembly through `RuntimeAssembly.InternalLoad`, so the guest stops at "Unimplemented native method (PInvokeImpl QCall!AssemblyNative_InternalLoad)". The resolution itself is CoreLib's own code, reached from `CustomAttribute_CreateCustomAttributeInstance` exactly as CoreCLR reaches it, so nothing in the attribute path is what is missing; `sourcesPure/CustomAttributeTypeArg.cs` covers the names Roslyn leaves unqualified, which are the decorated assembly's own types. Un-park when `AssemblyNative_InternalLoad` binds a display name. Verified to exit 0 on real .NET."""
+            "UnsafeAccessorTypeByName.cs",
+            """`[UnsafeAccessorType("...")]` names a parameter's or the return's type by string rather than in the signature, which is how CoreLib's own accessors reach `BinaryFormatter`, `GenericPrincipal` and `MetadataReader` -- 18 of the 20 accessor declarations in the shared framework are of this shape. `MethodInfo.read` detects the attribute (`hasTypeNameOverrides`), and dispatch refuses on it rather than resolving the member against the signature's `System.Object`: "TODO: [UnsafeAccessor] .TestUnsafeAccessorTypeByName::NewHidden names at least one of its types with [UnsafeAccessorType]". Un-park when the attribute's blob is parsed and its type name resolved -- note that the name may be assembly-qualified, that an unqualified one means the accessor's own assembly (the form this file uses), and that CoreCLR emits a type check on every translated argument (`EmitTypeCheck`). Verified to exit 0 on real .NET."""
+            "ValueTypeHashCodeOverlappingReferenceFields.cs",
+            """Explicit layout may put two *reference* fields at the same offset -- the GC sees one pointer slot, so the type loads, and real .NET hashes whichever object the slot holds (measured: exits 0). PawPrint cannot reach it, and not because of anything in `ValueType_GetHashCodeStrategy`: an explicit-layout struct with overlapping reference fields has no access route at all. `CliValueType.DereferenceFieldById` sees more than one field covering the range and falls back to rendering the bytes, and `CliType.ToBytes` refuses a non-null reference because PawPrint models one as an opaque handle rather than an address. That is the same dead end as `RuntimeHelpersBoxReferenceContainingStruct.cs`, `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`. Note that answering the strategy's nullness question some other way would not be enough: the guest's own `Unsafe.As<byte, object>(ref rawData + fieldOffset)` read then hits the same wall, because the two aliased cells make `tryReadHeapValueFieldPrecise`'s uniqueness gate fail and the byte walk refuses a reference-containing payload. Un-park when a reference cell can be named through an aliased explicit-layout offset. Verified to exit 0 on real .NET."""
+            "BulkMoveAcrossOverlappedStructPadding.cs",
+            """A bulk move across padding that *two* fields cover, which explicit layout produces by overlaying identical reference-containing structs. `CliType.TryPaddingRunAt` refuses such a byte — with two fields over it there is no single one to descend through, so it cannot say whose padding it is — and that refusal is the one gap left in the padding step that `BulkMoveAcrossStructPadding.cs` covers. Parked because the refusal is currently unreachable, and measured rather than assumed: an explicit-layout struct with any overlap is stored byte-backed, a byte-backed value holding references cannot be field-accessed, and so the plain `src[i].First.N = i + 1` that *builds* the array stops in `CliType.OfBytesLike` with "non-primitive template ObjectRef None" before any copy happens. Allocating the array alone succeeds; it is the first field write that fails. Same blocker as `ReinterpretCellUnderAliasedAncestor.cs`; un-park when that lands, at which point `TryPaddingRunAt`'s two-fields-cover-it branch is first exercised and will need to learn that padding shared by fields which are padding there too is still padding."""
+            "ReinterpretCellUnderAliasedAncestor.cs",
+            """A named cell under an explicit-layout ancestor that an unrelated sibling overlaps. Parked on a gap well below cell naming: an explicit-layout struct with any overlap is stored byte-backed, so `CliValueType.DereferenceFieldById` rebuilds a field via `OfBytesLike`, which refuses non-primitive templates — so reference-containing explicit-layout structs cannot be field-accessed at all. The program fails at a plain `outer.Whole.R = ...` before reaching any reinterpret. Not a regression: that path is untouched by the cell resolver."""
+            "MakeGenericMethodOpenArgument.cs",
+            """`RuntimeMethodHandle_GetStubIfNeededSlow` (issue #743) handles `MakeGenericMethod` with closed type arguments, which is what every reachable path needs, but an argument that still contains generic parameters — `MakeGenericMethod(typeof(G<>))` or `MakeGenericMethod(someTypeParameter)` — cannot be represented. Both are legal: real .NET returns a MethodInfo with `ContainsGenericParameters = true`, inspectable but not invokable. PawPrint's `MethodHandle.MethodGenerics` is a `ConcreteTypeHandle list`, and `ConcreteTypeHandle` indexes `AllConcreteTypes`, whose entries carry only *closed* generic arguments, so the QCall fails with a precise TODO. Widening that representation reaches concretization and every other MethodHandle consumer, so it is its own change rather than part of the QCall."""
+            "ReflectionInvokeConstructorOnInstanceManyArguments.cs",
+            """`ConstructorInfo.Invoke(instance, args)` with more than four arguments, the only route to the five-argument `MethodBaseInvoker.InvokeConstructorWithoutAlloc` (MethodBaseInvoker.Constructor.cs:15). It stops before the QCall, in `MethodBaseInvoker.CopyBack`: "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (measured). That overload's `shouldCopyBack` is a bare `stackalloc bool[argCount]` with no `NativeMemory.Clear`, unlike its `InvokeWithManyArgs` sibling, which clears a block covering all three regions (MethodBaseInvoker.cs:238-243) and so passes. CoreLib is compiled `[module: SkipLocalsInit]`, so `localloc` really does leave that block uninitialised on CoreCLR too, and `CheckArguments` writes `shouldCopyBack[i]` only on the conversion paths (MethodBaseInvoker.cs:354-386) — an argument already of the signature's type leaves its slot untouched. Real .NET therefore reads the garbage and is saved by the copy-back being a no-op (`copyOfParameters[i]` is the argument it was handed); PawPrint's stack memory refuses to be read before it is written. Un-parking means deciding what an uninitialised `localloc` byte reads as, which is a question about the memory model rather than about reflection. Verified to exit 0 on real .NET."""
+            "ReflectionInvokeByRefReferenceStruct.cs",
+            """`MethodBase.Invoke` with a `ref` parameter whose element is a struct holding a reference. It never reaches the byref: `MethodBaseInvoker.CheckArguments` first copies the boxed argument with `RuntimeHelpers.Box(ref GetRawData(box), handle)` (`TryByRefFastPath`, MethodBaseInvoker.cs:391), and `BoxCache.Box`'s bytewise copy of the source stops at "boxed value byte-view read: refusing byte view over boxed value type containing object references" (measured), the same gap `RuntimeHelpersBoxReferenceContainingStruct.cs` is parked on from a local. Un-park when boxing a reference-holding struct from raw data lands. Verified to exit 0 on real .NET."""
+            "RuntimeHelpersBoxReferenceContainingStruct.cs",
+            """`RuntimeHelpers.Box` of a struct holding a reference — the one shape whose box CoreCLR fills with `Buffer.BulkMoveWithWriteBarrier` rather than `SpanHelpers.Memmove` (RuntimeType.BoxCache.cs:91). Nothing here is about `ReflectionInvocation_GetBoxInfo`, which serves this type fine: the guest never reaches `Box` at all. It dies one step earlier, in its own `Unsafe.As<WithRef, byte>(ref r)`, which is `Intrinsics.call` (Intrinsics.fs:1672) taking a byte view over a *local* — measured as "refusing byte view over value type containing object references in single-cell byref `<variable 0 …> as System.Byte`", from `validateByteAddressableCell` (IlMachineManagedByref.fs:595). That is the same "a reference-containing value type has no byte image" gap as `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`, and it forecloses *every* route a guest has to a `ref byte` over such a struct, which is why the reference-free half of this coverage lives in the active `RuntimeHelpersBox.cs` instead. The file is not satisfiable the wrong way: it checks both fields (so moving only the reference, or only the trailing int, still fails) and re-reads the box after mutating the source (so handing back a view onto the source rather than a copy fails). Un-park when a reference-containing value type can be byte-addressed."""
+            "DelegateBindOpenGenericDefinitionDefaultMethod.cs",
+            """`CreateDelegate` over a default interface method of an open variant interface definition, closed over a receiver implementing it by variance through `IChild : IContra<object>`, which overrides the default. The binding virtualises onto the receiver, and real .NET resolves the slot for the typical instantiation to the definition's own default body (11), although the closed `IContra<object>` dispatches to the override (22). PawPrint resolves through the closed instantiation, so it refuses any virtualisation that lands on a default body rather than bind the override: "TODO: Delegate_BindToMethodInfo must virtualise M of the open generic definition ... which implements it with a default interface method" (measured). Un-park when CoreCLR's default-method search for a typical instantiation is modelled. Verified to exit 0 on real .NET."""
+            "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
+            """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET."""
+            "PointerFieldAliasedWidthStore.cs",
+            """Storing into a pointer-typed field through a byref aliased as `long*`/`double*` rather than `void**`. A pointer slot is a `CliType.RuntimePointer` cell with no byte image, so the byte-scatter writer refuses it; the sibling `PointerFieldIndirectStore.cs` fixes that for the pointer-shaped payloads by replacing the whole cell instead. That route is deliberately *not* taken here, because whole-cell replacement restamps the cell with the payload's shape: on a 64-bit runtime `stind.i8`/`stind.r8` are exact-width stores into a `void*` slot too, and taking them would leave the field holding `Numeric Int64`/`Float64`, so the next read pushes the wrong evaluation-stack kind and fails downstream (measured: `bad ceq: Int64 vs NativeInt(0)`) with a message naming neither the field nor the store. Un-parking needs a pointer cell that can hold a non-pointer bit pattern while still reading back as a pointer — i.e. the same "materialise bits late" question as the rest of the provenance model — not a wider routing predicate."""
+            "MethodHandleGetFunctionPointerSharedCode.cs",
+            """`RuntimeMethodHandle.GetFunctionPointer` on an instance method of a generic class instantiated over a reference type (or over a value type instantiated over one), or on a virtual method of a generic value type so instantiated. CoreCLR compiles every such instantiation to one body over `System.__Canon`, which reads its instantiation from `this` (or, behind a value type's unboxing stub, from the box), and reflection hands out that shared entry point rather than an instantiating stub, so `GC<string>.Inst` and `GC<object>.Inst` have one address, and calling the `GC<object>` one on a `GC<string>` answers for `string`. PawPrint does not model shared generic code: a `FunctionPointerTarget.Managed` names one exact instantiation, so it would compare unequal and run the wrong instantiation's body. `NativeRuntimeMethodHandle.functionPointerOutcome` classifies the shape as `SharedCode` and the QCall refuses it: "TODO: RuntimeMethodHandle.GetFunctionPointer on ... an instance method of a shared generic instantiation". Un-park when a function pointer can name shared code whose instantiation comes from the receiver; `ldftn` of the same shape (reachable from IL, not from C#) has the same gap but does not refuse. Verified to exit 0 on real .NET."""
+            "StackTraceFromExceptionNeedFileInfo.cs",
+            """`new StackTrace(exception, fNeedFileInfo: true)` on an exception with no captured trace. The blocker is not the frame count, which is zero and correctly reported: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` *before* the loop over frames, gated only on `fNeedFileInfo` (StackFrameHelper.cs:95-113), so an empty capture does not avoid it. `CreateStackTraceSymbols` is an `[UnsafeAccessor]` constructor whose return type is named by `[UnsafeAccessorType("System.Diagnostics.StackTraceSymbols, System.Diagnostics.StackTrace, ...")]`, and `UnsafeAccessorDispatch.resolve` refuses any accessor that names a type that way (measured: "names at least one of its types with [UnsafeAccessorType]"). Raising that refusal as a guest exception for CoreLib's surrounding `try { } catch { }` to absorb would not be faithful: `System.Diagnostics.StackTrace` ships in the shared framework, so real .NET resolves the name and constructs a `StackTraceSymbols`. Un-park with `[UnsafeAccessorType]` resolution. CoreCLR resolves the name through the managed `TypeNameResolver.GetTypeHelper` (vm/typeparse.cpp), which loads the named assembly with `RuntimeAssembly.InternalLoad`, so that needs the `AssemblyNative_InternalLoad` QCall, which PawPrint does not yet answer. This is the blocker standing between `Exception.StackTrace` (Exception.cs:232) and `ExceptionDispatchInfo.SetCurrentStackTrace` (Exception.cs:247) and working, both of which pass `fNeedFileInfo: true`. Verified to exit 0 on real .NET."""
+            "MarshalOffsetOfSharedGeneric.cs",
+            """`Marshal.OffsetOf` on a generic struct instantiated over a reference type. CoreCLR answers for the field's approximate enclosing MethodTable, which for such an instantiation is its canonical form over `System.__Canon`, so a `T` field is a `__Canon` and has no native form -- even when `[MarshalAs(ByValTStr)]` would have accepted the `string` it really holds -- while a struct not mentioning `T` in a field is answered as usual. PawPrint does not model canonical forms, so the QCall refuses every shared instantiation rather than answer for the exact one: "TODO: MarshalNative_OffsetOf: Program+Phantom`1<System.String> ... is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms" (measured). Un-park when a type's canonical form can be laid out. Verified to exit 0 on real .NET."""
         ]
         |> Map.ofList
+
+    /// How each case ends, on every runtime, when that is not a normal exit with code 0.
+    /// `onRuntime` folds these into every runtime's endings.
+    let endingsEverywhere : Map<string, GuestEnding> =
+        [
+            "UnhandledException.cs", GuestEnding.UnhandledException
+            "EnumHasFlagMismatchUnhandled.cs", GuestEnding.UnhandledException
+            "EnumHasFlagNullFlagUnhandled.cs", GuestEnding.UnhandledException
+            "ArrayGetLengthOutOfRangeUnhandled.cs", GuestEnding.UnhandledException
+            "CachedCctorFailureUnhandledOnFieldStore.cs", GuestEnding.UnhandledException
+            "CachedCctorFailureUnhandledOnCall.cs", GuestEnding.UnhandledException
+            "CachedCctorFailureUnhandledOnRunClassConstructor.cs", GuestEnding.UnhandledException
+            "ExceptionWithNoOpFinally.cs", GuestEnding.ExitCode 3
+            "ForegroundThreadExitsAfterMainReturns.cs", GuestEnding.ExitCode 7
+            "IntMainReturnOverridesExitCode.cs", GuestEnding.ExitCode 3
+            "VoidMainSetsExitCode.cs", GuestEnding.ExitCode 9
+            "ExitOverridesExitCode.cs", GuestEnding.ExitCode 2
+            "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", GuestEnding.ExitCode 5
+            "BackgroundWorkerJoinsMainThread.cs", GuestEnding.ExitCode 4
+            "EntryThreadIsBackgroundAfterMainReturns.cs", GuestEnding.ExitCode 11
+            "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11
+            "EntryThreadReforegroundedThenBackgroundAgain.cs", GuestEnding.ExitCode 3
+            "MainBackgroundBeforeStartingForegroundWorker.cs", GuestEnding.ExitCode 3
+            "MainBackgroundThenForegroundAgainBeforeWorker.cs", GuestEnding.ExitCode 3
+        ]
+        |> Map.ofList
+
+    /// Which cases are parked on `runtime`, and how each case is expected to end there.
+    let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =
+        match runtime with
+        | EmulatedRuntime.Net10 ->
+            {
+                Parked = parkedEverywhere
+                Endings = endingsEverywhere
+            }
 
     let allPure =
         assy.GetManifestResourceNames ()
@@ -433,8 +459,6 @@ module TestPureCases =
         ]
         |> Map.ofList
 
-    let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
-
     /// The environment a seeded guest wants, where it wants one, which both
     /// runtimes are given as `environmentCases` gives theirs. A relative HOME
     /// names the same place in PawPrint's seeded tree and in the oracle's
@@ -466,8 +490,26 @@ module TestPureCases =
         ]
         |> Map.ofList
 
-    let environmentCaseNames : string list =
-        environmentCases |> Map.toList |> List.map fst
+    /// Which test below runs each case on one runtime. Every case is in exactly one of these, when
+    /// the seeded, environment-overlay, standard-streams and non-default-ending cases are disjoint.
+    type PureRunSets =
+        {
+            /// Run by `Standard tests`, expecting exit code 0.
+            Simple : Set<string>
+            /// Run by `Seeded filesystem tests`, each with its `seededCases` seed.
+            Seeded : Set<string>
+            /// Run by `Environment overlay tests`, each with its `environmentCases` entries.
+            Environment : Set<string>
+            /// Run by `Standard streams tests`, each with its `standardStreamsCases` streams.
+            StandardStreams : Set<string>
+            /// Run by `Custom exit code tests`, each expecting this exit code.
+            CustomExitCodes : Map<string, int>
+            /// Run by `Tests which throw unhandled exceptions`.
+            UnhandledException : Set<string>
+            /// Parked: run by `Unimplemented tests have correct real-runtime behaviour` on the real
+            /// runtime alone.
+            Parked : Set<string>
+        }
 
     /// Guests launched with standard streams of their own, as each says. One
     /// description drives both sides: PawPrint's launcher sets the streams up
@@ -515,21 +557,75 @@ module TestPureCases =
         ]
         |> Map.ofList
 
-    let standardStreamsCaseNames : string list =
-        standardStreamsCases |> Map.toList |> List.map fst
+    /// Assign each of `all` to the test that runs it, given which cases are `seeded`, which have
+    /// an `environment` overlay, which have `standardStreams` of their own, and which are parked or
+    /// end other than by exiting with 0 in `cases`. A parked case goes to `Parked` alone, whatever
+    /// else is true of it. A case named in `seeded`, `environment`, `standardStreams` or `cases` but
+    /// not in `all` is assigned all the same, so that the test running it fails to find its source.
+    let runSets
+        (all : Set<string>)
+        (seeded : Set<string>)
+        (environment : Set<string>)
+        (standardStreams : Set<string>)
+        (cases : GuestCasesOnRuntime<string>)
+        : PureRunSets
+        =
+        let parked = cases.Parked |> Map.keys |> Set.ofSeq
+        let endings = cases.Endings |> Map.filter (fun name _ -> not (parked.Contains name))
 
-    let simpleCases : string list =
-        allPure
-        |> Seq.filter (fun s ->
-            (customExitCodes.ContainsKey s
-             || unimplemented.Contains s
-             || expectsUnhandledException.Contains s
-             || seededCases.ContainsKey s
-             || environmentCases.ContainsKey s
-             || standardStreamsCases.ContainsKey s)
-            |> not
-        )
-        |> Seq.toList
+        {
+            Simple =
+                Set.difference all parked
+                |> Set.filter (fun name ->
+                    not (
+                        cases.Endings.ContainsKey name
+                        || seeded.Contains name
+                        || environment.Contains name
+                        || standardStreams.Contains name
+                    )
+                )
+            Seeded = Set.difference seeded parked
+            Environment = Set.difference environment parked
+            StandardStreams = Set.difference standardStreams parked
+            CustomExitCodes =
+                endings
+                |> Map.toSeq
+                |> Seq.choose (fun (name, ending) ->
+                    match ending with
+                    | GuestEnding.ExitCode code -> Some (name, code)
+                    | GuestEnding.UnhandledException -> None
+                )
+                |> Map.ofSeq
+            UnhandledException =
+                endings
+                |> Map.filter (fun _ ending -> ending = GuestEnding.UnhandledException)
+                |> Map.keys
+                |> Set.ofSeq
+            Parked = parked
+        }
+
+    /// `runSets` for this fixture's cases on `runtime`.
+    let runSetsOn (runtime : EmulatedRuntime) : PureRunSets =
+        runSets
+            allPure
+            (seededCases |> Map.keys |> Set.ofSeq)
+            (environmentCases |> Map.keys |> Set.ofSeq)
+            (standardStreamsCases |> Map.keys |> Set.ofSeq)
+            (onRuntime runtime)
+
+    let private runSetsUnderTest () : PureRunSets =
+        runSetsOn (FrameworkUnderTest.runtime ())
+
+    let simpleCases () : Set<string> = (runSetsUnderTest ()).Simple
+    let seededCaseNames () : Set<string> = (runSetsUnderTest ()).Seeded
+    let environmentCaseNames () : Set<string> = (runSetsUnderTest ()).Environment
+    let standardStreamsCaseNames () : Set<string> = (runSetsUnderTest ()).StandardStreams
+    let customExitCodes () : Map<string, int> = (runSetsUnderTest ()).CustomExitCodes
+
+    let expectsUnhandledException () : Set<string> =
+        (runSetsUnderTest ()).UnhandledException
+
+    let unimplemented () : Set<string> = (runSetsUnderTest ()).Parked
 
     /// Run `body` against a logger that captures the guest's run, writing everything it
     /// captured to stderr if `body` throws. The assertion belongs inside `body` rather
@@ -1497,9 +1593,6 @@ class Program
 
     [<TestCaseSource(nameof customExitCodes)>]
     let ``Custom exit code tests`` (KeyValue (fileName : string, exitCode : int)) =
-        if unimplemented.Contains fileName then
-            Assert.Inconclusive ()
-
         {
             FileName = fileName
             ExpectedReturnCode = exitCode
@@ -1528,27 +1621,38 @@ class Program
     let ``Unimplemented tests have correct real-runtime behaviour`` (fileName : string) =
         let source = Assembly.getEmbeddedResourceAsString fileName assy
         let image = Roslyn.compile [ source ]
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending fileName
 
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind fileName |> Option.defaultValue 0
-
-        match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException report ->
-            failwith $"Real runtime terminated with an unhandled exception for %s{fileName}:\n%s{report}"
-        | RealRuntimeResult.Aborted (_code, report) ->
-            failwith $"Real runtime called Environment.FailFast for %s{fileName}:\n%s{report}"
+        RealRuntime.executeWithRealRuntime [||] image
+        |> GuestEnding.assertReal fileName ending
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]
     let ``Can evaluate C# files, unimplemented`` (fileName : string) =
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending fileName
+
         {
             FileName = fileName
-            ExpectedReturnCode = 0
-            KernelConfig = KernelConfig.Default
+            ExpectedReturnCode =
+                match ending with
+                | GuestEnding.ExitCode code -> code
+                // Not checked; both runtimes are expected to throw.
+                | GuestEnding.UnhandledException -> 0
+            // A parked case gets the seed and environment it would have if it ran.
+            KernelConfig =
+                { KernelConfig.Default with
+                    FileSystem =
+                        seededCases
+                        |> Map.tryFind fileName
+                        |> Option.defaultValue KernelConfig.Default.FileSystem
+                    Environment =
+                        environmentCases
+                        |> Map.tryFind fileName
+                        |> Option.defaultValue KernelConfig.Default.Environment
+                }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always
-            ExpectsUnhandledException = false
+            ExpectsUnhandledException = (ending = GuestEnding.UnhandledException)
             AssertTerminalState = None
         }
         |> runTest

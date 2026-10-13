@@ -3,7 +3,9 @@
 
 Usage: directory-mutation-models.py tmpfs|apfs <output>...
 
-The models are the ones docs/divergences.md states:
+The models are the ones
+https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
+states:
 
 * tmpfs (Linux 6.18.5): the directory is a list in newest-link-first order; each
   link takes an offset from a per-directory counter starting at 3, a rename
