@@ -148,6 +148,7 @@
     <Compile Include="TestSigsuspend.fs" />
     <Compile Include="TestSleepPark.fs" />
     <Compile Include="TestFifoOpenPark.fs" />
+    <Compile Include="TestSelectPark.fs" />
     <Compile Include="TestSigcontGeneration.fs" />
     <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
