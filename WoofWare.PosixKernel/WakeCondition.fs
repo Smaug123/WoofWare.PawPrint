@@ -303,6 +303,8 @@ module WakeCondition =
         // Only Linux has inotify, and its close leaves the read asleep.
         | Some (ParkedSyscall.InotifyRead _)
         | Some (ParkedSyscall.Select _)
+        | Some (ParkedSyscall.DatagramReceive _)
+        | Some (ParkedSyscall.DatagramSend _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -662,6 +664,10 @@ module WakeCondition =
 
                 WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending wait.Awaited)
                 :: deadline
+            // A signal alone, while they are reserved: what a datagram transfer
+            // waits for joins this when something parks a task in one.
+            | ParkedSyscall.DatagramReceive _
+            | ParkedSyscall.DatagramSend _ -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

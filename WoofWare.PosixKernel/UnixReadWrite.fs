@@ -1527,7 +1527,8 @@ module UnixReadWrite =
             // for every count (`devices.c`, WRITE rows).
             Ok (Some (WriteAnswer.Completed (int64 count)))
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"UnixReadWrite.deviceWriteWithoutBytes: a write to %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
@@ -1569,7 +1570,8 @@ module UnixReadWrite =
             // memory alike (`devices.c`, READ rows).
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"UnixReadWrite.readDevice: a read of %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
@@ -1735,7 +1737,7 @@ module UnixReadWrite =
                         )
                     )
                 | None -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
-            | OpenFileTarget.CharacterDevice (_, device) -> Ok (ReadTarget.CharacterDevice device)
+            | OpenFileTarget.CharacterDevice (_, device, _) -> Ok (ReadTarget.CharacterDevice device)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
             | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
@@ -2666,7 +2668,7 @@ module UnixReadWrite =
             | OpenFileTarget.Directory (inode, _) -> seekable (PReadTarget.File inode)
             // Seekable as far as `pread` asks: measured on Linux, 16@0 and
             // 16@2^40 answer as `read` does (`devices.c`, PREAD rows).
-            | OpenFileTarget.CharacterDevice (_, device) -> seekable (PReadTarget.CharacterDevice device)
+            | OpenFileTarget.CharacterDevice (_, device, _) -> seekable (PReadTarget.CharacterDevice device)
 
         match target with
         | Error error -> Ok (ReadAnswer.Failed error, system)
@@ -2781,7 +2783,7 @@ module UnixReadWrite =
                     )
                 )
             | None -> Ok (WriteTarget.Socket socketId)
-        | OpenFileTarget.CharacterDevice (_, device) -> Ok (WriteTarget.CharacterDevice device)
+        | OpenFileTarget.CharacterDevice (_, device, _) -> Ok (WriteTarget.CharacterDevice device)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
             Ok (WriteTarget.Pipe (pipeId, descriptionId, description.NonBlocking))
@@ -3513,6 +3515,8 @@ module UnixReadWrite =
         | Some (ParkedSyscall.FifoOpen _)
         | Some (ParkedSyscall.InotifyRead _)
         | Some (ParkedSyscall.Select _)
+        | Some (ParkedSyscall.DatagramReceive _)
+        | Some (ParkedSyscall.DatagramSend _)
         | None -> None
 
     /// The write `task` is asleep in.
@@ -4475,7 +4479,7 @@ module UnixReadWrite =
         | OpenFileTarget.Directory (inode, _) -> seekable (PWriteTarget.File inode)
         // Seekable as far as `pwrite` asks: measured on Linux, 16@0 answers as
         // `write` does (`devices.c`, PWRITE rows).
-        | OpenFileTarget.CharacterDevice (_, device) -> seekable (PWriteTarget.CharacterDevice device)
+        | OpenFileTarget.CharacterDevice (_, device, _) -> seekable (PWriteTarget.CharacterDevice device)
 
     /// `admitPWrite`, with a refusal answered as the `Error` rather than raised.
     let internal tryAdmitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

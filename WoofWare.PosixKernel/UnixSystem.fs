@@ -1469,7 +1469,7 @@ module UnixSystem =
                     | Some (InodeContent.Socket _)
                     | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
-                | OpenFileTarget.CharacterDevice (inode, device) ->
+                | OpenFileTarget.CharacterDevice (inode, device, _) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
@@ -2618,7 +2618,9 @@ module UnixSystem =
                 | Some (ParkedSyscall.Sleep _ as parked)
                 | Some (ParkedSyscall.FifoOpen _ as parked)
                 | Some (ParkedSyscall.Select _ as parked)
-                | Some (ParkedSyscall.SignalWait _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
+                | Some (ParkedSyscall.SignalWait _ as parked)
+                | Some (ParkedSyscall.DatagramReceive _ as parked)
+                | Some (ParkedSyscall.DatagramSend _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.InotifyRead read) ->
                     match Map.tryFind read.Instance descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Instance) ]

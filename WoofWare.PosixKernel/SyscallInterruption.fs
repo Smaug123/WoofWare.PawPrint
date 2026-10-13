@@ -189,6 +189,13 @@ module SyscallInterruption =
         // runs once it returns. So no rule applies there, and this answers
         // Linux's.
         | ParkedSyscall.SignalWait _ -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 and Darwin 27.0.0
+        // (`docs/probes/datagram-park`, rows R2 and S4): a receive on a UDP or
+        // Unix-domain datagram socket returned EINTR without SA_RESTART and
+        // went on sleeping with it, and so did a Linux Unix-domain datagram
+        // send. A Darwin one never sleeps.
+        | ParkedSyscall.DatagramReceive _
+        | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]

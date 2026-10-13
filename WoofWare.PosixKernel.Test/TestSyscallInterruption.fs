@@ -770,6 +770,14 @@ module TestSyscallInterruption =
                     Deadline = None
                     Destination = None
                 }
+            ParkedSyscall.DatagramReceive
+                {
+                    ParkedDatagramReceive.Socket = description
+                }
+            ParkedSyscall.DatagramSend
+                {
+                    ParkedDatagramSend.Socket = description
+                }
         ]
 
     /// The measured rule, per flavour, stated here rather than read from
@@ -783,7 +791,8 @@ module TestSyscallInterruption =
     /// under it (`inotify-probe.c` section B; Linux only). A signal wait
     /// answers EINTR under it on Linux 6.18.5 (`docs/probes/sigwait`); on
     /// Darwin 27.0.0 a handler does not end one at all, and the rule is
-    /// Linux's.
+    /// Linux's. A datagram receive and a Linux Unix-domain datagram send
+    /// restart under it (`datagram-park.c`).
     let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         match parked with
         | ParkedSyscall.Flock _
@@ -792,7 +801,9 @@ module TestSyscallInterruption =
         | ParkedSyscall.PipeWrite _
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _
-        | ParkedSyscall.InotifyRead _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.InotifyRead _
+        | ParkedSyscall.DatagramReceive _
+        | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _
@@ -828,6 +839,42 @@ module TestSyscallInterruption =
             for parked in oneParkOfEach do
                 (flavour, caseName parked, SyscallInterruption.ruleOf flavour parked)
                 |> shouldEqual (flavour, caseName parked, measuredRule flavour parked)
+
+    [<Test>]
+    let ``a task parked in one syscall may be parked again in it, and in no other`` () : unit =
+        // `UnixTaskTable.withPark` refuses to park a task in a second syscall
+        // over the first; it must tell every pair of cases apart, and no two
+        // parks of one case.
+        let caseName (parked : ParkedSyscall) : string =
+            let case, _ =
+                Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields (parked, typeof<ParkedSyscall>)
+
+            case.Name
+
+        let tasks = (worldOn SimulatedUnixPlatform.linuxX64).System.Tasks
+
+        let park (parked : ParkedSyscall) (tasks : Map<int, UnixTaskState>) : Map<int, UnixTaskState> =
+            UnixTaskTable.withPark
+                1
+                {
+                    Syscall = parked
+                    Ordinal = ParkOrdinal 0L
+                }
+                tasks
+
+        for first in oneParkOfEach do
+            let parkedOnce = park first tasks
+
+            for second in oneParkOfEach do
+                let accepted =
+                    try
+                        park second parkedOnce |> ignore<Map<int, UnixTaskState>>
+                        true
+                    with e when e.Message.Contains "without clearing the first" ->
+                        false
+
+                (caseName first, caseName second, accepted)
+                |> shouldEqual (caseName first, caseName second, caseName first = caseName second)
 
     [<Test>]
     let ``a signal sent to the process interrupts the leader asleep in an accept`` () : unit =

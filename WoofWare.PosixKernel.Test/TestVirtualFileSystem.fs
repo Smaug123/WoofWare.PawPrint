@@ -1184,7 +1184,8 @@ module TestVirtualFileSystem =
             everyDevice
             |> List.filter (fun device -> not (List.contains device CharacterDevice.all))
 
-        withoutDriver |> shouldEqual [ CharacterDevice.Zero ; CharacterDevice.Random ]
+        withoutDriver
+        |> shouldEqual [ CharacterDevice.Zero ; CharacterDevice.Random ; CharacterDevice.Tty ]
 
         for device in everyDevice do
             let expected =
