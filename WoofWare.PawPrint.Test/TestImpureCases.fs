@@ -1515,7 +1515,7 @@ module TestImpureCases =
     /// `SocketOptions.cs` under `platform`: TCP_NODELAY, IPV6_V6ONLY and
     /// SO_LINGER through the managed `Socket` API, which exits 0 for Linux's
     /// answers where the flavours disagree and 100 for Darwin's
-    /// (`docs/probes/sockopt-options/`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/sockopt-options`).
     let private socketOptionsCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "SocketOptions.cs"
@@ -1536,7 +1536,7 @@ module TestImpureCases =
     /// `SocketPeerName.cs` under `platform`: `getpeername(2)` through the
     /// managed `RemoteEndPoint` and by hand, which exits 0 for Linux's ENOTCONN
     /// on a refused socket and 100 for Darwin's EINVAL
-    /// (`docs/probes/getpeername/getpeername.c`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/blob/a31630834a56ee717dede659a307c979fe83728e/docs/probes/getpeername/getpeername.c`).
     let private socketPeerNameCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "SocketPeerName.cs"
@@ -1557,7 +1557,7 @@ module TestImpureCases =
     /// `SocketDualMode.cs` under `platform`: a dual-mode IPv6 socket talking
     /// to an IPv4 listener through the managed `Socket` API, which exits 0 for
     /// Linux's answers where the flavours disagree and 100 for Darwin's
-    /// (`docs/probes/dual-mode/`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/dual-mode`).
     ///
     /// `new Socket(SocketType.Stream, ProtocolType.Tcp)` makes an IPv4 socket
     /// where `DOTNET_SYSTEM_NET_DISABLEIPV6` is set, so the case names it, and

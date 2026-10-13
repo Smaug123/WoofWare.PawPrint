@@ -466,7 +466,7 @@ The tables above were measured by an earlier session and are right about
 everything they say. They are also **incomplete in three ways that each change
 the design**, and one section of them is **wrong**. Found while implementing the
 verdict (2026-08-23); the probe that settles all of it is committed at
-`docs/probes/rename/`, with four measured columns beside it.
+[`docs/probes/rename/`](https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/rename), with four measured columns beside it.
 
 **Three findings the tables do not contain:**
 
@@ -498,7 +498,7 @@ is not `/` is a *mount* root, and renaming one is liable to EXDEV. The
 discriminator turned out to be neither `.` nor `..` but whether the source's and
 destination's parent directories coincide; where EXDEV stays quiet the root
 answers EINVAL for both, exactly as an ordinary directory does. **The root is
-not a special case**, and no arm exists for it. See `docs/probes/rename/README.md`.
+not a special case**, and no arm exists for it. See [`docs/probes/rename/README.md`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/a31630834a56ee717dede659a307c979fe83728e/docs/probes/rename/README.md).
 
 **One row is nondeterministic on macOS** and must never enter the host-equality
 tier: `rename("l/", "g")` with `l` a symlink to a regular file and an
