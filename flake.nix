@@ -170,43 +170,6 @@
         };
       };
       checks = {
-        # Fails `nix flake check` when a definition in WoofWare.PosixKernel starts speaking
-        # WoofWare.PawPrint's CoreCLR PAL encoding instead of POSIX's. The library is meant to be
-        # usable by a client that has never heard of .NET, and as of stage 9i it is: no conversion
-        # remains, and scripts/pal-residue-allowlist.txt is empty. This now guards against one
-        # coming back.
-        pal-residue =
-          pkgs.runCommand "pal-residue" {}
-          ''
-            ${pkgs.python3}/bin/python3 ${./scripts/check-pal-residue.py} \
-              ${pkgs.lib.fileset.toSource {
-              root = ./WoofWare.PosixKernel;
-              fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "fs") ./WoofWare.PosixKernel;
-            }} \
-              ${./scripts/pal-residue-allowlist.txt}
-            touch $out
-          '';
-        # Fails `nix flake check` when a WoofWare.PosixKernel source line names
-        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...),
-        # names CoreCLR, or calls the process a guest. The library is meant to read as a
-        # POSIX simulator that knows nothing of the client it was extracted from, and prose
-        # is where that knowledge crept back in. Runs the
-        # checker's own contract first, so that a change to the checker cannot quietly
-        # retire it.
-        client-references =
-          pkgs.runCommand "client-references" {
-            buildInputs = [pkgs.python3 pkgs.bash];
-          }
-          ''
-            ${pkgs.bash}/bin/bash ${./scripts/test-client-references.sh} \
-              ${./scripts/check-client-references.py}
-            ${pkgs.python3}/bin/python3 ${./scripts/check-client-references.py} \
-              ${pkgs.lib.fileset.toSource {
-              root = ./WoofWare.PosixKernel;
-              fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "fs") ./WoofWare.PosixKernel;
-            }}
-            touch $out
-          '';
         # The docstring-attachment check is the oracle a definition-moving commit is held
         # to, and it is only as good as its own contract: thirty-six shapes in a throwaway
         # repository, eighteen of which must be reported and eighteen of which must not. The
@@ -251,10 +214,6 @@
         # CoreLib flavour production runs instead of the host's. See dotnet-linux-framework.
         # Tests that need it skip when it is unset, so a non-Nix checkout still works.
         DOTNET_LINUX_FRAMEWORK_DIR = dotnet-linux-framework;
-        # mkShell's stdenv puts `cc` on the path. WoofWare.PosixKernel.Test's
-        # TestSignalFuzz builds its harness with it, and fails rather than skips
-        # when this says a compiler was promised.
-        POSIXKERNEL_REQUIRE_C_COMPILER = "1";
         # Force polling-based file watcher to avoid hangs in
         # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
         # path can deadlock under load when ASP.NET hosts created in tests
@@ -268,12 +227,7 @@
           pkgs.claude-code
           pkgs.codex
           # `docs/probes/**/*.py` are run by hand from this shell, and
-          # `TestVirtualFileSystemAgainstHost` spawns it: a working directory is
-          # process-global, so the host half of the `chdir` comparison cannot run
-          # in the test host, and Python is the only thing to hand that reports
-          # errno numerically. Declared here rather than relied on from the
-          # ambient system, so that CI -- which runs `nix develop --command
-          # dotnet test` -- runs that comparison instead of skipping it.
+          # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
           pkgs.python3
         ];
       };

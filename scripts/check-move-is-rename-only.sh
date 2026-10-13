@@ -2,9 +2,9 @@
 # Verify that the file moves in this branch changed nothing but their namespace
 # and `open` lines.
 #
-# This is the oracle for the WoofWare.PosixKernel extraction stages (see
-# docs/plans/2026-08-23-posix-kernel-extraction.md). Those stages move thousands
-# of lines between assemblies; a reviewer cannot read that diff, so the check has
+# This is the oracle for a change that moves definitions between files or
+# assemblies, such as carving a new project out of an existing one. Such a change
+# can move thousands of lines; a reviewer cannot read that diff, so the check has
 # to say mechanically that there is nothing in it to read.
 #
 # Usage: scripts/check-move-is-rename-only.sh <base-ref> [extra-old:new pair]...
