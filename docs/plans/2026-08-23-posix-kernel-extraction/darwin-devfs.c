@@ -226,9 +226,15 @@ static void sec_stat(void) {
         P("READLINK %s %s%s%s\n", links[i], res(n), n >= 0 ? " -> " : "", n >= 0 ? b : "");
     }
     const char *acc[] = {"/dev", "/dev/null", "/dev/tty", "/dev/stdin", "/dev/fd", "/dev/fd/10", "/dev/fd/15", "/dev/fd/16", "/dev/fd/99"};
-    for (size_t i = 0; i < sizeof acc / sizeof *acc; i++)
-        P("ACCESS %s F=%s R=%s W=%s X=%s\n", acc[i], res(access(acc[i], F_OK)), res(access(acc[i], R_OK)),
-          res(access(acc[i], W_OK)), res(access(acc[i], X_OK)));
+    for (size_t i = 0; i < sizeof acc / sizeof *acc; i++) {
+        // One call per statement, so that each `res` reads its own call's
+        // errno: the order in which arguments are evaluated is unspecified.
+        const char *f = res(access(acc[i], F_OK));
+        const char *r = res(access(acc[i], R_OK));
+        const char *w = res(access(acc[i], W_OK));
+        const char *x = res(access(acc[i], X_OK));
+        P("ACCESS %s F=%s R=%s W=%s X=%s\n", acc[i], f, r, w, x);
+    }
 }
 
 static void pstatfs(const char *label, const struct statfs *f) {
@@ -324,8 +330,10 @@ static void sec_walk(void) {
     P("\n");
     chdir(keep);
     // pathconf at /dev
-    P("PATHCONF /dev NAME_MAX=%s PATH_MAX=%s LINK_MAX=%s\n", res(pathconf("/dev", _PC_NAME_MAX)),
-      res(pathconf("/dev", _PC_PATH_MAX)), res(pathconf("/dev", _PC_LINK_MAX)));
+    const char *nameMax = res(pathconf("/dev", _PC_NAME_MAX));
+    const char *pathMax = res(pathconf("/dev", _PC_PATH_MAX));
+    const char *linkMax = res(pathconf("/dev", _PC_LINK_MAX));
+    P("PATHCONF /dev NAME_MAX=%s PATH_MAX=%s LINK_MAX=%s\n", nameMax, pathMax, linkMax);
     P("PATHCONF /dev/null NAME_MAX=%s\n", res(pathconf("/dev/null", _PC_NAME_MAX)));
     // a long name in /dev
     char longname[300] = "/dev/";
@@ -349,7 +357,9 @@ static void sec_walk(void) {
     char fdlong[300] = "/dev/fd/";
     memset(fdlong + 8, '1', 256);
     fdlong[264] = 0;
-    P("WALK /dev/fd/<256 digits> stat %s statfs %s\n", res(stat(fdlong, &s)), res(statfs(fdlong, &fs)));
+    const char *longStat = res(stat(fdlong, &s));
+    const char *longStatfs = res(statfs(fdlong, &fs));
+    P("WALK /dev/fd/<256 digits> stat %s statfs %s\n", longStat, longStatfs);
     // Root on Linux succeeds here, so the name is removed again.
     int made = open("/dev/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", O_CREAT | O_WRONLY, 0644);
     P("WALK /dev/<32 a> open(O_CREAT) %s\n", res(made));
@@ -554,10 +564,16 @@ static void node_ops(const char *path) {
                 fcntl(fd, F_SETFL, saved | O_NONBLOCK);
                 P(" | read=%s", (m == 0 || m == 2) ? res(read(fd, b, sizeof b)) : "-");
                 P(" write=%s", (m == 1 || m == 2) ? res(write(fd, "", 0)) : "-");
-                P(" lseek(0,CUR)=%s lseek(5,SET)=%s", res(lseek(fd, 0, SEEK_CUR)), res(lseek(fd, 5, SEEK_SET)));
-                P(" FIONREAD=%s(%d)", res(ioctl(fd, FIONREAD, &avail)), avail);
+                // Each call in a statement of its own: the order in which a
+                // function's arguments are evaluated is unspecified.
+                const char *cur = res(lseek(fd, 0, SEEK_CUR));
+                const char *set = res(lseek(fd, 5, SEEK_SET));
+                P(" lseek(0,CUR)=%s lseek(5,SET)=%s", cur, set);
+                const char *fionread = res(ioctl(fd, FIONREAD, &avail));
+                P(" FIONREAD=%s(%d)", fionread, avail);
                 struct termios t;
-                P(" tcgetattr=%s isatty=%d", res(tcgetattr(fd, &t)), isatty(fd));
+                const char *termios = res(tcgetattr(fd, &t));
+                P(" tcgetattr=%s isatty=%d", termios, isatty(fd));
                 fcntl(fd, F_SETFL, saved);
             }
             close(fd);
@@ -738,7 +754,8 @@ static void sec_tty(void) {
             pstat(&ts_, 0);
             P(" | same_as_slave=%d same_as_node=%d isatty=%d", same_id(&ts_, &ss), same_id(&ts_, &ns_), isatty(fd));
             int avail = -1;
-            P(" FIONREAD=%s(%d)", res(ioctl(fd, FIONREAD, &avail)), avail);
+            const char *fionread = res(ioctl(fd, FIONREAD, &avail));
+            P(" FIONREAD=%s(%d)", fionread, avail);
             P(" lseek=%s", res(lseek(fd, 0, SEEK_CUR)));
             P(" write=%s", res(write(fd, "hi\n", 3)));
             fcntl(fd, F_SETFL, O_NONBLOCK);
