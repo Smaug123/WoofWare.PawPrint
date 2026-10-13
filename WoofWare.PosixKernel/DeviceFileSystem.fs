@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// The configuration of a Linux devtmpfs that `stat(2)` and `statfs(2)` can
 /// see.
-type DevtmpfsMount =
+type internal DevtmpfsMount =
     {
         /// The `st_dev` every inode on the devtmpfs reports: the anonymous
         /// device the kernel gave it when it mounted it, which depends on what
@@ -17,7 +17,7 @@ type DevtmpfsMount =
     }
 
 [<RequireQualifiedAccess>]
-module DevtmpfsMount =
+module internal DevtmpfsMount =
     /// A devtmpfs as one measured Linux machine mounted it.
     let defaults : DevtmpfsMount =
         {
@@ -37,7 +37,7 @@ module DevtmpfsMount =
 
 /// The filesystem a machine has mounted at `/dev`.
 [<RequireQualifiedAccess>]
-type DeviceFileSystemMount =
+type internal DeviceFileSystemMount =
     /// Linux's devtmpfs, holding a node for each `CharacterDevice`.
     | Devtmpfs of DevtmpfsMount
     /// Darwin's devfs, which this kernel does not model: a path that reaches
@@ -45,7 +45,7 @@ type DeviceFileSystemMount =
     | Devfs
 
 [<RequireQualifiedAccess>]
-module DeviceFileSystemMount =
+module internal DeviceFileSystemMount =
     /// The device filesystem a machine of `flavour` mounts at `/dev` when a
     /// client expresses no preference.
     let defaultFor (flavour : SimulatedUnixFlavour) : DeviceFileSystemMount =
@@ -82,17 +82,20 @@ module CharacterDevice =
         | CharacterDevice.URandom -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "urandom"
         | CharacterDevice.Zero -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "zero"
         | CharacterDevice.Random -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "random"
+        | CharacterDevice.Tty -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "tty"
 
     /// The permission bits of the device's node.
     let permissions (device : CharacterDevice) : PermissionBits =
-        // Measured on both flavours: crw-rw-rw- for all four nodes
+        // Measured on both flavours: crw-rw-rw- for all five nodes
         // (`devices.c`, STAT rows: mode 020666 for null, zero, random and
-        // urandom, on Linux 6.18.5 and on Darwin 27.0.0).
+        // urandom, on Linux 6.18.5 and on Darwin 27.0.0; `darwin-devfs.c`,
+        // STAT rows: the same for tty, on both).
         match device with
         | CharacterDevice.Null
         | CharacterDevice.URandom
         | CharacterDevice.Zero
-        | CharacterDevice.Random -> PermissionBits 0o666
+        | CharacterDevice.Random
+        | CharacterDevice.Tty -> PermissionBits 0o666
 
     /// What an `ioctl(2)` the device's Linux driver does not recognise answers:
     /// `FIONREAD` and `TCGETS` (`tcgetattr`) among them, neither device being a
@@ -100,7 +103,7 @@ module CharacterDevice =
     ///
     /// Linux only: this kernel holds no device on Darwin. Only for a device in
     /// `CharacterDevice.all`: no other device has a node to ask through.
-    let unrecognisedIoctl (device : CharacterDevice) : UnixError =
+    let internal unrecognisedIoctl (device : CharacterDevice) : UnixError =
         // Measured on Linux 6.18.5 (`devices-l2.c`, FIONREAD and TCGETATTR
         // rows, through descriptors opened for reading and for writing): null
         // has no ioctl operation, so the call is ENOTTY, while urandom's
@@ -109,7 +112,8 @@ module CharacterDevice =
         | CharacterDevice.Null -> UnixError.ENOTTY
         | CharacterDevice.URandom -> UnixError.EINVAL
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"CharacterDevice.unrecognisedIoctl: asked about %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in the caller)."
 
@@ -117,7 +121,7 @@ module CharacterDevice =
     /// flavour's `dev_t` encoding.
     ///
     /// Linux only: this kernel holds no device on Darwin.
-    let specialFileDevice (flavour : SimulatedUnixFlavour) (device : CharacterDevice) : int64 =
+    let internal specialFileDevice (flavour : SimulatedUnixFlavour) (device : CharacterDevice) : int64 =
         match flavour with
         | SimulatedUnixFlavour.Darwin ->
             failwith
@@ -126,13 +130,15 @@ module CharacterDevice =
 
         // The mem driver's registrations, which are fixed: 1,3 for null, 1,5
         // for zero, 1,8 for random and 1,9 for urandom, measured on Linux
-        // 6.18.5 (`devices.c`, STAT rows).
+        // 6.18.5 (`devices.c`, STAT rows). The tty driver's `/dev/tty` is 5,0,
+        // also fixed, measured there too (`darwin-devfs.c`, STAT rows).
         let major, minor =
             match device with
             | CharacterDevice.Null -> 1L, 3L
             | CharacterDevice.Zero -> 1L, 5L
             | CharacterDevice.Random -> 1L, 8L
             | CharacterDevice.URandom -> 1L, 9L
+            | CharacterDevice.Tty -> 5L, 0L
 
         // glibc's `makedev`, which is how a 64-bit Linux `stat` encodes the pair:
         // measured, 1,3 is reported as 259 and 1,9 as 265.

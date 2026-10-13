@@ -56,6 +56,7 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three pa
 Those records are opaque outside the library.
 A client reads a system through `UnixSystem`'s queries, such as `UnixSystem.leader`, `UnixSystem.tasks`, `UnixSystem.signals`, `UnixSystem.credentials`, `UnixSystem.fileDescriptors`, `UnixSystem.openFiles`, `UnixSystem.delivered` and `UnixSystem.descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described under "When time passes".
 `UnixSystem.descriptorTarget` answers what a descriptor's description refers to, an `OpenFileTarget`, of which `OpenFileTarget.Fifo` (a FIFO's inode and an opaque `FifoAttachment`) is reserved: nothing opens a FIFO yet, `FileDescriptorRegistry.checkInvariants` reports a description naming one as a defect, and the case exists so that a client's matches already handle it when FIFOs arrive.
+`OpenFileTarget.CharacterDevice` carries, besides the device and its node, an opaque `CharacterDeviceState`: the description's own state, which holds nothing in this version, because Linux keeps no position for a device and Darwin's devices, which keep one per description, are refused.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
@@ -285,7 +286,7 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 From version 1.0, adding a case to any union whose cases are public is a breaking change, and comes only in a major version.
 F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
 The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a place that throws `UnmodelledException` (see "Answers, and what this library will not answer"), which needs no new case.
-Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` and `WakePrimitive.FifoPartnerOpened`.
+Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `CharacterDevice.Tty`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`, `ParkedSyscall.Select`, `ParkedSyscall.SignalWait`, `WakePrimitive.FifoPartnerOpened` and `WakePrimitive.AwaitedSignalPending`.
 Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
 
 The defects the `checkInvariants` functions report (`UnixSystemDefect`, `VirtualFileSystemDefect`, `FileDescriptorRegistryDefect` and `SimulatedMachineDefect`) are open too, and have no patterns at all.
@@ -617,9 +618,9 @@ A woken task finishes its call through its family's finishing function, which ma
 
 Each answers what the call that parked answered, as in the tables above.
 
-`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) and `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`) are reserved: nothing parks a task in either yet, and neither has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
-So is the primitive a FIFO open waits for, `WakePrimitive.FifoPartnerOpened`, which no condition contains yet.
-The cases exist so that a client's matches already handle them when sleeps and FIFOs arrive.
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`), `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`), `ParkedSyscall.Select` (a `select` or `pselect`, carrying a `ParkedSelect`, whose representation is internal) and `ParkedSyscall.SignalWait` (a `sigwait`, `sigwaitinfo` or `sigtimedwait`, carrying a `ParkedSignalWait`) are reserved: nothing parks a task in any of them yet, and none has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
+So are the primitives a FIFO open and a signal wait wait for, `WakePrimitive.FifoPartnerOpened` and `WakePrimitive.AwaitedSignalPending`, which no condition contains yet.
+The cases exist so that a client's matches already handle them when sleeps, FIFOs, `select` and signal waits arrive.
 
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.
@@ -839,6 +840,9 @@ A client that asks after every step, as one that interleaves instructions does, 
 It answers what `wakes` answers, and asks no wake condition when the last sweep woke nobody and nothing a condition reads has changed since but the clock, which has not reached any sleeping task's deadline.
 Advancing the clock, and dispatching a task to the processor it is on, leave the memo answering; a syscall, and a dispatch that moves a task to another processor, make the next call sweep.
 A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
+A client reads that kqueue through `UnixSystem.pollQueue`, then `PollQueue.registered`, `PollQueue.entry` and `PollQueue.activated`.
+A kqueue's own registrations, and what each is attached to, are not public (`KqueueState`'s representation is internal), so a later version can attach a registration to a pipe or a timer without a change of shape.
+`KqueueFilter.Timer` is reserved: `kevent` refuses `EVFILT_TIMER`, and a poll registers only `KqueueFilter.Read` and `KqueueFilter.Write`, so nothing registers a timer yet.
 
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
@@ -982,7 +986,7 @@ The filesystem type is chosen separately (see "Giving the machine files"), from 
 The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
 On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
 Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
-`CharacterDevice.Zero` and `CharacterDevice.Random` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names either.
+`CharacterDevice.Zero`, `CharacterDevice.Random` and `CharacterDevice.Tty` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names any of them.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 Some interfaces are one flavour's alone, and the other flavour refuses every call of them rather than answering: no kernel of that flavour has the call, so there is no answer to measure.

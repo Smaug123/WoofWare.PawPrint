@@ -740,18 +740,25 @@ type EpollState =
         Ready : (int * OpenFileDescriptionId) list
     }
 
-/// One of the two kqueue filters this library models: what a registration
-/// watches its descriptor for.
+/// A kqueue filter: what a registration watches its identifier for.
 [<RequireQualifiedAccess>]
 type KqueueFilter =
-    /// `EVFILT_READ`: something to read, or a connection to accept.
+    /// `EVFILT_READ`: something to read on a descriptor, or a connection to
+    /// accept.
     | Read
-    /// `EVFILT_WRITE`: room to write.
+    /// `EVFILT_WRITE`: room to write on a descriptor.
     | Write
+    /// `EVFILT_TIMER`: a timer, identified by an arbitrary `ident` that names
+    /// no descriptor.
+    ///
+    /// Reserved: nothing in this version registers one, because `kevent`
+    /// refuses `EVFILT_TIMER` as a filter it does not model, and a Darwin
+    /// `poll` registers only `Read` and `Write`.
+    | Timer
 
 /// One registration held by a kqueue: what `kevent(2)`'s `EV_ADD` recorded for
 /// one (descriptor, filter) pair.
-type KqueueRegistration =
+type internal KqueueRegistration =
     {
         /// Whether the registration was first added with `EV_CLEAR`. One that
         /// was is reported once each time something activates it; one that was
@@ -781,42 +788,57 @@ type KqueueRegistration =
         Socket : SocketId
     }
 
-/// Everything one Darwin kqueue holds.
+/// Everything one Darwin kqueue holds: its registrations, and those activated
+/// and still to be reported.
+///
+/// Its representation is internal, so a later version may change what a
+/// registration holds, what it is attached to and how it is keyed without
+/// breaking a client; a client compares one, and builds none.
 type KqueueState =
-    {
-        /// The process that created the kqueue, whose descriptor table its
-        /// registrations' descriptor numbers are read in.
-        ///
-        /// A kqueue belongs to that process alone: Darwin closes a kqueue's
-        /// descriptor in the child of a `fork(2)` (it carries `FD_CLOFORK`), and
-        /// this library models no other way for a descriptor to reach another
-        /// process, so no other process's descriptor names it.
-        Owner : ProcessId
-        /// Whether a `close(2)` has ended a `kevent` wait on this kqueue, which
-        /// Darwin calls draining it.
-        ///
-        /// Closing a descriptor while a task is asleep in `kevent` through that
-        /// same descriptor ends that task's wait, and every other task's wait on
-        /// the kqueue, with `EBADF`; and from then on every wait on the kqueue
-        /// through a descriptor that survived the close is `EBADF` at once.
-        /// Closing a descriptor no waiter entered through changes nothing.
-        Drained : bool
-        /// The registrations, keyed as Darwin keys them: the descriptor number
-        /// the registration was made through, in `Owner`'s descriptor table,
-        /// and the filter. Closing that descriptor removes the registration,
-        /// in every kqueue `Owner` owns, even while something else keeps what
-        /// it named alive (another descriptor, or a call in flight that holds
-        /// it); so every registration names an open descriptor, and destroying
-        /// a description touches none.
-        Registrations : Map<int * KqueueFilter, KqueueRegistration>
-        /// The registrations activated and still to be reported, in the order
-        /// a wait reports them; and, for a registration added without
-        /// `EV_CLEAR`, one reported and still active. A wait walks this list in
-        /// order, reporting each entry whose filter is still ready and dropping
-        /// each that is not. Always a subset of `Registrations`, with no
-        /// duplicates (`checkInvariants` states both).
-        Active : (int * KqueueFilter) list
-    }
+    internal
+        {
+            /// The process that created the kqueue, whose descriptor table its
+            /// registrations' descriptor numbers are read in.
+            ///
+            /// A kqueue belongs to that process alone: Darwin closes a kqueue's
+            /// descriptor in the child of a `fork(2)` (it carries `FD_CLOFORK`), and
+            /// this library models no other way for a descriptor to reach another
+            /// process, so no other process's descriptor names it.
+            Owner : ProcessId
+            /// Whether a `close(2)` has ended a `kevent` wait on this kqueue, which
+            /// Darwin calls draining it.
+            ///
+            /// Closing a descriptor while a task is asleep in `kevent` through that
+            /// same descriptor ends that task's wait, and every other task's wait on
+            /// the kqueue, with `EBADF`; and from then on every wait on the kqueue
+            /// through a descriptor that survived the close is `EBADF` at once.
+            /// Closing a descriptor no waiter entered through changes nothing.
+            Drained : bool
+            /// The registrations, keyed as Darwin keys them: the descriptor number
+            /// the registration was made through, in `Owner`'s descriptor table,
+            /// and the filter. Closing that descriptor removes the registration,
+            /// in every kqueue `Owner` owns, even while something else keeps what
+            /// it named alive (another descriptor, or a call in flight that holds
+            /// it); so every registration names an open descriptor, and destroying
+            /// a description touches none.
+            Registrations : Map<int * KqueueFilter, KqueueRegistration>
+            /// The registrations activated and still to be reported, in the order
+            /// a wait reports them; and, for a registration added without
+            /// `EV_CLEAR`, one reported and still active. A wait walks this list in
+            /// order, reporting each entry whose filter is still ready and dropping
+            /// each that is not. Always a subset of `Registrations`, with no
+            /// duplicates (`checkInvariants` states both).
+            Active : (int * KqueueFilter) list
+        }
+
+/// The failure for meeting `KqueueFilter.Timer`, which nothing in this version
+/// registers.
+[<RequireQualifiedAccess>]
+module internal ReservedTimerFilter =
+    /// `call` met a registration of `KqueueFilter.Timer`.
+    let fail (call : string) : 'a =
+        failwith
+            $"%s{call}: met a registration of KqueueFilter.Timer, and what a timer's filter reports is not modelled. Nothing in this version registers one: KqueueFilter.Timer is reserved until EVFILT_TIMER is modelled, and kevent refuses that filter (this is a bug in this library, or in a caller that assembled the state by hand)."
 
 /// What an open FIFO's description holds besides the FIFO's inode: how it
 /// reaches the channel that carries the FIFO's bytes, and whatever state of the
@@ -830,6 +852,20 @@ type FifoAttachment =
     internal
     // No channel exists to attach to until FIFOs are modelled.
     | Unattached
+
+/// What an open character device's description holds besides the device and
+/// its node: state of the description's own that its reads, writes and
+/// `lseek(2)` consult.
+///
+/// Its representation is private, so a later version may change what it holds
+/// without breaking a client; a client compares one, and builds none. Every
+/// description in this version holds the same, nothing: Linux keeps no
+/// position for a device (see `OpenFileTarget.CharacterDevice`). Darwin keeps
+/// one per description, which `read(2)` and `write(2)` advance and `lseek(2)`
+/// may set to any offset, negative included; Darwin's devices are refused, so
+/// no description holds one yet.
+[<RequireQualifiedAccess>]
+type CharacterDeviceState = internal | Positionless
 
 /// What an open file description refers to, together with the state that only
 /// that kind of object carries.
@@ -920,7 +956,8 @@ type OpenFileTarget =
     /// `device` is the device the inode stands for, which never changes, kept
     /// here so that an operation on the descriptor answers without consulting
     /// the filesystem; `UnixSystem.checkInvariants` holds the two in step.
-    | CharacterDevice of inode : InodeNumber * device : CharacterDevice
+    /// `state` is the rest, which a client does not see into.
+    | CharacterDevice of inode : InodeNumber * device : CharacterDevice * state : CharacterDeviceState
     /// A FIFO (a named pipe), opened through its inode.
     ///
     /// Reserved: nothing in this version makes one, since nothing makes a FIFO
@@ -1102,7 +1139,7 @@ module OpenFileDescription =
         | OpenFileTarget.Directory (inode, _)
         // A device's node too: measured, two descriptions of `/dev/null`
         // contend under `flock`, as two of one regular file do.
-        | OpenFileTarget.CharacterDevice (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _, _)
         // A FIFO's identity is its inode: measured on both flavours, `fstat`
         // through either end reports the path's inode.
         | OpenFileTarget.Fifo (inode, _) -> OpenFileObject.File inode
@@ -1542,7 +1579,7 @@ module OpenFileTable =
         match target with
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)
-        | OpenFileTarget.CharacterDevice (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _, _)
         | OpenFileTarget.Fifo (inode, _) -> Some inode
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Kqueue _
@@ -3349,7 +3386,7 @@ module FileDescriptorRegistry =
         =
         createDescription
             {
-                Target = OpenFileTarget.CharacterDevice (inode, device)
+                Target = OpenFileTarget.CharacterDevice (inode, device, CharacterDeviceState.Positionless)
                 AccessMode = accessMode
                 NonBlocking = false
                 Flock = None
@@ -3661,7 +3698,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"setOffset: fd %d{fd} names directory %O{inode}, whose position is not a byte offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have called setDirectoryPosition)."
-        | OpenFileTarget.CharacterDevice (inode, device) ->
+        | OpenFileTarget.CharacterDevice (inode, device, _) ->
             failwith
                 $"setOffset: fd %d{fd} names %O{device} at inode %O{inode}, which keeps no offset: its `lseek` answers 0 and moves nothing (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
         | OpenFileTarget.Fifo (inode, _) ->

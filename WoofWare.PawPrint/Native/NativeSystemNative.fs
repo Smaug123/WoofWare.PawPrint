@@ -1699,7 +1699,7 @@ module NativeSystemNative =
                     // A round that fails, as a write to a closed destination
                     // does, still returns its errno.
                     match UnixSystem.descriptorTarget source state.Kernel.System with
-                    | Some (OpenFileTarget.CharacterDevice (_, CharacterDevice.URandom)) ->
+                    | Some (OpenFileTarget.CharacterDevice (_, CharacterDevice.URandom, _)) ->
                         failwith
                             $"%s{operation}: fd %d{source} is /dev/urandom, which never reaches end-of-file, so the shim's read/write loop would copy for ever inside one native call."
                     | _ -> readWrite state
@@ -4104,6 +4104,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
+            | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -5638,6 +5640,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.Select _)
+            | Some (ParkedSyscall.SignalWait _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)
@@ -7653,6 +7657,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
+            | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -7987,6 +7993,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.Select _)
+            | Some (ParkedSyscall.SignalWait _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)

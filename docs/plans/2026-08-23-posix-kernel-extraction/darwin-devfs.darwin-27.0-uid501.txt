@@ -1,0 +1,310 @@
+# kernel: Darwin 27.0.0 arm64, root:xnu-13432.1.9~1/RELEASE_ARM64_T6050, kern.boottime 1791357518
+# Darwin probe, euid=501
+NOW 1791377233.819811000
+STAT / stat dir mode=040755 dev=1,19(raw 0x1000013) ino=2 nlink=23 uid=0 gid=0 rdev=0,0(raw 0x0) size=736 blksize=4096 blocks=0 flags=0x100000 gen=0 atime=1790233837.000000000 mtime=1790233837.000000000 ctime=1790233837.000000000 birth=1790233837.000000000 | lstat =stat
+STAT /dev stat dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=335 nlink=4 uid=0 gid=0 rdev=0,0(raw 0x0) size=4787 blksize=512 blocks=10 flags=0x8000 gen=0 atime=1791377015.873877000 mtime=1791357518.000000000 ctime=1791357518.000000000 birth=0.000000000 | lstat =stat
+STAT /dev/null stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377011.862958000 mtime=1791377233.815222000 ctime=1791377233.815222000 birth=0.000000000 | lstat =stat | fstatat(/dev,"null",NOFOLLOW) =lstat
+STAT /dev/zero stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=339 nlink=1 uid=0 gid=0 rdev=3,3(raw 0x3000003) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791357518.000000000 mtime=1791357518.000000000 ctime=1791357518.000000000 birth=0.000000000 | lstat =stat | fstatat(/dev,"zero",NOFOLLOW) =lstat
+STAT /dev/random stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=613 nlink=1 uid=0 gid=0 rdev=17,0(raw 0x11000000) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791357656.466882000 mtime=1791373889.904014000 ctime=1791373889.904014000 birth=0.000000000 | lstat =stat | fstatat(/dev,"random",NOFOLLOW) =lstat
+STAT /dev/urandom stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=614 nlink=1 uid=0 gid=0 rdev=17,1(raw 0x11000001) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377233.545563000 mtime=1791357518.000000000 ctime=1791357518.000000000 birth=0.000000000 | lstat =stat | fstatat(/dev,"urandom",NOFOLLOW) =lstat
+STAT /dev/tty stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=337 nlink=1 uid=0 gid=0 rdev=2,0(raw 0x2000000) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377012.301091000 mtime=1791377011.865253000 ctime=1791377011.865253000 birth=0.000000000 | lstat =stat | fstatat(/dev,"tty",NOFOLLOW) =lstat
+STAT /dev/console stat chr mode=020622 dev=82,5865225(raw 0x52597f09) ino=336 nlink=1 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791357518.000000000 mtime=1791377056.271694000 ctime=1791377056.271694000 birth=0.000000000 | lstat =stat | fstatat(/dev,"console",NOFOLLOW) =lstat
+STAT /dev/stdin stat fifo mode=010440 dev=82,5865225(raw 0x52597f09) ino=1275282804 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819800220 mtime=1791377233.819800220 ctime=1791377233.819800220 birth=0.000000000 | lstat lnk mode=0120555 dev=82,5865225(raw 0x52597f09) ino=344 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 | fstatat(/dev,"stdin",NOFOLLOW) =lstat
+STAT /dev/stdout stat fifo mode=010220 dev=82,5865225(raw 0x52597f09) ino=1790578886 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819800887 mtime=1791377233.819800887 ctime=1791377233.819800887 birth=0.000000000 | lstat lnk mode=0120555 dev=82,5865225(raw 0x52597f09) ino=345 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 | fstatat(/dev,"stdout",NOFOLLOW) =lstat
+STAT /dev/stderr stat fifo mode=010220 dev=82,5865225(raw 0x52597f09) ino=1071347878 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819801428 mtime=1791377233.819801428 ctime=1791377233.819801428 birth=0.000000000 | lstat lnk mode=0120555 dev=82,5865225(raw 0x52597f09) ino=346 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 | fstatat(/dev,"stderr",NOFOLLOW) =lstat
+STAT /dev/fd stat dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791357518.000000000 mtime=1791357518.000000000 ctime=1791357518.000000000 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd",NOFOLLOW) =lstat
+STAT /dev/fd/0 stat fifo mode=010440 dev=82,5865225(raw 0x52597f09) ino=1275282804 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819800220 mtime=1791377233.819800220 ctime=1791377233.819800220 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/0",NOFOLLOW) =lstat
+STAT /dev/fd/1 stat fifo mode=010220 dev=82,5865225(raw 0x52597f09) ino=1790578886 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819800887 mtime=1791377233.819800887 ctime=1791377233.819800887 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/1",NOFOLLOW) =lstat
+STAT /dev/fd/2 stat fifo mode=010220 dev=82,5865225(raw 0x52597f09) ino=1071347878 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819801428 mtime=1791377233.819801428 ctime=1791377233.819801428 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/2",NOFOLLOW) =lstat
+STAT /dev/fd/10 stat reg mode=0100644 dev=82,5865225(raw 0x52597f09) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178 | lstat =stat | fstatat(/dev,"fd/10",NOFOLLOW) =lstat
+STAT /dev/fd/11 stat dir mode=040400 dev=82,5865225(raw 0x52597f09) ino=717680434 nlink=3 uid=501 gid=0 rdev=0,0(raw 0x0) size=96 blksize=4096 blocks=0 flags=0x0 gen=0 atime=1791377233.819657011 mtime=1791377233.819719386 ctime=1791377233.819719386 birth=1791377233.819657011 | lstat =stat | fstatat(/dev,"fd/11",NOFOLLOW) =lstat
+STAT /dev/fd/12 stat fifo mode=010440 dev=82,5865225(raw 0x52597f09) ino=933689063 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819774845 mtime=1791377233.819774845 ctime=1791377233.819774845 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/12",NOFOLLOW) =lstat
+STAT /dev/fd/13 stat fifo mode=010220 dev=82,5865225(raw 0x52597f09) ino=3242327005 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=1791377233.819774970 mtime=1791377233.819774970 ctime=1791377233.819774970 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/13",NOFOLLOW) =lstat
+STAT /dev/fd/14 stat chr mode=020444 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377011.862958000 mtime=1791377233.815222000 ctime=1791377233.815222000 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/14",NOFOLLOW) =lstat
+STAT /dev/fd/15 stat reg mode=0100444 dev=82,5865225(raw 0x52597f09) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178 | lstat =stat | fstatat(/dev,"fd/15",NOFOLLOW) =lstat
+STAT /dev/fd/16 stat reg mode=0100200 dev=82,5865225(raw 0x52597f09) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178 | lstat =stat | fstatat(/dev,"fd/16",NOFOLLOW) =lstat
+STAT /dev/fd/17 stat sock mode=0140666 dev=82,5865225(raw 0x52597f09) ino=15220 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000 birth=0.000000000 | lstat =stat | fstatat(/dev,"fd/17",NOFOLLOW) =lstat
+STAT /dev/fd/60 stat reg mode=0100200 dev=82,5865225(raw 0x52597f09) ino=717679351 nlink=1 uid=501 gid=20 rdev=0,0(raw 0x0) size=7815 blksize=4096 blocks=16 flags=0x0 gen=0 atime=1791377201.249015833 mtime=1791377233.820099180 ctime=1791377233.820099180 birth=1791377201.219477018 | lstat =stat | fstatat(/dev,"fd/60",NOFOLLOW) =lstat
+STAT /dev/fd/99 stat -1 EBADF | lstat -1 EBADF | fstatat(/dev,"fd/99",NOFOLLOW) -1 EBADF
+STAT /dev/ptmx stat chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=607 nlink=1 uid=0 gid=4 rdev=15,2(raw 0xf000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377230.790390000 mtime=1791357659.963270000 ctime=1791357659.963270000 birth=0.000000000 | lstat =stat | fstatat(/dev,"ptmx",NOFOLLOW) =lstat
+STAT /dev/full stat -1 ENOENT | lstat -1 ENOENT | fstatat(/dev,"full",NOFOLLOW) -1 ENOENT
+STAT /dev/shm stat -1 ENOENT | lstat -1 ENOENT | fstatat(/dev,"shm",NOFOLLOW) -1 ENOENT
+STAT /dev/pts stat -1 ENOENT | lstat -1 ENOENT | fstatat(/dev,"pts",NOFOLLOW) -1 ENOENT
+FSTAT fd 0 fifo mode=010660 dev=0,0(raw 0x0) ino=17869376423156991348 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 atime=1791377233.819800220 mtime=1791377233.819800220 ctime=1791377233.819800220 birth=0.000000000
+FSTAT fd 1 fifo mode=010660 dev=0,0(raw 0x0) ino=7952493350357700806 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 atime=1791377233.819800887 mtime=1791377233.819800887 ctime=1791377233.819800887 birth=0.000000000
+FSTAT fd 2 fifo mode=010660 dev=0,0(raw 0x0) ino=7332578300077504678 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 atime=1791377233.819801428 mtime=1791377233.819801428 ctime=1791377233.819801428 birth=0.000000000
+FSTAT fd 10 reg mode=0100644 dev=1,19(raw 0x1000013) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178
+FSTAT fd 11 dir mode=040700 dev=1,19(raw 0x1000013) ino=717680434 nlink=3 uid=501 gid=0 rdev=0,0(raw 0x0) size=96 blksize=4096 blocks=0 flags=0x0 gen=0 atime=1791377233.819657011 mtime=1791377233.819719386 ctime=1791377233.819719386 birth=1791377233.819657011
+FSTAT fd 12 fifo mode=010660 dev=0,0(raw 0x0) ino=12450434134120527591 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 atime=1791377233.819774845 mtime=1791377233.819774845 ctime=1791377233.819774845 birth=0.000000000
+FSTAT fd 13 fifo mode=010660 dev=0,0(raw 0x0) ino=450607253016411101 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 atime=1791377233.819774970 mtime=1791377233.819774970 ctime=1791377233.819774970 birth=0.000000000
+FSTAT fd 14 chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 atime=1791377011.862958000 mtime=1791377233.815222000 ctime=1791377233.815222000 birth=0.000000000
+FSTAT fd 15 reg mode=0100644 dev=1,19(raw 0x1000013) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178
+FSTAT fd 16 reg mode=0100644 dev=1,19(raw 0x1000013) ino=717680435 nlink=1 uid=501 gid=0 rdev=0,0(raw 0x0) size=10 blksize=4096 blocks=8 flags=0x0 gen=0 atime=1791377233.819715178 mtime=1791377233.819758511 ctime=1791377233.819758511 birth=1791377233.819715178
+FSTAT fd 17 sock mode=0140666 dev=255,16777215(raw 0xffffffff) ino=15220 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=8192 blocks=0 flags=0x0 gen=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000 birth=0.000000000
+READLINK /dev/stdin 4 -> fd/0
+READLINK /dev/stdout 4 -> fd/1
+READLINK /dev/stderr 4 -> fd/2
+READLINK /dev/fd -1 EINVAL
+READLINK /dev/fd/0 -1 EINVAL
+READLINK /dev/fd/10 -1 EINVAL
+READLINK /dev/null -1 EINVAL
+ACCESS /dev F=0 R=0 W=-1 EACCES X=0
+ACCESS /dev/null F=0 R=0 W=0 X=-1 EACCES
+ACCESS /dev/tty F=0 R=0 W=0 X=-1 EACCES
+ACCESS /dev/stdin F=0 R=0 W=-1 EACCES X=-1 EACCES
+ACCESS /dev/fd F=0 R=0 W=-1 EACCES X=0
+ACCESS /dev/fd/10 F=0 R=0 W=0 X=-1 EACCES
+ACCESS /dev/fd/15 F=0 R=0 W=-1 EACCES X=-1 EACCES
+ACCESS /dev/fd/16 F=0 R=-1 EACCES W=0 X=-1 EACCES
+ACCESS /dev/fd/99 F=-1 EBADF R=-1 EBADF W=-1 EBADF X=-1 EBADF
+STATFS / type=26 subtype=1 bsize=4096 iosize=1048576 blocks=975653540 bfree=289608091 bavail=289608091 files=4294096768 ffree=4293612749 fsid=01000014:0000001a owner=0 flags=0x4480d001 fstypename=apfs on=/ from=/dev/disk3s1s1
+STATFS /dev type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/null type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/tty type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/stdin type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd/0 type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd/10 type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd/11 type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd/12 type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS /dev/fd/17 type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS fstatfs(fd 10) type=26 subtype=1 bsize=4096 iosize=1048576 blocks=975653540 bfree=289608090 bavail=289608090 files=11592890076 ffree=11584323600 fsid=01000013:0000001a owner=0 flags=0x4909080 fstypename=apfs on=/System/Volumes/Data from=/dev/disk3s5
+STATFS fstatfs(fd 14) type=19 subtype=0 bsize=512 iosize=512 blocks=403 bfree=0 bavail=0 files=698 ffree=0 fsid=52597f09:00000013 owner=0 flags=0x4101000 fstypename=devfs on=/dev from=devfs
+STATFS fstatfs(fd 12) -1 EINVAL
+STATFS fstatfs(open(/dev/fd/10)) type=26 subtype=1 bsize=4096 iosize=1048576 blocks=975653540 bfree=289608090 bavail=289608090 files=11592890076 ffree=11584323600 fsid=01000013:0000001a owner=0 flags=0x4909080 fstypename=apfs on=/System/Volumes/Data from=/dev/disk3s5
+WALK /dev stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /dev/ stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /dev/. stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /dev/.. stat dir dev=0x1000013 ino=2 | lstat dir dev=0x1000013 ino=2
+WALK /dev/../dev stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK //dev stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /./dev stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /dev//null stat chr dev=0x52597f09 ino=338 | lstat chr dev=0x52597f09 ino=338
+WALK /dev/./null stat chr dev=0x52597f09 ino=338 | lstat chr dev=0x52597f09 ino=338
+WALK /dev/../dev/null stat chr dev=0x52597f09 ino=338 | lstat chr dev=0x52597f09 ino=338
+WALK /dev/null/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/null/. stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/null/.. stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/null/x stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/nonexistent stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/nonexistent/ stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/ stat dir dev=0x52597f09 ino=343 | lstat dir dev=0x52597f09 ino=343
+WALK /dev/fd/. stat dir dev=0x52597f09 ino=343 | lstat dir dev=0x52597f09 ino=343
+WALK /dev/fd/.. stat dir dev=0x52597f09 ino=335 | lstat dir dev=0x52597f09 ino=335
+WALK /dev/fd/../null stat chr dev=0x52597f09 ino=338 | lstat chr dev=0x52597f09 ino=338
+WALK /dev/fd/0/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/fd/10/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/fd/10/. stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/11/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/fd/11/. stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/11/.. stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/11/file stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd//10 stat reg dev=0x52597f09 ino=717680435 | lstat reg dev=0x52597f09 ino=717680435
+WALK /dev/fd/./10 stat reg dev=0x52597f09 ino=717680435 | lstat reg dev=0x52597f09 ino=717680435
+WALK /dev/fd/010 stat reg dev=0x52597f09 ino=717680435 | lstat reg dev=0x52597f09 ino=717680435
+WALK /dev/fd/+10 stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/1a stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/-1 stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/fd/4294967306 stat reg dev=0x52597f09 ino=717680435 | lstat reg dev=0x52597f09 ino=717680435
+WALK /dev/fd/99999999999999999999 stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/stdin/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/stdin/. stat -1 ENOENT | lstat -1 ENOENT
+WALK /dev/stdout/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+WALK /dev/tty/ stat -1 ENOTDIR | lstat -1 ENOTDIR
+CHDIR /dev 0 getcwd=/dev
+CHDIR .. 0 getcwd=/
+CHDIR /dev/fd 0 getcwd=/dev/fd
+CHDIR .. 0 getcwd=/dev
+CHDIR /dev/fd/11 -1 ENOTDIR getcwd=/dev
+CHDIR /dev/fd/10 -1 ENOTDIR getcwd=/dev
+CHDIR /dev/stdin -1 ENOTDIR getcwd=/dev
+CHDIR /dev/null -1 ENOTDIR getcwd=/dev
+FCHDIR /dev 0 getcwd=/dev
+OPEN /dev/fd O_DIRECTORY 3 fchdir 0 getcwd=/dev/fd fstatat(fd,"10") reg ino=717680435 openat(fd,"10") 4 offset=3
+PATHCONF /dev NAME_MAX=31 PATH_MAX=127 LINK_MAX=32767
+PATHCONF /dev/null NAME_MAX=-1 EINVAL
+WALK /dev/<256 a> stat -1 ENOENT
+WALK /dev/<255 a> stat -1 ENOENT
+WALK /dev/<1000 a> stat -1 ENOENT
+WALK /dev/<256 a>/x stat -1 ENOENT
+WALK /tmp/<256 a> stat -1 ENAMETOOLONG
+WALK /dev/fd/<256 digits> stat -1 ENOENT statfs -1 ENOENT
+WALK /dev/<32 a> open(O_CREAT) -1 EPERM
+FDSEM open(/dev/fd/10, O_RDONLY) 3 newfd_offset=3 read2=2 fd10_offset_after=5 getfl=0x10002 getfd=0 write=1 fstat_same_as_fd10=1 flock(new,EX|NB) after flock(10,EX)=0
+FDSEM open(/dev/fd/10, O_RDONLY|O_CLOEXEC) 3 getfl=0x14002 getfd=1
+FDSEM fd10 O_NONBLOCK set, open(/dev/fd/10, O_RDWR) 3 getfl=0x14006 after F_SETFL(new,0) fd10_getfl=0x14002
+FDMODE orig=10(O_RDWR) open O_RDONLY 3 getfl=0x14002
+FDMODE orig=10(O_RDWR) open O_WRONLY 3 getfl=0x14002
+FDMODE orig=10(O_RDWR) open O_RDWR 3 getfl=0x14002
+FDMODE orig=10(O_RDWR) open O_WRONLY|O_APPEND 3 getfl=0x14002
+FDMODE orig=15(O_RDONLY) open O_RDONLY 3 getfl=0x0
+FDMODE orig=15(O_RDONLY) open O_WRONLY -1 EACCES
+FDMODE orig=15(O_RDONLY) open O_RDWR -1 EACCES
+FDMODE orig=15(O_RDONLY) open O_WRONLY|O_APPEND -1 EACCES
+FDMODE orig=16(O_WRONLY|O_APPEND) open O_RDONLY -1 EACCES
+FDMODE orig=16(O_WRONLY|O_APPEND) open O_WRONLY 3 getfl=0x9
+FDMODE orig=16(O_WRONLY|O_APPEND) open O_RDWR -1 EACCES
+FDMODE orig=16(O_WRONLY|O_APPEND) open O_WRONLY|O_APPEND 3 getfl=0x9
+FDFLAGS /dev/fd/10 O_WRONLY|O_TRUNC 3 file_size_before=10 after=10
+FDFLAGS /dev/fd/10 O_RDONLY|O_TRUNC 3 file_size_before=10 after=10
+FDFLAGS /dev/fd/10 O_RDONLY|O_CREAT 3 file_size_before=10 after=10
+FDFLAGS /dev/fd/10 O_RDONLY|O_CREAT|O_EXCL -1 EEXIST file_size_before=10 after=10
+FDFLAGS /dev/fd/10 O_RDONLY|O_DIRECTORY -1 ENOTDIR file_size_before=10 after=10
+FDFLAGS /dev/fd/10 O_RDONLY|O_NOFOLLOW 3 file_size_before=10 after=10
+FDOPEN /dev/fd/11 O_RDONLY|O_DIRECTORY -1 ENOTDIR
+FDOPEN /dev/fd/11 O_WRONLY -1 EACCES
+FDOPEN /dev/fd/11 O_RDWR -1 EACCES
+FDOPEN /dev/fd/12 O_RDONLY 3 getfl=0x0 kind=fifo ino=12450434134120527591
+FDOPEN /dev/fd/12 O_WRONLY -1 EACCES
+FDOPEN /dev/fd/12 O_RDWR -1 EACCES
+FDOPEN /dev/fd/13 O_RDONLY -1 EACCES
+FDOPEN /dev/fd/13 O_WRONLY 3 getfl=0x1 kind=fifo ino=450607253016411101
+FDOPEN /dev/fd/13 O_RDWR -1 EACCES
+FDOPEN /dev/fd/14 O_RDONLY 3 getfl=0x0 kind=chr ino=338
+FDOPEN /dev/fd/14 O_WRONLY -1 EACCES
+FDOPEN /dev/fd/14 O_RDWR -1 EACCES
+FDOPEN /dev/fd/17 O_RDONLY 3 getfl=0x2 kind=sock ino=15220
+FDOPEN /dev/fd/17 O_WRONLY 3 getfl=0x2 kind=sock ino=15220
+FDOPEN /dev/fd/17 O_RDWR 3 getfl=0x2 kind=sock ino=15220
+FDOPEN /dev/fd/99 O_RDONLY -1 EBADF
+FDOPEN /dev/fd/99 O_WRONLY -1 EBADF
+FDOPEN /dev/fd/99 O_RDWR -1 EBADF
+FDOPEN /dev/fd/0 O_RDONLY 3 getfl=0x0 kind=fifo ino=17869376423156991348
+FDOPEN /dev/fd/0 O_WRONLY -1 EACCES
+FDOPEN /dev/fd/0 O_RDWR -1 EACCES
+FDOPEN /dev/fd/1 O_RDONLY -1 EACCES
+FDOPEN /dev/fd/1 O_WRONLY 3 getfl=0x1 kind=fifo ino=7952493350357700806
+FDOPEN /dev/fd/1 O_RDWR -1 EACCES
+FDOPEN /dev/fd/11 O_RDONLY 3 getfl=0x0 kind=dir ino=717680434 offset=0
+FDPIPE via /dev/fd/12 read1=1 then fd12 read1=1 getfl(fd12)=0x0
+FDSTD open(/dev/stdin) 3 same_as_fd0=1 getfl=0x0 read=0
+FDSTD open(/dev/stdout, O_WRONLY) 3 write=1
+FDSTD open(/dev/stdout, O_RDONLY) -1 EACCES
+FDCLOSED fd0 closed: stat(/dev/stdin) -1 EBADF lstat(/dev/stdin) 0 stat(/dev/fd/0) -1 EBADF open(/dev/stdin) -1 EBADF
+FDLINK open(link -> /dev/fd/10) 3 offset=3 stat_same_as_fd10=0
+FDLINK open(link -> /dev/stdin) 3 same_as_fd0=1
+FDLINK open(link -> /dev/null) 3 write=1
+FDLIST opendir ok: 0(t0,i4) 1(t0,i5) 2(t0,i6) 3(t0,i7) 10(t0,i14) 11(t0,i15) 12(t0,i16) 13(t0,i17) 14(t0,i18) 15(t0,i19) 16(t0,i20) 17(t0,i21) 18(t0,i22) 40(t0,i44) 60(t0,i64) 61(t0,i65) 62(t0,i66) total=17 (fd 40 open: 40)
+OPEN /dev/null O_RDONLY 3 getfl=0x0 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 | read=0 write=- lseek(0,CUR)=0 lseek(5,SET)=5 FIONREAD=-1 ENODEV(-12345) tcgetattr=-1 ENODEV isatty=0
+OPEN /dev/null O_WRONLY 3 getfl=0x1 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 | read=- write=0 lseek(0,CUR)=0 lseek(5,SET)=5 FIONREAD=-1 ENODEV(-12345) tcgetattr=-1 ENODEV isatty=0
+OPEN /dev/null O_RDWR 3 getfl=0x2 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 | read=0 write=0 lseek(0,CUR)=0 lseek(5,SET)=5 FIONREAD=-1 ENODEV(-12345) tcgetattr=-1 ENODEV isatty=0
+OPEN /dev/null O_RDONLY|O_CREAT 3 getfl=0x0 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0
+OPEN /dev/null O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/null O_RDONLY|O_DIRECTORY -1 ENOTDIR
+OPEN /dev/null O_RDONLY|O_NOFOLLOW 3 getfl=0x0 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0
+OPEN /dev/null O_WRONLY|O_TRUNC 3 getfl=0x10001 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0
+OPEN /dev/null O_RDONLY|O_NONBLOCK 3 getfl=0x4 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=338 nlink=1 uid=0 gid=0 rdev=3,2(raw 0x3000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0
+OPEN /dev/tty O_RDONLY -1 ENXIO
+OPEN /dev/tty O_WRONLY -1 ENXIO
+OPEN /dev/tty O_RDWR -1 ENXIO
+OPEN /dev/tty O_RDONLY|O_CREAT -1 ENXIO
+OPEN /dev/tty O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/tty O_RDONLY|O_DIRECTORY -1 ENOTDIR
+OPEN /dev/tty O_RDONLY|O_NOFOLLOW -1 ENXIO
+OPEN /dev/tty O_WRONLY|O_TRUNC -1 ENXIO
+OPEN /dev/tty O_RDONLY|O_NONBLOCK -1 ENXIO
+OPEN /dev/stdin O_RDONLY 3 getfl=0x0 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=17869376423156991348 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 | read=0 write=- lseek(0,CUR)=-1 ESPIPE lseek(5,SET)=-1 ESPIPE FIONREAD=0(0) tcgetattr=-1 ENOTTY isatty=0
+OPEN /dev/stdin O_WRONLY -1 EACCES
+OPEN /dev/stdin O_RDWR -1 EACCES
+OPEN /dev/stdin O_RDONLY|O_CREAT 3 getfl=0x0 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=17869376423156991348 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0
+OPEN /dev/stdin O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/stdin O_RDONLY|O_DIRECTORY -1 ENOTDIR
+OPEN /dev/stdin O_RDONLY|O_NOFOLLOW -1 ELOOP
+OPEN /dev/stdin O_WRONLY|O_TRUNC -1 EACCES
+OPEN /dev/stdin O_RDONLY|O_NONBLOCK 3 getfl=0x0 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=17869376423156991348 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0
+OPEN /dev/stdout O_RDONLY -1 EACCES
+OPEN /dev/stdout O_WRONLY 3 getfl=0x10001 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=7952493350357700806 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=1 blksize=16384 blocks=1 flags=0x0 gen=0 | read=- write=0 lseek(0,CUR)=-1 ESPIPE lseek(5,SET)=-1 ESPIPE FIONREAD=0(0) tcgetattr=-1 ENOTTY isatty=0
+OPEN /dev/stdout O_RDWR -1 EACCES
+OPEN /dev/stdout O_RDONLY|O_CREAT -1 EACCES
+OPEN /dev/stdout O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/stdout O_RDONLY|O_DIRECTORY -1 ENOTDIR
+OPEN /dev/stdout O_RDONLY|O_NOFOLLOW -1 ELOOP
+OPEN /dev/stdout O_WRONLY|O_TRUNC 3 getfl=0x10001 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=7952493350357700806 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=1 blksize=16384 blocks=1 flags=0x0 gen=0
+OPEN /dev/stdout O_RDONLY|O_NONBLOCK -1 EACCES
+OPEN /dev/stderr O_RDONLY -1 EACCES
+OPEN /dev/stderr O_WRONLY 3 getfl=0x1 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=7332578300077504678 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0 | read=- write=0 lseek(0,CUR)=-1 ESPIPE lseek(5,SET)=-1 ESPIPE FIONREAD=0(0) tcgetattr=-1 ENOTTY isatty=0
+OPEN /dev/stderr O_RDWR -1 EACCES
+OPEN /dev/stderr O_RDONLY|O_CREAT -1 EACCES
+OPEN /dev/stderr O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/stderr O_RDONLY|O_DIRECTORY -1 ENOTDIR
+OPEN /dev/stderr O_RDONLY|O_NOFOLLOW -1 ELOOP
+OPEN /dev/stderr O_WRONLY|O_TRUNC 3 getfl=0x1 fstat: fifo mode=010660 dev=0,0(raw 0x0) ino=7332578300077504678 nlink=0 uid=501 gid=20 rdev=0,0(raw 0x0) size=0 blksize=16384 blocks=0 flags=0x0 gen=0
+OPEN /dev/stderr O_RDONLY|O_NONBLOCK -1 EACCES
+OPEN /dev/fd O_RDONLY 3 getfl=0x0 fstat: dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0 | read=-1 ENOTSUP write=- lseek(0,CUR)=0 lseek(5,SET)=5 FIONREAD=0(0) tcgetattr=-1 ENOTTY isatty=0
+OPEN /dev/fd O_WRONLY -1 EISDIR
+OPEN /dev/fd O_RDWR -1 EISDIR
+OPEN /dev/fd O_RDONLY|O_CREAT 3 getfl=0x0 fstat: dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0
+OPEN /dev/fd O_RDONLY|O_CREAT|O_EXCL -1 EEXIST
+OPEN /dev/fd O_RDONLY|O_DIRECTORY 3 getfl=0x0 fstat: dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0
+OPEN /dev/fd O_RDONLY|O_NOFOLLOW 3 getfl=0x0 fstat: dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0
+OPEN /dev/fd O_WRONLY|O_TRUNC -1 EISDIR
+OPEN /dev/fd O_RDONLY|O_NONBLOCK 3 getfl=0x4 fstat: dir mode=040555 dev=82,5865225(raw 0x52597f09) ino=343 nlink=1 uid=0 gid=0 rdev=0,0(raw 0x0) size=0 blksize=512 blocks=0 flags=0x0 gen=0
+NS euid=501 egid=20
+NS open(/dev/pawprobe, O_CREAT|O_WRONLY) -1 EPERM
+NS mkdir(/dev/pawprobedir) -1 EPERM
+NS mkfifo(/dev/pawprobefifo) -1 EPERM
+NS symlink(x, /dev/pawprobe) -1 EPERM
+NS link(/dev/null, /dev/pawprobe) -1 EPERM
+NS mkdir(/dev/fd/pawprobe) -1 ENOENT
+NS open(/dev/fd/pawprobe, O_CREAT) -1 ENOENT
+NS open(/dev/fd/77, O_CREAT) -1 EBADF
+NS unlink(/dev/null) -1 EPERM
+NS unlink(/dev/stdin) -1 EPERM
+NS unlink(/dev/fd) -1 EPERM
+NS unlink(/dev/fd/10) -1 EPERM
+NS unlink(/dev/nonexistent) -1 ENOENT
+NS rmdir(/dev/fd) -1 EPERM
+NS rmdir(/dev/fd/11) -1 ENOTDIR
+NS rmdir(/dev/null) -1 ENOTDIR
+NS rmdir(/dev/nonexistent) -1 ENOENT
+NS rename(/dev/null, /dev/pawprobe) -1 EPERM
+NS rename(/dev/null, /dev/zero) -1 EPERM
+NS rename(/dev/nonexistent, /dev/pawprobe) -1 ENOENT
+NS rename(/dev/fd/10, tmp/new) -1 EXDEV
+NS rename(tmpfile, /dev/fd/10) -1 EXDEV
+NS rename(/dev/stdin, tmp/new) -1 EXDEV
+NS chmod(/dev, 0555) -1 EPERM
+NS chmod(/dev/null, 0666) -1 EPERM
+NS chmod(/dev/tty, 0666) -1 EPERM
+NS chmod(/dev/fd, 0555) -1 EPERM
+NS chmod(/dev/fd/10, 0640) 0
+NS   file mode via fd 10 before=0100644 after=0100640
+NS chown(/dev/null, -1, -1) 0
+NS chown(/dev/null, euid, egid) -1 EPERM
+NS chown(/dev, -1, -1) 0
+NS lchown(/dev/stdin, -1, -1) 0
+NS chown(/dev/fd/10, -1, -1) 0
+NS chown(/dev/fd/10, euid, egid) 0
+NS utimes(/dev/null, NULL) 0
+NS utimes(/dev/null, 2001) -1 EPERM
+NS   /dev/null mtime before=1791377233 after=1791377233
+NS utimes(/dev, NULL) -1 EACCES
+NS utimes(/dev/tty, NULL) 0
+NS utimes(/dev/fd/10, 2001) 0
+NS   file mtime via fd 10 before=1791377233 after=1000000000
+NS truncate(/dev/fd/10, 4) 0
+NS   file size via fd 10 after=10
+NS truncate(/dev/fd/15, 2) (fd 15 O_RDONLY) -1 EACCES
+NS   file size via fd 10 after=10
+NS truncate(/dev/stdin, 3) (fd 0 a pipe) -1 EINVAL
+NS truncate(/dev/null, 0) -1 EINVAL
+LIST /dev: 0:.(t4,i335) 1:..(t4,i335) 2:console(t2,i336) 3:tty(t2,i337) 4:null(t2,i338) 5:zero(t2,i339) 6:klog(t2,i340) 9:fd(t0,i343) 10:stdin(t10,i344) 11:stdout(t10,i345) 12:stderr(t10,i346) 273:ptmx(t2,i607) 279:random(t2,i613) 280:urandom(t2,i614) 282:dtracehelper(t2,i616)
+LIST /dev total=349 by d_type: t0=1 t2=320 t4=3 t6=22 t10=3
+LIST /dev prefixes: .*1 ..*1 console*1 tty*1 null*1 zero*1 klog*1 oslog*1 oslog_stream*1 fd*1 stdin*1 stdout*1 stderr*1 auditsessions*1 auditpipe*1 pf*1 pfm*1 ttyp*10 ptyp*10 ttypa*1 ptypa*1 ttypb*1 ptypb*1 ttypc*1 ptypc*1 ttypd*1 ptypd*1 ttype*1 ptype*1 ttypf*1 ptypf*1 ttyq*10 ptyq*10 ttyqa*1 ptyqa*1 ttyqb*1 ptyqb*1 ttyqc*1 ptyqc*1 ttyqd*1 ptyqd*1 ttyqe*1 ptyqe*1 ttyqf*1 ptyqf*1 ttyr*10 ptyr*10 ttyra*1 ptyra*1 ttyrb*1 ptyrb*1 ttyrc*1 ptyrc*1 ttyrd*1 ptyrd*1 ttyre*1 ptyre*1 ttyrf*1 ptyrf*1 ttys*16 ptys*10 ttysa*1 ptysa*1 ttysb*1 ptysb*1 ttysc*1 ptysc*1 ttysd*1 ptysd*1 ttyse*1 ptyse*1 ttysf*1 ptysf*1 ttyt*10 ptyt*10 ttyta*1 ptyta*1 ttytb*1 ptytb*1 ttytc*1 ptytc*1 ttytd*1 ptytd*1 ttyte*1 ptyte*1 ttytf*1 ptytf*1 ttyu*10 ptyu*10 ttyua*1 ptyua*1 ttyub*1 ptyub*1 ttyuc*1 ptyuc*1 ttyud*1 ptyud*1 ttyue*1 ptyue*1 ttyuf*1 ptyuf*1 ttyv*10 ptyv*10 ttyva*1 ptyva*1 ttyvb*1 ptyvb*1 ttyvc*1 ptyvc*1 ttyvd*1 ptyvd*1 ttyve*1 ptyve*1 ttyvf*1 ptyvf*1 ttyw*10 ptyw*10 ttywa*1 ptywa*1 ttywb*1 ptywb*1 ttywc*1 ptywc*1 ttywd*1 ptywd*1 ttywe*1 ptywe*1 ttywf*1 ptywf*1 ptmx*1 bpf*4 fsevents*1 random*1 urandom*1 dtrace*1 dtracehelper*1 lockstat*1 fbt*1 profile*1 monotonic*1 nfsclnt*1 afsc_type*1 uart.debug-cons*1 cu.debug-consol*1 tty.debug-conso*1 disk*21 rdisk*21 aes_*1 apfs-raw-device*1 autofs*1 autofs_nowait*1 autofs_notrigge*1 autofs_homedirm*1 autofs_control*1 cu.Bluetooth-In*1 tty.Bluetooth-I*1
+LIST / dev: d_ino=1152921500312607380 d_type=4
+TTY parent isatty(0,1,2)=0,0,0
+TTY no-ctty open(/dev/tty, O_RDWR) -1 ENXIO O_RDONLY|O_NONBLOCK -1 ENXIO stat(/dev/tty) 0
+TTY pty slave=/dev/ttys002 open 4 TIOCSCTTY 0
+TTY pty slave fstat: chr mode=020620 dev=82,5865225(raw 0x52597f09) ino=733 nlink=1 uid=501 gid=4 rdev=16,2(raw 0x10000002) size=0 blksize=65536 blocks=0 flags=0x0 gen=0
+TTY ctty open(/dev/tty, O_RDWR) 5 fstat: chr mode=020666 dev=82,5865225(raw 0x52597f09) ino=337 nlink=1 uid=0 gid=0 rdev=2,0(raw 0x2000000) size=0 blksize=65536 blocks=0 flags=0x0 gen=0 | same_as_slave=0 same_as_node=1 isatty=1 FIONREAD=0(0) lseek=-1 ESPIPE write=3 read(nonblock)=-1 EAGAIN fstatfs=devfs
+# Darwin probe, euid=501
+TIMES /dev start: a=1791377233.823473000 m=1791357518.000000000 c=1791357518.000000000
+TIMES /dev after lookup of null: a=1791377233.823473000 m=1791357518.000000000 c=1791357518.000000000
+TIMES /dev after readdir: a=1791377237.830350000 m=1791357518.000000000 c=1791357518.000000000
+TIMES /dev after failed create: a=1791377237.830350000 m=1791357518.000000000 c=1791357518.000000000
+TIMES /dev/tty lstat twice 2s apart: a0=1791377234.662530000 a1=1791377234.662530000 m0=1791377233.825437000 m1=1791377233.825437000 c0=1791377233.825437000 c1=1791377233.825437000
+TIMES /dev/fd lstat twice 2s apart: a0=1791357518.000000000 a1=1791357518.000000000 m0=1791357518.000000000 m1=1791357518.000000000 c0=1791357518.000000000 c1=1791357518.000000000
+TIMES /dev/stdin lstat twice 2s apart: a0=1791357518.000000000 a1=1791357518.000000000 m0=1791357518.000000000 m1=1791357518.000000000 c0=1791357518.000000000 c1=1791357518.000000000
+TIMES /dev/fd/10 lstat twice 2s apart: a0=1791377233.828248524 a1=1791377233.828248524 m0=1791377233.828282691 m1=1791377233.828282691 c0=1791377233.828282691 c1=1791377233.828282691
+TIMES /dev/fd/12 lstat twice 2s apart: a0=1791377233.828299858 a1=1791377233.828299858 m0=1791377233.828299858 m1=1791377233.828299858 c0=1791377233.828299858 c1=1791377233.828299858
+TIMES read via /dev/stdin: link a0=1791357518.000000000 a1=1791357518.000000000 pipe a0=1791377233.828327817 a1=1791377251.846794629

@@ -310,8 +310,11 @@ type EscapeAnalysisState =
 /// the answer too, a failure to bind a member or to dispatch a call among them, and an array
 /// allocation's <c>OutOfMemoryException</c> for lengths too large to allocate. Where it then looks
 /// up the message by a resource name, as for a multidimensional array constructor's
-/// <c>ArgumentOutOfRangeException</c>, what the lookup can raise is in the answer too. What it runs
-/// to make one with arguments, a failed type binding's <c>TypeLoadException</c>, is not followed.
+/// <c>ArgumentOutOfRangeException</c>, what the lookup can raise is in the answer too. A failed type
+/// binding's <c>TypeLoadException</c> it makes by a constructor taking the type's name, which
+/// formats its message with <c>String.Format</c>, so where a type fails to bind, what that
+/// constructor can raise is in the answer too. The analysis cannot yet tell which formatting
+/// methods <c>String.Format</c> calls on the strings it is given, so that answer is unknown.
 ///
 /// A type initializer runs where CoreCLR's <c>CEEInfo::initClass</c> runs it: at an access to a
 /// static field of its type, and at a call to a method of its type that is static, a constructor, or
@@ -503,6 +506,34 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
 
+    /// The `(string, string, string, int)` instance constructor of a CoreLib exception type, which
+    /// CoreCLR runs to make a `TypeLoadException` (`ExceptionMaking.TypeLoadConstructor`).
+    let private typeLoadConstructor (state : EscapeAnalysisState) (name : ExceptionName) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+        let string = TypeDefn.PrimitiveType PrimitiveType.String
+
+        let found =
+            corelib.TryGetTopLevelTypeDef name.Namespace name.Name
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = ".ctor"
+                && not m.IsStatic
+                && m.Signature.ParameterTypes = [
+                    string
+                    string
+                    string
+                    TypeDefn.PrimitiveType PrimitiveType.Int32
+                ]
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(string, string, string, int), found %d{found.Length}"
+
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
     /// making it as `making` says: the exception, and the methods it runs to make it, whose own
     /// raises escape there too.
@@ -523,6 +554,7 @@ module EscapeAnalysis =
         | ExceptionMaking.ParameterlessConstructor -> thrown, [ parameterlessConstructor state name ]
         | ExceptionMaking.ResourceMessage ->
             thrown, [ parameterlessConstructor state name ; resourceMessageLookup state ]
+        | ExceptionMaking.TypeLoadConstructor -> thrown, [ typeLoadConstructor state name ]
         | ExceptionMaking.Preallocated -> thrown, []
         | ExceptionMaking.InitializerFailure ->
             failwith
@@ -1111,7 +1143,8 @@ module EscapeAnalysis =
     /// Why binding a type reference fails, which decides what the binding throws.
     [<RequireQualifiedAccess>]
     type private BindFailure =
-        /// Its assembly binds and declares no such type: `TypeLoadException`.
+        /// Its assembly binds and declares no such type: `TypeLoadException`, made by its
+        /// `(string, string, string, int)` constructor (`ExceptionMaking.TypeLoadConstructor`).
         | TypeAbsent
         /// No assembly is found for it: `FileNotFoundException`, unless one of the program's resolve
         /// handlers throws or supplies one (`Opacity.UnresolvedAssembly`).
@@ -1121,9 +1154,10 @@ module EscapeAnalysis =
     let private bindFailureFacts (state : EscapeAnalysisState) (failure : BindFailure) : OutsideBodyFact list =
         match failure with
         | BindFailure.TypeAbsent ->
-            [
-                OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
-            ]
+            let thrown, made =
+                runtimeRaises state "System.TypeLoadException" ExceptionMaking.TypeLoadConstructor
+
+            OutsideBodyFact.Raises thrown :: List.map OutsideBodyFact.Runs made
         | BindFailure.AssemblyUnavailable ->
             [
                 OutsideBodyFact.Raises (ThrownType.Exactly (corelibType state "System.IO" "FileNotFoundException"))

@@ -1519,6 +1519,8 @@ module UnixDescriptor =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
+            | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -1671,7 +1673,7 @@ module UnixDescriptor =
                                 (UnixMachineState.connection connectionId system.Machine).Transfer
                         )
                     )
-            | Some (OpenFileTarget.CharacterDevice (_, device)) ->
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) ->
                 // The driver's own answer, without the destination: Linux asks the
                 // inode whether it is a regular file before it would write one.
                 Ok (Error (CharacterDevice.unrecognisedIoctl device))
@@ -1718,9 +1720,9 @@ module UnixDescriptor =
     /// write end reports 0. A connected socket reports what waits in its
     /// receive buffer. EBADF for a descriptor that is not open, whatever the
     /// destination; EFAULT for an unmapped destination, whatever is held. A
-    /// device answers its driver's errno whatever the destination
-    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
-    /// descriptor.
+    /// device answers its driver's errno whatever the destination: under
+    /// Linux, `ENOTTY` for `/dev/null` and `EINVAL` for `/dev/urandom`.
+    /// Refused for every other descriptor.
     ///
     /// Changes nothing.
     let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1766,7 +1768,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _, _)
             // A FIFO's inode is on the filesystem its path is on, and the
             // later screen answers EINVAL for it there:
             // `generic_remap_file_range_prep` refuses any inode that is not
@@ -1878,7 +1880,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
-            | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
             | Some (OpenFileTarget.Inotify _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
@@ -2002,6 +2004,8 @@ module UnixDescriptor =
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
                     | ParkedSyscall.Sleep _
+                    | ParkedSyscall.Select _
+                    | ParkedSyscall.SignalWait _
                     // No descriptor names a FIFO open's description until the call
                     // installs it, so no close reaches it.
                     | ParkedSyscall.FifoOpen _
@@ -2043,6 +2047,8 @@ module UnixDescriptor =
                 | ParkedSyscall.PipeWrite _
                 | ParkedSyscall.SigSuspend
                 | ParkedSyscall.Sleep _
+                | ParkedSyscall.Select _
+                | ParkedSyscall.SignalWait _
                 | ParkedSyscall.FifoOpen _
                 | ParkedSyscall.InotifyRead _
                 | ParkedSyscall.ConnectionRead _
@@ -2079,6 +2085,8 @@ module UnixDescriptor =
                    | ParkedSyscall.PipeWrite _
                    | ParkedSyscall.SigSuspend
                    | ParkedSyscall.Sleep _
+                   | ParkedSyscall.Select _
+                   | ParkedSyscall.SignalWait _
                    | ParkedSyscall.FifoOpen _
                    | ParkedSyscall.InotifyRead _
                    | ParkedSyscall.ConnectionRead _
@@ -2154,12 +2162,17 @@ module UnixDescriptor =
             | ParkedSyscall.Poll _
             | ParkedSyscall.SigSuspend
             | ParkedSyscall.Sleep _
+            | ParkedSyscall.SignalWait _
             // No descriptor names a FIFO open's description until the call
             // installs it, so no close reaches it.
             | ParkedSyscall.FifoOpen _
             // Only Linux has inotify, and its close leaves the read asleep
             // (measured, `inotify-probe.c` row B close-under-read).
             | ParkedSyscall.InotifyRead _
+            // Reserved: nothing parks a task in it yet. Darwin's close of a
+            // selected descriptor will end it, with EBADF (measured,
+            // `docs/probes/select-park` row E1); Linux's leaves it asleep.
+            | ParkedSyscall.Select _
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2304,6 +2317,8 @@ module UnixDescriptor =
                     | ParkedSyscall.Poll _
                     | ParkedSyscall.SigSuspend
                     | ParkedSyscall.Sleep _
+                    | ParkedSyscall.Select _
+                    | ParkedSyscall.SignalWait _
                     | ParkedSyscall.FifoOpen _
                     | ParkedSyscall.InotifyRead _
                     | ParkedSyscall.KqueuePoll _ -> false
@@ -2407,6 +2422,8 @@ module UnixDescriptor =
                         | ParkedSyscall.PipeWrite _
                         | ParkedSyscall.SigSuspend
                         | ParkedSyscall.Sleep _
+                        | ParkedSyscall.Select _
+                        | ParkedSyscall.SignalWait _
                         | ParkedSyscall.FifoOpen _
                         | ParkedSyscall.InotifyRead _
                         | ParkedSyscall.ConnectionRead _
@@ -2460,7 +2477,7 @@ module UnixDescriptor =
     /// releases it. That is refused for a connected socket whose `SO_LINGER`
     /// is on, whose close this kernel may refuse when the call returns. Under Darwin a close of the
     /// descriptor a `kevent` sleeps through is served too, and drains the
-    /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
+    /// kqueue, which ends that wait and every other on
     /// the kqueue; the kqueue goes as the last of them returns, if no
     /// descriptor names it by then.
     ///
@@ -2482,7 +2499,7 @@ module UnixDescriptor =
     /// already woken is refused.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
-    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
+    /// the process owns and in the kqueue of every
     /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
     /// then reports nothing.
     ///

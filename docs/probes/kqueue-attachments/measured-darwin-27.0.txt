@@ -1,0 +1,13 @@
+T1 timer ident 0x100000001: 0
+T1 timer ident UINTPTR_MAX: 0
+T1 read ident 0x100000000|fd (fd 0): 22
+T2 timer ident = pipe read fd 4: 0
+T2 read on pipe read fd 4: 0
+T2 after close: delete read: 2
+T2 after close: delete timer: 0
+T3 n=1 ident=42 filter=-7 flags=0x61 clear=1 data=5
+T3 immediately again: n=0
+T4 read end EVFILT_READ: 0
+T4 read end EVFILT_WRITE: 0
+T4 write end EVFILT_READ: 0
+T4 write end EVFILT_WRITE: 0

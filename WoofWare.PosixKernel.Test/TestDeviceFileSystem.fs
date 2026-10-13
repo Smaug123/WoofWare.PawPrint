@@ -121,6 +121,40 @@ module TestDeviceFileSystem =
     // ------------------------------------------------------------------ stat
 
     [<Test>]
+    let ``every device's name, mode and Linux st_rdev are the measured ones, whether or not it has a driver``
+        ()
+        : unit
+        =
+        // Measured on Linux 6.18.5 and Darwin 27.0.0: mode 020666 for every
+        // node (`devices.c` and `darwin-devfs.c`, STAT rows); Linux's mem
+        // driver's 1,3, 1,5, 1,8 and 1,9, and `/dev/tty`'s 5,0, encoded by
+        // glibc's `makedev`.
+        let measured (device : CharacterDevice) : string * int * int64 =
+            match device with
+            | CharacterDevice.Null -> "null", 0o666, 0x103L
+            | CharacterDevice.URandom -> "urandom", 0o666, 0x109L
+            | CharacterDevice.Zero -> "zero", 0o666, 0x105L
+            | CharacterDevice.Random -> "random", 0o666, 0x108L
+            | CharacterDevice.Tty -> "tty", 0o666, 0x500L
+
+        let everyDevice =
+            Microsoft.FSharp.Reflection.FSharpType.GetUnionCases typeof<CharacterDevice>
+            |> Array.map (fun case ->
+                Microsoft.FSharp.Reflection.FSharpValue.MakeUnion (case, [||])
+                |> unbox<CharacterDevice>
+            )
+
+        for device in everyDevice do
+            let expectedName, expectedMode, expectedDevice = measured device
+            CharacterDevice.name device |> shouldEqual (name expectedName)
+
+            CharacterDevice.permissions device
+            |> shouldEqual (PermissionBits.parseOrFail context expectedMode)
+
+            CharacterDevice.specialFileDevice SimulatedUnixFlavour.Linux device
+            |> shouldEqual expectedDevice
+
+    [<Test>]
     let ``each device node reports the measured stat fields`` () : unit =
         let property (seconds : int64) : unit =
             let bootTime = UnixTimestamp.ofSeconds (abs seconds % 2_000_000_000L)

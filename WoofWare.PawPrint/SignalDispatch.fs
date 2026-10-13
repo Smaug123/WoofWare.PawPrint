@@ -542,7 +542,7 @@ module SignalDispatch =
         | OpenFileTarget.Kqueue _ -> "a kqueue"
         | OpenFileTarget.Socket socket -> $"a socket (%O{socket})"
         | OpenFileTarget.Pipe (pipe, pipeEnd) -> $"the %O{pipeEnd} end of pipe %O{pipe}"
-        | OpenFileTarget.CharacterDevice (_, device) -> $"the character device %O{device}"
+        | OpenFileTarget.CharacterDevice (_, device, _) -> $"the character device %O{device}"
         | OpenFileTarget.Fifo (inode, _) -> $"a FIFO (inode %O{inode})"
         | OpenFileTarget.Inotify _ -> "an inotify instance"
 

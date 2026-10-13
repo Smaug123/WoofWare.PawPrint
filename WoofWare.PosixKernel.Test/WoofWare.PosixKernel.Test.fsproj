@@ -148,6 +148,8 @@
     <Compile Include="TestSigsuspend.fs" />
     <Compile Include="TestSleepPark.fs" />
     <Compile Include="TestFifoOpenPark.fs" />
+    <Compile Include="TestSelectPark.fs" />
+    <Compile Include="TestSignalWaitPark.fs" />
     <Compile Include="TestSigcontGeneration.fs" />
     <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
@@ -247,6 +249,7 @@
     <Compile Include="TestShutdownAgainstHost.fs" />
     <Compile Include="TestKeventWriteData.fs" />
     <Compile Include="TestDarwinPoll.fs" />
+    <Compile Include="TestKqueueTimerReserved.fs" />
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
