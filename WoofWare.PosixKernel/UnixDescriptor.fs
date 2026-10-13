@@ -1673,7 +1673,7 @@ module UnixDescriptor =
                                 (UnixMachineState.connection connectionId system.Machine).Transfer
                         )
                     )
-            | Some (OpenFileTarget.CharacterDevice (_, device)) ->
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) ->
                 // The driver's own answer, without the destination: Linux asks the
                 // inode whether it is a regular file before it would write one.
                 Ok (Error (CharacterDevice.unrecognisedIoctl device))
@@ -1768,7 +1768,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _, _)
             // A FIFO's inode is on the filesystem its path is on, and the
             // later screen answers EINVAL for it there:
             // `generic_remap_file_range_prep` refuses any inode that is not
@@ -1880,7 +1880,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
-            | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
             | Some (OpenFileTarget.Inotify _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY

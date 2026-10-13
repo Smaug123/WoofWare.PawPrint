@@ -186,7 +186,7 @@ module TestDeviceDescriptors =
             match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors opened) with
             | Some description ->
                 match description.Target with
-                | OpenFileTarget.CharacterDevice (_, opened) -> opened |> shouldEqual device
+                | OpenFileTarget.CharacterDevice (_, opened, _) -> opened |> shouldEqual device
                 | other -> failwith $"expected a device's description, got %A{other}"
 
                 description.AccessMode |> shouldEqual access

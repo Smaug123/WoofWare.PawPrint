@@ -289,7 +289,7 @@ module ObjectLifetime =
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)
-        | OpenFileTarget.CharacterDevice (inode, _) ->
+        | OpenFileTarget.CharacterDevice (inode, _, _) ->
             // The description may have been the last holding a name of a file
             // since unlinked, which goes as it does (Linux's dentry): an
             // inotify watch on the file, if it has no link left, hears of its

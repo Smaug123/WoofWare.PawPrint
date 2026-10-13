@@ -554,7 +554,7 @@ module UnixMachineState =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _, _)
             | OpenFileTarget.Fifo (inode, _) -> Some inode
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _

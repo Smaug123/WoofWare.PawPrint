@@ -853,6 +853,20 @@ type FifoAttachment =
     // No channel exists to attach to until FIFOs are modelled.
     | Unattached
 
+/// What an open character device's description holds besides the device and
+/// its node: state of the description's own that its reads, writes and
+/// `lseek(2)` consult.
+///
+/// Its representation is private, so a later version may change what it holds
+/// without breaking a client; a client compares one, and builds none. Every
+/// description in this version holds the same, nothing: Linux keeps no
+/// position for a device (see `OpenFileTarget.CharacterDevice`). Darwin keeps
+/// one per description, which `read(2)` and `write(2)` advance and `lseek(2)`
+/// may set to any offset, negative included; Darwin's devices are refused, so
+/// no description holds one yet.
+[<RequireQualifiedAccess>]
+type CharacterDeviceState = internal | Positionless
+
 /// What an open file description refers to, together with the state that only
 /// that kind of object carries.
 ///
@@ -942,7 +956,8 @@ type OpenFileTarget =
     /// `device` is the device the inode stands for, which never changes, kept
     /// here so that an operation on the descriptor answers without consulting
     /// the filesystem; `UnixSystem.checkInvariants` holds the two in step.
-    | CharacterDevice of inode : InodeNumber * device : CharacterDevice
+    /// `state` is the rest, which a client does not see into.
+    | CharacterDevice of inode : InodeNumber * device : CharacterDevice * state : CharacterDeviceState
     /// A FIFO (a named pipe), opened through its inode.
     ///
     /// Reserved: nothing in this version makes one, since nothing makes a FIFO
@@ -1124,7 +1139,7 @@ module OpenFileDescription =
         | OpenFileTarget.Directory (inode, _)
         // A device's node too: measured, two descriptions of `/dev/null`
         // contend under `flock`, as two of one regular file do.
-        | OpenFileTarget.CharacterDevice (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _, _)
         // A FIFO's identity is its inode: measured on both flavours, `fstat`
         // through either end reports the path's inode.
         | OpenFileTarget.Fifo (inode, _) -> OpenFileObject.File inode
@@ -1564,7 +1579,7 @@ module OpenFileTable =
         match target with
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _)
-        | OpenFileTarget.CharacterDevice (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _, _)
         | OpenFileTarget.Fifo (inode, _) -> Some inode
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Kqueue _
@@ -3371,7 +3386,7 @@ module FileDescriptorRegistry =
         =
         createDescription
             {
-                Target = OpenFileTarget.CharacterDevice (inode, device)
+                Target = OpenFileTarget.CharacterDevice (inode, device, CharacterDeviceState.Positionless)
                 AccessMode = accessMode
                 NonBlocking = false
                 Flock = None
@@ -3683,7 +3698,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"setOffset: fd %d{fd} names directory %O{inode}, whose position is not a byte offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have called setDirectoryPosition)."
-        | OpenFileTarget.CharacterDevice (inode, device) ->
+        | OpenFileTarget.CharacterDevice (inode, device, _) ->
             failwith
                 $"setOffset: fd %d{fd} names %O{device} at inode %O{inode}, which keeps no offset: its `lseek` answers 0 and moves nothing (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
         | OpenFileTarget.Fifo (inode, _) ->

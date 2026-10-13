@@ -331,6 +331,8 @@ WoofWare.PosixKernel.CharacterDeviceModule.all [static property]: [read-only] Wo
 WoofWare.PosixKernel.CharacterDeviceModule.get_all [static method]: unit -> WoofWare.PosixKernel.CharacterDevice list
 WoofWare.PosixKernel.CharacterDeviceModule.name [static method]: WoofWare.PosixKernel.CharacterDevice -> WoofWare.PosixKernel.DirectoryEntryName
 WoofWare.PosixKernel.CharacterDeviceModule.permissions [static method]: WoofWare.PosixKernel.CharacterDevice -> WoofWare.PosixKernel.PermissionBits
+WoofWare.PosixKernel.CharacterDeviceState inherit obj, implements WoofWare.PosixKernel.CharacterDeviceState System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.CharacterDeviceState System.IComparable, System.IComparable, System.Collections.IStructuralComparable
+WoofWare.PosixKernel.CharacterDeviceState.Equals [method]: (WoofWare.PosixKernel.CharacterDeviceState, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ClientEnd inherit obj, implements WoofWare.PosixKernel.ClientEnd System.IEquatable, System.Collections.IStructuralEquatable - union type with 4 cases
 WoofWare.PosixKernel.ClientEnd+Supplying inherit WoofWare.PosixKernel.ClientEnd
 WoofWare.PosixKernel.ClientEnd+Supplying.get_unwritten [method]: unit -> WoofWare.PosixKernel.UnwrittenBytes
@@ -2644,7 +2646,9 @@ WoofWare.PosixKernel.OpenFileTarget+CharacterDevice inherit WoofWare.PosixKernel
 WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.device [property]: [read-only] WoofWare.PosixKernel.CharacterDevice
 WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.get_device [method]: unit -> WoofWare.PosixKernel.CharacterDevice
 WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.get_inode [method]: unit -> WoofWare.PosixKernel.InodeNumber
+WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.get_state [method]: unit -> WoofWare.PosixKernel.CharacterDeviceState
 WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.inode [property]: [read-only] WoofWare.PosixKernel.InodeNumber
+WoofWare.PosixKernel.OpenFileTarget+CharacterDevice.state [property]: [read-only] WoofWare.PosixKernel.CharacterDeviceState
 WoofWare.PosixKernel.OpenFileTarget+Directory inherit WoofWare.PosixKernel.OpenFileTarget
 WoofWare.PosixKernel.OpenFileTarget+Directory.get_inode [method]: unit -> WoofWare.PosixKernel.InodeNumber
 WoofWare.PosixKernel.OpenFileTarget+Directory.get_position [method]: unit -> WoofWare.PosixKernel.DirectoryPosition
@@ -2707,7 +2711,7 @@ WoofWare.PosixKernel.OpenFileTarget.IsInotify [property]: [read-only] bool
 WoofWare.PosixKernel.OpenFileTarget.IsKqueue [property]: [read-only] bool
 WoofWare.PosixKernel.OpenFileTarget.IsPipe [property]: [read-only] bool
 WoofWare.PosixKernel.OpenFileTarget.IsSocket [property]: [read-only] bool
-WoofWare.PosixKernel.OpenFileTarget.NewCharacterDevice [static method]: (WoofWare.PosixKernel.InodeNumber, WoofWare.PosixKernel.CharacterDevice) -> WoofWare.PosixKernel.OpenFileTarget
+WoofWare.PosixKernel.OpenFileTarget.NewCharacterDevice [static method]: (WoofWare.PosixKernel.InodeNumber, WoofWare.PosixKernel.CharacterDevice, WoofWare.PosixKernel.CharacterDeviceState) -> WoofWare.PosixKernel.OpenFileTarget
 WoofWare.PosixKernel.OpenFileTarget.NewDirectory [static method]: (WoofWare.PosixKernel.InodeNumber, WoofWare.PosixKernel.DirectoryPosition) -> WoofWare.PosixKernel.OpenFileTarget
 WoofWare.PosixKernel.OpenFileTarget.NewEpoll [static method]: WoofWare.PosixKernel.EpollState -> WoofWare.PosixKernel.OpenFileTarget
 WoofWare.PosixKernel.OpenFileTarget.NewFifo [static method]: (WoofWare.PosixKernel.InodeNumber, WoofWare.PosixKernel.FifoAttachment) -> WoofWare.PosixKernel.OpenFileTarget
