@@ -6822,7 +6822,6 @@ WoofWare.PosixKernel.WakeCondition.NewAnyOf [static method]: (WoofWare.PosixKern
 WoofWare.PosixKernel.WakeCondition.NewPrimitive [static method]: WoofWare.PosixKernel.WakePrimitive -> WoofWare.PosixKernel.WakeCondition
 WoofWare.PosixKernel.WakeCondition.Tag [property]: [read-only] int
 WoofWare.PosixKernel.WakeConditionModule inherit obj
-WoofWare.PosixKernel.WakeConditionModule.deadlines [static method]: WoofWare.PosixKernel.WakeCondition -> System.Int64 list
 WoofWare.PosixKernel.WakeConditionModule.ofPark [static method]: WoofWare.PosixKernel.ParkedSyscall -> WoofWare.PosixKernel.WakeCondition
 WoofWare.PosixKernel.WakePrimitive inherit obj, implements WoofWare.PosixKernel.WakePrimitive System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WakePrimitive System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 19 cases
 WoofWare.PosixKernel.WakePrimitive+AcceptQueueNonEmpty inherit WoofWare.PosixKernel.WakePrimitive
