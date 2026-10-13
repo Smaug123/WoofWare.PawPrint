@@ -293,7 +293,7 @@ module TestUnconnectedSocketTransfer =
             match
                 CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.blob system.Machine.UnixPlatform family endpoint) system
             with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect did not complete: %A{other}"
 
         let loopbackAt (port : uint16) =
@@ -326,7 +326,7 @@ module TestUnconnectedSocketTransfer =
                         (CopyIn.blob (UnixSystem.platform system) 0 (Ipv4Endpoint.ofParts (Ipv4Address 0u) 0us)))
                     system
             with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"the dissolve did not complete: %A{other}"
 
         let before = system.Machine.Sockets.[socketId]

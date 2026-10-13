@@ -180,7 +180,7 @@ module TestSockNameFaultLength =
         let endpoint = Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
 
         match CopyIn.connect client UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
-        | Ok (ConnectOutcome.Completed, system) -> client, system
+        | Ok (SyscallAnswer.Completed 0L, system) -> client, system
         | other -> failwith $"connecting: %A{other}"
 
     [<Test>]

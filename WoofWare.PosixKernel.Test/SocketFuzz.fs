@@ -393,8 +393,8 @@ module SocketFuzz =
 
             let token =
                 match outcome with
-                | ConnectOutcome.Completed -> "ok"
-                | ConnectOutcome.Failed e -> errName e
+                | SyscallAnswer.Completed _ -> "ok"
+                | SyscallAnswer.Failed e -> errName e
 
             token,
             { state with
@@ -421,8 +421,8 @@ module SocketFuzz =
 
             let token =
                 match outcome with
-                | ConnectOutcome.Completed -> "ok"
-                | ConnectOutcome.Failed e -> errName e
+                | SyscallAnswer.Completed _ -> "ok"
+                | SyscallAnswer.Failed e -> errName e
 
             token,
             { state with

@@ -631,7 +631,7 @@ module TestConnectedTransferAgainstHost =
 
         let system =
             match CopyIn.connect client UserBuffer.Mapped 16u (kernelLoopback platform) system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect: %A{other}"
 
         let server, system =

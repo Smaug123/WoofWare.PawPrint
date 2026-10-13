@@ -2620,7 +2620,8 @@ module UnixSystem =
                 | Some (ParkedSyscall.Select _ as parked)
                 | Some (ParkedSyscall.SignalWait _ as parked)
                 | Some (ParkedSyscall.DatagramReceive _ as parked)
-                | Some (ParkedSyscall.DatagramSend _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
+                | Some (ParkedSyscall.DatagramSend _ as parked)
+                | Some (ParkedSyscall.Connect _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.InotifyRead read) ->
                     match Map.tryFind read.Instance descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Instance) ]

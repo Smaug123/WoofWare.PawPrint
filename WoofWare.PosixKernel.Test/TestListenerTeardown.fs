@@ -118,7 +118,7 @@ module TestListenerTeardown =
         let fd, system = KeventWorld.stream false system
 
         match KeventWorld.connect fd port system with
-        | ConnectOutcome.Completed, system -> fd, system
+        | SyscallAnswer.Completed 0L, system -> fd, system
         | other, _ -> failwith $"connect: %A{other}"
 
     /// The probe's `do_read`: a read of 4096 bytes.

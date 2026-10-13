@@ -127,7 +127,7 @@ module TestReceiveSendMeasured =
 
             let system =
                 match KeventWorld.connect client 6200us system with
-                | ConnectOutcome.Completed, system -> system
+                | SyscallAnswer.Completed 0L, system -> system
                 | other, _ -> failwith $"connect: %A{other}"
 
             let server, system = KeventWorld.accept listener system

@@ -607,6 +607,25 @@ type ParkedDatagramSend =
             Socket : OpenFileDescriptionId
         }
 
+/// One task's in-flight blocking `connect(2)` to a listener whose accept queue
+/// was full.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.Connect`.
+type ParkedConnect =
+    internal
+        {
+            // What else it must hold is the design of the connect that sleeps:
+            // for TCP, the SYN retransmit schedule (the attempt, the next
+            // deadline, the destination); for a Unix-domain stream, the
+            // listener and the name the call looked up, which it looks up again
+            // when it wakes (`docs/probes/connect-park`).
+            /// The open file description of the connecting socket, through
+            /// which the call was made, and which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -689,6 +708,16 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
     /// defect.
     | DatagramSend of ParkedDatagramSend
+    /// A blocking `connect(2)` to a listener whose accept queue is full, under
+    /// Linux: a TCP connect sleeps until a retransmitted SYN finds room, and a
+    /// Unix-domain stream connect until the listener has room or is gone. A
+    /// Darwin connect never sleeps. Holds the connecting socket's open file
+    /// description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | Connect of ParkedConnect
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -740,6 +769,7 @@ module ParkedSyscall =
         // of the descriptor leaves a sleeping receive holding the socket.
         | ParkedSyscall.DatagramReceive receive -> [ receive.Socket ]
         | ParkedSyscall.DatagramSend send -> [ send.Socket ]
+        | ParkedSyscall.Connect connect -> [ connect.Socket ]
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -968,6 +998,7 @@ module UnixTaskTable =
             | ParkedSyscall.SignalWait _ -> 15
             | ParkedSyscall.DatagramReceive _ -> 16
             | ParkedSyscall.DatagramSend _ -> 17
+            | ParkedSyscall.Connect _ -> 18
 
         let sameSyscall =
             match existing.Parked with

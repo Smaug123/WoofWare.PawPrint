@@ -3543,6 +3543,7 @@ module UnixReadWrite =
         | Some (ParkedSyscall.Select _)
         | Some (ParkedSyscall.DatagramReceive _)
         | Some (ParkedSyscall.DatagramSend _)
+        | Some (ParkedSyscall.Connect _)
         | None -> None
 
     /// The write `task` is asleep in.

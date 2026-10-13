@@ -367,6 +367,7 @@ module DebuggerServer =
                 | None -> ()
             | Some (ParkedSyscall.DatagramReceive _) -> writer.WriteString ("kind", "blockedInDatagramReceive")
             | Some (ParkedSyscall.DatagramSend _) -> writer.WriteString ("kind", "blockedInDatagramSend")
+            | Some (ParkedSyscall.Connect _) -> writer.WriteString ("kind", "blockedInConnect")
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

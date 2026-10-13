@@ -284,15 +284,18 @@ module TestSyscallInterruption =
             let client, system =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
+            // The holder connects: the leader may be the sleeper, and a task
+            // asleep in one call makes no other.
             match
-                CopyIn.connect
+                CopyIn.connectAs
+                    holder
                     client
                     UserBuffer.Mapped
                     16u
                     (CopyIn.inet (UnixSystem.platform system) (loopback 5000us))
                     system
             with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connecting: %A{other}"
 
     /// `task`'s sleeping call, finished.
@@ -778,6 +781,10 @@ module TestSyscallInterruption =
                 {
                     ParkedDatagramSend.Socket = description
                 }
+            ParkedSyscall.Connect
+                {
+                    ParkedConnect.Socket = description
+                }
         ]
 
     /// The measured rule, per flavour, stated here rather than read from
@@ -792,7 +799,8 @@ module TestSyscallInterruption =
     /// answers EINTR under it on Linux 6.18.5 (`docs/probes/sigwait`); on
     /// Darwin 27.0.0 a handler does not end one at all, and the rule is
     /// Linux's. A datagram receive and a Linux Unix-domain datagram send
-    /// restart under it (`datagram-park.c`).
+    /// restart under it (`datagram-park.c`), and so does a Linux connect
+    /// asleep on a full listener (`connect-park.c`).
     let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         match parked with
         | ParkedSyscall.Flock _
@@ -803,7 +811,8 @@ module TestSyscallInterruption =
         | ParkedSyscall.ConnectionWrite _
         | ParkedSyscall.InotifyRead _
         | ParkedSyscall.DatagramReceive _
-        | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.DatagramSend _
+        | ParkedSyscall.Connect _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _

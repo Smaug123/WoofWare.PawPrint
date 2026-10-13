@@ -4124,6 +4124,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.DatagramReceive _ as other)
             | Some (ParkedSyscall.DatagramSend _ as other)
+            | Some (ParkedSyscall.Connect _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -5658,6 +5659,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.SignalWait _)
             | Some (ParkedSyscall.DatagramReceive _)
             | Some (ParkedSyscall.DatagramSend _)
+            | Some (ParkedSyscall.Connect _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)
@@ -5782,11 +5784,17 @@ module NativeSystemNative =
                     (KernelRefusal.advising [ BufferPointer.unmodelledHint addressArgument ; reachedBy ])
                     e
 
-            let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
+            let answer (outcome : SyscallOutcome) (state : IlMachineState) : NativeHandlerResult option =
                 match outcome with
                 // A successful connect leaves errno alone.
-                | ConnectOutcome.Completed -> complete UnixErrorPal.palSuccess state
-                | ConnectOutcome.Failed error -> failFromSyscall error state
+                | SyscallOutcome.Answered (SyscallAnswer.Completed _) -> complete UnixErrorPal.palSuccess state
+                | SyscallOutcome.Answered (SyscallAnswer.Failed error) -> failFromSyscall error state
+                | SyscallOutcome.WouldBlock condition ->
+                    failwith
+                        $"%s{operation}: thread %O{ctx.Thread}'s connect would sleep until %A{condition}, and PawPrint does not yet park a thread in a connect."
+                | SyscallOutcome.Restarts ->
+                    failwith
+                        $"%s{operation}: thread %O{ctx.Thread}'s connect answered a restart, which only a finishing call answers, and a first connect is not one (this is a bug in the kernel library)."
 
             // The call stops before the kernel copies the caller's sockaddr,
             // so the pointer is resolved only then: a call whose copy takes no
@@ -5796,6 +5804,7 @@ module NativeSystemNative =
                 try
                     match
                         UnixConnection.connect
+                            ctx.Thread
                             fd
                             (BufferPointer.toUserBuffer addressArgument)
                             (uint32 declaredLength)
@@ -7637,6 +7646,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.SignalWait _ as other)
             | Some (ParkedSyscall.DatagramReceive _ as other)
             | Some (ParkedSyscall.DatagramSend _ as other)
+            | Some (ParkedSyscall.Connect _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -7975,6 +7985,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.SignalWait _)
             | Some (ParkedSyscall.DatagramReceive _)
             | Some (ParkedSyscall.DatagramSend _)
+            | Some (ParkedSyscall.Connect _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)

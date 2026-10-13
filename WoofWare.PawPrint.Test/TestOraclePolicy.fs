@@ -145,8 +145,9 @@ module TestOraclePolicy =
             OraclePolicy.comparesHere (case SimulatedUnixPlatform.macOsArm64)
             |> shouldEqual true
 
-    let private comparedCases : EndToEndTestCase list =
-        TestImpureCases.cases
+    /// The cases that run on `runtime` and ask to be compared on a host of their own flavour.
+    let private comparedCasesOn (runtime : EmulatedRuntime) : EndToEndTestCase list =
+        (TestImpureCases.onRuntime runtime).Run
         |> List.filter (fun case -> case.Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour)
 
     [<Test>]
@@ -155,27 +156,30 @@ module TestOraclePolicy =
         // real oracle for the half of the corpus that describes their own kernel. If
         // either half were empty the mechanism would be dead on that host and nothing
         // else in the suite would say so.
-        let flavours =
-            comparedCases
-            |> List.map (fun case -> SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform)
-            |> Set.ofList
+        for runtime in EmulatedRuntime.supported do
+            let flavours =
+                comparedCasesOn runtime
+                |> List.map (fun case -> SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform)
+                |> Set.ofList
 
-        flavours
-        |> shouldEqual (Set.ofList [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ])
+            flavours
+            |> shouldEqual (Set.ofList [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ])
 
     [<Test>]
     let ``compared cases seed no AppContext properties`` () : unit =
         // `DifferentialOracle.assertComparable` refuses this per case as it runs; asked
         // here of the whole corpus at once, so that registering an uncomparable case is
         // caught even on a host that would not have compared it.
-        comparedCases
+        EmulatedRuntime.supported
+        |> List.collect comparedCasesOn
         |> List.filter (fun case -> not (AppContextProperties.isEmpty case.AppContext))
         |> List.map (fun case -> case.FileName)
         |> shouldEqual []
 
     [<Test>]
     let ``compared cases leave their seed's root to whoever runs the tests`` () : unit =
-        comparedCases
+        EmulatedRuntime.supported
+        |> List.collect comparedCasesOn
         |> List.filter (fun case -> case.KernelConfig.FileSystemRootOwner.IsSome)
         |> List.map (fun case -> case.FileName)
         |> shouldEqual []
@@ -183,7 +187,7 @@ module TestOraclePolicy =
     [<Test>]
     let ``the oracle refuses a case that gives its seed's root an owner`` () : unit =
         let case =
-            TestImpureCases.cases
+            TestImpureCases.runEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let rootOwned =
@@ -223,7 +227,11 @@ module TestOraclePolicy =
         // declaration outright. Asked here of the whole corpus rather than only of the
         // case that happens to run, and asked of every case rather than only the
         // compared ones, because the refusal is about this fixture and not the oracle.
-        TestImpureCases.cases @ TestImpureCases.unimplemented
+        EmulatedRuntime.supported
+        |> List.collect (fun runtime ->
+            let cases = TestImpureCases.onRuntime runtime
+            cases.Run @ List.map fst cases.Parked
+        )
         |> List.filter (fun case -> case.ExpectsUnhandledException)
         |> List.map (fun case -> case.FileName)
         |> shouldEqual []
@@ -234,7 +242,7 @@ module TestOraclePolicy =
         // happens to the one that tries. Refused before the guest runs, so the
         // diagnostic does not depend on how far the interpreter got.
         let case =
-            TestImpureCases.cases
+            TestImpureCases.runEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let forced =
@@ -259,7 +267,7 @@ module TestOraclePolicy =
         // that ignored the policy, or ran the oracle and discarded its answer, would let
         // this pass.
         let divergent =
-            TestImpureCases.cases
+            TestImpureCases.runEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         divergent.Oracle |> shouldEqual OraclePolicy.Never
@@ -290,7 +298,7 @@ module TestOraclePolicy =
         // fixture -- so the divergence is manufactured by declaring the real runtime's
         // answer as the expected one.
         let divergent =
-            TestImpureCases.cases
+            TestImpureCases.runEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let forced =

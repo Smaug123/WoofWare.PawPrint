@@ -328,7 +328,7 @@ module TestSockaddrDecoding =
             let throughOracle =
                 match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd case.Buffer case.Length system with
                 | Error refusal -> Error (ConnectRefusal.Copy refusal)
-                | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
+                | Ok (SockaddrCopyAdmission.Answered error) -> Ok (SyscallAnswer.Failed error, system)
                 | Ok (SockaddrCopyAdmission.Transfer length) ->
                     let socketId =
                         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with

@@ -377,19 +377,13 @@ module TestImpureCases =
         // count, or it is not testing anything the ASCII case doesn't.
         multiByteCurrentDirectory.Length |> shouldBeSmallerThan stackallocBytes
 
-    let unimplemented : EndToEndTestCase list =
+    /// The cases parked on every runtime, each with why it is parked, what would un-park it, and
+    /// how it was verified to behave on real .NET. `onRuntime` folds these into every runtime's
+    /// parks.
+    let parkedEverywhere : (EndToEndTestCase * string) list =
         [
-            // A *short* non-ASCII directory, parked for an unrelated reason:
-            // it fits the stackalloc, so `SystemNative_GetCwd` succeeds and
-            // ERANGE never enters into it, but decoding the bytes back with
-            // `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path,
-            // which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a
-            // `cgt.un` between two byrefs into one stackalloc block ("refusing
-            // cgt.un: no structural order between byrefs"). The ASCII siblings
-            // in `cases` cover the same handler; what is missing is byref
-            // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
-            // such a path directly in the meantime.
-            currentDirectoryCase "/héllo/中文/🐶"
+            currentDirectoryCase "/héllo/中文/🐶",
+            """A *short* non-ASCII directory, parked for an unrelated reason: it fits the stackalloc, so `SystemNative_GetCwd` succeeds and ERANGE never enters into it, but decoding the bytes back with `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path, which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a `cgt.un` between two byrefs into one stackalloc block ("refusing cgt.un: no structural order between byrefs"). The ASCII siblings in `cases` cover the same handler; what is missing is byref ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of such a path directly in the meantime."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -1653,7 +1647,8 @@ module TestImpureCases =
                 )
         }
 
-    let cases : EndToEndTestCase list =
+    /// The cases that run on every runtime. `onRuntime` folds these into every runtime's runs.
+    let runEverywhere : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
             // overflows the 256 bytes `Interop.Sys.GetCwd()` stackallocs, so
@@ -5115,6 +5110,34 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
         ]
+
+    /// The registered cases on one runtime. Each case carries its own expected ending, so a case
+    /// that ends differently on two runtimes is registered once in each runtime's arm.
+    type ImpureCasesOnRuntime =
+        {
+            /// The cases that run under PawPrint on this runtime.
+            Run : EndToEndTestCase list
+            /// The cases PawPrint is not expected to run correctly on this runtime, each with why
+            /// it is parked, what would un-park it, and how it was verified to behave on real .NET.
+            Parked : (EndToEndTestCase * string) list
+        }
+
+    /// Which cases run on `runtime`, and which are parked there.
+    let onRuntime (runtime : EmulatedRuntime) : ImpureCasesOnRuntime =
+        match runtime with
+        | EmulatedRuntime.Net10 ->
+            {
+                Run = runEverywhere
+                Parked = parkedEverywhere
+            }
+
+    /// The cases that run on the runtime under test.
+    let cases () : EndToEndTestCase list =
+        (onRuntime (FrameworkUnderTest.runtime ())).Run
+
+    /// The cases parked on the runtime under test.
+    let unimplemented () : EndToEndTestCase list =
+        (onRuntime (FrameworkUnderTest.runtime ())).Parked |> List.map fst
 
     /// Run `case` under PawPrint with its framework assemblies bound from `dotnetRuntimes`, the
     /// first directory holding an assembly's name winning, and on the real runtime too where the
