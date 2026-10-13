@@ -140,7 +140,7 @@ module TestInlineArrayLayout =
         ]
         |> Map.ofList
 
-    /// Combinations for which there is no oracle, because real .NET cannot run them.
+    /// Combinations for which there is no oracle on `runtime`, because real .NET cannot run them.
     ///
     /// An auto-layout inline array whose *multiplied* size is below the pointer size and is not a
     /// power of two gets exactly that as its alignment: nothing is recorded as a custom field
@@ -153,19 +153,30 @@ module TestInlineArrayLayout =
     ///
     /// PawPrint has no JIT, so it lays such a type out with the alignment CoreCLR computed and runs
     /// the program. That divergence is recorded in `docs/divergences.md`; what is asserted below is
-    /// only that the exclusion is still warranted, so that a future runtime which fixes the
-    /// upstream bug fails this fixture rather than quietly keeping a stale carve-out.
-    let private unrunnableCases : string list = [ "byte/auto" ; "short/auto" ]
+    /// only that the exclusion is still warranted, so that a runtime which fixes the upstream bug
+    /// fails this fixture on that runtime rather than quietly keeping a stale carve-out.
+    let unrunnableOn (runtime : EmulatedRuntime) : string list =
+        match runtime with
+        | EmulatedRuntime.Net10 -> [ "byte/auto" ; "short/auto" ]
 
-    let private cases : string list =
+    /// Every combination of element shape and buffer attribute the sweep can build.
+    let allCases : string list =
         [
             for element in elementShapes |> Map.toSeq |> Seq.map fst do
                 for attribute in bufferAttributes |> Map.toSeq |> Seq.map fst do
-                    let case = $"%s{element}/%s{attribute}"
-
-                    if not (List.contains case unrunnableCases) then
-                        yield case
+                    yield $"%s{element}/%s{attribute}"
         ]
+
+    /// The combinations the sweep compares against the real runtime on `runtime`.
+    let casesOn (runtime : EmulatedRuntime) : string list =
+        let unrunnable = unrunnableOn runtime
+
+        allCases |> List.filter (fun case -> not (List.contains case unrunnable))
+
+    let private unrunnableCases () : string list =
+        unrunnableOn (FrameworkUnderTest.runtime ())
+
+    let private cases () : string list = casesOn (FrameworkUnderTest.runtime ())
 
     let private source (element : ElementShape) (attribute : string) : string =
         $"""
@@ -310,9 +321,9 @@ public class TestInlineArrayLayoutSweep
 
         actual |> shouldEqual expected
 
-    /// The carve-out above is a claim about the *host* runtime, so it is measured, not assumed. A
-    /// runtime that fixed the upstream bug would make these shapes oracle-checkable again, and this
-    /// test is what would say so.
+    /// The carve-out above is a claim about the runtime under test, so it is measured, not assumed.
+    /// A runtime that fixed the upstream bug would make these shapes oracle-checkable again, and
+    /// this test is what would say so.
     [<TestCaseSource(nameof unrunnableCases)>]
     let ``The excluded shapes are ones the real runtime refuses to run`` (case : string) : unit =
         let elementKey, attributeKey =
@@ -330,5 +341,5 @@ public class TestInlineArrayLayoutSweep
                 $"%s{case}: the real runtime failed, but not with the InvalidProgramException this exclusion is for:\n%s{report}"
         | RealRuntimeResult.NormalExit exitCode ->
             failwith
-                $"%s{case}: the real runtime now runs this shape (exit code %d{exitCode}), so it has an oracle again and belongs in the sweep rather than in `unrunnableCases`"
+                $"%s{case}: the real runtime now runs this shape (exit code %d{exitCode}), so it has an oracle again and belongs in the sweep rather than in `unrunnableOn`"
         | RealRuntimeResult.Aborted (code, report) -> failwith $"%s{case}: real runtime aborted (%O{code}):\n%s{report}"
