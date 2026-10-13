@@ -552,7 +552,7 @@ type internal GetCwdRefusal =
     /// it decides which failure to report, and whether it has depends on a libc
     /// route this library cannot observe. It therefore over-refuses rather than
     /// answer some cells and die in others; the measurements are in
-    /// `docs/divergences.md`.
+    /// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
     | FatalToTheProcess
 
 [<RequireQualifiedAccess>]

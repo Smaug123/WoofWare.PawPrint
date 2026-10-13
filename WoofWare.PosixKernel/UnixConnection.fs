@@ -429,7 +429,9 @@ module UnixConnection =
     /// decodes to.
     ///
     /// Every answered row is measured (`connect_probe.c` and successors,
-    /// 2026-08-21; docs/plans/2026-08-21-socket-connect.md holds the table);
+    /// 2026-08-21;
+    /// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/plans/2026-08-21-socket-connect.md
+    /// holds the table);
     /// a `ConnectRefusal` names an unmeasured or unmodellable input, and a
     /// throw is a bug in this library or in the caller's state construction.
     let internal connectDecoded<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

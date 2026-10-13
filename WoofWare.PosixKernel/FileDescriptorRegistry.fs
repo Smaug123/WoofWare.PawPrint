@@ -312,7 +312,8 @@ type ConnectAttempt =
 ///
 /// What a refused socket's later connects answer is measured:
 /// `probe3.c`/`probe4.c` on Linux (2026-08-21; see
-/// docs/plans/2026-08-21-socket-connect.md for the full table), and Darwin
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/plans/2026-08-21-socket-connect.md
+/// for the full table), and Darwin
 /// 27.0.0 (2026-09-25).
 [<RequireQualifiedAccess>]
 type SocketPhase =
