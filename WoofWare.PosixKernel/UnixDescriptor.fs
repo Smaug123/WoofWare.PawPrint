@@ -1720,9 +1720,9 @@ module UnixDescriptor =
     /// write end reports 0. A connected socket reports what waits in its
     /// receive buffer. EBADF for a descriptor that is not open, whatever the
     /// destination; EFAULT for an unmapped destination, whatever is held. A
-    /// device answers its driver's errno whatever the destination
-    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
-    /// descriptor.
+    /// device answers its driver's errno whatever the destination: under
+    /// Linux, `ENOTTY` for `/dev/null` and `EINVAL` for `/dev/urandom`.
+    /// Refused for every other descriptor.
     ///
     /// Changes nothing.
     let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

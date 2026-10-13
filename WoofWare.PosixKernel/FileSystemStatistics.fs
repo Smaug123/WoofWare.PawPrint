@@ -488,8 +488,8 @@ module FileSystemStatistics =
     /// kernel of this platform whose root filesystem is `mount`.
     ///
     /// A file or directory gets the root filesystem's answer: `target` does not
-    /// say which filesystem its inode is on, so one on the device filesystem is
-    /// `ofDeviceMount`'s to answer.
+    /// say which filesystem its inode is on, so this does not answer for one on
+    /// the device filesystem. `UnixPathResolution.fstatfs` and `statfs` do.
     ///
     /// Refuses a platform and mount that do not describe one machine (see
     /// `EmulatedFileSystemType.isReportableUnder`), whatever the object.
