@@ -591,24 +591,20 @@ module NativeSystemNative =
 
         int written
 
-    /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
-    /// fds across the SystemNative boundary as plain `IntPtr` values (the low
-    /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
-    /// `NativeIntSource.Verbatim`. Refuses non-verbatim sources because their
-    /// provenance encodes something other than an fd integer, which the
-    /// FileDescriptorRegistry has no way to interpret.
+    /// Decode an `intptr_t` file-descriptor argument to the descriptor the
+    /// kernel is asked about, as the shim's `ToFileDescriptor`
+    /// (src/native/libs/Common/pal_utilities.h) does: by keeping the low 32
+    /// bits, so `0x1_0000_0003` is descriptor 3. PawPrint represents such an
+    /// argument as `NativeIntSource.Verbatim`. Refuses non-verbatim sources
+    /// because their provenance encodes something other than an fd integer,
+    /// which the FileDescriptorRegistry has no way to interpret.
     let private fdArgument (operation : string) (arg : CliType) : int =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)) ->
-            if value < int64 System.Int32.MinValue || value > int64 System.Int32.MaxValue then
-                // fds are int32-bounded on every Unix kernel we model. A
-                // value outside that range cannot correspond to a live fd in
-                // the registry; return a sentinel that will miss the table
-                // and produce EBADF, rather than silently truncating to a
-                // potentially-live fd.
-                System.Int32.MinValue
-            else
-                int value
+            // `ToFileDescriptor` asserts that the value is a plausible
+            // descriptor, but the shipped shim is a release build, so the
+            // assert is compiled out and what remains is `(int)fd`.
+            int value
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
             // `IntPtr.Zero` can arrive spelled as the null managed pointer
             // rather than as `Verbatim 0L`; the guest-level value is the
