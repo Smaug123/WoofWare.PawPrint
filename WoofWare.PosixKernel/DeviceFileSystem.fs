@@ -82,19 +82,20 @@ module CharacterDevice =
         | CharacterDevice.URandom -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "urandom"
         | CharacterDevice.Zero -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "zero"
         | CharacterDevice.Random -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "random"
-        | CharacterDevice.Tty -> failwith "CharacterDevice.name: Tty is not yet decided"
+        | CharacterDevice.Tty -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "tty"
 
     /// The permission bits of the device's node.
     let permissions (device : CharacterDevice) : PermissionBits =
-        // Measured on both flavours: crw-rw-rw- for all four nodes
+        // Measured on both flavours: crw-rw-rw- for all five nodes
         // (`devices.c`, STAT rows: mode 020666 for null, zero, random and
-        // urandom, on Linux 6.18.5 and on Darwin 27.0.0).
+        // urandom, on Linux 6.18.5 and on Darwin 27.0.0; `darwin-devfs.c`,
+        // STAT rows: the same for tty, on both).
         match device with
         | CharacterDevice.Null
         | CharacterDevice.URandom
         | CharacterDevice.Zero
-        | CharacterDevice.Random -> PermissionBits 0o666
-        | CharacterDevice.Tty -> failwith "CharacterDevice.permissions: Tty is not yet decided"
+        | CharacterDevice.Random
+        | CharacterDevice.Tty -> PermissionBits 0o666
 
     /// What an `ioctl(2)` the device's Linux driver does not recognise answers:
     /// `FIONREAD` and `TCGETS` (`tcgetattr`) among them, neither device being a
@@ -129,14 +130,15 @@ module CharacterDevice =
 
         // The mem driver's registrations, which are fixed: 1,3 for null, 1,5
         // for zero, 1,8 for random and 1,9 for urandom, measured on Linux
-        // 6.18.5 (`devices.c`, STAT rows).
+        // 6.18.5 (`devices.c`, STAT rows). The tty driver's `/dev/tty` is 5,0,
+        // also fixed, measured there too (`darwin-devfs.c`, STAT rows).
         let major, minor =
             match device with
             | CharacterDevice.Null -> 1L, 3L
             | CharacterDevice.Zero -> 1L, 5L
             | CharacterDevice.Random -> 1L, 8L
             | CharacterDevice.URandom -> 1L, 9L
-            | CharacterDevice.Tty -> failwith "CharacterDevice.specialFileDevice: Tty is not yet decided"
+            | CharacterDevice.Tty -> 5L, 0L
 
         // glibc's `makedev`, which is how a 64-bit Linux `stat` encodes the pair:
         // measured, 1,3 is reported as 259 and 1,9 as 265.

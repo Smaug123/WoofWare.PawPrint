@@ -2679,7 +2679,7 @@ module VirtualFileSystem =
 
         // Nothing in this version makes a socket inode or a FIFO inode:
         // `mknodat` of `S_IFSOCK` or `S_IFIFO`, and a Unix-domain `bind`, all
-        // refuse. Nor a node for zero or random: only the device filesystem's
+        // refuse. Nor a node for zero, random or tty: only the device filesystem's
         // mount makes device nodes, one for each device in
         // `CharacterDevice.all`, and `mknod` makes none. So one here came from
         // a bug.
@@ -2691,11 +2691,11 @@ module VirtualFileSystem =
                 | InodeContent.Socket _
                 | InodeContent.Fifo _
                 | InodeContent.CharacterDevice (CharacterDevice.Zero, _)
-                | InodeContent.CharacterDevice (CharacterDevice.Random, _) ->
+                | InodeContent.CharacterDevice (CharacterDevice.Random, _)
+                | InodeContent.CharacterDevice (CharacterDevice.Tty, _) ->
                     Some (VirtualFileSystemDefect.ReservedContent inode)
                 | InodeContent.CharacterDevice (CharacterDevice.Null, _)
                 | InodeContent.CharacterDevice (CharacterDevice.URandom, _)
-                | InodeContent.CharacterDevice (CharacterDevice.Tty, _)
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.Symlink _ -> None
