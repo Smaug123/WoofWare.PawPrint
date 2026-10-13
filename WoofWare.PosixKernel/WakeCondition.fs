@@ -177,8 +177,8 @@ type WakePrimitive =
 /// Data, and deliberately transparent: a client that cannot make progress needs
 /// to *read* a condition as well as evaluate it — for example, to advance the
 /// virtual clock to the nearest deadline when nothing is runnable, which
-/// `WakeCondition.deadlines` answers and a predicate could not. So no case may
-/// carry a function.
+/// `UnixWait.deadlines` answers from the parks' conditions and a predicate could
+/// not. So no case may carry a function.
 [<RequireQualifiedAccess>]
 type WakeCondition =
     /// Wait for this one primitive.
@@ -468,9 +468,11 @@ module WakeCondition =
     /// Every deadline in `condition`, in nanoseconds since boot, one per
     /// `DeadlinePassed` it contains.
     ///
-    /// What a client whose tasks are all asleep reads to learn how far it may
-    /// advance the clock before a parked call's timeout would fire.
-    let rec deadlines (condition : WakeCondition) : int64 list =
+    /// Internal because the condition alone will not always say when a park
+    /// times out: a timerfd's next expiry depends on its current setting, which
+    /// only the system holds. Clients read `UnixWait.deadlines`, which takes the
+    /// system.
+    let rec internal deadlines (condition : WakeCondition) : int64 list =
         match condition with
         | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
