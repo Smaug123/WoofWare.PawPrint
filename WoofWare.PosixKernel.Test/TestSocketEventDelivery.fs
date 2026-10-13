@@ -5,7 +5,9 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// The socket readiness delivery, row by measured row: every claim here is a
-/// row of `docs/plans/2026-08-21-socket-readiness-wake.md`'s tables (probes
+/// row of the tables in
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/plans/2026-08-21-socket-readiness-wake.md
+/// (probes
 /// `et.c`/`order2.c`/`order3.c`/`order4.c`, Linux 6.18.5). A process can see
 /// the delivered batches; what it cannot see is the ready list itself — which
 /// entries are pending, what consumption removed, where truncation stopped —

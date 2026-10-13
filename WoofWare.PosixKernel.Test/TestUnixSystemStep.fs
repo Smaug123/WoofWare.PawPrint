@@ -4142,7 +4142,8 @@ module TestUnixSystemStep =
         // write to the destination on these paths -- a NUL at the last byte, and
         // the stale path too once the buffer reaches PATH_MAX -- and this
         // library deliberately reports none of it: see
-        // `GetCwdOrphanAnswer.ShortestPathFirst` and docs/divergences.md.
+        // `GetCwdOrphanAnswer.ShortestPathFirst` and
+        // https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
         for capacity in [ 2UL ; 3UL ; 8UL ; 64UL ; 1023UL ; 1024UL ; 1025UL ; 4096UL ] do
             UnixPathResolution.tryGetcwd UserBuffer.Mapped capacity (atOrphan darwin)
             |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
