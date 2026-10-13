@@ -255,7 +255,11 @@ module UnixWait =
             // takes it (from Linux's source; which reader runs first is not
             // observable). Measured (`inotify-descriptor-probe.c` row S
             // two-sleepers-one-record): of two readers, one took the record.
-            | WakePrimitive.InotifyRecordQueued _ -> None
+            | WakePrimitive.InotifyRecordQueued _
+            // A signal is pending to the task it was sent to, or, sent to the
+            // process, to whichever task the receiver rule picks. No wait queue
+            // is shared.
+            | WakePrimitive.AwaitedSignalPending _ -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             views
@@ -316,6 +320,9 @@ module UnixWait =
                        }
                 | Some {
                            Syscall = ParkedSyscall.Sleep _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.SignalWait _
                        }
                 | Some {
                            Syscall = ParkedSyscall.FifoOpen _

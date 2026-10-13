@@ -180,6 +180,7 @@ module SyscallInterruption =
         // (`docs/probes/select-park`, row A3): a `select` a caught signal
         // interrupts answers EINTR under SA_RESTART too.
         | ParkedSyscall.Select _ -> SignalRestartRule.FailsWithEintr
+        | ParkedSyscall.SignalWait _ -> failwith "SyscallInterruption.ruleOf: SignalWait is not yet decided"
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]

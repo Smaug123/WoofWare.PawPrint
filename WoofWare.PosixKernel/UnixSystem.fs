@@ -2614,6 +2614,7 @@ module UnixSystem =
                 | None -> []
                 // Names no description.
                 | Some ParkedSyscall.SigSuspend -> []
+                | Some (ParkedSyscall.SignalWait _) -> []
                 | Some (ParkedSyscall.Sleep _ as parked)
                 | Some (ParkedSyscall.FifoOpen _ as parked)
                 | Some (ParkedSyscall.Select _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]

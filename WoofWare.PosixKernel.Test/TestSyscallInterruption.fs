@@ -764,6 +764,12 @@ module TestSyscallInterruption =
                 {
                     ParkedSelect.Deadline = Some 1L
                 }
+            ParkedSyscall.SignalWait
+                {
+                    Awaited = SignalMask.empty
+                    Deadline = None
+                    Destination = None
+                }
         ]
 
     /// The measured rule, per flavour, stated here rather than read from
@@ -774,7 +780,10 @@ module TestSyscallInterruption =
     /// the same on both flavours.
     /// A FIFO open restarts under SA_RESTART on Linux 6.18.5, and answers
     /// EINTR under it on Darwin 27.0.0. A read of an inotify instance restarts
-    /// under it (`inotify-probe.c` section B; Linux only).
+    /// under it (`inotify-probe.c` section B; Linux only). A signal wait
+    /// answers EINTR under it on Linux 6.18.5 (`docs/probes/sigwait`); on
+    /// Darwin 27.0.0 a handler does not end one at all, and the rule is
+    /// Linux's.
     let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         match parked with
         | ParkedSyscall.Flock _
@@ -790,7 +799,8 @@ module TestSyscallInterruption =
         | ParkedSyscall.KqueuePoll _
         | ParkedSyscall.SigSuspend
         | ParkedSyscall.Sleep _
-        | ParkedSyscall.Select _ -> SignalRestartRule.FailsWithEintr
+        | ParkedSyscall.Select _
+        | ParkedSyscall.SignalWait _ -> SignalRestartRule.FailsWithEintr
         | ParkedSyscall.FifoOpen _ ->
             match flavour with
             | SimulatedUnixFlavour.Linux -> SignalRestartRule.RestartsUnderSaRestart

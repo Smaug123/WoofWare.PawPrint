@@ -415,6 +415,14 @@ module GuestLocation =
                         | Some (ParkedSyscall.InotifyRead parked) ->
                             Some $"in a read of the inotify instance of open file description %O{parked.Instance}"
                         | Some (ParkedSyscall.Select _) -> Some "in select or pselect"
+                        | Some (ParkedSyscall.SignalWait parked) ->
+                            let until =
+                                match parked.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
+                            Some
+                                $"in sigwait, sigwaitinfo or sigtimedwait, for a signal of %s{parked.Awaited.Display}%s{until}"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

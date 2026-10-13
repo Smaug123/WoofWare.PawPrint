@@ -170,6 +170,16 @@ type WakePrimitive =
     /// takes the record, which a change to what the instance watches queues,
     /// in any process, or `inotify_rm_watch(2)`.
     | InotifyRecordQueued of reader : OpenFileDescriptionId
+    /// A signal in `awaited` is pending to the task that waits.
+    ///
+    /// What a signal wait (`sigwait(3)`, `sigwaitinfo(2)`, `sigtimedwait(2)`)
+    /// waits for. `awaited` is the call's set (`ParkedSignalWait.Awaited`).
+    /// Not `SignalDeliverable`: an awaited signal is taken by the call rather
+    /// than delivered, and is commonly blocked, or at its default action.
+    ///
+    /// Reserved: nothing parks a task in a signal wait yet, so no condition
+    /// this library hands out contains it.
+    | AwaitedSignalPending of awaited : SignalMask
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -288,6 +298,7 @@ module WakeCondition =
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
+        | Some (ParkedSyscall.SignalWait _)
         | Some (ParkedSyscall.FifoOpen _)
         // Only Linux has inotify, and its close leaves the read asleep.
         | Some (ParkedSyscall.InotifyRead _)
@@ -403,6 +414,9 @@ module WakeCondition =
                 InotifyQueue.isEmpty
                     (OpenFileTable.inotifyState "WakeCondition.satisfied" reader system.Machine.OpenFiles).Queue
             )
+        | WakePrimitive.AwaitedSignalPending _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but nothing parks a task in a signal wait yet (`ParkedSyscall.SignalWait` is reserved), and which pending signals such a wait may take is not modelled, so the park was recorded by hand (this is a bug in the caller that recorded it)."
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -492,7 +506,8 @@ module WakeCondition =
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
         | WakeCondition.Primitive WakePrimitive.EndedByClose
         | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _)
-        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _) -> []
+        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _)
+        | WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -632,6 +647,7 @@ module WakeCondition =
                 select.Deadline
                 |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
                 |> Option.toList
+            | ParkedSyscall.SignalWait _ -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 
