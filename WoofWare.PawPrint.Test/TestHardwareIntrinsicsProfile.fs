@@ -41,7 +41,7 @@ module TestHardwareIntrinsicsProfile =
         match flavour with
         | "framework under test" -> FrameworkUnderTest.runtimeDirs ()
         | "linux-x64" ->
-            LinuxCoreLibFlavour.requireLinuxFramework ()
+            FrameworkUnderTest.requireLinuxFrameworkDirectory ()
             |> LinuxCoreLibFlavour.runtimeDirsPreferringLinux
         | other -> failwith $"unknown flavour %s{other}"
 

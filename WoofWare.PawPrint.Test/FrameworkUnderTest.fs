@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open System.IO
 open Microsoft.Extensions.Logging.Abstractions
+open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
@@ -100,6 +101,33 @@ module FrameworkUnderTest =
             FrameworkUnderTestError.CoreLibMismatch (runtime, corelib.DefinitionFullName, corelib.OriginalPath, found)
             |> Error
 
+    /// `path` with every symbolic link along it resolved, so that two spellings of one directory
+    /// compare equal. The devshell's `dotnet` links each framework directory to the one its own
+    /// package installs, and the host is not consistent about which spelling it reports: CoreLib's
+    /// location has the links resolved, another framework assembly's does not. Fails on a chain of
+    /// more than 40 links, as `realpath` does (ELOOP).
+    let resolveLinks (path : string) : string =
+        let rec go (hops : int) (path : string) : string =
+            let full = Path.TrimEndingDirectorySeparator (Path.GetFullPath path)
+
+            match Path.GetDirectoryName full with
+            | null -> full
+            | parent ->
+                let candidate = Path.Combine (go hops parent, Path.GetFileName full)
+
+                match FileInfo(candidate).LinkTarget with
+                | null -> candidate
+                | target ->
+                    if hops >= 40 then
+                        failwith $"resolving %s{path} followed more than 40 symbolic links"
+
+                    // A relative target is relative to the link's own directory.
+                    match Path.GetDirectoryName candidate with
+                    | null -> failwith $"logic error: %s{candidate} has no directory"
+                    | linkDir -> go (hops + 1) (Path.Combine (linkDir, target))
+
+        go 0 path
+
     /// `runtimeDirs` as a framework for `runtime`: every directory exists, and the CoreLib a guest
     /// binds along them (the first `System.Private.CoreLib.dll`) is `runtime`'s.
     let check
@@ -181,6 +209,53 @@ module FrameworkUnderTest =
 
     /// The runtime under test.
     let runtime () : EmulatedRuntime = (selected ()).Runtime
+
+    /// The environment variable in which the Nix devshell names `runtime`'s pinned dotnet/runtime
+    /// source, a sparse checkout at the tag of the version `flake.nix` pins for it.
+    let runtimeSourceVariable (runtime : EmulatedRuntime) : string =
+        match runtime with
+        | EmulatedRuntime.Net10 -> "DOTNET_RUNTIME_SRC_NET10"
+
+    /// The environment variable in which the Nix devshell names the managed assemblies of
+    /// `runtime`'s linux-x64 runtime pack, at the version `flake.nix` pins for it.
+    let linuxFrameworkVariable (runtime : EmulatedRuntime) : string =
+        match runtime with
+        | EmulatedRuntime.Net10 -> "DOTNET_LINUX_FRAMEWORK_DIR_NET10"
+
+    let private devshellDirectory (variable : string) : string option =
+        match Environment.GetEnvironmentVariable variable with
+        | null
+        | "" -> None
+        | dir -> Some dir
+
+    /// The value of `variable`, or else the calling test is ignored: these directories exist only
+    /// inside the Nix devshell, so a plain `dotnet test` in a non-Nix checkout skips rather than
+    /// fails.
+    let private requireDevshellDirectory (variable : string) (purpose : string) : string =
+        match devshellDirectory variable with
+        | Some dir -> dir
+        | None ->
+            Assert.Ignore $"%s{variable} is unset; run under `nix develop` to %s{purpose}."
+            failwith "unreachable: Assert.Ignore did not throw"
+
+    /// The runtime under test's pinned dotnet/runtime source, or `None` outside the Nix devshell.
+    let runtimeSource () : string option =
+        devshellDirectory (runtimeSourceVariable (runtime ()))
+
+    /// The runtime under test's pinned dotnet/runtime source; outside the Nix devshell, the
+    /// calling test is ignored.
+    let requireRuntimeSource () : string =
+        requireDevshellDirectory (runtimeSourceVariable (runtime ())) "check against pinned upstream sources"
+
+    /// The runtime under test's pinned linux-x64 framework, or `None` outside the Nix devshell.
+    let linuxFrameworkDirectory () : string option =
+        devshellDirectory (linuxFrameworkVariable (runtime ()))
+
+    /// The runtime under test's pinned linux-x64 framework; outside the Nix devshell, the calling
+    /// test is ignored. Nothing a test asserts about a foreign CoreLib flavour has a meaningful
+    /// fallback.
+    let requireLinuxFrameworkDirectory () : string =
+        requireDevshellDirectory (linuxFrameworkVariable (runtime ())) "exercise the linux-x64 CoreLib"
 
     /// The `DotnetRuntimeDirs` to run a guest along. A caller may put directories ahead of these
     /// (the guest's own siblings, say); if one of them holds a CoreLib, the guest runs on that
