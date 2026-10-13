@@ -54,7 +54,7 @@ type ParkedKevent =
         /// The descriptor the call was made through.
         ///
         /// Kept beside the description because a close of this descriptor, and
-        /// of no other, ends the wait (see `KqueueState.Drained`).
+        /// of no other, ends the wait (see `WakePrimitive.KqueueDrained`).
         Fd : int
         /// The `nevents` the call was made with: positive, since a call with
         /// none to take returns at once.
@@ -150,7 +150,7 @@ type ParkedPoll =
 /// Darwin's `poll` registers, for each entry, one filter per group of the bits
 /// it asks for, each added once only (`EV_ONESHOT`): the first report it makes
 /// removes it, whether or not that report adds anything to the entry.
-type PollRegistration =
+type internal PollRegistration =
     {
         /// The index, in the call's entries, of the entry the filter reports
         /// into: the last entry naming this descriptor and filter, since a
@@ -197,31 +197,59 @@ type PollQueueId =
 /// in which order -- not only on what its descriptors present then.
 ///
 /// Held on the machine rather than in the call's park, because a socket event
-/// in any process's call activates its filters, as one does a kqueue's
-/// (`KqueueRegistration.Socket`), and no process's view holds another's tasks.
-/// It lives exactly as long as the park naming it (`ParkedKqueuePoll.Queue`):
-/// the park's end destroys it.
+/// in any process's call activates its filters, as one does a kqueue's, and no
+/// process's view holds another's tasks. It lives exactly as long as the park
+/// naming it (`ParkedKqueuePoll.Queue`): the park's end destroys it.
+///
+/// Its representation is internal, so a later version may change what a
+/// registration holds and what it is attached to without breaking a client. A
+/// client reads one through `PollQueue.registered`, `PollQueue.entry` and
+/// `PollQueue.activated`, and builds none.
 type PollQueue =
-    {
-        /// The process whose `poll` made the queue, whose descriptor table its
-        /// registrations' descriptor numbers are read in.
-        Owner : ProcessId
-        /// The filters still registered: those that have not yet reported, keyed
-        /// by descriptor number and filter. Closing a descriptor removes every
-        /// one made through it, as it does from a kqueue a process holds.
-        Registrations : Map<int * KqueueFilter, PollRegistration>
-        /// The registrations of sockets' filters something has activated since
-        /// the call last scanned, in the order they were activated: the order
-        /// a scan reports them in, which decides whether a reported `POLLHUP`
-        /// suppresses a socket's `POLLOUT`. Always a subset of
-        /// `Registrations`, with no duplicates, naming sockets alone.
-        ///
-        /// A pipe's filters are not listed: every operation that makes one
-        /// ready activates it (measured), and the order a pipe entry's two
-        /// filters report in cannot change what the entry answers, so a scan
-        /// reports a pipe's registration exactly while its filter is ready.
-        Active : (int * KqueueFilter) list
-    }
+    internal
+        {
+            /// The process whose `poll` made the queue, whose descriptor table its
+            /// registrations' descriptor numbers are read in.
+            Owner : ProcessId
+            /// The filters still registered: those that have not yet reported, keyed
+            /// by descriptor number and filter. Closing a descriptor removes every
+            /// one made through it, as it does from a kqueue a process holds.
+            Registrations : Map<int * KqueueFilter, PollRegistration>
+            /// The registrations of sockets' filters something has activated since
+            /// the call last scanned, in the order they were activated: the order
+            /// a scan reports them in, which decides whether a reported `POLLHUP`
+            /// suppresses a socket's `POLLOUT`. Always a subset of
+            /// `Registrations`, with no duplicates, naming sockets alone.
+            ///
+            /// A pipe's filters are not listed: every operation that makes one
+            /// ready activates it (measured), and the order a pipe entry's two
+            /// filters report in cannot change what the entry answers, so a scan
+            /// reports a pipe's registration exactly while its filter is ready.
+            Active : (int * KqueueFilter) list
+        }
+
+/// What a client reads of a sleeping Darwin poll's kqueue (`UnixSystem.pollQueue`).
+[<RequireQualifiedAccess>]
+module PollQueue =
+    /// The filters the call registered that have not yet reported, each as the
+    /// descriptor it was registered through and its filter, in ascending order.
+    let registered (queue : PollQueue) : (int * KqueueFilter) list =
+        queue.Registrations |> Map.toList |> List.map fst
+
+    /// The index, in the call's entries, of the entry that the filter `filter`
+    /// registered through `fd` reports into; `None` when no such filter is
+    /// registered. Where several entries name the same descriptor and filter,
+    /// it is the last of them.
+    let entry (fd : int) (filter : KqueueFilter) (queue : PollQueue) : int option =
+        queue.Registrations
+        |> Map.tryFind (fd, filter)
+        |> Option.map (fun (registration : PollRegistration) -> registration.Entry)
+
+    /// The registered filters that something has activated since the call
+    /// last scanned, in the order they were activated, which is the order the
+    /// call reports them in. In this version only a socket's filters are
+    /// listed: the call reports a pipe's filter exactly while it is ready.
+    let activated (queue : PollQueue) : (int * KqueueFilter) list = queue.Active
 
 /// One task's in-flight Darwin-flavoured `poll(2)`: its entries, the kqueue
 /// the call made for its own use, and when it times out.
@@ -495,6 +523,54 @@ type ParkedInotifyRead =
         Count : int
     }
 
+/// One task's in-flight `select(2)` or `pselect(2)`: the state the call fixed
+/// when it was entered.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client reads a select's wait through
+/// `WakeCondition.ofPark`, and builds none. Nothing in this version makes one:
+/// see `ParkedSyscall.Select`.
+type ParkedSelect =
+    internal
+        {
+            // What the two flavours' parks must hold beyond this is not
+            // settled: Darwin's call ends with EBADF when a selected
+            // descriptor is closed, Linux's sleeps on and reports it, and
+            // Darwin's readiness for each set is unmeasured
+            // (`docs/probes/select-park`).
+            /// The instant, in nanoseconds since boot, at which the call stops
+            /// waiting and returns 0; or `None` for a call with a null timeout.
+            Deadline : int64 option
+        }
+
+/// One task's in-flight `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`:
+/// Linux's `rt_sigtimedwait(2)` or Darwin's `__sigwait`, asleep until a signal
+/// in a set is pending. The state the call fixed when it was entered.
+///
+/// Reserved: nothing parks a task in a signal wait yet
+/// (`ParkedSyscall.SignalWait`).
+type ParkedSignalWait =
+    {
+        /// The signals the call takes, from the set its caller passed. They
+        /// need not be blocked: on both flavours the call takes an awaited
+        /// signal that arrives unblocked with a handler, and the handler does
+        /// not run.
+        Awaited : SignalMask
+        /// The instant, in nanoseconds since boot on the machine's virtual
+        /// clock, at which a Linux call with a timeout gives up and answers
+        /// `EAGAIN`. Fixed at the call: Linux never writes the remaining time
+        /// back. `None` for a call with no timeout, which is every Darwin call,
+        /// since Darwin has `sigwait(3)` alone.
+        Deadline : int64 option
+        /// Where the kernel reports the signal the call takes, as the caller
+        /// classified it when the call was entered: Linux writes a `siginfo_t`
+        /// to `info`, and Darwin an `int` to `sig`. `None` when that pointer
+        /// is null, which both kernels test for, and then write nothing. On
+        /// both flavours a destination the kernel cannot write fails the call
+        /// with `EFAULT`, and the signal is taken all the same.
+        Destination : UserBuffer option
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -543,6 +619,22 @@ type ParkedSyscall =
     /// A blocking `read(2)` of an inotify instance, waiting for a record or for
     /// a signal with a handler. Holds the instance (`ParkedInotifyRead.Instance`).
     | InotifyRead of ParkedInotifyRead
+    /// `select(2)` or `pselect(2)`, waiting for a descriptor in one of its sets
+    /// to be ready, for its deadline, or for a signal with a handler.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | Select of ParkedSelect
+    /// `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`: waiting for a
+    /// signal in its set to be pending, for its deadline if it has one, or,
+    /// under Linux, for a signal with a handler outside its set. Holds no open
+    /// file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | SignalWait of ParkedSignalWait
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -586,6 +678,10 @@ module ParkedSyscall =
         | ParkedSyscall.Sleep _ -> []
         | ParkedSyscall.FifoOpen fifoOpen -> [ fifoOpen.Opener ]
         | ParkedSyscall.InotifyRead read -> [ read.Instance ]
+        // Reserved, and holding nothing yet: Linux's will hold the description
+        // behind each selected descriptor, as its `poll` does.
+        | ParkedSyscall.Select _ -> []
+        | ParkedSyscall.SignalWait _ -> []
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -810,6 +906,8 @@ module UnixTaskTable =
             | ParkedSyscall.Sleep _ -> 11
             | ParkedSyscall.FifoOpen _ -> 12
             | ParkedSyscall.InotifyRead _ -> 13
+            | ParkedSyscall.Select _ -> 14
+            | ParkedSyscall.SignalWait _ -> 15
 
         let sameSyscall =
             match existing.Parked with

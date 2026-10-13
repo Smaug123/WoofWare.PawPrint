@@ -1,0 +1,33 @@
+# Darwin 27.0.0 arm64, 27.0.1
+# flavour darwin, uid 501
+entry pending-before=60000000 first: ret=0 sig=USR1 took=0 handled=- later=- pending=40000000 second: ret=0 sig=USR2 took=0 handled=- later=- pending=0
+during to=thread ret=0 sig=USR1 took=104 handled=- later=- pending=0
+during to=process ret=0 sig=USR1 took=103 handled=- later=- pending=0
+receiver main-blocks worker-sig=USR1 worker-took=101 main-handled=- main-pending=0
+receiver main-handles worker-sig=-77 worker-took=-1 main-handled=USR1@0 main-pending=0
+unblocked libc USR1 handler ret=0 sig=USR1 took=105 handled=- later=- pending=40000000
+unblocked libc USR1 SIG_DFL(terminate) ret=0 sig=USR1 took=104 handled=- later=- pending=40000000
+unblocked libc URG SIG_DFL(ignore) ret=0 sig=USR2 took=301 handled=- later=- pending=0
+unblocked libc USR1 SIG_IGN ret=0 sig=USR2 took=303 handled=- later=- pending=0
+unblocked raw USR1 handler ret=0 errno=0 sig=USR1 took=104 handled=- later=- pending=40000000
+unblocked raw USR1 SIG_DFL(terminate) ret=0 errno=0 sig=USR1 took=102 handled=- later=- pending=0
+unblocked raw URG SIG_DFL(ignore) ret=0 errno=0 sig=USR2 took=303 handled=- later=- pending=0
+unblocked raw USR1 SIG_IGN ret=0 errno=0 sig=USR2 took=300 handled=- later=- pending=0
+ignored during USR1 SIG_IGN ret=0 sig=USR2 took=305 handled=- later=- pending=0
+ignored during URG SIG_DFL(ignore) ret=0 sig=USR2 took=301 handled=- later=- pending=0
+ignored before USR1 SIG_IGN pending-before=0 ret=0 sig=USR2 took=302 handled=- later=- pending=0
+ignored before URG SIG_DFL(ignore) pending-before=0 ret=0 sig=USR2 took=301 handled=- later=- pending=0
+outside libc flags=0 ret=0 sig=USR1 took=305 handled=USR2@305 later=- pending=0
+outside libc flags=SA_RESTART ret=0 sig=USR1 took=301 handled=USR2@301 later=- pending=0
+outside raw flags=0 ret=0 errno=0 sig=USR1 took=305 handled=USR2@305 later=- pending=0
+outside raw flags=SA_RESTART ret=0 errno=0 sig=USR1 took=302 handled=USR2@302 later=- pending=0
+rank stop libc USR1-first ret=0 sig=USR1 took=159 handled=USR2@159 later=- pending=0
+rank stop libc USR2-first ret=0 sig=USR1 took=156 handled=USR2@156 later=- pending=0
+rank stop raw USR1-first ret=0 errno=0 sig=USR1 took=170 handled=USR2@170 later=- pending=0
+rank stop raw USR2-first ret=0 errno=0 sig=USR1 took=154 handled=USR2@154 later=- pending=0
+info raw null arrives-during ret=0 errno=0 took=101 pending-after=0
+info raw unmapped arrives-during ret=-1 errno=14 took=106 pending-after=0
+info raw null pending-at-entry ret=0 errno=0 took=0 pending-after=0
+info raw unmapped pending-at-entry ret=-1 errno=14 took=0 pending-after=0
+set empty raw: ret=-1 errno=22 libc: ret=22
+set KILL,STOP raw: ret=-1 errno=22 libc: ret=22

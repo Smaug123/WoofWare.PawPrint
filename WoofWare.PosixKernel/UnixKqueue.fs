@@ -108,7 +108,7 @@ type KeventOutcome =
     ///
     /// Any change the call applied before it failed stays applied, with the
     /// system this rides with. A finishing call fails with `EBADF` when a close
-    /// has drained the kqueue (see `KqueueState.Drained`), and with `EINTR`
+    /// has drained the kqueue (see `UnixDescriptor.close`), and with `EINTR`
     /// when a signal with a handler interrupts the wait.
     | Failed of error : UnixError
     /// `kevent` returned these entries of its changelist, in changelist order:
@@ -281,10 +281,9 @@ module UnixKqueue =
         Ok (fd, UnixSystemState.withFileDescriptors registry system)
 
     /// <summary>
-    /// `kqueue(2)`: create a kqueue, owned by the calling process
-    /// (`KqueueState.Owner`), and a descriptor onto it, the lowest one not in
-    /// use. The description is blocking, and the descriptor has `FD_CLOEXEC`
-    /// and `FD_CLOFORK`.
+    /// `kqueue(2)`: create a kqueue, owned by the calling process, and a
+    /// descriptor onto it, the lowest one not in use. The description is
+    /// blocking, and the descriptor has `FD_CLOEXEC` and `FD_CLOFORK`.
     ///
     /// Under the Linux flavour every call is refused: Linux has no kqueue.
     /// </summary>
@@ -335,6 +334,8 @@ module UnixKqueue =
         match filter with
         | KqueueFilter.Read -> KeventFilter.Read
         | KqueueFilter.Write -> KeventFilter.Write
+        // `EVFILT_TIMER`, in Darwin's `<sys/event.h>`.
+        | KqueueFilter.Timer -> -7s
 
     /// The event `report` is, in Darwin's numbering.
     let private eventOf (platform : SimulatedUnixPlatform) (report : KqueueReport) : Kevent =
@@ -734,7 +735,7 @@ module UnixKqueue =
     /// anything returns at once with no events.
     ///
     /// Otherwise an `nevents` of zero or less returns no events at once; a
-    /// kqueue a close has drained (see `KqueueState.Drained`) fails with
+    /// kqueue a close has drained (see `UnixDescriptor.close`) fails with
     /// `EBADF`; and otherwise the call reports up to `nevents` events. It walks
     /// the kqueue's queue in order, reading each registration's filter again:
     /// one no longer ready leaves the queue and reports nothing, and one that

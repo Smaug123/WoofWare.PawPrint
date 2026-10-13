@@ -38,7 +38,7 @@ type WakePrimitive =
     | EpollEventDeliverable of epoll : OpenFileDescriptionId
     /// The kqueue the open file description `kqueue` names has been drained:
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
-    /// has ended every wait on it (see `KqueueState.Drained`).
+    /// has ended every wait on it (see `UnixDescriptor.close`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
     /// A wait for events on the kqueue the open file description `kqueue`
     /// names would report at least one now.
@@ -170,6 +170,16 @@ type WakePrimitive =
     /// takes the record, which a change to what the instance watches queues,
     /// in any process, or `inotify_rm_watch(2)`.
     | InotifyRecordQueued of reader : OpenFileDescriptionId
+    /// A signal in `awaited` is pending to the task that waits.
+    ///
+    /// What a signal wait (`sigwait(3)`, `sigwaitinfo(2)`, `sigtimedwait(2)`)
+    /// waits for. `awaited` is the call's set (`ParkedSignalWait.Awaited`).
+    /// Not `SignalDeliverable`: an awaited signal is taken by the call rather
+    /// than delivered, and is commonly blocked, or at its default action.
+    ///
+    /// Reserved: nothing parks a task in a signal wait yet, so no condition
+    /// this library hands out contains it.
+    | AwaitedSignalPending of awaited : SignalMask
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -288,9 +298,11 @@ module WakeCondition =
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
+        | Some (ParkedSyscall.SignalWait _)
         | Some (ParkedSyscall.FifoOpen _)
         // Only Linux has inotify, and its close leaves the read asleep.
         | Some (ParkedSyscall.InotifyRead _)
+        | Some (ParkedSyscall.Select _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -402,6 +414,9 @@ module WakeCondition =
                 InotifyQueue.isEmpty
                     (OpenFileTable.inotifyState "WakeCondition.satisfied" reader system.Machine.OpenFiles).Queue
             )
+        | WakePrimitive.AwaitedSignalPending _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but nothing parks a task in a signal wait yet (`ParkedSyscall.SignalWait` is reserved), and which pending signals such a wait may take is not modelled, so the park was recorded by hand (this is a bug in the caller that recorded it)."
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -491,7 +506,8 @@ module WakeCondition =
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
         | WakeCondition.Primitive WakePrimitive.EndedByClose
         | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _)
-        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _) -> []
+        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _)
+        | WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -625,6 +641,27 @@ module WakeCondition =
             // inotify.
             | ParkedSyscall.InotifyRead read ->
                 [ WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued read.Instance) ]
+            // Its deadline, or a signal. The descriptors it waits on join this
+            // when something parks a task in it.
+            | ParkedSyscall.Select select ->
+                select.Deadline
+                |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                |> Option.toList
+            // An awaited signal, its deadline, or (below, as for every park) a
+            // signal with a handler outside its set. Under Darwin a signal
+            // outside the set does not end the call (measured,
+            // `docs/probes/sigwait`): its handler runs only once the call
+            // returns. Saying so for a Darwin task in a signal wait is
+            // `SignalDeliverable`'s evaluation's, which is not modelled:
+            // evaluating this condition fails at `AwaitedSignalPending`.
+            | ParkedSyscall.SignalWait wait ->
+                let deadline =
+                    wait.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
+
+                WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending wait.Awaited)
+                :: deadline
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

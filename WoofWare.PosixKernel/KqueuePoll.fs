@@ -156,6 +156,7 @@ module internal KqueuePoll =
         let hungUp = revents &&& DarwinPollEvents.Hup <> 0s
 
         match filter with
+        | KqueueFilter.Timer -> ReservedTimerFilter.fail "UnixPoll.poll"
         | KqueueFilter.Read ->
             let mask =
                 if hungUp then
