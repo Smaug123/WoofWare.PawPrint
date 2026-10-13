@@ -119,6 +119,22 @@ type internal CallSite =
     /// the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
 
+/// What a body's conditional branches test, from which an instance of the body works out which of
+/// its offsets a run may execute (`ControlFlow.mayExecute`).
+type internal Branching =
+    {
+        Body : MethodInstructions<TypeDefn>
+        /// The Boolean that the instruction before a branch is known to push, by its offset, in
+        /// every instance: what a capability query returns on this CPU, or whether objects that are
+        /// all null, or all not null, are an object.
+        Constants : Map<int, bool>
+        /// The objects that the instruction before a `brtrue` or `brfalse` pushes, by its offset,
+        /// where only an instance can decide whether they are null.
+        Tests : Map<int, Set<SpelledObject>>
+        /// What each `ret` returns, by its offset; a `jmp` returns `Unknown`.
+        Returns : Map<int, StackValue>
+    }
+
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
 /// own exception clauses can be applied to all three alike.
@@ -151,8 +167,12 @@ type internal LocalFacts =
         /// What the body's `ret`s return, over every path to them.
         Returns : StackValue
         /// The arguments, by index, whose objects can decide something of what the body does: what
-        /// it passes to a call, a virtual call's receiver among them, and what it returns.
+        /// it passes to a call, a virtual call's receiver among them, what it returns, and what a
+        /// branch tests.
         Consults : Set<int>
+        /// What decides which offsets a run of one instance of the body may execute; `None` for a
+        /// method with no IL the analysis follows.
+        Branching : Branching option
     }
 
 /// What a `rethrow` re-raises of one thing its clause's protected block raised.
@@ -212,17 +232,49 @@ type internal Instantiation =
     /// One instantiation: the declaring type's arguments, then the method's own.
     | Closed of typeArguments : ConcreteTypeHandle list * methodArguments : ConcreteTypeHandle list
 
+/// The objects a value may be, as an instance of a method decides them.
+type internal ObjectClasses =
+    {
+        /// The class of each object it may be: each type, and whether the object's class is
+        /// exactly it, rather than it or one derived from it.
+        Classes : Set<ConcreteTypeHandle * bool>
+        /// Whether it may be null.
+        MayBeNull : bool
+    }
+
+[<RequireQualifiedAccess>]
+module internal ObjectClasses =
+
+    /// No object, and not null either: a value nothing reaches, from which a join starts.
+    let none : ObjectClasses =
+        {
+            Classes = Set.empty
+            MayBeNull = false
+        }
+
+    /// Null, and no object.
+    let onlyNull : ObjectClasses =
+        {
+            Classes = Set.empty
+            MayBeNull = true
+        }
+
+    /// A value that may be anything either may be.
+    let union (a : ObjectClasses) (b : ObjectClasses) : ObjectClasses =
+        {
+            Classes = Set.union a.Classes b.Classes
+            MayBeNull = a.MayBeNull || b.MayBeNull
+        }
+
 /// One instantiation of a method definition, as the calls reaching it call it, which a summary is
 /// computed for.
 type internal MethodInstance =
     {
         Definition : MethodKey
         Arguments : Instantiation
-        /// The classes of the objects these calls pass as some of the method's arguments, by
-        /// index, `this` at 0: each type, and whether the object's class is exactly it; empty for
-        /// an argument they pass only null. An argument absent here may be any object of its
-        /// declared type.
-        Passed : Map<int, Set<ConcreteTypeHandle * bool>>
+        /// The objects these calls pass as some of the method's arguments, by index, `this` at 0.
+        /// An argument absent here may be null or any object of its declared type.
+        Passed : Map<int, ObjectClasses>
     }
 
 /// What a call dispatched on a receiver's type does in one instance of the method making it.
@@ -288,10 +340,11 @@ type EscapeAnalysisState =
             Summaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
-            /// The classes of the objects each instance returns, as far as it has been asked
-            /// (`returnsOf`): each type, and whether the object's class is exactly it; `None` where
-            /// only the declared return type says.
-            Returns : Map<MethodInstance, (ConcreteTypeHandle * bool) list option>
+            /// The objects each instance returns, as far as it has been asked (`returnsOf`);
+            /// `None` where only the declared return type says.
+            Returns : Map<MethodInstance, ObjectClasses option>
+            /// The facts of each instance asked about so far (`instanceFacts`).
+            InstanceFacts : Map<MethodInstance, LocalFacts>
         }
 
 /// <summary>
@@ -337,11 +390,13 @@ type EscapeAnalysisState =
 /// <c>throw</c> of a value of a static type raises that type or a subtype. An object a call
 /// returns is of the classes the callee's <c>ret</c>s return in the instance the call reaches.
 ///
-/// A method's summary is computed for each combination of classes its callers pass it, as the
-/// arguments its body makes a virtual call on, returns or passes on: an object passed is of the
-/// classes the caller says, so a helper called with a <c>new Dog()</c> runs <c>Dog</c>'s overrides
-/// there. Asked about by itself, a method may be passed any object its parameter types admit, and
-/// so may one whose body stores to the argument or takes its address.
+/// A method's summary is computed for each combination of objects its callers pass it, as the
+/// arguments its body makes a virtual call on, returns, passes on or tests: an object passed is of
+/// the classes the caller says, so a helper called with a <c>new Dog()</c> runs <c>Dog</c>'s
+/// overrides there, and is null or not as the caller says, so a <c>brtrue</c> or <c>brfalse</c>
+/// straight after loading it goes only the way that decides. Asked about by itself, a method may be
+/// passed null or any object its parameter types admit, and so may one whose body stores to the
+/// argument or takes its address.
 ///
 /// The native libraries the framework ships with its CoreLib (<c>FrameworkShim</c>) are assumed to
 /// be present and to export what its P/Invokes import, so that calling one of their functions
@@ -434,6 +489,7 @@ module EscapeAnalysis =
             Summaries = Map.empty
             Bases = Map.empty
             Returns = Map.empty
+            InstanceFacts = Map.empty
         }
 
     /// The analysis `state` begins, with nothing summarised yet, summarising every call of a method
@@ -444,6 +500,7 @@ module EscapeAnalysis =
             InstanceCalls = Map.empty
             Summaries = Map.empty
             Returns = Map.empty
+            InstanceFacts = Map.empty
         }
 
     let private assemblyOf (state : EscapeAnalysisState) (fullName : string) : DumpedAssembly =
@@ -1891,6 +1948,85 @@ module EscapeAnalysis =
             Effects = effects
         }
 
+    /// Whether a value that is one of `objects` is known to be an object (`Some true`), as a
+    /// `brtrue` tests it, or known to be null (`Some false`), given the objects the body is passed
+    /// as its arguments.
+    let private objectIsKnown (passed : Map<int, ObjectClasses>) (objects : Set<SpelledObject>) : bool option =
+        let isObject (object : SpelledObject) : bool option =
+            match object with
+            | SpelledObject.Null -> Some false
+            | SpelledObject.Exactly _ -> Some true
+            | SpelledObject.Argument (index, _) ->
+                match passed.TryFind index with
+                | Some passed when not passed.MayBeNull -> Some true
+                | Some passed when passed.Classes.IsEmpty -> Some false
+                | _ -> None
+            | SpelledObject.Within _
+            | SpelledObject.Returned _ -> None
+
+        match objects |> Seq.map isObject |> Seq.distinct |> List.ofSeq with
+        | [ known ] -> known
+        | _ -> None
+
+    /// Whether `spelling` is of a reference type, whatever the instantiation: `string`, `object`,
+    /// an array, or a class. A type variable may be a value type.
+    let private isReference (state : EscapeAnalysisState) (spelling : SpelledType) : EscapeAnalysisState * bool =
+        match TypeDefn.stripCustomModifiers spelling.Type with
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.PrimitiveType PrimitiveType.Object
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> state, true
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.GenericInstantiation _ ->
+            match nominalIdentity state (assemblyOf state spelling.SpelledIn) spelling.Type with
+            | state, Some identity ->
+                let valueType = state.BaseTypes.ValueType.Identity
+                let state, derivesFromValueType = derivesFrom state identity valueType
+
+                state,
+                not derivesFromValueType
+                || identity = valueType
+                || identity = state.BaseTypes.Enum.Identity
+            | state, None -> state, false
+        | _ -> state, false
+
+    /// Whether every object among `objects` is spelled, in `spellings`, as of a reference type, so
+    /// that whether it is null is what a `brtrue` tests of it. An object a call returns that names
+    /// no declared type is not.
+    let private allReferences
+        (state : EscapeAnalysisState)
+        (spellings : SpelledType[])
+        (objects : SpelledObject list)
+        : EscapeAnalysisState * bool
+        =
+        ((state, true), objects)
+        ||> List.fold (fun (state, soFar) object ->
+            if not soFar then
+                state, false
+            else
+                match object with
+                | SpelledObject.Null -> state, true
+                | SpelledObject.Exactly index
+                | SpelledObject.Within index
+                | SpelledObject.Argument (_, index)
+                | SpelledObject.Returned (_, Some index) -> isReference state spellings.[index]
+                | SpelledObject.Returned (_, None) -> state, false
+        )
+
+    /// What the `ret`s among `sites` that a run executes return, over all of them.
+    let private returnedOver (sites : Map<int, StackValue>) (executed : Set<int>) : StackValue =
+        ((Some Set.empty), sites)
+        ||> Map.fold (fun returned offset value ->
+            match returned, value with
+            | _ when not (executed.Contains offset) -> returned
+            | Some returned, StackValue.Objects objects -> Some (Set.union returned objects)
+            | _, StackValue.Unknown
+            | None, _ -> None
+        )
+        |> Option.map StackValue.Objects
+        |> Option.defaultValue StackValue.Unknown
+
     let private opaqueFromEntry (reason : Opacity) : LocalFacts =
         {
             Raises = []
@@ -1903,6 +2039,7 @@ module EscapeAnalysis =
             Spellings = [||]
             Returns = StackValue.Unknown
             Consults = Set.empty
+            Branching = None
         }
 
     /// The exceptions an operation of the runtime's own can raise (`runtimeRaises`). Its contract
@@ -2003,6 +2140,7 @@ module EscapeAnalysis =
                 Spellings = [||]
                 Returns = StackValue.Unknown
                 Consults = Set.empty
+                Branching = None
             }
 
         let exactly (names : ExceptionName list) : ThrownType list =
@@ -2572,7 +2710,7 @@ module EscapeAnalysis =
             made @ arguments
 
         // What each call to a capability query returns on this CPU, which decides a branch on it.
-        let constants =
+        let capabilities =
             ops
             |> Seq.indexed
             |> Seq.choose (fun (index, (op, offset)) ->
@@ -2586,6 +2724,42 @@ module EscapeAnalysis =
                 | _ -> None
             )
             |> Map.ofSeq
+
+        // The objects each `brtrue` or `brfalse` tests, by the offset of the instruction before it,
+        // which pushes them, where each is spelled as a reference: a branch on a value type, such as
+        // an `IntPtr` that `newobj` made, tests the value, not whether it is null. Where the
+        // instruction before does not fall through, something else lands on the branch.
+        let state, tested =
+            ((state, Map.empty), Seq.pairwise ops)
+            ||> Seq.fold (fun (state, tested) ((before, beforeOffset), (op, offset)) ->
+                match op with
+                | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _ | UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _) when
+                    not (capabilities.ContainsKey beforeOffset)
+                    ->
+                    match ControlFlow.successorsOf beforeOffset before, objectsAt offset 0 with
+                    | Successors.FallThrough, Some objects ->
+                        let state, references = allReferences state spellings objects
+
+                        if references then
+                            state, Map.add beforeOffset (Set.ofList objects) tested
+                        else
+                            state, tested
+                    | _ -> state, tested
+                | _ -> state, tested
+            )
+
+        // A test the body decides by itself, whatever its callers pass, is a constant like a
+        // capability query's; the rest only an instance decides.
+        let constants =
+            (capabilities, tested)
+            ||> Map.fold (fun constants offset objects ->
+                match objectIsKnown Map.empty objects with
+                | Some known -> Map.add offset known constants
+                | None -> constants
+            )
+
+        let tests =
+            tested |> Map.filter (fun offset _ -> not (constants.ContainsKey offset))
 
         let executed = ControlFlow.mayExecute body constants
 
@@ -2628,21 +2802,25 @@ module EscapeAnalysis =
                 | _ -> opaque, rethrows
             )
 
-        // What the body returns: the top of the stack at each `ret` a run can reach. A `jmp`
-        // returns whatever the method it transfers to does, which this does not follow.
-        let returns =
-            ((Some Set.empty), ops)
-            ||> Array.fold (fun returned (op, offset) ->
-                match op, returned with
-                | _ when not (executed.Contains offset) -> returned
-                | IlOp.Nullary NullaryIlOp.Ret, Some returned ->
-                    objectsAt offset 0
-                    |> Option.map (fun objects -> Set.union returned (Set.ofList objects))
-                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _), _ -> None
-                | _ -> returned
+        // What each `ret` returns: the top of the stack there. A `jmp` returns whatever the
+        // method it transfers to does, which this does not follow.
+        let returnSites =
+            ops
+            |> Seq.choose (fun (op, offset) ->
+                match op with
+                | IlOp.Nullary NullaryIlOp.Ret ->
+                    let returned =
+                        match objectsAt offset 0 with
+                        | Some objects -> StackValue.Objects (Set.ofList objects)
+                        | None -> StackValue.Unknown
+
+                    Some (offset, returned)
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _) -> Some (offset, StackValue.Unknown)
+                | _ -> None
             )
-            |> Option.map StackValue.Objects
-            |> Option.defaultValue StackValue.Unknown
+            |> Map.ofSeq
+
+        let returns = returnedOver returnSites executed
 
         let consults =
             let ofValue (value : StackValue) : int list =
@@ -2664,6 +2842,9 @@ module EscapeAnalysis =
                         yield! ofValue passed
 
                 yield! ofValue returns
+
+                for objects in tests.Values do
+                    yield! ofValue (StackValue.Objects objects)
             ]
             |> Set.ofList
 
@@ -2679,6 +2860,14 @@ module EscapeAnalysis =
             Spellings = spellings
             Returns = returns
             Consults = consults
+            Branching =
+                Some
+                    {
+                        Body = body
+                        Constants = constants
+                        Tests = tests
+                        Returns = returnSites
+                    }
         }
 
     /// How deeply an instance's type arguments may nest. A generic method can call itself at a
@@ -3176,59 +3365,110 @@ module EscapeAnalysis =
             },
             facts
 
+    /// The facts of `instance`: those of its definition, less what a run of the instance cannot
+    /// reach, given which of the objects its callers pass are null (`MethodInstance.Passed`).
+    let private instanceFacts
+        (state : EscapeAnalysisState)
+        (instance : MethodInstance)
+        : EscapeAnalysisState * LocalFacts
+        =
+        match state.InstanceFacts.TryFind instance with
+        | Some facts -> state, facts
+        | None ->
+            let state, facts = factsFor state instance.Definition
+
+            let refined =
+                match facts.Branching with
+                | None -> facts
+                | Some branching ->
+                    let decided =
+                        branching.Tests
+                        |> Map.toList
+                        |> List.choose (fun (offset, objects) ->
+                            objectIsKnown instance.Passed objects |> Option.map (fun known -> offset, known)
+                        )
+
+                    if decided.IsEmpty then
+                        facts
+                    else
+                        let constants =
+                            (branching.Constants, decided)
+                            ||> List.fold (fun constants (offset, known) -> Map.add offset known constants)
+
+                        let executed = ControlFlow.mayExecute branching.Body constants
+                        let at (offset : int) : bool = executed.Contains offset
+
+                        { facts with
+                            Raises = facts.Raises |> List.filter (fst >> at)
+                            Opaque = facts.Opaque |> List.filter (fun (offset, _, _) -> at offset)
+                            Assumed = facts.Assumed |> List.filter (fst >> at)
+                            Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
+                            Rethrows = facts.Rethrows |> List.filter (fst >> at)
+                            Returns = returnedOver branching.Returns executed
+                        }
+
+            { state with
+                InstanceFacts = state.InstanceFacts.Add (instance, refined)
+            },
+            refined
+
     /// How many classes an object a call returns, or passes, may be of before only the type
     /// declared for it says what it is.
     let private returnedClassesLimit : int = 8
 
-    /// The classes an object among `objects` may be of in `instance`, whose definition's facts are
-    /// `facts`: each type, and whether the object's class is exactly it, rather than it or one
-    /// derived from it. `None` where the instance does not decide them. `inProgress` holds the
-    /// returns being worked out; a return that depends on one of them is its declared type.
+    /// The objects an object among `objects` may be in `instance`, whose facts are `facts`; `None`
+    /// where the instance does not decide their classes. `inProgress` holds the returns being
+    /// worked out; a return that depends on one of them is its declared type.
     let rec private objectTypes
         (state : EscapeAnalysisState)
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
         (objects : Set<SpelledObject>)
-        : EscapeAnalysisState * (ConcreteTypeHandle * bool) list option
+        : EscapeAnalysisState * ObjectClasses option
         =
-        let ofSpelling (state : EscapeAnalysisState) (index : int) (exact : bool) =
+        // An object of the type spelled at `index`, or of one derived from it unless `exact`, or
+        // null where `mayBeNull`.
+        let ofSpelling (state : EscapeAnalysisState) (index : int) (exact : bool) (mayBeNull : bool) =
             let spelling = facts.Spellings.[index]
 
             if not spelling.InBodyContext then
                 state, None
             else
                 match concretizeIn state instance.Arguments spelling.Type spelling.SpelledIn with
-                | state, Some handle -> state, Some [ handle, exact ]
+                | state, Some handle ->
+                    state,
+                    Some
+                        {
+                            Classes = Set.singleton (handle, exact)
+                            MayBeNull = mayBeNull
+                        }
                 | state, None -> state, None
 
-        let state, types =
-            ((state, Some []), objects)
-            ||> Set.fold (fun (state, soFar) object ->
-                match soFar with
-                | None -> state, None
-                | Some soFar ->
-                    let state, types =
-                        match object with
-                        | SpelledObject.Null -> state, Some []
-                        | SpelledObject.Exactly index -> ofSpelling state index true
-                        | SpelledObject.Within index -> ofSpelling state index false
-                        | SpelledObject.Returned (call, declared) ->
-                            match returnedBy state inProgress instance facts call with
-                            | state, Some types -> state, Some types
-                            | state, None ->
-                                match declared with
-                                | Some index -> ofSpelling state index false
-                                | None -> state, None
-                        | SpelledObject.Argument (index, declared) ->
-                            match instance.Passed.TryFind index with
-                            | Some types -> state, Some (Set.toList types)
-                            | None -> ofSpelling state declared false
+        ((state, Some ObjectClasses.none), objects)
+        ||> Set.fold (fun (state, soFar) object ->
+            match soFar with
+            | None -> state, None
+            | Some soFar ->
+                let state, objects =
+                    match object with
+                    | SpelledObject.Null -> state, Some ObjectClasses.onlyNull
+                    | SpelledObject.Exactly index -> ofSpelling state index true false
+                    | SpelledObject.Within index -> ofSpelling state index false true
+                    | SpelledObject.Returned (call, declared) ->
+                        match returnedBy state inProgress instance facts call with
+                        | state, Some objects -> state, Some objects
+                        | state, None ->
+                            match declared with
+                            | Some index -> ofSpelling state index false true
+                            | None -> state, None
+                    | SpelledObject.Argument (index, declared) ->
+                        match instance.Passed.TryFind index with
+                        | Some passed -> state, Some passed
+                        | None -> ofSpelling state declared false true
 
-                    state, types |> Option.map (fun types -> soFar @ types)
-            )
-
-        state, types |> Option.map List.distinct
+                state, objects |> Option.map (ObjectClasses.union soFar)
+        )
 
     /// `reached`, as a call in `instance` that passes `passes` (`LocalFacts.Calls`) reaches it:
     /// with the classes of the objects it passes as each argument `reached`'s body consults, where
@@ -3254,13 +3494,21 @@ module EscapeAnalysis =
             ((state, Map.empty), reachedFacts.Consults)
             ||> Set.fold (fun (state, passed) index ->
                 match index, receiver with
-                | 0, Some receiver -> state, Map.add 0 (Set.singleton receiver) passed
+                | 0, Some receiver ->
+                    state,
+                    Map.add
+                        0
+                        {
+                            Classes = Set.singleton receiver
+                            MayBeNull = false
+                        }
+                        passed
                 | _ ->
                     match List.tryItem index passes with
                     | Some (StackValue.Objects objects) ->
                         match objectTypes state inProgress instance facts objects with
-                        | state, Some types when types.Length <= returnedClassesLimit ->
-                            state, Map.add index (Set.ofList types) passed
+                        | state, Some objects when objects.Classes.Count <= returnedClassesLimit ->
+                            state, Map.add index objects passed
                         | state, _ -> state, passed
                     | Some StackValue.Unknown
                     | None -> state, passed
@@ -3300,7 +3548,7 @@ module EscapeAnalysis =
         (instance : MethodInstance)
         (facts : LocalFacts)
         (call : int)
-        : EscapeAnalysisState * (ConcreteTypeHandle * bool) list option
+        : EscapeAnalysisState * ObjectClasses option
         =
         let pending = Pending.Call (instance, call)
 
@@ -3370,13 +3618,13 @@ module EscapeAnalysis =
         match reached with
         | None -> state, None
         | Some reached ->
-            ((state, Some []), reached)
+            ((state, Some ObjectClasses.none), reached)
             ||> List.fold (fun (state, soFar) reached ->
                 match soFar with
                 | None -> state, None
                 | Some soFar ->
                     match returnsOf state inProgress reached with
-                    | state, Some types -> state, Some (soFar @ types)
+                    | state, Some objects -> state, Some (ObjectClasses.union soFar objects)
                     | state, None -> state, None
             )
 
@@ -3397,9 +3645,9 @@ module EscapeAnalysis =
 
         match objectTypes state inProgress instance facts receivers with
         | state, None -> state, None
-        | state, Some types ->
+        | state, Some objects ->
             let state, outcomes =
-                ((state, []), types)
+                ((state, []), Set.toList objects.Classes)
                 ||> List.fold (fun (state, outcomes) (receiver, exact) ->
                     let state, outcome =
                         dispatchOn state assembly instance.Arguments receiver exact callee
@@ -3412,20 +3660,20 @@ module EscapeAnalysis =
 
             state, Some (List.rev outcomes)
 
-    /// The classes of the objects `instance` returns, over every `ret` of its body: each type, and
-    /// whether the object's class is exactly it. `None` where only its declared return type says,
-    /// which is also the answer for a return that depends on one in `inProgress`.
+    /// The objects `instance` returns, over every `ret` a run of it reaches. `None` where only its
+    /// declared return type says, which is also the answer for a return that depends on one in
+    /// `inProgress`.
     and private returnsOf
         (state : EscapeAnalysisState)
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
-        : EscapeAnalysisState * (ConcreteTypeHandle * bool) list option
+        : EscapeAnalysisState * ObjectClasses option
         =
         match state.Returns.TryFind instance with
         | Some known -> state, known
         | None when inProgress.Contains (Pending.Return instance) -> state, None
         | None ->
-            let state, facts = factsFor state instance.Definition
+            let state, facts = instanceFacts state instance
 
             let state, types =
                 match facts.Returns with
@@ -3434,7 +3682,8 @@ module EscapeAnalysis =
                     objectTypes state (Set.add (Pending.Return instance) inProgress) instance facts objects
 
             let types =
-                types |> Option.filter (fun types -> types.Length <= returnedClassesLimit)
+                types
+                |> Option.filter (fun types -> types.Classes.Count <= returnedClassesLimit)
 
             { state with
                 Returns = state.Returns.Add (instance, types)
@@ -3634,7 +3883,7 @@ module EscapeAnalysis =
             | key :: rest when state.Summaries.ContainsKey key || state.InstanceCalls.ContainsKey key ->
                 discover state rest found
             | key :: rest ->
-                let state, facts = factsFor state key.Definition
+                let state, facts = instanceFacts state key
                 let state, calls = callsOf state key facts
 
                 let state =
@@ -3648,7 +3897,7 @@ module EscapeAnalysis =
 
         // Whether a raise at `offset` of `key`'s body gets out of it.
         let escapesAt (state : EscapeAnalysisState) (key : MethodInstance) (offset : int) (thrown : ThrownType option) =
-            let facts = state.Facts.[key.Definition]
+            let facts = state.InstanceFacts.[key]
             escapesHandlers state (assemblyOf state key.Definition.AssemblyFullName) facts.Regions offset thrown
 
         // What each `rethrow` in `key`'s body re-raises, given what its callees let escape: what
@@ -3662,7 +3911,7 @@ module EscapeAnalysis =
             (summaryOf : MethodInstance -> Escapes)
             : EscapeAnalysisState * (int * Raised) list
             =
-            let facts = state.Facts.[key.Definition]
+            let facts = state.InstanceFacts.[key]
             let calls = state.InstanceCalls.[key]
             let assembly = assemblyOf state key.Definition.AssemblyFullName
 
@@ -3752,7 +4001,7 @@ module EscapeAnalysis =
             ]
 
         let seedOf (state : EscapeAnalysisState) (key : MethodInstance) : EscapeAnalysisState * Escapes =
-            let facts = state.Facts.[key.Definition]
+            let facts = state.InstanceFacts.[key]
             let calls = state.InstanceCalls.[key]
 
             // What happens outside the body is past all its handlers.
@@ -3975,7 +4224,7 @@ module EscapeAnalysis =
             (within : int -> bool)
             : EscapeAnalysisState * OpaqueSite list * UnnamedAt list
             =
-            let facts = state.Facts.[key.Definition]
+            let facts = state.InstanceFacts.[key]
             let calls = instanceCalls key
             let assembly = assemblyOf state key.Definition.AssemblyFullName
 
@@ -4024,7 +4273,7 @@ module EscapeAnalysis =
             let state, sites, onward =
                 match next with
                 | UnnamedAt.Escaping key ->
-                    let facts = state.Facts.[key.Definition]
+                    let facts = state.InstanceFacts.[key]
 
                     // What happens outside the body is past all its handlers.
                     let outside =
@@ -4041,7 +4290,7 @@ module EscapeAnalysis =
                     let state, sites, onward = reaching state key facts.Regions (fun _ -> true)
                     state, outside @ sites, ranOutside @ onward
                 | UnnamedAt.Rethrown (key, offset) ->
-                    let facts = state.Facts.[key.Definition]
+                    let facts = state.InstanceFacts.[key]
                     let assembly = assemblyOf state key.Definition.AssemblyFullName
 
                     let clause =

@@ -561,6 +561,35 @@ public static class ContextCases
     // `Type ==` calls `Equals` only when neither operand is a RuntimeType.
     public static bool SameType() => typeof(string) == typeof(object);
 
+    // `ThrowIfNull` throws only for a null argument, which its callers here decide.
+    static void Check(object o) => ArgumentNullException.ThrowIfNull(o);
+
+    static object Make() => new object();
+
+    public static void ThrowsIfNullOnNew() => ArgumentNullException.ThrowIfNull(new object());
+
+    public static void ChecksNew() => Check(new object());
+
+    public static void ChecksString() => Check("s");
+
+    public static void ChecksMade() => Check(Make());
+
+    public static void ChecksNull() => Check(null);
+
+    public static void ChecksEither(bool b) => Check(b ? new object() : null);
+
+    public static void ChecksParameter(object o) => Check(o);
+
+    static object Unset;
+
+    // A field may hold null.
+    public static void ChecksField() => Check(Unset);
+
+    static object First(object[] xs) => xs[0];
+
+    // An element may be null, so what returns one may too.
+    public static void ChecksElement() => Check(First(new object[1]));
+
 }
 
 public sealed class Sealed
@@ -1070,6 +1099,44 @@ public static class SR
             }
             { expect "Fixture.ContextCases" "ConstructsQuiet" with
                 Excludes = [ "=Fixture.Bark" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ThrowsIfNullOnNew" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksNew" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksString" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            // What a call returns is never null when every `ret` of what it reaches returns an
+            // object `newobj` made.
+            { expect "Fixture.ContextCases" "ChecksMade" with
+                Excludes = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksNull" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksEither" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksParameter" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksField" with
+                Contains = [ "=System.ArgumentNullException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ChecksElement" with
+                Contains = [ "=System.ArgumentNullException" ]
                 Unknown = Some false
             }
             { expect "Fixture.ContextCases" "SameType" with
@@ -5087,6 +5154,104 @@ public static class Runners
 
         let _, failures =
             dispatchFailures fixture "Loops" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// An image whose branches test a value type that `newobj` made, which no C# spells, so that
+    /// the branch tests the value rather than whether an object is null:
+    ///   - `Runners.ZeroPointer`: `ldc.i4.0; newobj IntPtr(int); brtrue L; a / b`;
+    ///   - `Runners.PassesZeroPointer`: passes that `IntPtr` to `Runners.Divides`, which branches
+    ///     on it the same way.
+    let private fabricateValueBranches () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Branches", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Branches"
+
+        let runners =
+            modul.DefineType (
+                "Branches.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let staticAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+        let pointer = typeof<nativeint>.GetConstructor [| typeof<int> |]
+
+        // `brtrue` over the `IntPtr` on the stack, then `a / b` from arguments `a` and `b`.
+        let divideUnless (il : Emit.ILGenerator) (a : Emit.OpCode) (b : Emit.OpCode) =
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit a
+            il.Emit b
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+        let zeroPointer =
+            runners.DefineMethod ("ZeroPointer", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = zeroPointer.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit (Emit.OpCodes.Newobj, pointer)
+        divideUnless il Emit.OpCodes.Ldarg_0 Emit.OpCodes.Ldarg_1
+
+        let divides =
+            runners.DefineMethod (
+                "Divides",
+                staticAttributes,
+                typeof<int>,
+                [| typeof<nativeint> ; typeof<int> ; typeof<int> |]
+            )
+
+        let il = divides.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        divideUnless il Emit.OpCodes.Ldarg_1 Emit.OpCodes.Ldarg_2
+
+        let passesZeroPointer =
+            runners.DefineMethod ("PassesZeroPointer", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = passesZeroPointer.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit (Emit.OpCodes.Newobj, pointer)
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit (Emit.OpCodes.Call, divides)
+        il.Emit Emit.OpCodes.Ret
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a branch on a value type that newobj made is not a test of whether it is null`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateValueBranches ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Branches.dll") (new MemoryStream (image))
+
+        let cases =
+            [
+                "ZeroPointer", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                "PassesZeroPointer", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Branches" image
+
+        let _, failures =
+            dispatchFailures fixture "Branches" runtime cases (analysisOver [ fixture ] id)
 
         match failures with
         | [] -> ()
