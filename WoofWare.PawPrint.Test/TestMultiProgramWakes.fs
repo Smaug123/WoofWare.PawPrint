@@ -21,9 +21,10 @@ open WoofWare.PosixKernel
 ///
 /// After every tick's preamble, the sweep has woken every thread it should: a sweep of the
 /// machine as the preamble leaves it, asked about the threads each program's state shows asleep,
-/// wakes nobody. Each run's trace, every tick's program, thread and step counter and the threads
-/// its preamble woke, is written to the test's output as a digest, so that two builds can be
-/// compared run for run.
+/// wakes nobody. And each program's kept syscall sleepers are the ones its thread states and the
+/// kernel's parks show (`Scheduler.checkSyscallSleepers`). Each run's trace, every tick's
+/// program, thread and step counter and the threads its preamble woke, is written to the test's
+/// output as a digest, so that two builds can be compared run for run.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 // Runs guests under the interpreter; see AGENTS.md for why that makes it `Explicit`, and CI
@@ -429,6 +430,9 @@ public static class Program
             | [] -> ()
             | missed -> failwith $"%A{case}: after the preamble of tick %d{tick}, a sweep still wakes %A{missed}"
 
+            for _, program in programs advanced do
+                Scheduler.checkSyscallSleepers program.State
+
             let after = waiters advanced
             let currentPid = UnixSystem.processId advanced.Current.State.Kernel.System
 
@@ -496,7 +500,10 @@ public static class Program
         |> Convert.ToHexString
 
     [<Test>]
-    let ``after every preamble no thread asleep in the kernel is left for a sweep to wake`` () : unit =
+    let ``after every preamble no thread asleep in the kernel is left for a sweep to wake, and each program keeps the sleepers its threads show``
+        ()
+        : unit
+        =
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
