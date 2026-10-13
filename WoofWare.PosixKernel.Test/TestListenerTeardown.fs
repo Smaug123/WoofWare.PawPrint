@@ -494,6 +494,121 @@ module TestListenerTeardown =
             replayed |> shouldEqual measured
 
     // ------------------------------------------------------------------
+    // A client that closes while its connection is queued
+    // ------------------------------------------------------------------
+
+    /// `queued-client-reset.c`'s row `row` on the kernel: a client connects,
+    /// writes 100 bytes if the row says `wrote`, sets `SO_LINGER` {1, 0} if it
+    /// says `reset`, and closes while its connection is still queued; then
+    /// the listener's readiness, a bind of the client's endpoint, the accept,
+    /// and what the accepted socket answers, a write and the read and
+    /// `SO_ERROR` after it included, printed as the probe prints them.
+    let private kernelQueuedClient (flavour : SimulatedUnixFlavour) (row : string) : string =
+        let system = systemOn (platformOf flavour)
+
+        // The probe ignores SIGPIPE.
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals =
+                            SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore system.Process.Signals
+                    }
+            }
+
+        let listener, system = listenerAt system
+        let client, system = connectTo system
+
+        let clientPort =
+            match (UnixMachineState.socket (socketOf client system) system.Machine).Ipv4Binding with
+            | Some binding -> binding.Endpoint.Port
+            | None -> failwith "the connected client is unbound"
+
+        let system =
+            if row.EndsWith ("wrote", StringComparison.Ordinal) then
+                write client 100 system |> snd
+            else
+                system
+
+        let system =
+            if row.StartsWith ("reset", StringComparison.Ordinal) then
+                lingerZero client system
+            else
+                system
+
+        let system =
+            match UnixDescriptor.tryClose client system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"%s{row}: the client's close answered %A{other}"
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        let listenerPoll, system =
+            match
+                UnixPoll.tryPoll
+                    1
+                    [
+                        {
+                            Fd = listener
+                            Events = 0x1s
+                        }
+                    ]
+                    0
+                    system
+            with
+            | Ok (PollOutcome.Answered ([ revents ], _), system) -> int (uint16 revents), system
+            | other -> failwith $"poll: %A{other}"
+
+        let bound = bindFree clientPort system
+
+        let accepted, system =
+            match UnixConnection.tryAccept 1 listener UserBuffer.Mapped 16u system with
+            | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
+            | other -> failwith $"%s{row}: the accept answered %A{other}"
+
+        let _, system = UnixDescriptor.setNonBlocking accepted true system
+        let r1, system = read accepted system
+        let r2, system = read accepted system
+        let soerr, system = socketError accepted system
+
+        let peer =
+            match UnixSocket.tryGetpeername accepted UserBuffer.Mapped 16u system with
+            | Ok (GetSockNameAnswer.Reported _) -> "ok"
+            | Ok (GetSockNameAnswer.Failed (error, _)) -> $"%A{error}"
+            | Error refusal -> failwith $"getpeername refused: %s{GetSockNameRefusal.describe refusal}"
+
+        let w, system = write accepted 100 system
+        let r3, system = read accepted system
+        let soerr2, system = socketError accepted system
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        // The probe ignores SIGPIPE, so its write reports no signal.
+        let w = w.Replace ("+SIGPIPE", "")
+
+        $"Q\t%s{row}\tlistener-poll=0x%x{listenerPoll} %s{bound} accept=ok read=%s{r1},%s{r2} soerr=%s{soerr} getpeername=%s{peer} write100=%s{w} read=%s{r3} soerr=%s{soerr2}"
+
+    /// Measured on both (`queued-client-reset.c`): a connection whose client
+    /// closes while it waits in the accept queue is still accepted, and the
+    /// accepted socket reads what the client sent and then end of file after
+    /// a FIN, or `ECONNRESET` and then end of file after a reset, which also
+    /// frees the client's endpoint at once.
+    [<Test>]
+    let ``a connection whose client closed while it was queued is accepted, as each flavour was measured to``
+        ()
+        : unit
+        =
+        for flavour in flavours do
+            let replayed =
+                [ "fin" ; "fin-wrote" ; "reset" ; "reset-wrote" ]
+                |> List.map (kernelQueuedClient flavour)
+
+            let measured = resource "queuedClientReset" flavour
+            measured |> List.length |> shouldEqual 4
+
+            for replayed, measured in List.zip replayed measured do
+                replayed |> shouldEqual measured
+
+    // ------------------------------------------------------------------
     // A client whose connect has not reported its completion
     // ------------------------------------------------------------------
 

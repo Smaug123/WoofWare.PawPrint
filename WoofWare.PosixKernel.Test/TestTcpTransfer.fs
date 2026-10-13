@@ -755,7 +755,7 @@ module TestTcpTransfer =
                 Stranded =
                     match transfer.Rules with
                     | TcpTransferRules.Linux _ -> 0
-                    | TcpTransferRules.Darwin stranded ->
+                    | TcpTransferRules.Darwin (stranded, _) ->
                         Map.tryFind (TcpTransferReference.other e) stranded |> Option.defaultValue 0
                 SendCap = d.SendCapacity
                 RecvCap = d.ReceiveCapacity

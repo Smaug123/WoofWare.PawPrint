@@ -3017,15 +3017,16 @@ module UnixSocket =
     ///
     /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
     /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
-    /// belongs with `close`, which does not model it yet. A close
-    /// of a connected socket that it changes is refused: with a time of zero,
-    /// a reset rather than an orderly shutdown; with a positive time, a wait
-    /// for bytes still in the send buffer, on Linux whatever `O_NONBLOCK` is
-    /// and on Darwin through a blocking description. So is any close of its
-    /// last descriptor while a call in flight that the close does not end
-    /// holds it, whatever the time.
-    /// Every other close is the one it would be anyway: a FIN, or a reset if
-    /// bytes were left unread.
+    /// belongs with `close`: with a time of zero, the close of a connected
+    /// socket is abortive, a reset unless both FINs have arrived. A close it
+    /// would make wait is refused: with a positive time, for bytes still in
+    /// the send buffer, on Linux whatever `O_NONBLOCK` is and on Darwin
+    /// through a blocking description; and so is Darwin's close under a time
+    /// of zero after its own FIN, still queued, met the peer's, whose reset
+    /// waits on the peer's reads. So is any close of its last descriptor
+    /// while a call in flight that the close does not end holds it, whatever
+    /// the time. Every other close is the one it would be anyway: a FIN, or a
+    /// reset if bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener does not reach

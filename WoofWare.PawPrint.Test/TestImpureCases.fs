@@ -1287,6 +1287,25 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketAbortiveClose.cs` under `platform`: a client's close lingering
+    /// for no time, by `LingerState` {1, 0} and by `Close(0)`, resets the
+    /// connection: the server reads what was sent, then `ConnectionReset`, then
+    /// end of file, and the client's endpoint binds at once. Compared against
+    /// the real runtime on a host of the same flavour.
+    let private socketAbortiveCloseCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketAbortiveClose.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     /// `SocketSendReceive.cs` under `platform`: the synchronous Socket API and
     /// hand-rolled P/Invokes of `SystemNative_Receive`, `SystemNative_Send`,
     /// `SystemNative_GetBytesAvailable`, `SystemNative_Read` and
@@ -1789,6 +1808,8 @@ module TestImpureCases =
             socketSendReceiveCase SimulatedUnixPlatform.macOsArm64
             socketShutdownCase SimulatedUnixPlatform.linuxX64
             socketShutdownCase SimulatedUnixPlatform.macOsArm64
+            socketAbortiveCloseCase SimulatedUnixPlatform.linuxX64
+            socketAbortiveCloseCase SimulatedUnixPlatform.macOsArm64
             networkStreamAsyncCase SimulatedUnixPlatform.linuxX64
             networkStreamAsyncCase SimulatedUnixPlatform.macOsArm64
             {
