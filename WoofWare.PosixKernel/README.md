@@ -286,7 +286,7 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 From version 1.0, adding a case to any union whose cases are public is a breaking change, and comes only in a major version.
 F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
 The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a place that throws `UnmodelledException` (see "Answers, and what this library will not answer"), which needs no new case.
-Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `CharacterDevice.Tty`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`, `ParkedSyscall.Select`, `ParkedSyscall.SignalWait`, `WakePrimitive.FifoPartnerOpened` and `WakePrimitive.AwaitedSignalPending`.
+Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `CharacterDevice.Tty`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`, `ParkedSyscall.Select`, `ParkedSyscall.SignalWait`, `ParkedSyscall.DatagramReceive`, `ParkedSyscall.DatagramSend`, `WakePrimitive.FifoPartnerOpened` and `WakePrimitive.AwaitedSignalPending`.
 Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
 
 The defects the `checkInvariants` functions report (`UnixSystemDefect`, `VirtualFileSystemDefect`, `FileDescriptorRegistryDefect` and `SimulatedMachineDefect`) are open too, and have no patterns at all.
@@ -618,9 +618,10 @@ A woken task finishes its call through its family's finishing function, which ma
 
 Each answers what the call that parked answered, as in the tables above.
 
-`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`), `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`), `ParkedSyscall.Select` (a `select` or `pselect`, carrying a `ParkedSelect`, whose representation is internal) and `ParkedSyscall.SignalWait` (a `sigwait`, `sigwaitinfo` or `sigtimedwait`, carrying a `ParkedSignalWait`) are reserved: nothing parks a task in any of them yet, and none has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`), `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`), `ParkedSyscall.Select` (a `select` or `pselect`, carrying a `ParkedSelect`, whose representation is internal), `ParkedSyscall.SignalWait` (a `sigwait`, `sigwaitinfo` or `sigtimedwait`, carrying a `ParkedSignalWait`), `ParkedSyscall.DatagramReceive` (a blocking receive on a datagram socket, carrying a `ParkedDatagramReceive`) and `ParkedSyscall.DatagramSend` (a blocking Linux Unix-domain datagram send, carrying a `ParkedDatagramSend`) are reserved: nothing parks a task in any of them yet, and none has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
+The two datagram parks' payloads have internal representations too.
 So are the primitives a FIFO open and a signal wait wait for, `WakePrimitive.FifoPartnerOpened` and `WakePrimitive.AwaitedSignalPending`, which no condition contains yet.
-The cases exist so that a client's matches already handle them when sleeps, FIFOs, `select` and signal waits arrive.
+The cases exist so that a client's matches already handle them when sleeps, FIFOs, `select`, signal waits and datagram transfers arrive.
 
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.

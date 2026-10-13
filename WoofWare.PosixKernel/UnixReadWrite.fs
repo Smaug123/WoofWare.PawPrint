@@ -3515,6 +3515,8 @@ module UnixReadWrite =
         | Some (ParkedSyscall.FifoOpen _)
         | Some (ParkedSyscall.InotifyRead _)
         | Some (ParkedSyscall.Select _)
+        | Some (ParkedSyscall.DatagramReceive _)
+        | Some (ParkedSyscall.DatagramSend _)
         | None -> None
 
     /// The write `task` is asleep in.

@@ -770,6 +770,14 @@ module TestSyscallInterruption =
                     Deadline = None
                     Destination = None
                 }
+            ParkedSyscall.DatagramReceive
+                {
+                    ParkedDatagramReceive.Socket = description
+                }
+            ParkedSyscall.DatagramSend
+                {
+                    ParkedDatagramSend.Socket = description
+                }
         ]
 
     /// The measured rule, per flavour, stated here rather than read from
@@ -783,7 +791,8 @@ module TestSyscallInterruption =
     /// under it (`inotify-probe.c` section B; Linux only). A signal wait
     /// answers EINTR under it on Linux 6.18.5 (`docs/probes/sigwait`); on
     /// Darwin 27.0.0 a handler does not end one at all, and the rule is
-    /// Linux's.
+    /// Linux's. A datagram receive and a Linux Unix-domain datagram send
+    /// restart under it (`datagram-park.c`).
     let private measuredRule (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         match parked with
         | ParkedSyscall.Flock _
@@ -792,7 +801,9 @@ module TestSyscallInterruption =
         | ParkedSyscall.PipeWrite _
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _
-        | ParkedSyscall.InotifyRead _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.InotifyRead _
+        | ParkedSyscall.DatagramReceive _
+        | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _

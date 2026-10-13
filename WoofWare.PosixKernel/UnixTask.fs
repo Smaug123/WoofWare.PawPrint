@@ -571,6 +571,42 @@ type ParkedSignalWait =
         Destination : UserBuffer option
     }
 
+/// One task's in-flight blocking receive on a datagram socket that had
+/// nothing queued: a `read(2)`, `recv(2)`, `recvfrom(2)` or `recvmsg(2)`.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.DatagramReceive`.
+type ParkedDatagramReceive =
+    internal
+        {
+            // What else it must hold is the datagram data path's design: which
+            // call it is, where `recvfrom`'s address and `recvmsg`'s message
+            // header go, and, under Darwin, that a close of the descriptor has
+            // ended it (`docs/probes/datagram-park`, row R3).
+            /// The open file description of the socket the call was made
+            /// through, which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
+/// One task's in-flight blocking send of a datagram on a Unix-domain socket
+/// whose receiver, or whose own send buffer, had no room for it: a Linux
+/// `write(2)`, `send(2)`, `sendto(2)` or `sendmsg(2)`.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.DatagramSend`.
+type ParkedDatagramSend =
+    internal
+        {
+            // What else it must hold is the datagram data path's design: the
+            // datagram's destination, and which of Linux's two waits (the
+            // receiver's queue, or the sender's buffer) it is in.
+            /// The open file description of the socket the call was made
+            /// through, which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -635,6 +671,24 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
     /// defect.
     | SignalWait of ParkedSignalWait
+    /// A blocking receive on a datagram socket, UDP or Unix-domain, connected
+    /// or not, through `read(2)`, `recv(2)`, `recvfrom(2)` or `recvmsg(2)`:
+    /// it sleeps until a datagram arrives, on both flavours, or a signal with
+    /// a handler interrupts it. Holds the socket's open file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | DatagramReceive of ParkedDatagramReceive
+    /// A blocking send of a datagram on a Unix-domain socket, which under Linux
+    /// sleeps while the receiver's queue or the sender's own buffer is full. A
+    /// UDP send never sleeps, and a Darwin Unix-domain send that has no room
+    /// fails with `ENOBUFS`. Holds the socket's open file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | DatagramSend of ParkedDatagramSend
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -682,6 +736,10 @@ module ParkedSyscall =
         // behind each selected descriptor, as its `poll` does.
         | ParkedSyscall.Select _ -> []
         | ParkedSyscall.SignalWait _ -> []
+        // Measured under Linux (`docs/probes/datagram-park`, row R3): a close
+        // of the descriptor leaves a sleeping receive holding the socket.
+        | ParkedSyscall.DatagramReceive receive -> [ receive.Socket ]
+        | ParkedSyscall.DatagramSend send -> [ send.Socket ]
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -908,6 +966,8 @@ module UnixTaskTable =
             | ParkedSyscall.InotifyRead _ -> 13
             | ParkedSyscall.Select _ -> 14
             | ParkedSyscall.SignalWait _ -> 15
+            | ParkedSyscall.DatagramReceive _ -> 16
+            | ParkedSyscall.DatagramSend _ -> 17
 
         let sameSyscall =
             match existing.Parked with

@@ -100,6 +100,8 @@ module TestDatagramPark =
                 |> UnixSystem.checkInvariants
                 |> shouldEqual [ UnixSystemDefect.ReservedPark (task, parked) ]
 
-                OpenFileTable.holdCount socket asleep.Machine.OpenFiles |> shouldEqual (Some 2)
+                // The park holds the description it names, once.
+                OpenFileTable.holdCount socket awake.Machine.OpenFiles |> shouldEqual (Some 0)
+                OpenFileTable.holdCount socket asleep.Machine.OpenFiles |> shouldEqual (Some 1)
                 UnixWait.deadlines (Set.singleton task) asleep |> shouldEqual []
                 UnixWait.satisfied task asleep |> shouldEqual (Some Set.empty)
