@@ -7,7 +7,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Tests for the comparison behind the `MdUtf8String_EqualsCaseInsensitive` QCall.
 ///

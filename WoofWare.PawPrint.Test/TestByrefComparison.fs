@@ -6,7 +6,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `ceqNormalised` is the single place three boundaries — `ceq` on byrefs,
 /// `Unsafe.AreSame`, and pointer comparison in `NativeIntSource` — decide whether two

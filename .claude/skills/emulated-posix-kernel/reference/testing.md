@@ -1,13 +1,16 @@
-# Testing a kernel fact: choosing a tier
+# Testing a kernel fact in PawPrint: choosing a tier
 
-Three tiers can observe a kernel fact, and each one is blind to something the
-others see. Picking wrong wastes a cycle.
+Three tiers in `WoofWare.PawPrint.Test` can observe what a guest is told about
+the kernel, and each one is blind to something the others see. Picking wrong
+wastes a cycle. The kernel's own unit and host-equality tests are in its
+repository, and a fact the kernel decides is tested there first.
 
 ## Host-equality tests
 
-`TestVirtualFileSystemAgainstHost`, `TestPlatformSocketSupport`. For any fact
-measurable on the machine running the test, this is the strongest form — and the
-assertion should be **equality against the host**, not a bracketing check:
+`TestPlatformSocketSupport`, `TestSocketCreation`, `TestFileStatusPal`. For any
+fact measurable on the machine running the test, this is the strongest form —
+and the assertion should be **equality against the host**, not a bracketing
+check:
 
 ```fsharp
 let modelled = SimulatedUnixPlatform.pathLimits (hostPlatform ())
@@ -36,9 +39,6 @@ The oracle covers only the host's column. Swapping pipefs and sockfs survives it
 on macOS, because Darwin answers `EINVAL` for both; the Linux guest is what kills
 that mutant. Per-flavour guests and the host oracle are complementary across
 environments, not redundant.
-
-`TestVirtualFileSystemAgainstHost` cannot express `FinalNavigation.Root`: it
-prefixes every path with a temp directory, so `/` arrives as a named component.
 
 ## `sourcesPure`
 

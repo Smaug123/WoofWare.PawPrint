@@ -7,7 +7,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// The name-to-value view CoreCLR's Unix PAL presents over the kernel's `envp`,
 /// which is what `GetEnvironmentVariableW` and PawPrint's own knob lookups read.

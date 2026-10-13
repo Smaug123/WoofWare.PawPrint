@@ -11,7 +11,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// A <c>TypeDefn</c> is a DAG, not a tree: nothing stops the same subterm appearing in several

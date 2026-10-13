@@ -6,7 +6,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `IntrinsicHelpers.offsetManagedPointerByElements` is the shared element-offset walk behind
 /// `Unsafe.Add`, `Unsafe.Subtract`, `Span<T>.get_Item` and friends. Every branch of it combines the

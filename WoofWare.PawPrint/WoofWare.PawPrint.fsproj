@@ -259,6 +259,10 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
     <PackageReference Include="WoofWare.Myriad.Plugins" Version="$(WoofWareMyriadPluginsVersion)" PrivateAssets="all" />
     <PackageReference Include="Myriad.Sdk" Version="0.8.3" PrivateAssets="all" />
+    <!-- The emulated POSIX kernel, developed at https://github.com/Smaug123/WoofWare.PosixKernel.
+         A change to it lands there and arrives here by bumping this version. Projects that
+         reference this one, such as WoofWare.PawPrint.Test, take it from here. -->
+    <PackageReference Include="WoofWare.PosixKernel" Version="0.1.302" />
   </ItemGroup>
 
   <ItemGroup>
@@ -270,7 +274,6 @@
     <ProjectReference Include="..\WoofWare.PawPrint.Loader\WoofWare.PawPrint.Loader.fsproj" />
     <ProjectReference Include="..\WoofWare.PawPrint.Semantics\WoofWare.PawPrint.Semantics.fsproj" />
     <ProjectReference Include="..\WoofWare.PawPrint.TypeSystem\WoofWare.PawPrint.TypeSystem.fsproj" />
-    <ProjectReference Include="..\WoofWare.PosixKernel\WoofWare.PosixKernel.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

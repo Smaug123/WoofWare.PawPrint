@@ -7,7 +7,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `IlMachineManagedByref.walkProjectionByteOffset` folds a `ByrefProjection` chain to a byte
 /// offset. `Field` consults the current type cursor; `ReinterpretAs` re-anchors it; `ByteOffset`

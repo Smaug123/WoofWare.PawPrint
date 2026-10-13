@@ -6,7 +6,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `cgt.un` and `clt.un` on two byrefs into one array.
 ///
