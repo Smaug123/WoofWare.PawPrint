@@ -323,6 +323,9 @@ module UnixWait =
                 | Some {
                            Syscall = ParkedSyscall.InotifyRead _
                        }
+                | Some {
+                           Syscall = ParkedSyscall.Select _
+                       }
                 | None -> None
             )
             |> Set.ofSeq

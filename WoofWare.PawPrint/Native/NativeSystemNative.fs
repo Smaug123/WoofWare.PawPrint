@@ -4104,6 +4104,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -5638,6 +5639,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.Select _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)
@@ -7653,6 +7655,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _ as other)
             | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.Sleep _ as other)
+            | Some (ParkedSyscall.Select _ as other)
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
@@ -7987,6 +7990,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.PipeWrite _)
             | Some ParkedSyscall.SigSuspend
             | Some (ParkedSyscall.Sleep _)
+            | Some (ParkedSyscall.Select _)
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)

@@ -523,6 +523,26 @@ type ParkedInotifyRead =
         Count : int
     }
 
+/// One task's in-flight `select(2)` or `pselect(2)`: the state the call fixed
+/// when it was entered.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client reads a select's wait through
+/// `WakeCondition.ofPark`, and builds none. Nothing in this version makes one:
+/// see `ParkedSyscall.Select`.
+type ParkedSelect =
+    internal
+        {
+            // What the two flavours' parks must hold beyond this is not
+            // settled: Darwin's call ends with EBADF when a selected
+            // descriptor is closed, Linux's sleeps on and reports it, and
+            // Darwin's readiness for each set is unmeasured
+            // (`docs/probes/select-park`).
+            /// The instant, in nanoseconds since boot, at which the call stops
+            /// waiting and returns 0; or `None` for a call with a null timeout.
+            Deadline : int64 option
+        }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -571,6 +591,13 @@ type ParkedSyscall =
     /// A blocking `read(2)` of an inotify instance, waiting for a record or for
     /// a signal with a handler. Holds the instance (`ParkedInotifyRead.Instance`).
     | InotifyRead of ParkedInotifyRead
+    /// `select(2)` or `pselect(2)`, waiting for a descriptor in one of its sets
+    /// to be ready, for its deadline, or for a signal with a handler.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | Select of ParkedSelect
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -614,6 +641,9 @@ module ParkedSyscall =
         | ParkedSyscall.Sleep _ -> []
         | ParkedSyscall.FifoOpen fifoOpen -> [ fifoOpen.Opener ]
         | ParkedSyscall.InotifyRead read -> [ read.Instance ]
+        // Reserved, and holding nothing yet: Linux's will hold the description
+        // behind each selected descriptor, as its `poll` does.
+        | ParkedSyscall.Select _ -> []
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -838,6 +868,7 @@ module UnixTaskTable =
             | ParkedSyscall.Sleep _ -> 11
             | ParkedSyscall.FifoOpen _ -> 12
             | ParkedSyscall.InotifyRead _ -> 13
+            | ParkedSyscall.Select _ -> 14
 
         let sameSyscall =
             match existing.Parked with

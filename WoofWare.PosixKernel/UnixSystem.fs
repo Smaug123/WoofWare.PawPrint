@@ -671,9 +671,9 @@ type UnixSystemDefect<'Task> =
     /// processor is the one it runs on (`UnixTaskState.cpu`).
     | OccupantOnAnotherCpu of task : 'Task * occupied : CpuId * cpu : CpuId
     /// A task is parked in a syscall that nothing in this version parks a task
-    /// in, such as `ParkedSyscall.Sleep` or `ParkedSyscall.FifoOpen`: a case
-    /// reserved for behaviour not yet modelled, which no call produces and no
-    /// finishing call answers.
+    /// in, such as `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` or
+    /// `ParkedSyscall.Select`: a case reserved for behaviour not yet modelled,
+    /// which no call produces and no finishing call answers.
     | ReservedPark of task : 'Task * parked : ParkedSyscall
     /// A task is parked in a read of an inotify instance through the open file
     /// description `description`, which names `target` rather than an
@@ -2615,7 +2615,8 @@ module UnixSystem =
                 // Names no description.
                 | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Sleep _ as parked)
-                | Some (ParkedSyscall.FifoOpen _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
+                | Some (ParkedSyscall.FifoOpen _ as parked)
+                | Some (ParkedSyscall.Select _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.InotifyRead read) ->
                     match Map.tryFind read.Instance descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Instance) ]

@@ -2909,6 +2909,8 @@ WoofWare.PosixKernel.ParkedPollEntry.IsWatched [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedPollEntry.NewIgnored [static method]: int -> WoofWare.PosixKernel.ParkedPollEntry
 WoofWare.PosixKernel.ParkedPollEntry.NewWatched [static method]: (int, WoofWare.PosixKernel.OpenFileDescriptionId, System.Int16) -> WoofWare.PosixKernel.ParkedPollEntry
 WoofWare.PosixKernel.ParkedPollEntry.Tag [property]: [read-only] int
+WoofWare.PosixKernel.ParkedSelect inherit obj, implements WoofWare.PosixKernel.ParkedSelect System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSelect System.IComparable, System.IComparable, System.Collections.IStructuralComparable
+WoofWare.PosixKernel.ParkedSelect.Equals [method]: (WoofWare.PosixKernel.ParkedSelect, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ParkedSleep inherit obj, implements WoofWare.PosixKernel.ParkedSleep System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSleep System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ParkedSleep..ctor [constructor]: (System.Int64, WoofWare.PosixKernel.SleepRemainder)
 WoofWare.PosixKernel.ParkedSleep.Deadline [property]: [read-only] System.Int64
@@ -2916,7 +2918,7 @@ WoofWare.PosixKernel.ParkedSleep.Equals [method]: (WoofWare.PosixKernel.ParkedSl
 WoofWare.PosixKernel.ParkedSleep.get_Deadline [method]: unit -> System.Int64
 WoofWare.PosixKernel.ParkedSleep.get_Remainder [method]: unit -> WoofWare.PosixKernel.SleepRemainder
 WoofWare.PosixKernel.ParkedSleep.Remainder [property]: [read-only] WoofWare.PosixKernel.SleepRemainder
-WoofWare.PosixKernel.ParkedSyscall inherit obj, implements WoofWare.PosixKernel.ParkedSyscall System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSyscall System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 14 cases
+WoofWare.PosixKernel.ParkedSyscall inherit obj, implements WoofWare.PosixKernel.ParkedSyscall System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSyscall System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 15 cases
 WoofWare.PosixKernel.ParkedSyscall+Accept inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Accept.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedAccept
 WoofWare.PosixKernel.ParkedSyscall+Accept.Item [property]: [read-only] WoofWare.PosixKernel.ParkedAccept
@@ -2953,6 +2955,9 @@ WoofWare.PosixKernel.ParkedSyscall+PipeWrite.Item [property]: [read-only] WoofWa
 WoofWare.PosixKernel.ParkedSyscall+Poll inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Poll.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedPoll
 WoofWare.PosixKernel.ParkedSyscall+Poll.Item [property]: [read-only] WoofWare.PosixKernel.ParkedPoll
+WoofWare.PosixKernel.ParkedSyscall+Select inherit WoofWare.PosixKernel.ParkedSyscall
+WoofWare.PosixKernel.ParkedSyscall+Select.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedSelect
+WoofWare.PosixKernel.ParkedSyscall+Select.Item [property]: [read-only] WoofWare.PosixKernel.ParkedSelect
 WoofWare.PosixKernel.ParkedSyscall+Sleep inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Sleep.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedSleep
 WoofWare.PosixKernel.ParkedSyscall+Sleep.Item [property]: [read-only] WoofWare.PosixKernel.ParkedSleep
@@ -2969,6 +2974,7 @@ WoofWare.PosixKernel.ParkedSyscall+Tags.KqueuePoll [static field]: int = 4
 WoofWare.PosixKernel.ParkedSyscall+Tags.PipeRead [static field]: int = 6
 WoofWare.PosixKernel.ParkedSyscall+Tags.PipeWrite [static field]: int = 7
 WoofWare.PosixKernel.ParkedSyscall+Tags.Poll [static field]: int = 3
+WoofWare.PosixKernel.ParkedSyscall+Tags.Select [static field]: int = 14
 WoofWare.PosixKernel.ParkedSyscall+Tags.SigSuspend [static field]: int = 10
 WoofWare.PosixKernel.ParkedSyscall+Tags.Sleep [static field]: int = 11
 WoofWare.PosixKernel.ParkedSyscall.Equals [method]: (WoofWare.PosixKernel.ParkedSyscall, System.Collections.IEqualityComparer) -> bool
@@ -2984,6 +2990,7 @@ WoofWare.PosixKernel.ParkedSyscall.get_IsKqueuePoll [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsPipeRead [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsPipeWrite [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsPoll [method]: unit -> bool
+WoofWare.PosixKernel.ParkedSyscall.get_IsSelect [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsSigSuspend [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsSleep [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_SigSuspend [static method]: unit -> WoofWare.PosixKernel.ParkedSyscall
@@ -3000,6 +3007,7 @@ WoofWare.PosixKernel.ParkedSyscall.IsKqueuePoll [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsPipeRead [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsPipeWrite [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsPoll [property]: [read-only] bool
+WoofWare.PosixKernel.ParkedSyscall.IsSelect [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsSigSuspend [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsSleep [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.NewAccept [static method]: WoofWare.PosixKernel.ParkedAccept -> WoofWare.PosixKernel.ParkedSyscall
@@ -3014,6 +3022,7 @@ WoofWare.PosixKernel.ParkedSyscall.NewKqueuePoll [static method]: WoofWare.Posix
 WoofWare.PosixKernel.ParkedSyscall.NewPipeRead [static method]: WoofWare.PosixKernel.ParkedPipeRead -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewPipeWrite [static method]: WoofWare.PosixKernel.ParkedPipeWrite -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewPoll [static method]: WoofWare.PosixKernel.ParkedPoll -> WoofWare.PosixKernel.ParkedSyscall
+WoofWare.PosixKernel.ParkedSyscall.NewSelect [static method]: WoofWare.PosixKernel.ParkedSelect -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewSleep [static method]: WoofWare.PosixKernel.ParkedSleep -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.SigSuspend [static property]: [read-only] WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.Tag [property]: [read-only] int
