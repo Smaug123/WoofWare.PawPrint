@@ -431,7 +431,11 @@ module FileSystemStatistics =
     ///
     /// Refuses a device filesystem this platform cannot mount, and Darwin's
     /// devfs, which this kernel does not model and no path reaches.
-    let ofDeviceMount (platform : SimulatedUnixPlatform) (mount : DeviceFileSystemMount) : FileSystemStatistics =
+    let internal ofDeviceMount
+        (platform : SimulatedUnixPlatform)
+        (mount : DeviceFileSystemMount)
+        : FileSystemStatistics
+        =
         let flavour = SimulatedUnixPlatform.flavour platform
 
         match mount with

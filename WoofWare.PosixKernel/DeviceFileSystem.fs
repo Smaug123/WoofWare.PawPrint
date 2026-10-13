@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// The configuration of a Linux devtmpfs that `stat(2)` and `statfs(2)` can
 /// see.
-type DevtmpfsMount =
+type internal DevtmpfsMount =
     {
         /// The `st_dev` every inode on the devtmpfs reports: the anonymous
         /// device the kernel gave it when it mounted it, which depends on what
@@ -17,7 +17,7 @@ type DevtmpfsMount =
     }
 
 [<RequireQualifiedAccess>]
-module DevtmpfsMount =
+module internal DevtmpfsMount =
     /// A devtmpfs as one measured Linux machine mounted it.
     let defaults : DevtmpfsMount =
         {
@@ -37,7 +37,7 @@ module DevtmpfsMount =
 
 /// The filesystem a machine has mounted at `/dev`.
 [<RequireQualifiedAccess>]
-type DeviceFileSystemMount =
+type internal DeviceFileSystemMount =
     /// Linux's devtmpfs, holding a node for each `CharacterDevice`.
     | Devtmpfs of DevtmpfsMount
     /// Darwin's devfs, which this kernel does not model: a path that reaches
@@ -45,7 +45,7 @@ type DeviceFileSystemMount =
     | Devfs
 
 [<RequireQualifiedAccess>]
-module DeviceFileSystemMount =
+module internal DeviceFileSystemMount =
     /// The device filesystem a machine of `flavour` mounts at `/dev` when a
     /// client expresses no preference.
     let defaultFor (flavour : SimulatedUnixFlavour) : DeviceFileSystemMount =
@@ -103,7 +103,7 @@ module CharacterDevice =
     ///
     /// Linux only: this kernel holds no device on Darwin. Only for a device in
     /// `CharacterDevice.all`: no other device has a node to ask through.
-    let unrecognisedIoctl (device : CharacterDevice) : UnixError =
+    let internal unrecognisedIoctl (device : CharacterDevice) : UnixError =
         // Measured on Linux 6.18.5 (`devices-l2.c`, FIONREAD and TCGETATTR
         // rows, through descriptors opened for reading and for writing): null
         // has no ioctl operation, so the call is ENOTTY, while urandom's
@@ -121,7 +121,7 @@ module CharacterDevice =
     /// flavour's `dev_t` encoding.
     ///
     /// Linux only: this kernel holds no device on Darwin.
-    let specialFileDevice (flavour : SimulatedUnixFlavour) (device : CharacterDevice) : int64 =
+    let internal specialFileDevice (flavour : SimulatedUnixFlavour) (device : CharacterDevice) : int64 =
         match flavour with
         | SimulatedUnixFlavour.Darwin ->
             failwith
