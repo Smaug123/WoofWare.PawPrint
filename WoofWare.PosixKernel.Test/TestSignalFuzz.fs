@@ -121,9 +121,9 @@ module TestSignalFuzz =
             try
                 Process.Start psi
             with :? ComponentModel.Win32Exception as e ->
-                // Inside the devshell `cc` is always there, and a run without it
-                // would silently check nothing.
-                if isNull (Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC") then
+                // The devshell promises a C compiler by setting this, and there a
+                // run without one would silently check nothing.
+                if Environment.GetEnvironmentVariable "POSIXKERNEL_REQUIRE_C_COMPILER" <> "1" then
                     Assert.Ignore $"no C compiler to build the harness with: %s{e.Message}"
 
                 reraise ()

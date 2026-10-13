@@ -3311,6 +3311,32 @@ module TestUnixSystemStep =
         | other -> failwith $"the holder's open answered %A{other}"
 
     [<Test>]
+    let ``a parked task may not issue a connect, and nor may a task the table does not hold`` () : unit =
+        // A connect can sleep, so it takes its task as flock does, and fails
+        // loudly for one that is already parked or is not a task at all, before
+        // it looks at the descriptor.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixDescriptor.tryFlock holderTask first 2 system |> granted
+        let _, parkedIn = UnixDescriptor.tryFlock waiterTask second 2 held |> parked
+
+        let connect (task : int) : unit =
+            UnixConnection.tryConnect task first UserBuffer.Mapped 0u parkedIn |> ignore
+
+        let parkedExn = Assert.Throws<exn> (fun () -> connect waiterTask)
+        parkedExn.Message |> shouldContainText "UnixConnection.connect"
+        parkedExn.Message |> shouldContainText "is parked in"
+
+        let unknownExn = Assert.Throws<exn> (fun () -> connect 99)
+        unknownExn.Message |> shouldContainText "names no task"
+
+        // The holder is neither, and its connect is answered: `first` is not a
+        // socket.
+        match UnixConnection.tryConnect holderTask first UserBuffer.Mapped 0u parkedIn with
+        | Ok (CallProgress.Answered (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOTSOCK), _)) -> ()
+        | other -> failwith $"the holder's connect answered %A{other}"
+
+    [<Test>]
     let ``a grant through flockAcquire clears the record, and a beaten resume keeps it`` () : unit =
         let first, second, system = withTwoDescriptions linux
         let another, system = withAnotherDescription first system
@@ -4116,7 +4142,8 @@ module TestUnixSystemStep =
         // write to the destination on these paths -- a NUL at the last byte, and
         // the stale path too once the buffer reaches PATH_MAX -- and this
         // library deliberately reports none of it: see
-        // `GetCwdOrphanAnswer.ShortestPathFirst` and docs/divergences.md.
+        // `GetCwdOrphanAnswer.ShortestPathFirst` and
+        // https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
         for capacity in [ 2UL ; 3UL ; 8UL ; 64UL ; 1023UL ; 1024UL ; 1025UL ; 4096UL ] do
             UnixPathResolution.tryGetcwd UserBuffer.Mapped capacity (atOrphan darwin)
             |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))

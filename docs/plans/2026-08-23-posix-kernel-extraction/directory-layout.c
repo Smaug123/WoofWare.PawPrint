@@ -10,7 +10,9 @@
 //
 // Measured 2026-09-26 on Darwin 27.0.0 (arm64, APFS) and Linux 6.18.5 (arm64,
 // tmpfs on /dev/shm; also the container's ext4 root as a contrast). The facts
-// are in docs/divergences.md and the emulated-posix-kernel skill's
+// are in
+// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
+// and the emulated-posix-kernel skill's
 // flavour-divergence table.
 #include "directory-common.h"
 

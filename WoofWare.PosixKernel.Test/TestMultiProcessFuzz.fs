@@ -1026,8 +1026,11 @@ module TestMultiProcessFuzz =
                 let port = ports.[port % ports.Length]
                 let owner = listenerOwner port machine
 
+                // As the task the fuzzer chose, which fails the run if it
+                // sleeps: no connect sleeps yet.
                 match
-                    CopyIn.connect
+                    CopyIn.connectAs
+                        task
                         fd
                         UserBuffer.Mapped
                         16u
@@ -1036,8 +1039,8 @@ module TestMultiProcessFuzz =
                 with
                 | Ok (outcome, after) ->
                     match outcome, owner with
-                    | ConnectOutcome.Completed, Some owner
-                    | ConnectOutcome.Failed UnixError.EINPROGRESS, Some owner when owner <> pid ->
+                    | SyscallAnswer.Completed 0L, Some owner
+                    | SyscallAnswer.Failed UnixError.EINPROGRESS, Some owner when owner <> pid ->
                         cover FuzzLabel.CrossConnect
                     | _ -> ()
 
@@ -1460,6 +1463,9 @@ module TestMultiProcessFuzz =
         | Some (ParkedSyscall.DatagramSend _ as parked) ->
             failwith
                 $"task %d{task} is woken in %A{parked}, but nothing parks a task in a datagram transfer yet, so there is no finishing call to finish it with"
+        | Some (ParkedSyscall.Connect _ as parked) ->
+            failwith
+                $"task %d{task} is woken in %A{parked}, but nothing parks a task in a connect yet, so there is no finishConnect to finish it with"
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.

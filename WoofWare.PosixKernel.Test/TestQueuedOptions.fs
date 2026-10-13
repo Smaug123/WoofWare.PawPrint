@@ -126,7 +126,7 @@ module TestQueuedOptions =
         let fd, system = KeventWorld.stream false system
 
         match KeventWorld.connect fd port system with
-        | ConnectOutcome.Completed, system -> fd, system
+        | SyscallAnswer.Completed 0L, system -> fd, system
         | other, _ -> failwith $"connect: %A{other}"
 
     // ------------------------------------------------------------------
@@ -256,16 +256,12 @@ module TestQueuedOptions =
         | other -> failwith $"expected two D lines, got %A{other}"
 
     /// The other row: a connection that completed under {1, 0} is reset as
-    /// it is dropped, which this kernel refuses, as it refuses every abortive
-    /// close of a connection something still refers to.
+    /// it is dropped, and its client reads ECONNRESET.
     [<Test>]
-    let ``Linux: a dropped connection that completed lingering for no time is refused`` () : unit =
+    let ``Linux: a dropped connection that completed lingering for no time is reset`` () : unit =
         match measuredD () with
         | [ _ ; (line, completed, accepted) ] ->
             completed |> shouldEqual "{1,0}"
             line |> shouldContainText "client-read=-1 ECONNRESET"
-
-            match kernelD completed accepted with
-            | Error (AcceptRefusal.AbortiveDrop (listener, _), socket) -> listener |> shouldEqual socket
-            | other -> failwith $"expected the drop to be refused, got %A{other}"
+            kernelD completed accepted |> Result.mapError fst |> shouldEqual (Ok line)
         | other -> failwith $"expected two D lines, got %A{other}"

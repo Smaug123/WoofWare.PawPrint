@@ -2,15 +2,6 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
-/// One `connect(2)` call's answer: it completed, or it failed with the errno
-/// the syscall left. EINPROGRESS is a `Failed` like any other -- a caller
-/// reports it as it reports any other errno -- and the outcome it defers is
-/// already latched on the socket's phase.
-[<RequireQualifiedAccess>]
-type ConnectOutcome =
-    | Completed
-    | Failed of UnixError
-
 /// What became of an `accept(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
 type AcceptOutcome =
@@ -110,15 +101,6 @@ type internal AcceptRefusal =
     /// sleeps on through it. This kernel wakes a sleeping accept while a
     /// connection is queued, which would wake that second sleeper too.
     | DarwinDrainedListener of listener : SocketId
-    /// The accept fails after taking `connection` off `listener`'s queue, which
-    /// closes the connection's server end at once, and that end has the
-    /// `SO_LINGER` the listener had when the connection completed, on with a
-    /// time of zero, while the client is still open. A real kernel resets the connection, and the client reads
-    /// ECONNRESET; this kernel models no abortive close. See
-    /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
-    /// the drop is the ordinary close, since the server end has written
-    /// nothing that could still be in its send buffer.
-    | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module internal AcceptRefusal =
@@ -136,8 +118,6 @@ module internal AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
-        | AcceptRefusal.AbortiveDrop (listener, connection) ->
-            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the SO_LINGER the listener had when the connection completed, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
@@ -151,7 +131,6 @@ module internal AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault _ -> RefusalKind.Unmodelled
         | AcceptRefusal.Interruption inner -> SyscallInterruptionRefusal.kind inner
         | AcceptRefusal.DarwinDrainedListener _ -> RefusalKind.Unmodelled
-        | AcceptRefusal.AbortiveDrop _ -> RefusalKind.Unmodelled
 
 /// What `shutdown(2)` answered.
 [<RequireQualifiedAccess>]
@@ -250,8 +229,10 @@ type internal ConnectRefusal =
     /// The destination is not an address of this machine, and this library
     /// models no network to carry a packet anywhere else.
     | DestinationNotLocal of destination : SocketAddress * kind : SocketKind
-    /// The listener's accept queue is at its measured capacity: a real kernel
-    /// leaves the SYN unanswered and the client retries on a timer.
+    /// The listener's accept queue is at its measured capacity. Linux drops the
+    /// SYN and the client retransmits it on a timer, so a blocking connect
+    /// sleeps (`ParkedSyscall.Connect`, reserved); Darwin evicts a queued
+    /// connection or resets this one (measured, `docs/probes/connect-park`).
     | AcceptQueueFull of listener : SocketId * destination : SocketAddress * queued : int
     /// The resolved source equals the destination while a listener matched,
     /// which only a reuse-bound client can engineer; unmeasured.
@@ -311,7 +292,7 @@ module internal ConnectRefusal =
 
             $"destination %s{SocketAddress.toString destination} is not a local address of this simulated machine, and this library models no network to carry %s{carried} anywhere else. Add the address to the kernel's LocalIpv4Addresses/LocalRoutes if it should be local, or connect to loopback."
         | ConnectRefusal.AcceptQueueFull (listener, destination, queued) ->
-            $"the accept queue of listener %O{listener} at %s{SocketAddress.toString destination} already holds %d{queued} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer -- timing this library cannot honour deterministically -- so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
+            $"the accept queue of listener %O{listener} at %s{SocketAddress.toString destination} already holds %d{queued} connections, its measured capacity. Linux drops the SYN, and the client retransmits it on a timer: a blocking connect sleeps until a retransmit finds room, which this library does not model yet, and a non-blocking one is left in progress. Darwin evicts a queued connection or resets this one, by a choice nothing here decides. So this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
         | ConnectRefusal.SelfTuple endpoint ->
             $"the resolved source %s{SocketAddress.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
         | ConnectRefusal.DuplicateFourTuple (source, destination) ->
@@ -380,6 +361,8 @@ type internal ConnectAddress =
 type PausedConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
+            /// The task that made the call, which the rest of it is made by.
+            Task : 'Task
             Fd : int
             Address : UserBuffer
             DeclaredLength : uint32
@@ -446,7 +429,9 @@ module UnixConnection =
     /// decodes to.
     ///
     /// Every answered row is measured (`connect_probe.c` and successors,
-    /// 2026-08-21; docs/plans/2026-08-21-socket-connect.md holds the table);
+    /// 2026-08-21;
+    /// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/plans/2026-08-21-socket-connect.md
+    /// holds the table);
     /// a `ConnectRefusal` names an unmeasured or unmodellable input, and a
     /// throw is a bug in this library or in the caller's state construction.
     let internal connectDecoded<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -455,7 +440,7 @@ module UnixConnection =
         (declaredLength : uint32)
         (address : ConnectAddress)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         let family = address.Family
         let destination = address.Destination
@@ -467,7 +452,7 @@ module UnixConnection =
 
         // An IPv6 socket's connect to a native IPv6 address, which needs an
         // IPv6 transport, refused at the point the ladder would use it.
-        let nativeDestination () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
+        let nativeDestination () : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
             address.NativeDestination
             |> Option.map (fun destination -> Error (ConnectRefusal.Ipv6Destination (socketId, destination)))
 
@@ -475,30 +460,30 @@ module UnixConnection =
         // binds nothing on the way: measured on both, at every v4-mapped
         // address including a group one and port 0 (`docs/probes/dual-mode/`,
         // A3 and G).
-        let ipv6Only () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
+        let ipv6Only () : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
             match sock.Addressing, nativeDestination () with
             | SocketAddressing.Inet6V6Only _, None ->
-                Some (Ok (ConnectOutcome.Failed (SimulatedUnixPlatform.ipv6OnlyConnectError platform), system))
+                Some (Ok (SyscallAnswer.Failed (SimulatedUnixPlatform.ipv6OnlyConnectError platform), system))
             | SocketAddressing.Inet6V6Only _, Some native -> Some native
             | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _ | SocketAddressing.Unix _), _ -> None
 
         let declaredLength = int declaredLength
 
-        let fail (error : UnixError) : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
-            Ok (ConnectOutcome.Failed error, system)
+        let fail (error : UnixError) : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
+            Ok (SyscallAnswer.Failed error, system)
 
         let failed
             (error : UnixError)
             (system : UnixSystem<'Task, 'Handler>)
-            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
-            Ok (ConnectOutcome.Failed error, system)
+            Ok (SyscallAnswer.Failed error, system)
 
         let completed
             (system : UnixSystem<'Task, 'Handler>)
-            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
-            Ok (ConnectOutcome.Completed, system)
+            Ok (SyscallAnswer.Completed 0L, system)
 
         let withPhase (phase : SocketPhase) (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
             { system with
@@ -665,7 +650,7 @@ module UnixConnection =
 
         // The established/refused attempt, shared by both flavours once the
         // per-flavour screens have let an idle stream socket through.
-        let attemptStream (dest : Ipv4Endpoint) : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
+        let attemptStream (dest : Ipv4Endpoint) : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
             let dest = resolveWildcard dest
 
             if not (destinationIsLocal dest.Address) then
@@ -1007,6 +992,9 @@ module UnixConnection =
                 else
 
                 match sock.Phase with
+                // Linux answers a connect in flight EALREADY when non-blocking,
+                // and a blocking one sleeps on (measured, `connect-park.c` T3).
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.connect" socketId
                 | SocketPhase.EstablishedPendingReport connectionId when
                     (match
                         (TcpTransfer.towards
@@ -1107,6 +1095,9 @@ module UnixConnection =
                 // oversized sockaddr, and a connected socket's beats
                 // AF_UNSPEC.
                 match sock.Phase with
+                // No Darwin connect is left in flight: one to a full listener
+                // completes or is reset at once (measured, `connect-park.c`).
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.connect" socketId
                 | SocketPhase.EstablishedPendingReport _ ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is a bug in this library, or in a caller that assembled the state by hand."
@@ -1163,7 +1154,7 @@ module UnixConnection =
                 // `attemptStream` does.
                 let failBound
                     (error : UnixError)
-                    : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+                    : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
                     =
                     match sock.Ipv4Binding with
                     | Some _ -> fail error
@@ -1362,10 +1353,7 @@ module UnixConnection =
             // every family but AF_UNSPEC, and a failure keeps that binding;
             // Darwin binds nothing, and disconnects first. Measured
             // (`sockaddr-dgram-connect.c`, B, D and L).
-            let failPrepared
-                (error : UnixError)
-                : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
-                =
+            let failPrepared (error : UnixError) : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
                 match flavour with
                 | SimulatedUnixFlavour.Darwin -> failed error disconnectedFirst
                 | SimulatedUnixFlavour.Linux ->
@@ -1587,7 +1575,7 @@ module UnixConnection =
         (declaredLength : uint32)
         (copied : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         let platform = system.Machine.UnixPlatform
 
@@ -1608,7 +1596,7 @@ module UnixConnection =
             | _ -> None
 
         match rejectedBeforeTheSocket with
-        | Some error -> Ok (ConnectOutcome.Failed error, system)
+        | Some error -> Ok (SyscallAnswer.Failed error, system)
         | None ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -1629,13 +1617,13 @@ module UnixConnection =
         (declaredLength : uint32)
         (copied : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd destination declaredLength system with
         | Error refusal -> Error (ConnectRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered error) ->
             UnixSocket.requireCopied "UnixConnection.connect" 0 copied
-            Ok (ConnectOutcome.Failed error, system)
+            Ok (SyscallAnswer.Failed error, system)
         | Ok (SockaddrCopyAdmission.Transfer length) ->
 
         UnixSocket.requireCopied "UnixConnection.connect" length copied
@@ -1670,28 +1658,60 @@ module UnixConnection =
                 copied)
             system
 
+    /// What a `connect` by `task` through `fd` answers once the kernel holds
+    /// the bytes it copied: `tryConnectBytes`'s answer, as the call's outcome.
+    ///
+    /// No connect sleeps yet: the one that would, to a full listener, is
+    /// refused (`ConnectRefusal.AcceptQueueFull`), so this always answers
+    /// `SyscallOutcome.Answered`. The task is what a connect that sleeps will
+    /// park.
+    let private finishConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (address : UserBuffer)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        =
+        ignore<'Task> task
+
+        tryConnectBytes fd address declaredLength copied system
+        |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
+
     /// `connect`, with a refusal answered as the `Error` rather than raised.
     let internal tryConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (address : UserBuffer)
         (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<
-              CallProgress<PausedConnect<'Task, 'Handler>, ConnectOutcome * UnixSystem<'Task, 'Handler>>,
+              CallProgress<PausedConnect<'Task, 'Handler>, SyscallOutcome * UnixSystem<'Task, 'Handler>>,
               ConnectRefusal
            >
         =
+        // Loudly partial in an unregistered or parked task, before anything is
+        // answered, as every call that can sleep is. The paused call holds the
+        // system it was made in, so the task is still unparked when it resumes.
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixConnection.connect: task %O{task} is parked in %A{parked}, and is issuing a connect. A task blocks in one syscall at a time, so that call's completion must clear its record first (this is a bug in the client)."
+        | None ->
+
         match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd address declaredLength system with
         | Error refusal -> Error (ConnectRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered _) ->
-            tryConnectBytes fd address declaredLength ImmutableArray.Empty system
+            finishConnect task fd address declaredLength ImmutableArray.Empty system
             |> Result.map CallProgress.Answered
         // A copy of nothing reads nothing, so there is nothing to stop for.
         | Ok (SockaddrCopyAdmission.Transfer 0) ->
-            tryConnectBytes fd address declaredLength ImmutableArray.Empty system
+            finishConnect task fd address declaredLength ImmutableArray.Empty system
             |> Result.map CallProgress.Answered
         | Ok (SockaddrCopyAdmission.Transfer length) ->
             {
+                Task = task
                 Fd = fd
                 Address = address
                 DeclaredLength = declaredLength
@@ -1706,9 +1726,9 @@ module UnixConnection =
             |> Ok
 
     /// <summary>
-    /// `connect(2)`: point `fd` at the address in the `struct sockaddr` the
-    /// caller declared `declaredLength` bytes long at `address`, or ask what
-    /// pointing it there would answer.
+    /// `connect(2)`, made by `task`: point `fd` at the address in the
+    /// `struct sockaddr` the caller declared `declaredLength` bytes long at
+    /// `address`, or ask what pointing it there would answer.
     /// </summary>
     /// <remarks>
     /// Every answer the call gives before the kernel copies the sockaddr in
@@ -1719,25 +1739,38 @@ module UnixConnection =
     /// is, with one difference of order, measured: Linux's `connect` copies
     /// the sockaddr in before it asks whether the descriptor is a socket,
     /// where its `bind` and both of Darwin's ask first.
+    ///
+    /// A connect answers 0, or fails with the errno the syscall leaves.
+    /// `EINPROGRESS` is a failure like any other, which a caller reports as it
+    /// reports any other errno; the connection it defers is already settled on
+    /// the socket's phase.
+    ///
+    /// It takes the task, and its outcome is a `SyscallOutcome`, because under
+    /// Linux a blocking connect to a listener whose accept queue is full sleeps
+    /// (`ParkedSyscall.Connect`): the paused call holds the task, so the
+    /// connect `connectWithAddress` finishes can park it. No connect sleeps in
+    /// this version: that one is refused. A task that is parked already, or
+    /// that the table does not hold, fails loudly.
     /// </remarks>
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (address : UserBuffer)
         (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
-        : CallProgress<PausedConnect<'Task, 'Handler>, ConnectOutcome * UnixSystem<'Task, 'Handler>>
+        : CallProgress<PausedConnect<'Task, 'Handler>, SyscallOutcome * UnixSystem<'Task, 'Handler>>
         =
-        tryConnect fd address declaredLength system
+        tryConnect task fd address declaredLength system
         |> Refusal.orRaise "UnixConnection.connect" ConnectRefusal.kind ConnectRefusal.describe
 
     /// `connectWithAddress`, with a refusal answered as the `Error` rather than raised.
     let internal tryConnectWithAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (copied : ImmutableArray<byte>)
         (paused : PausedConnect<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         CopyRange.require "UnixConnection.connectWithAddress" paused.Range copied
-        tryConnectBytes paused.Fd paused.Address paused.DeclaredLength copied paused.System
+        finishConnect paused.Task paused.Fd paused.Address paused.DeclaredLength copied paused.System
 
     /// <summary>
     /// The rest of the `connect` `paused` stopped: `copied`, exactly the bytes
@@ -1748,7 +1781,7 @@ module UnixConnection =
     let connectWithAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (copied : ImmutableArray<byte>)
         (paused : PausedConnect<'Task, 'Handler>)
-        : ConnectOutcome * UnixSystem<'Task, 'Handler>
+        : SyscallOutcome * UnixSystem<'Task, 'Handler>
         =
         tryConnectWithAddress copied paused
         |> Refusal.orRaise "UnixConnection.connectWithAddress" ConnectRefusal.kind ConnectRefusal.describe
@@ -1905,17 +1938,21 @@ module UnixConnection =
             )
 
         // The server end closes as `close` closes it: a FIN, or a reset if the
-        // client had written to it. It keeps the SO_REUSEADDR its socket would
-        // have held, the listener's when the connection completed
+        // client had written to it, and abortively under the `SO_LINGER` {1, 0}
+        // its connection completed with (measured, `queued-options.c` section
+        // D: the client reads ECONNRESET). It keeps the SO_REUSEADDR its socket
+        // would have held, the listener's when the connection completed
         // (`QueuedConnection.ReuseAddress`, measured for the socket an accept
         // returns); that a dropped connection's end keeps it too is inferred
         // from Linux's source (`sk_clone_lock` in `tcp_create_openreq_child`),
         // not measured.
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
         let wakes, transfer =
-            TcpTransfer.close
-                ConnectionEnd.Server
-                queued.ReuseAddress
-                (UnixMachineState.connection connectionId system.Machine).Transfer
+            if queued.Options.Linger.Enabled && queued.Options.Linger.Hundredths = 0L then
+                TcpTransfer.abort ConnectionEnd.Server queued.ReuseAddress transfer
+            else
+                TcpTransfer.close ConnectionEnd.Server queued.ReuseAddress transfer
 
         let connections =
             if List.isEmpty clients then
@@ -1984,33 +2021,8 @@ module UnixConnection =
             SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
             && int declaredLength < 0
 
-        // The dropped server end has the options its connection completed
-        // with, so with lingering on for no time it would reset a client still
-        // open. Measured (`queued-options.c`, section D): a change to the
-        // listener's linger after the connection completed does not reach it.
         let dropped () : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal> =
-            let head =
-                match (UnixMachineState.socket socketId system.Machine).Phase with
-                | SocketPhase.Listening {
-                                            Queue = queued :: _
-                                        } -> queued
-                | phase ->
-                    failwith
-                        $"UnixConnection.handOver: socket %O{socketId} is in %A{phase}, not listening with a connection queued (this is a bug in this library)."
-
-            let clientOpen =
-                system.Machine.Sockets
-                |> Map.exists (fun _ socket ->
-                    match socket.Phase with
-                    | SocketPhase.Established (c, _)
-                    | SocketPhase.EstablishedPendingReport c -> c = head.Connection
-                    | _ -> false
-                )
-
-            if head.Options.Linger.Enabled && head.Options.Linger.Hundredths = 0L && clientOpen then
-                Error (AcceptRefusal.AbortiveDrop (socketId, head.Connection))
-            else
-                Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
 
         match linuxNegative, destination with
         | true, UserBuffer.Addressless ->
@@ -2137,6 +2149,7 @@ module UnixConnection =
         | SocketKind.Stream ->
 
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.accept" socketId
         | SocketPhase.DatagramPeer _ ->
             failwith
                 $"UnixConnection.accept: socket %O{socketId} is a stream socket holding SocketPhase.DatagramPeer, a pairing this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
@@ -2419,6 +2432,7 @@ module UnixConnection =
             | SimulatedUnixFlavour.Linux -> Error (ShutdownRefusal.LinuxUnconnected socketId)
 
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.shutdown" socketId
         | SocketPhase.Listening _ -> Error (ShutdownRefusal.Listener socketId)
         | SocketPhase.DatagramPeer _ -> Error (ShutdownRefusal.ConnectedDatagram socketId)
         | SocketPhase.Idle

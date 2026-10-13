@@ -110,7 +110,9 @@ module TestWakeSweepMemo =
             machine
             |> parkInAccept pid 0 listener
             |> parkInAccept pid 1 listener
-            |> Machines.doIn pid (fun view -> KeventWorld.client 8080us view |> snd)
+            // Task 2 connects: tasks 0 and 1 are asleep, and a task asleep in
+            // one call makes no other.
+            |> Machines.doIn pid (fun view -> KeventWorld.clientAs 2 8080us view |> snd)
 
         SimulatedMachine.wakes (Map.ofList [ pid, Set.ofList [ 0 ; 1 ] ]) machine
         |> List.map fst

@@ -160,10 +160,10 @@ module DualModeProbe =
 
     let private connect (libc : Libc) (fd : int) (blob : byte[]) (length : int) : Answer =
         match CopyIn.connect fd UserBuffer.Mapped (uint32 length) blob libc.System with
-        | Result.Ok (ConnectOutcome.Completed, system) ->
+        | Result.Ok (SyscallAnswer.Completed _, system) ->
             libc.System <- system
             Answer.Ok
-        | Result.Ok (ConnectOutcome.Failed error, system) ->
+        | Result.Ok (SyscallAnswer.Failed error, system) ->
             libc.System <- system
             Answer.Errno error
         | Result.Error refusal -> Answer.Refused (ConnectRefusal.describe refusal)
@@ -1116,17 +1116,12 @@ module DualModeProbe =
                 (Seq.toArray (OptionValue.ofLinger 1 0))
             |> ignore<Answer>
 
-            // The model refuses this close while the client still holds the
-            // connection, so the rows after it read a connection still open.
-            let closed = tryClose libc srv
+            close libc srv
             nameLine $"R3 %s{who}, abortive close: getsockname" getsockname c 28
             nameLine $"R3 %s{who}, abortive close: getpeername" getpeername c 28
             soErrorLine $"R3 %s{who}, abortive close: SO_ERROR" c
             nameLine $"R3 %s{who}, error taken: getsockname" getsockname c 28
             close libc c
-
-            if not closed then
-                close libc srv
 
         close libc l
 

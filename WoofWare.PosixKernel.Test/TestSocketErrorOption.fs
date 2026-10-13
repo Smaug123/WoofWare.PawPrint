@@ -82,7 +82,7 @@ module TestSocketErrorOption =
         (fd : int)
         (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) destination) system with
         | Ok answer -> answer
@@ -111,7 +111,7 @@ module TestSocketErrorOption =
         let fd, system = stream (fresh platform)
         let system = nonBlocking fd system |> prepare fd
         let outcome, system = connect fd nobody system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
         phaseOf fd system |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
         fd, system
 
@@ -214,7 +214,7 @@ module TestSocketErrorOption =
                     yield
                         (let fd, system = stream (fresh platform)
                          let outcome, system = connect fd nobody system
-                         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+                         outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
                          "refused by a blocking connect", fd, system)
                     if SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux then
                         yield
@@ -354,7 +354,7 @@ module TestSocketErrorOption =
 
                 let outcome, system = connect fd destination system
 
-                if outcome <> ConnectOutcome.Failed UnixError.ECONNABORTED then
+                if outcome <> SyscallAnswer.Failed UnixError.ECONNABORTED then
                     failwith $"%s{label}, to %O{destination}: expected ECONNABORTED, got %A{outcome}"
 
                 phaseOf fd system |> shouldEqual SocketPhase.Idle
@@ -370,7 +370,7 @@ module TestSocketErrorOption =
         let _, system = readErrorPlainly fd system
         let _, system = connect fd nobody system
         let outcome, system = connect fd nobody system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
         phaseOf fd system |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
 
     /// Darwin's connect never reports a refusal, taken or not: EISCONN wherever
@@ -382,7 +382,7 @@ module TestSocketErrorOption =
             let _, system = listening system
             let _, system = readErrorPlainly fd system
             let outcome, after = connect fd destination system
-            outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+            outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
             after |> shouldEqual system
 
     /// The read drops ERR from the level and nothing else: Linux measured

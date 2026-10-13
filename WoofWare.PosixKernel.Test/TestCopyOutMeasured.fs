@@ -56,7 +56,7 @@ module TestCopyOutMeasured =
         let client, system = stream system
 
         match CopyIn.connect client UserBuffer.Mapped 16u (CopyIn.inet platform (loopback 5000us)) system with
-        | Ok (ConnectOutcome.Completed, system) -> listener, client, system
+        | Ok (SyscallAnswer.Completed 0L, system) -> listener, client, system
         | other -> failwith $"connect answered %A{other}"
 
     /// One call's copy-out under this kernel, made on the client for

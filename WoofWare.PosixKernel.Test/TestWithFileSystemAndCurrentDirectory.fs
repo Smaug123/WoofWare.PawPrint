@@ -288,7 +288,8 @@ module TestWithFileSystemAndCurrentDirectory =
     [<Test>]
     let ``Darwin's seed admits the valid UTF-8 its model binds, and checks NAME_MAX first`` () : unit =
         // The seed applies the model's rule, strictly-valid UTF-8, which
-        // admits U+FFFF though APFS does not (docs/divergences.md): a seed may
+        // admits U+FFFF though APFS does not
+        // (https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md): a seed may
         // hold whatever a process of the same flavour could have created.
         let nonCharacter =
             Map.ofList [ name (string (char 0xFFFF)), SeedEntry.file noBytes ]

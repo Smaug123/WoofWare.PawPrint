@@ -121,6 +121,10 @@ module TestTcpShutdownMeasured =
 
                 "0"
 
+            // The linger is the caller's to remember here: `Abort` is the
+            // close under it.
+            member _.SetLingerZero _ = "0"
+
             member _.Abort e =
                 if TcpTransfer.abortRefused e transfer then
                     refused <- true
@@ -150,6 +154,7 @@ module TestTcpShutdownMeasured =
             member _.Settle () = ()
             member _.RegisterEdges _ = notThisLayer "edge registration"
             member _.Edges () = notThisLayer "edge registration"
+            member _.BindsEndpoints = false
             member _.PortOf _ = 0
             member _.BindFree _ = notThisLayer "bind"
             member _.Candidate _ _ _ = notThisLayer "bind"

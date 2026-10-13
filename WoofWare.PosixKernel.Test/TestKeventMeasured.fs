@@ -126,7 +126,7 @@ module TestKeventMeasured =
 
             s.Step (fun system ->
                 match KeventWorld.connect socket 5000us system with
-                | ConnectOutcome.Failed UnixError.EINPROGRESS, system -> system
+                | SyscallAnswer.Failed UnixError.EINPROGRESS, system -> system
                 | other, _ -> failwith $"expected EINPROGRESS, got %A{other}"
             )
 
@@ -175,7 +175,7 @@ module TestKeventMeasured =
 
             s.Step (fun system ->
                 match KeventWorld.connect socket 6000us system with
-                | ConnectOutcome.Failed UnixError.ECONNREFUSED, system -> system
+                | SyscallAnswer.Failed UnixError.ECONNREFUSED, system -> system
                 | other, _ -> failwith $"expected ECONNREFUSED, got %A{other}"
             )
 

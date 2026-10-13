@@ -429,6 +429,7 @@ module internal DarwinReadiness =
         | SocketPhase.DatagramPeer _ ->
             failwith
                 "DarwinReadiness.sendBufferSpace: a stream socket holds a datagram peer, which this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
+        | SocketPhase.Connecting _ -> ReservedConnecting.failOfPhase "DarwinReadiness.sendBufferSpace"
 
     /// What the kqueue filter `filter` reports of the socket `socketId` right
     /// now, or `None` when the filter is not ready.
@@ -456,6 +457,7 @@ module internal DarwinReadiness =
 
         match socket.Phase, filter with
         | _, KqueueFilter.Timer -> ReservedTimerFilter.fail "DarwinReadiness.ofSocket"
+        | SocketPhase.Connecting _, _ -> ReservedConnecting.fail "DarwinReadiness.ofSocket" socketId
         | SocketPhase.Listening listenState, KqueueFilter.Read ->
             // Ready while a connection is queued, reporting how many are.
             match listenState.Queue with

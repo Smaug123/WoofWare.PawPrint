@@ -210,8 +210,8 @@ module TestConnectLadderMeasured =
         | Ok (outcome, after) ->
             let answer =
                 match outcome with
-                | ConnectOutcome.Completed -> "OK"
-                | ConnectOutcome.Failed error -> string error
+                | SyscallAnswer.Completed _ -> "OK"
+                | SyscallAnswer.Failed error -> string error
 
             match call.Left with
             | None -> answer

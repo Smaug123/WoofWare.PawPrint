@@ -424,6 +424,8 @@ module GuestLocation =
                                 $"in sigwait, sigwaitinfo or sigtimedwait, for a signal of %s{parked.Awaited.Display}%s{until}"
                         | Some (ParkedSyscall.DatagramReceive _) -> Some "in a receive on a datagram socket"
                         | Some (ParkedSyscall.DatagramSend _) -> Some "in a send on a datagram socket"
+                        | Some (ParkedSyscall.Connect _) ->
+                            Some "in a connect to a listener whose accept queue is full"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

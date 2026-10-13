@@ -5,7 +5,9 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// The socket readiness delivery, row by measured row: every claim here is a
-/// row of `docs/plans/2026-08-21-socket-readiness-wake.md`'s tables (probes
+/// row of the tables in
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/plans/2026-08-21-socket-readiness-wake.md
+/// (probes
 /// `et.c`/`order2.c`/`order3.c`/`order4.c`, Linux 6.18.5). A process can see
 /// the delivered batches; what it cannot see is the ready list itself — which
 /// entries are pending, what consumption removed, where truncation stopped —
@@ -166,7 +168,7 @@ module TestSocketEventDelivery =
         (nonBlocking : bool)
         (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match
             UnixConnection.connectSocket
@@ -488,7 +490,7 @@ module TestSocketEventDelivery =
         // Nothing listens at 5999: the refusal latches and signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -509,7 +511,7 @@ module TestSocketEventDelivery =
         // The delivering connect resets the socket, and the reset signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -549,7 +551,7 @@ module TestSocketEventDelivery =
         delivered |> shouldEqual []
 
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNABORTED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNABORTED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
@@ -833,7 +835,7 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 6UL ]
 
         let outcome, kernel = connect clientId false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -854,7 +856,7 @@ module TestSocketEventDelivery =
 
         let outcome, kernel = connect clientId false (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 

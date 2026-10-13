@@ -180,8 +180,8 @@ module TestConnectDestinationMeasured =
         | Ok (outcome, after) ->
             let answer =
                 match outcome with
-                | ConnectOutcome.Completed -> "OK"
-                | ConnectOutcome.Failed error -> string error
+                | SyscallAnswer.Completed _ -> "OK"
+                | SyscallAnswer.Failed error -> string error
 
             let socket = socketOf fd after
             let now = local socket
@@ -365,7 +365,7 @@ module TestConnectDestinationMeasured =
             let system =
                 if m.Groups.["state"].Value = "connected" then
                     match connectTo fd peerAt system with
-                    | Ok (ConnectOutcome.Completed, system) -> system
+                    | Ok (SyscallAnswer.Completed 0L, system) -> system
                     | other -> failwith $"%s{line}: the first connect answered %A{other}"
                 else
                     system
@@ -376,7 +376,7 @@ module TestConnectDestinationMeasured =
                 | _ -> Ipv4Endpoint.ofParts (Ipv4Address 0u) 6000us
 
             match connectTo fd destination system with
-            | Ok (ConnectOutcome.Completed, after) ->
+            | Ok (SyscallAnswer.Completed 0L, after) ->
                 m.Groups.["ans"].Value |> shouldEqual "OK"
                 let socket = socketOf fd after
                 let now = local socket

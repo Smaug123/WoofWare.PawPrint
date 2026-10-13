@@ -116,7 +116,7 @@ module TestEphemeralPorts =
         (fd : int)
         (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) destination) system with
         | Ok result -> result
@@ -163,8 +163,8 @@ module TestEphemeralPorts =
 
         let system =
             match connectTo clientFd (loopback 5000us) system with
-            | ConnectOutcome.Completed, system -> system
-            | ConnectOutcome.Failed error, _ -> failwith $"the first connect failed with %A{error}"
+            | SyscallAnswer.Completed _, system -> system
+            | SyscallAnswer.Failed error, _ -> failwith $"the first connect failed with %A{error}"
 
         let clientPort = localPort clientFd system
         clientPort |> shouldEqual (fst range)
@@ -216,10 +216,10 @@ module TestEphemeralPorts =
         // ...and the socket that did get a port can connect to the listener,
         // which is what crashed when the occupied port was handed out.
         match connectTo fd1 (loopback 5000us) system with
-        | ConnectOutcome.Completed, system ->
+        | SyscallAnswer.Completed _, system ->
             localPort fd1 system |> shouldNotEqual occupied
             noDefects system
-        | ConnectOutcome.Failed error, _ -> failwith $"connect from the bound socket failed with %A{error}"
+        | SyscallAnswer.Failed error, _ -> failwith $"connect from the bound socket failed with %A{error}"
 
     [<TestCaseSource(nameof platforms)>]
     let ``listen on an unbound socket skips a port a closed client's connection still occupies``
@@ -247,10 +247,10 @@ module TestEphemeralPorts =
 
         let system =
             match connectTo filler (loopback 5001us) system with
-            | ConnectOutcome.Completed, system ->
+            | SyscallAnswer.Completed _, system ->
                 localPort filler system |> shouldEqual 40001us
                 system
-            | ConnectOutcome.Failed error, _ -> failwith $"the filler connect failed with %A{error}"
+            | SyscallAnswer.Failed error, _ -> failwith $"the filler connect failed with %A{error}"
 
         let _, system = acceptFrom listener1 system
         let system = closeFd filler system
@@ -269,10 +269,10 @@ module TestEphemeralPorts =
         let fd, system = newStream system
 
         match connectTo fd (loopback 5001us) system with
-        | ConnectOutcome.Completed, system ->
+        | SyscallAnswer.Completed _, system ->
             localPort fd system |> shouldEqual occupied
             noDefects system
-        | ConnectOutcome.Failed error, _ -> failwith $"connect to the second listener failed with %A{error}"
+        | SyscallAnswer.Failed error, _ -> failwith $"connect to the second listener failed with %A{error}"
 
     [<TestCaseSource(nameof platforms)>]
     let ``connect skips a closed client's port towards the same listener`` (platform : SimulatedUnixPlatform) : unit =
@@ -282,11 +282,11 @@ module TestEphemeralPorts =
         let fd, system = newStream system
 
         match connectTo fd (loopback 5000us) system with
-        | ConnectOutcome.Completed, system ->
+        | SyscallAnswer.Completed _, system ->
             localPort fd system |> shouldNotEqual occupied
             localPort fd system |> shouldEqual 40001us
             noDefects system
-        | ConnectOutcome.Failed error, _ -> failwith $"connect to the first listener failed with %A{error}"
+        | SyscallAnswer.Failed error, _ -> failwith $"connect to the first listener failed with %A{error}"
 
     /// A connection queued at a wildcard listener has a concrete server
     /// endpoint that no socket is bound at, and the listener owns it through
@@ -317,8 +317,8 @@ module TestEphemeralPorts =
 
         let system =
             match connectTo clientFd (loopback 40000us) system with
-            | ConnectOutcome.Completed, system -> system
-            | ConnectOutcome.Failed error, _ -> failwith $"connect failed with %A{error}"
+            | SyscallAnswer.Completed _, system -> system
+            | SyscallAnswer.Failed error, _ -> failwith $"connect failed with %A{error}"
 
         // The client took 40001; put the cursor back on the listener's port.
         localPort clientFd system |> shouldEqual 40001us

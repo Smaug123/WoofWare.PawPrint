@@ -136,6 +136,10 @@ module TestBlockingConnection =
             Marked : Set<ConnectionEnd>
             /// Each end's `SO_LINGER` time, while it is on.
             Linger : Map<ConnectionEnd, int>
+            /// The ends a Darwin close under `SO_LINGER` {1, 0} released the
+            /// endpoint of once both FINs had arrived, whichever was first
+            /// (`tcp-shutdown.c` section L, `bothfin-cfirst`).
+            AbortReleased : Set<ConnectionEnd>
         }
 
     let private endOf (call : Call) : ConnectionEnd =
@@ -160,7 +164,8 @@ module TestBlockingConnection =
 
         Set.union named held
 
-    /// Close the socket of every end nothing references any more.
+    /// Close the socket of every end nothing references any more: abortively
+    /// under `SO_LINGER` {1, 0}.
     let private releaseUnreferenced (r : Reference) : Reference =
         let live = live r
 
@@ -169,11 +174,22 @@ module TestBlockingConnection =
             if Set.contains connectionEnd live || Set.contains connectionEnd r.Gone then
                 r
             else
-                let _, model = TcpTransferReference.close false connectionEnd r.Model
+                let abortive = Map.tryFind connectionEnd r.Linger = Some 0
+
+                let exchangeComplete =
+                    r.Model.Ends.[ConnectionEnd.Client].FinArrived
+                    && r.Model.Ends.[ConnectionEnd.Server].FinArrived
+
+                let _, model = TcpTransferReference.close abortive connectionEnd r.Model
 
                 { r with
                     Model = model
                     Gone = Set.add connectionEnd r.Gone
+                    AbortReleased =
+                        if abortive && not r.Model.Linux && exchangeComplete then
+                            Set.add connectionEnd r.AbortReleased
+                        else
+                            r.AbortReleased
                 }
         )
 
@@ -958,7 +974,7 @@ module TestBlockingConnection =
 
         let system =
             match KeventWorld.connect client port system with
-            | ConnectOutcome.Completed, system -> system
+            | SyscallAnswer.Completed 0L, system -> system
             | other, _ -> failwith $"connect: %A{other}"
 
         let server, system = KeventWorld.accept listener system
@@ -1085,6 +1101,7 @@ module TestBlockingConnection =
                     Gone = Set.empty
                     Marked = Set.empty
                     Linger = Map.empty
+                    AbortReleased = Set.empty
                 }
 
             // Both ends' capacities are the same, so one pair describes both.
@@ -1296,7 +1313,8 @@ module TestBlockingConnection =
                     // Under `SO_LINGER`, the last descriptor's close: refused
                     // while a call the close does not end holds the socket,
                     // and otherwise refused where the socket's own close would
-                    // reset the connection or wait.
+                    // wait, or, on Darwin under {1, 0}, leave a reset owed to
+                    // the peer's reads.
                     let closing = reference.Fds.[fd]
                     let socket = socketOf fd system
 
@@ -1315,10 +1333,17 @@ module TestBlockingConnection =
 
                             match holder with
                             | Some task -> Some (CloseRefusal.LingeringCloseDeferredToCall (socket, task))
-                            | None when seconds = 0 && not (Set.contains (other closing) reference.Gone) ->
+                            | None when
+                                seconds = 0
+                                && not (Set.contains (other closing) reference.Gone)
+                                && TcpTransferReference.abortRefused closing reference.Model
+                                ->
                                 Some (
                                     CloseRefusal.Release (
-                                        DescriptionReleaseRefusal.AbortiveClose (socket, connectionOf fd system)
+                                        DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin (
+                                            socket,
+                                            connectionOf fd system
+                                        )
                                     )
                                 )
                             | None when seconds > 0 && unsent > 0 && (linux || not reference.NonBlocking.[closing]) ->
@@ -1335,13 +1360,15 @@ module TestBlockingConnection =
                         | Some _
                         | None -> None
 
-                    // Darwin's close of the socket behind its own queued FIN,
-                    // once the peer's has arrived, over bytes left unread.
+                    // Darwin's ordinary close of the socket behind its own
+                    // queued FIN, once the peer's has arrived, over bytes left
+                    // unread.
                     let lingerRefusal =
                         match lingerRefusal with
                         | Some _ -> lingerRefusal
                         | None when
                             refusedFor.IsNone
+                            && Map.tryFind closing reference.Linger <> Some 0
                             && not (
                                 Set.contains
                                     closing
@@ -1375,8 +1402,8 @@ module TestBlockingConnection =
                         match refusal with
                         | CloseRefusal.LingeringCloseDeferredToCall _ ->
                             cover $"%s{flavourName} close: refused, deferred to a call under SO_LINGER"
-                        | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
-                            cover $"%s{flavourName} close: refused, abortive"
+                        | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin _) ->
+                            cover $"%s{flavourName} close: refused, abortive behind its queued FIN"
                         | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
                             cover $"%s{flavourName} close: refused, lingering"
                         | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _) ->
@@ -1412,6 +1439,12 @@ module TestBlockingConnection =
                             )
                         then
                             cover $"%s{flavourName} close: closes the socket"
+
+                            if
+                                Map.tryFind closing reference.Linger = Some 0
+                                && not (Set.contains (other closing) reference.Gone)
+                            then
+                                cover $"%s{flavourName} close: abortive"
 
                         system <- after
 
@@ -1725,7 +1758,9 @@ module TestBlockingConnection =
                     // until a reset reaches the connection or the end's own
                     // FIN, made after the peer's had arrived, has arrived,
                     // whether its socket is open or closed
-                    // (`bind-held-endpoint.c`); and forgotten with the
+                    // (`bind-held-endpoint.c`), or, on Darwin, its socket
+                    // closed under linger zero once both FINs had arrived;
+                    // and forgotten with the
                     // connection once both sockets have gone, where a real
                     // kernel's `TIME_WAIT` would go on holding an active
                     // closer's, which this library does not model. The pair's
@@ -1740,6 +1775,7 @@ module TestBlockingConnection =
                             && not ends.[ConnectionEnd.Client].GotReset
                             && not ends.[ConnectionEnd.Server].GotReset
                             && not (own.FinArrived && own.FinPassive)
+                            && not (Set.contains connectionEnd reference.AbortReleased)
 
                         for reuse in [ false ; true ] do
                             let refused = bindRefused reuse endPort system
@@ -2705,22 +2741,27 @@ module TestBlockingConnection =
         |> shouldEqual (Error (CloseRefusal.LingeringCloseDeferredToCall (socketOf copy system, 1)))
 
     /// Darwin's close ends the call made through the descriptor, so nothing
-    /// holds the socket past it, and the close is refused, if at all, as the
-    /// ordinary close of the socket is.
+    /// holds the socket past it, and the close is the socket's own close:
+    /// abortive, or refused where the ordinary close of the socket is.
     [<Test>]
     let ``Darwin: the last close of a socket a call sleeps on under SO_LINGER is the socket's own close`` () : unit =
         let platform = SimulatedUnixPlatform.macOsArm64
 
-        // {1, 0}: the abortive close, refused while the peer is open.
-        let client, _, system = pair (systemOn platform false)
+        // {1, 0}: the abortive close, which resets the open peer.
+        let client, server, system = pair (systemOn platform false)
         let system = lingerFor client 1 0 system
         let system = asleepReading 1 client 4096 system
-        let socket = socketOf client system
 
-        match UnixDescriptor.tryClose client system with
-        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose (refused, _))) ->
-            refused |> shouldEqual socket
-        | other -> failwith $"{{1, 0}}: %A{other}"
+        let system =
+            match UnixDescriptor.tryClose client system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"{{1, 0}}: %A{other}"
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        readNow server 4096 system
+        |> fst
+        |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
 
         // {1, 1 s} with bytes unsent, through a blocking description: the
         // close that waits.
@@ -3022,7 +3063,7 @@ module TestBlockingConnection =
                         let fd, view = KeventWorld.stream false view
 
                         match KeventWorld.connect fd port view with
-                        | ConnectOutcome.Completed, view -> fd, view
+                        | SyscallAnswer.Completed 0L, view -> fd, view
                         | other, _ -> failwith $"connect: %A{other}"
                     )
                     machine

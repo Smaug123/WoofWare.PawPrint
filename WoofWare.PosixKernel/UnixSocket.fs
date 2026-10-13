@@ -1223,6 +1223,7 @@ module UnixSocket =
 
             let connectionFailed =
                 match socket.Phase with
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getsockname" socketId
                 | SocketPhase.Refused _ -> true
                 | SocketPhase.Established (connection, connectionEnd) -> resetReached connection connectionEnd
                 | SocketPhase.EstablishedPendingReport connection -> resetReached connection ConnectionEnd.Client
@@ -2000,6 +2001,7 @@ module UnixSocket =
 
         // Measured in `docs/probes/getpeername/getpeername.c` on both flavours.
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getpeername" socketId
         | SocketPhase.Idle
         | SocketPhase.Listening _ -> notConnected
         | SocketPhase.Refused _ ->
@@ -2301,6 +2303,8 @@ module UnixSocket =
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
+               // No Darwin connect is left in flight.
+               | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.setsockopt" socketId
                | SocketPhase.Refused _ -> true
                | SocketPhase.Established (connectionId, connectionEnd) ->
                    let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
@@ -2439,7 +2443,9 @@ module UnixSocket =
                            | SocketPhase.EstablishedPendingReport _
                            | SocketPhase.Established _
                            | SocketPhase.Refused _
-                           | SocketPhase.DatagramPeer _ -> true
+                           | SocketPhase.DatagramPeer _
+                           // A connect binds its source before it sends.
+                           | SocketPhase.Connecting _ -> true
 
                     match socket.Addressing with
                     | SocketAddressing.Inet6DualMode _
@@ -2726,6 +2732,7 @@ module UnixSocket =
                 | ModelledOption.LingerSeconds -> ints [ enabled ; int (linger.Hundredths / 100L) ], system
                 | ModelledOption.Error ->
                     match socket.Phase with
+                    | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getsockopt" socketId
                     | SocketPhase.Refused RefusalError.Pending ->
                         // Both kernels take the error before the copy-out, so a
                         // read that then faults has still taken it: measured
@@ -3017,15 +3024,16 @@ module UnixSocket =
     ///
     /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
     /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
-    /// belongs with `close`, which does not model it yet. A close
-    /// of a connected socket that it changes is refused: with a time of zero,
-    /// a reset rather than an orderly shutdown; with a positive time, a wait
-    /// for bytes still in the send buffer, on Linux whatever `O_NONBLOCK` is
-    /// and on Darwin through a blocking description. So is any close of its
-    /// last descriptor while a call in flight that the close does not end
-    /// holds it, whatever the time.
-    /// Every other close is the one it would be anyway: a FIN, or a reset if
-    /// bytes were left unread.
+    /// belongs with `close`: with a time of zero, the close of a connected
+    /// socket is abortive, a reset unless both FINs have arrived. A close it
+    /// would make wait is refused: with a positive time, for bytes still in
+    /// the send buffer, on Linux whatever `O_NONBLOCK` is and on Darwin
+    /// through a blocking description; and so is Darwin's close under a time
+    /// of zero after its own FIN, still queued, met the peer's, whose reset
+    /// waits on the peer's reads. So is any close of its last descriptor
+    /// while a call in flight that the close does not end holds it, whatever
+    /// the time. Every other close is the one it would be anyway: a FIN, or a
+    /// reset if bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener does not reach

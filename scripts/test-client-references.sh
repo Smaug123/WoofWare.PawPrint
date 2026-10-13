@@ -60,6 +60,24 @@ let m () = failwith "a guest passed it"
 let clr = 1
 EOF
 
+# A permalink to one of the client's measurement documents is a citation, not a
+# reference: it is pinned to a commit, so it names a fixed record rather than
+# sending the reader into the client's moving code. Anything short of that form
+# is still a reference.
+sha=6b4aeb4fce455e8c187157ce020d1058fb0821bf
+cat > "$tmp/lib/Nested/Urls.fs" <<EOF
+module Urls
+/// Measured: https://github.com/Smaug123/WoofWare.PawPrint/blob/$sha/docs/divergences.md
+// (https://github.com/Smaug123/WoofWare.PawPrint/blob/$sha/docs/plans/2026-08-21-socket-connect.md): the table
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/main/docs/divergences.md
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4f/docs/divergences.md
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/$sha/scripts/check-pal-residue.py
+/// See https://github.com/Smaug123/WoofWare.PawPrint/blob/$sha/docs/divergences.md, set by KernelConfig.Mount.
+/// https://example.com/Smaug123/WoofWare.PawPrint/blob/$sha/docs/divergences.md
+/// https://github.com/Smaug123/WoofWare.PawPrint/tree/$sha/docs/probes
+let urls = 1
+EOF
+
 cat > "$tmp/lib/README.md" <<'EOF'
 Extracted from WoofWare.PawPrint, whose KernelConfig configures it.
 EOF
@@ -100,6 +118,12 @@ expected_hits=(
   "Nested/Clr.fs:6: CoreLib:"
   "Nested/Clr.fs:6: SocketAsyncEngine:"
   "Nested/Clr.fs:6: guests:"
+  "Nested/Urls.fs:4: PawPrint:"
+  "Nested/Urls.fs:5: PawPrint:"
+  "Nested/Urls.fs:6: PawPrint:"
+  "Nested/Urls.fs:7: KernelConfig:"
+  "Nested/Urls.fs:8: PawPrint:"
+  "Nested/Urls.fs:9: PawPrint:"
 )
 
 fail=0
@@ -129,6 +153,12 @@ fi
 # them, and words that merely begin with one, are not.
 if grep -qE 'Clr\.fs:(1|7|8|9|10): ' <<<"$out"; then
   echo "FAIL: a silent CoreCLR-fixture line was reported" >&2
+  fail=1
+fi
+# Pinned permalinks into the client's docs/ are silent, and masking one leaves
+# the rest of its line scanned: line 7 is reported for KernelConfig alone.
+if grep -qE 'Urls\.fs:(1|2|3|10): |Urls\.fs:7: PawPrint' <<<"$out"; then
+  echo "FAIL: a pinned permalink to the client's docs was reported" >&2
   fail=1
 fi
 if grep -q 'README' <<<"$out"; then

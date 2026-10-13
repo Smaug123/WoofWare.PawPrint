@@ -694,6 +694,7 @@ module UnixMachineState =
         let target = socket socketId machine
 
         match target.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixMachineState.socketReadinessLevel" socketId
         | SocketPhase.Listening listenState ->
             { ReadinessLevel.none with
                 In = not (List.isEmpty listenState.Queue)
@@ -807,7 +808,9 @@ module UnixMachineState =
     /// Whether `connectionEnd` of `connection` is done with its endpoint, as
     /// far as the connection can tell: a reset has reached the connection
     /// (`resetReleasedTuple`), or the end's FIN, made after the peer's had
-    /// arrived, has itself arrived (`TcpTransfer.passiveFinArrived`). That is
+    /// arrived, has itself arrived (`TcpTransfer.passiveFinArrived`), or,
+    /// under Darwin, the end's socket closed under `SO_LINGER` {1, 0} once
+    /// both FINs had arrived (`TcpTransfer.abortReleased`). That is
     /// so whether the end's socket is open or has closed, and the last may
     /// happen after the close, at the read by the peer that lets the FIN
     /// through. A Linux socket still open keeps an explicitly bound port
@@ -820,10 +823,13 @@ module UnixMachineState =
     /// the endpoint of an end whose passive FIN has arrived, open or closed
     /// (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
     /// section F, and `bind-held-endpoint.c` beside it). After a FIN made
-    /// first, or one still queued, it cannot.
+    /// first, or one still queued, it cannot, unless, under Darwin, the end
+    /// closed under linger zero after the exchange (section L,
+    /// `bothfin-cfirst`).
     let internal endpointReleased (connectionEnd : ConnectionEnd) (connection : TcpConnection) : bool =
         resetReleasedTuple connection
         || TcpTransfer.passiveFinArrived connectionEnd connection.Transfer
+        || TcpTransfer.abortReleased connectionEnd connection.Transfer
 
     /// Whether the connected socket `socket`'s binding has stopped reserving
     /// its port because its end of the connection is done with it
