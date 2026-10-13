@@ -529,6 +529,12 @@ module Scheduler =
     /// frame. `NativeHandlerResult.BlockedRetainingFrame` is what keeps that
     /// frame in place.
     let parkInSyscall (blocked : ThreadId) (state : IlMachineState) : IlMachineState =
+        let sleepers = state._SyscallSleepers
+
+        if sleepers.Asleep.Contains blocked then
+            failwith
+                $"Scheduler.parkInSyscall: thread %O{blocked} is already asleep in a syscall, so it cannot be making another (this is an interpreter bug)."
+
         { state with
             ThreadState =
                 state.ThreadState
@@ -539,6 +545,11 @@ module Scheduler =
                             Status = ThreadStatus.BlockedInSyscall
                         }
                     ))
+            _SyscallSleepers =
+                {
+                    Waiters = Set.add blocked sleepers.Waiters
+                    Asleep = Set.add blocked sleepers.Asleep
+                }
         }
 
 
@@ -568,13 +579,26 @@ module Scheduler =
             failwith
                 $"Scheduler.wakeFromSyscall: thread %O{thread} is not parked in a syscall (status: %O{other}); the sweep observed a satisfied wake condition against a thread that is not waiting on one."
 
-        setThreadStatus thread ThreadStatus.Runnable state
+        let sleepers = state._SyscallSleepers
+
+        if not (sleepers.Waiters.Contains thread) then
+            failwith
+                $"Scheduler.wakeFromSyscall: thread %O{thread} is parked in BlockedInSyscall, but the program's kept syscall waiters %O{sleepers.Waiters} do not include it: it parked without `parkInSyscall` (this is an interpreter bug)."
+
+        { setThreadStatus thread ThreadStatus.Runnable state with
+            _SyscallSleepers =
+                {
+                    Waiters = Set.remove thread sleepers.Waiters
+                    Asleep = Set.remove thread sleepers.Asleep
+                }
+        }
 
     /// The threads parked in `BlockedInSyscall`: those a wake flips back to
     /// `Runnable` (`wakeFromSyscall`).
     ///
-    /// Runs once per scheduler tick — that is, once per interpreted instruction —
-    /// so it accumulates only matches rather than materialising the thread map.
+    /// Walks every thread, accumulating only matches rather than materialising the
+    /// thread map; a caller that asks at every tick reads the threads the program
+    /// keeps instead (`IlMachineState._SyscallSleepers`).
     ///
     /// A thread parked with no record at all could never be woken by anything, so
     /// it is refused here rather than quietly skipped.
@@ -624,6 +648,46 @@ module Scheduler =
         match sleepingDispatcher state with
         | None -> waiters
         | Some dispatcher -> Set.add dispatcher waiters
+
+    /// `state` with the signal dispatcher `dispatcher` counted as asleep in its read of the signal
+    /// pipe if `asleep`, and not if not: what the dispatcher's read leaves its task in, which
+    /// `SignalDispatch.poll` makes and finishes rather than a park and a wake. `state` itself
+    /// when it already counts the dispatcher so.
+    ///
+    /// Fails loudly if `dispatcher` is parked in `BlockedInSyscall`, which a dispatcher in its
+    /// read never is.
+    let withDispatcherInRead (dispatcher : ThreadId) (asleep : bool) (state : IlMachineState) : IlMachineState =
+        let sleepers = state._SyscallSleepers
+
+        if sleepers.Waiters.Contains dispatcher then
+            failwith
+                $"Scheduler.withDispatcherInRead: the dispatcher %O{dispatcher} is parked in BlockedInSyscall, so it is not in its read of the signal pipe (this is an interpreter bug)."
+
+        if sleepers.Asleep.Contains dispatcher = asleep then
+            state
+        else
+            { state with
+                _SyscallSleepers =
+                    { sleepers with
+                        Asleep =
+                            if asleep then
+                                Set.add dispatcher sleepers.Asleep
+                            else
+                                Set.remove dispatcher sleepers.Asleep
+                    }
+            }
+
+    /// Fails loudly unless the syscall sleepers `state` keeps (`IlMachineState._SyscallSleepers`)
+    /// are the ones `syscallWaiters` and `asleepInSyscall` derive from its thread states and its
+    /// kernel's parks.
+    let checkSyscallSleepers (state : IlMachineState) : unit =
+        let kept = state._SyscallSleepers
+        let waiters = Set.ofList (syscallWaiters state)
+        let asleep = asleepInSyscall state
+
+        if kept.Waiters <> waiters || kept.Asleep <> asleep then
+            failwith
+                $"Scheduler.checkSyscallSleepers: the program keeps %O{kept.Waiters} as its threads parked in BlockedInSyscall and %O{kept.Asleep} as its threads asleep in the kernel, but its thread states and parks show %O{waiters} and %O{asleep}: a thread parked or woke without `parkInSyscall`, `wakeFromSyscall` or `withDispatcherInRead` (this is an interpreter bug)."
 
     /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
     /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and

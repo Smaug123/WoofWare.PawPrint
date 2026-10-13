@@ -635,7 +635,9 @@ module SignalDispatch =
         // Empty, with the write end open: the read sleeps, and so does the
         // dispatcher, until a poll finds the kernel has woken it.
         | Some (ReadOutcome.WouldBlock _, system) ->
-            state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
+            state.MapKernel (EmulatedKernel.withUnix system)
+            |> Scheduler.withDispatcherInRead dispatcher true
+            |> SignalPoll.Continues
         | Some (ReadOutcome.Restarts, _) ->
             refuse "is restarted by a signal, which PawPrint never directs at the dispatcher"
         | Some (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> refuse $"fails with %O{error}"
@@ -646,7 +648,10 @@ module SignalDispatch =
         if bytes.Length <> 1 then
             refuse $"reads %d{bytes.Length} bytes rather than one"
 
-        let state = state.MapKernel (EmulatedKernel.withUnix system)
+        let state =
+            state.MapKernel (EmulatedKernel.withUnix system)
+            |> Scheduler.withDispatcherInRead dispatcher false
+
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
         let signo = int bytes.[0]
 

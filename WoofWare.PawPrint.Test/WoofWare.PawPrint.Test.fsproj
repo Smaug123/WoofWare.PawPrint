@@ -434,6 +434,7 @@
     <Compile Include="TestMultiProgram.fs" />
     <Compile Include="TestProgramChoice.fs" />
     <Compile Include="TestSeveralPrograms.fs" />
+    <Compile Include="TestMultiProgramWakes.fs" />
     <Compile Include="TestAspNetTwoProcess.fs" />
     <Compile Include="TestFinallyChain.fs" />
   </ItemGroup>
