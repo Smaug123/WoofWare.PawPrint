@@ -1466,6 +1466,8 @@ module ArithmeticOperation =
                     hostFaultingArith (fun () -> (# "div" a b : int64 #))
                     |> NativeIntSource.Verbatim
                     |> Choice2Of2
+                // A pointer into storage is never 0, so 0 divided by it is 0.
+                | ValueSome 0L, ValueNone -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to divide two managed pointers"
 
             member _.Int64ManagedPtr _ _ a ptr =

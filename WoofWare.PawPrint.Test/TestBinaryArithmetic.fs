@@ -917,6 +917,23 @@ module TestBinaryArithmetic =
         | [] -> ()
         | disagreements -> failwith (String.concat "\n" disagreements)
 
+    [<Test>]
+    let ``div of 0 by a pointer into storage is 0`` () : unit =
+        let state, arr = stateWithIntArray (valuesOfLength 4)
+        let pointer = arrayPointer arr 1
+
+        // A pointer into storage is never 0, so the quotient is 0 whatever its address.
+        for dividend in
+            [
+                EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+            ] do
+            match BinaryArithmetic.executeFaulting baseClassTypes ArithmeticOperation.div state dividend pointer with
+            | Ok (result, _) ->
+                canonical result
+                |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+            | Error fault -> failwith $"div of %O{dividend} by a pointer into storage faulted with %O{fault}"
+
     let private byteHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
