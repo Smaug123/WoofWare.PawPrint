@@ -19,7 +19,7 @@ module TestTypeInfoAssemblyIdentity =
     // Factory intentionally undisposed: corelib.Logger outlives this scope.
     let private corelib : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 

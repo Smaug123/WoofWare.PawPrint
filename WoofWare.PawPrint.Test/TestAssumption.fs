@@ -19,7 +19,7 @@ module TestAssumption =
     let coreLibs : TestCaseData list = TestIntrinsicBody.coreLibs
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every assumption summarises the methods of the CoreLib it names`` (which : string) : unit =
+    let ``every assumption summarises the methods of the CoreLib it names`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
         let summarised =
@@ -78,7 +78,7 @@ module TestAssumption =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``the resource lookup's contract stands in for one method of the CoreLib, the one it names``
-        (which : string)
+        (which : AuditedCoreLib)
         : unit
         =
         let corelib = TestIntrinsicBody.coreLib which
@@ -109,7 +109,7 @@ module TestAssumption =
         | other -> failwith $"The resource lookup's contract stands in for a method whose body is %A{other}, not IL"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every exception a contract raises is a CoreLib exception type`` (which : string) : unit =
+    let ``every exception a contract raises is a CoreLib exception type`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
         let contracts =

@@ -53,7 +53,7 @@ module Netstandard21FSharpCore =
     /// cache does not hold one, so a checkout without it still passes.
     let path : string Lazy = System.Lazy<_>.Create locate
 
-    let corelibPath : string = typeof<obj>.Assembly.Location
+    let corelibPath : string = HostImage.coreLibPath
 
     /// netstandard.dll and every BCL facade these tests may need ship alongside
     /// System.Private.CoreLib in every Microsoft.NETCore.App runtime we test against; a

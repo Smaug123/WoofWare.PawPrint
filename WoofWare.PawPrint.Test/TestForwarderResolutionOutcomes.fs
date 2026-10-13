@@ -61,8 +61,7 @@ public sealed class Marker
 
     /// The shared framework, so that a forwarder which *does* arrive can have its target's base
     /// chain primed the way production primes it.
-    let private runtimeDir : string =
-        Path.GetDirectoryName typeof<obj>.Assembly.Location
+    let private runtimeDir : string = HostImage.frameworkDirectory
 
     /// The library's own base class, in a third assembly. Only the `BaseMissing` layout keeps it
     /// off disk.

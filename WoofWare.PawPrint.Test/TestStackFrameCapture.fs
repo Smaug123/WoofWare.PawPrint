@@ -23,7 +23,7 @@ module TestStackFrameCapture =
 
     // The factory is intentionally not disposed: the DumpedAssembly keeps the logger.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

@@ -100,7 +100,7 @@ public static class Caller
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory HostImage.coreLibPath
 
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 

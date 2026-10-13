@@ -30,7 +30,7 @@ module TestByrefComparison =
     /// ParallelScope.All is safe. Only needed to name a real type for `ReinterpretAs`.
     let private corelib =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll

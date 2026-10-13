@@ -173,7 +173,7 @@ class Program
         // Factory intentionally undisposed: the DumpedAssembly loggers outlive this scope.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let corelib = Assembly.readFile loggerFactory corelibPath
         let bct = BaseClassTypes.ofCorelib corelib
 

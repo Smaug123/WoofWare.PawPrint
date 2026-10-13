@@ -155,13 +155,24 @@ module TestDelegateLayout =
         "(it knows System.Delegate { obj _target; obj _methodBase; intptr _methodPtr; intptr _methodPtrAux } with System.MulticastDelegate { obj _invocationList; intptr _invocationCount })"
 
     let private readHostCorelib (loggerFactory : ILoggerFactory) : DumpedAssembly =
-        AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+        AssemblyApi.readFile loggerFactory HostImage.coreLibPath
 
     [<Test>]
-    let ``the host's CoreLib has the invocation-list-and-count layout`` () =
+    let ``the framework under test's CoreLib has that runtime's layout`` () =
+        let expected : (string * string) list =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 ->
+                [
+                    "Delegate", "_target"
+                    "Delegate", "_methodPtr"
+                    "Delegate", "_methodPtrAux"
+                    "MulticastDelegate", "_invocationList"
+                    "MulticastDelegate", "_invocationCount"
+                ]
+
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let corelib = readHostCorelib loggerFactory
+        let corelib = AssemblyApi.readFile loggerFactory (FrameworkUnderTest.coreLibPath ())
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         match DelegateLayout.classify corelib baseClassTypes.DelegateType baseClassTypes.MulticastDelegateType with
@@ -174,14 +185,7 @@ module TestDelegateLayout =
                 invocations.InvocationCount
             ]
             |> List.map (fun field -> field.DeclaringType.Name, field.Name)
-            |> shouldEqual
-                [
-                    "Delegate", "_target"
-                    "Delegate", "_methodPtr"
-                    "Delegate", "_methodPtrAux"
-                    "MulticastDelegate", "_invocationList"
-                    "MulticastDelegate", "_invocationCount"
-                ]
+            |> shouldEqual expected
         | Error refusal -> failwith refusal
 
     [<Test>]

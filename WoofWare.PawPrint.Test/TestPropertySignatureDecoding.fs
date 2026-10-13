@@ -24,7 +24,7 @@ open WoofWare.PawPrint
 module TestPropertySignatureDecoding =
 
     let private corelibReader : PEReader =
-        new PEReader (File.OpenRead typeof<obj>.Assembly.Location)
+        new PEReader (File.OpenRead HostImage.coreLibPath)
 
     let private metadataReader : MetadataReader = corelibReader.GetMetadataReader ()
 

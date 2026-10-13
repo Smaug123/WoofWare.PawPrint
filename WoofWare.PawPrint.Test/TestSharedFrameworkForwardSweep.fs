@@ -20,7 +20,7 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestSharedFrameworkForwardSweep =
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 
     let private readAssembly (path : string) : DumpedAssembly =

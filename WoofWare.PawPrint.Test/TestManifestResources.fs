@@ -789,7 +789,7 @@ public static class Entry
         peByteRange.Size |> shouldEqual resourceBytes.Length
 
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory HostImage.coreLibPath
 
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
