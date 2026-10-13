@@ -829,6 +829,46 @@ module TestShutdownAgainstHost =
 
     let private hostDisagreements = hostDisagreementsOf ShutdownProbe.Probe.Shutdown
 
+    /// `TcpExt: TCPTimeWaitOverflow` in the text of a Linux `/proc/net/netstat`:
+    /// how many sockets in the network namespace have closed without entering
+    /// TIME_WAIT, because the table of them (`tcp_max_tw_buckets`) was full.
+    let private timeWaitOverflows (netstat : string) : int64 =
+        // A section is a line of names and a line of values, each line
+        // headed by the section's name.
+        let tcpExt =
+            netstat.Split ('\n', StringSplitOptions.RemoveEmptyEntries)
+            |> Array.filter (fun line -> line.StartsWith ("TcpExt:", StringComparison.Ordinal))
+            |> Array.map (fun line -> line.Split (' ', StringSplitOptions.RemoveEmptyEntries))
+
+        match tcpExt with
+        | [| names ; values |] when names.Length = values.Length ->
+            match Array.tryFindIndex ((=) "TCPTimeWaitOverflow") names with
+            | Some i -> Int64.Parse values.[i]
+            | None -> failwith "/proc/net/netstat's TcpExt has no TCPTimeWaitOverflow"
+        | _ -> failwith "/proc/net/netstat has no TcpExt line of names with a line of values to match"
+
+    /// Runs `replay` and, on a Linux host, fails if any socket in the network
+    /// namespace closed without entering TIME_WAIT meanwhile: such an end
+    /// releases at once an endpoint it should hold, so a bind of it that was
+    /// measured as refused succeeds. Elsewhere, runs `replay`.
+    let private withoutTimeWaitOverflow (replay : unit -> 'a) : 'a =
+        match HostPlatform.flavour () with
+        | Some SimulatedUnixFlavour.Linux ->
+            let read () =
+                timeWaitOverflows (IO.File.ReadAllText "/proc/net/netstat")
+
+            let before = read ()
+            let result = replay ()
+            let after = read ()
+
+            if after > before then
+                failwith
+                    $"the host's TIME_WAIT table overflowed during the replay (TCPTimeWaitOverflow %d{before} -> %d{after}), so an end may have released an endpoint it should have held; the replay's answers do not describe the measured kernel"
+
+            result
+        | Some SimulatedUnixFlavour.Darwin
+        | None -> replay ()
+
     [<Test>]
     let ``this host answers shutdown, and what each end then sees, as its flavour was measured (section S)`` () =
         hostDisagreements "S" true ShutdownProbe.sectionS |> shouldEqual []
@@ -853,12 +893,15 @@ module TestShutdownAgainstHost =
     // which another's connect could take in between.
     [<Test>]
     let ``this host frees an endpoint by which FIN came first, as measured (section F)`` () =
-        hostDisagreements "F" false ShutdownProbe.sectionF |> shouldEqual []
+        withoutTimeWaitOverflow (fun () -> hostDisagreements "F" false ShutdownProbe.sectionF)
+        |> shouldEqual []
 
     // One scenario at a time, as for section F.
     [<Test>]
     let ``this host answers a bind of an endpoint an end still holds as measured (bind-held-endpoint.c)`` () =
-        hostDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" false ShutdownProbe.sectionH
+        withoutTimeWaitOverflow (fun () ->
+            hostDisagreementsOf ShutdownProbe.Probe.HeldEndpoint "H" false ShutdownProbe.sectionH
+        )
         |> shouldEqual []
 
     // A loaded host can hold back a queue's next bytes for longer than the
@@ -1052,6 +1095,39 @@ module TestShutdownAgainstHost =
             |> shouldEqual [ ShutdownLine.Line "bind-EADDRINUSE" ]
 
             attempts.Value |> shouldEqual 1
+        )
+
+    // The shape of Linux 6.18.5's /proc/net/netstat, with most of each
+    // header's names (136 for TcpExt) left out.
+    [<Test>]
+    let ``the TIME_WAIT overflow count is read from TcpExt's column of that name`` () =
+        [
+            "TcpExt: SyncookiesSent TW TWRecycled TCPTimeWaitOverflow TCPReqQFullDoCookies"
+            "TcpExt: 3 25 1 25275 0"
+            "IpExt: InNoRoutes TCPTimeWaitOverflow"
+            "IpExt: 7 9"
+            ""
+        ]
+        |> String.concat "\n"
+        |> timeWaitOverflows
+        |> shouldEqual 25275L
+
+    [<Test>]
+    let ``a netstat without the TIME_WAIT overflow count is refused`` () =
+        (fun () ->
+            [ "TcpExt: SyncookiesSent TW" ; "TcpExt: 3 25" ; "" ]
+            |> String.concat "\n"
+            |> timeWaitOverflows
+            |> ignore<int64>
+        )
+        |> shouldFail
+
+    [<Test>]
+    let ``this Linux host reports its TIME_WAIT overflow count`` () =
+        onLinuxHost (fun () ->
+            IO.File.ReadAllText "/proc/net/netstat"
+            |> timeWaitOverflows
+            |> shouldBeGreaterThan -1L
         )
 
     // ------------------------------------------------------------------

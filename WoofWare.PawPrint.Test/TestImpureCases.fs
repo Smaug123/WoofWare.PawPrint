@@ -2722,6 +2722,32 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A descriptor argument with bits set above its low 32, which
+                // the shim truncates to `int`. Compared on every host: the
+                // truncation is the shim's, and the descriptor flags the guest
+                // reads are the same on both kernels.
+                FileName = "DescriptorHighBits.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same program under Darwin.
+                FileName = "DescriptorHighBits.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_Socket` rows true only under the Linux
                 // flavour — the Unix-domain sockets Darwin refuses — together
                 // with the two descriptor-level rows a differential guest cannot
