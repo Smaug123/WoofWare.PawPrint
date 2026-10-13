@@ -841,6 +841,42 @@ module TestSyscallInterruption =
                 |> shouldEqual (flavour, caseName parked, measuredRule flavour parked)
 
     [<Test>]
+    let ``a task parked in one syscall may be parked again in it, and in no other`` () : unit =
+        // `UnixTaskTable.withPark` refuses to park a task in a second syscall
+        // over the first; it must tell every pair of cases apart, and no two
+        // parks of one case.
+        let caseName (parked : ParkedSyscall) : string =
+            let case, _ =
+                Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields (parked, typeof<ParkedSyscall>)
+
+            case.Name
+
+        let tasks = (worldOn SimulatedUnixPlatform.linuxX64).System.Tasks
+
+        let park (parked : ParkedSyscall) (tasks : Map<int, UnixTaskState>) : Map<int, UnixTaskState> =
+            UnixTaskTable.withPark
+                1
+                {
+                    Syscall = parked
+                    Ordinal = ParkOrdinal 0L
+                }
+                tasks
+
+        for first in oneParkOfEach do
+            let parkedOnce = park first tasks
+
+            for second in oneParkOfEach do
+                let accepted =
+                    try
+                        park second parkedOnce |> ignore<Map<int, UnixTaskState>>
+                        true
+                    with e when e.Message.Contains "without clearing the first" ->
+                        false
+
+                (caseName first, caseName second, accepted)
+                |> shouldEqual (caseName first, caseName second, caseName first = caseName second)
+
+    [<Test>]
     let ``a signal sent to the process interrupts the leader asleep in an accept`` () : unit =
         // `kill(2)` aims at the process, and the leader takes it.
         for restart, expected in [ true, Ending.Restart ; false, Ending.Eintr ] do
