@@ -8,7 +8,7 @@ using System.Net.Sockets;
 // connect to 127.0.0.1 goes out as `::ffff:127.0.0.1` in a 28-byte
 // `sockaddr_in6`, and its endpoints read back v4-mapped.
 //
-// Measured on Linux 6.18.5 and Darwin 27.0.0 (`docs/probes/dual-mode/`): with
+// Measured on Linux 6.18.5 and Darwin 27.0.0 (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/dual-mode`): with
 // IPV6_V6ONLY on, a connect to a v4-mapped address is ENETUNREACH on Linux and
 // EAFNOSUPPORT on Darwin; and a dual-mode socket bound to `::ffff:127.0.0.1`
 // shares its port with an IPv4 socket at 127.0.0.1 on Linux when both set

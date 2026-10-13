@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 // socket, and by hand on sockets with no peer.
 //
 // Measured on Linux 6.18.5 and Darwin 27.0.0
-// (`docs/probes/getpeername/getpeername.c`): a socket never connected, and a
+// (`https://github.com/Smaug123/WoofWare.PosixKernel/blob/a31630834a56ee717dede659a307c979fe83728e/docs/probes/getpeername/getpeername.c`): a socket never connected, and a
 // listener, answer ENOTCONN on both; a socket whose connect was refused answers
 // ENOTCONN on Linux and EINVAL on Darwin.
 //
