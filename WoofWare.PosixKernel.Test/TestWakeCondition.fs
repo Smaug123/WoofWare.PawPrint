@@ -164,7 +164,7 @@ module TestWakeCondition =
         let emptyFd, system = created system
 
         let system =
-            match UnixInotify.tryInotifyAddWatch queuedFd (PathArg.ofText "/") 0x100u system with
+            match UnixInotify.tryInotifyAddWatchEager queuedFd (PathArg.ofText "/") 0x100u system with
             | Ok (SyscallAnswer.Completed 1L, system) -> system
             | other -> failwith $"watching the root: %A{other}"
 

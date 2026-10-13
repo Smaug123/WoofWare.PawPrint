@@ -318,7 +318,7 @@ module TestDirectorySize =
         | DirectorySizeOp.RemoveDirectory path ->
             Answered.rmdir (rooted path) system |> completed $"rmdir %s{path}" |> snd
         | DirectorySizeOp.Rename (source, destination) ->
-            match UnixNamespace.tryRename (argument source) (argument destination) system with
+            match UnixNamespace.tryRenameEager (argument source) (argument destination) system with
             | Ok result -> result |> completed $"rename %s{source} %s{destination}" |> snd
             | Error refusal -> failwith $"rename %s{source} %s{destination} was refused: %A{refusal}"
 

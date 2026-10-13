@@ -104,24 +104,6 @@ WoofWare.PosixKernel.AcceptOutcome.NewFailed [static method]: WoofWare.PosixKern
 WoofWare.PosixKernel.AcceptOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.AcceptOutcome
 WoofWare.PosixKernel.AcceptOutcome.Restarts [static property]: [read-only] WoofWare.PosixKernel.AcceptOutcome
 WoofWare.PosixKernel.AcceptOutcome.Tag [property]: [read-only] int
-WoofWare.PosixKernel.AccessProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.AccessProgress`2+Answered inherit WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.AccessProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.AccessProgress`2+NeedsPath inherit WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2+NeedsPath.get_paused [method]: unit -> WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2+NeedsPath.paused [property]: [read-only] WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2+Tags inherit obj
-WoofWare.PosixKernel.AccessProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.AccessProgress`2+Tags.NeedsPath [static field]: int = 1
-WoofWare.PosixKernel.AccessProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.AccessProgress`2.get_IsNeedsPath [method]: unit -> bool
-WoofWare.PosixKernel.AccessProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.AccessProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.AccessProgress`2.IsNeedsPath [property]: [read-only] bool
-WoofWare.PosixKernel.AccessProgress`2.NewAnswered [static method]: WoofWare.PosixKernel.SyscallAnswer -> WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2.NewNeedsPath [static method]: WoofWare.PosixKernel.PausedAccess<'Task, 'Handler> -> WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
-WoofWare.PosixKernel.AccessProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ApfsMount inherit obj, implements WoofWare.PosixKernel.ApfsMount System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ApfsMount System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ApfsMount..ctor [constructor]: (int, System.UInt32, WoofWare.PosixKernel.UnixByteString)
 WoofWare.PosixKernel.ApfsMount.Equals [method]: (WoofWare.PosixKernel.ApfsMount, System.Collections.IEqualityComparer) -> bool
@@ -379,46 +361,6 @@ WoofWare.PosixKernel.ClientEnd.NewSupplying [static method]: WoofWare.PosixKerne
 WoofWare.PosixKernel.ClientEnd.ReadEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
 WoofWare.PosixKernel.ClientEnd.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ClientEnd.WriteEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
-WoofWare.PosixKernel.CloneFileProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.CloneFileProgress`2+Answered inherit WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.CloneFileProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.CloneFileProgress`2+Answered.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+Answered.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+NeedsDestination inherit WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+NeedsDestination.get_paused [method]: unit -> WoofWare.PosixKernel.PausedCloneFile<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+NeedsDestination.paused [property]: [read-only] WoofWare.PosixKernel.PausedCloneFile<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2+Tags inherit obj
-WoofWare.PosixKernel.CloneFileProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.CloneFileProgress`2+Tags.NeedsDestination [static field]: int = 1
-WoofWare.PosixKernel.CloneFileProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.CloneFileProgress`2.get_IsNeedsDestination [method]: unit -> bool
-WoofWare.PosixKernel.CloneFileProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.CloneFileProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.CloneFileProgress`2.IsNeedsDestination [property]: [read-only] bool
-WoofWare.PosixKernel.CloneFileProgress`2.NewAnswered [static method]: (WoofWare.PosixKernel.SyscallAnswer, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2.NewNeedsDestination [static method]: WoofWare.PosixKernel.PausedCloneFile<'Task, 'Handler> -> WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileProgress`2.Tag [property]: [read-only] int
-WoofWare.PosixKernel.CloneFileScreen`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.CloneFileScreen`2+Answered inherit WoofWare.PosixKernel.CloneFileScreen<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.CloneFileScreen`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.CloneFileScreen`2+Answered.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+Answered.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+NeedsSource inherit WoofWare.PosixKernel.CloneFileScreen<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+NeedsSource.get_paused [method]: unit -> WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+NeedsSource.paused [property]: [read-only] WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2+Tags inherit obj
-WoofWare.PosixKernel.CloneFileScreen`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.CloneFileScreen`2+Tags.NeedsSource [static field]: int = 1
-WoofWare.PosixKernel.CloneFileScreen`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.CloneFileScreen`2.get_IsNeedsSource [method]: unit -> bool
-WoofWare.PosixKernel.CloneFileScreen`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.CloneFileScreen`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.CloneFileScreen`2.IsNeedsSource [property]: [read-only] bool
-WoofWare.PosixKernel.CloneFileScreen`2.NewAnswered [static method]: (WoofWare.PosixKernel.SyscallAnswer, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.CloneFileScreen<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2.NewNeedsSource [static method]: WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler> -> WoofWare.PosixKernel.CloneFileScreen<'Task, 'Handler>
-WoofWare.PosixKernel.CloneFileScreen`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ConnectionEnd inherit obj, implements WoofWare.PosixKernel.ConnectionEnd System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ConnectionEnd System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.ConnectionEnd+Tags inherit obj
 WoofWare.PosixKernel.ConnectionEnd+Tags.Client [static field]: int = 0
@@ -1722,24 +1664,6 @@ WoofWare.PosixKernel.InodeTimes.get_Modification [method]: unit -> WoofWare.Posi
 WoofWare.PosixKernel.InodeTimes.get_StatusChange [method]: unit -> WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.Modification [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
 WoofWare.PosixKernel.InodeTimes.StatusChange [property]: [read-only] WoofWare.PosixKernel.UnixTimestamp
-WoofWare.PosixKernel.InotifyAddWatchProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered inherit WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath inherit WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath.get_paused [method]: unit -> WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+NeedsPath.paused [property]: [read-only] WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags inherit obj
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.InotifyAddWatchProgress`2+Tags.NeedsPath [static field]: int = 1
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_IsNeedsPath [method]: unit -> bool
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.IsNeedsPath [property]: [read-only] bool
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.NewAnswered [static method]: WoofWare.PosixKernel.SyscallAnswer -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.NewNeedsPath [static method]: WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
-WoofWare.PosixKernel.InotifyAddWatchProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.InotifyEvent inherit obj, implements WoofWare.PosixKernel.InotifyEvent System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.InotifyEvent System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 13 cases
 WoofWare.PosixKernel.InotifyEvent+Tags inherit obj
 WoofWare.PosixKernel.InotifyEvent+Tags.Access [static field]: int = 0
@@ -2149,24 +2073,6 @@ WoofWare.PosixKernel.LaunchDescriptor.IsGone [property]: [read-only] bool
 WoofWare.PosixKernel.LaunchDescriptor.IsSupplied [property]: [read-only] bool
 WoofWare.PosixKernel.LaunchDescriptor.NewSupplied [static method]: System.Byte System.Collections.Immutable.ImmutableArray -> WoofWare.PosixKernel.LaunchDescriptor
 WoofWare.PosixKernel.LaunchDescriptor.Tag [property]: [read-only] int
-WoofWare.PosixKernel.LinkProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.LinkProgress`2+Answered inherit WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.LinkProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.LinkProgress`2+NeedsDestination inherit WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2+NeedsDestination.get_paused [method]: unit -> WoofWare.PosixKernel.PausedLink<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2+NeedsDestination.paused [property]: [read-only] WoofWare.PosixKernel.PausedLink<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2+Tags inherit obj
-WoofWare.PosixKernel.LinkProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.LinkProgress`2+Tags.NeedsDestination [static field]: int = 1
-WoofWare.PosixKernel.LinkProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.LinkProgress`2.get_IsNeedsDestination [method]: unit -> bool
-WoofWare.PosixKernel.LinkProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.LinkProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.LinkProgress`2.IsNeedsDestination [property]: [read-only] bool
-WoofWare.PosixKernel.LinkProgress`2.NewAnswered [static method]: WoofWare.PosixKernel.SyscallAnswer -> WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2.NewNeedsDestination [static method]: WoofWare.PosixKernel.PausedLink<'Task, 'Handler> -> WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.LinkProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.LinkReadRule inherit obj, implements WoofWare.PosixKernel.LinkReadRule System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.LinkReadRule System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.LinkReadRule+Tags inherit obj
 WoofWare.PosixKernel.LinkReadRule+Tags.ModeIgnored [static field]: int = 0
@@ -3084,8 +2990,7 @@ WoofWare.PosixKernel.PathLimitsModule.maxSymlinkTraversals [static method]: Woof
 WoofWare.PosixKernel.PathLimitsModule.pathMaxBytes [static method]: WoofWare.PosixKernel.PathLimits -> int
 WoofWare.PosixKernel.PathWalk inherit obj
 WoofWare.PosixKernel.PathWalk.resolveExistingFromRoot [static method]: WoofWare.PosixKernel.PathLimits -> WoofWare.PosixKernel.Credentials -> WoofWare.PosixKernel.SymlinkProtection -> WoofWare.PosixKernel.SymlinkPolicy -> WoofWare.PosixKernel.UnixPath -> WoofWare.PosixKernel.VirtualFileSystem -> Microsoft.FSharp.Core.FSharpResult<WoofWare.PosixKernel.InodeNumber, WoofWare.PosixKernel.UnixError>
-WoofWare.PosixKernel.PausedAccess`2 inherit obj, implements WoofWare.PosixKernel.PausedAccess<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
-WoofWare.PosixKernel.PausedAccess`2.Equals [method]: (WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.PausedAccess`2 inherit obj
 WoofWare.PosixKernel.PausedBind inherit obj
 WoofWare.PosixKernel.PausedBind.copyRange [static method]: WoofWare.PosixKernel.PausedBind<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
 WoofWare.PosixKernel.PausedBind`2 inherit obj
@@ -3095,8 +3000,7 @@ WoofWare.PosixKernel.PausedConnect inherit obj
 WoofWare.PosixKernel.PausedConnect.copyRange [static method]: WoofWare.PosixKernel.PausedConnect<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
 WoofWare.PosixKernel.PausedConnect`2 inherit obj
 WoofWare.PosixKernel.PausedGetSockOpt`2 inherit obj
-WoofWare.PosixKernel.PausedInotifyAddWatch`2 inherit obj, implements WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> System.IEquatable, System.Collections.IStructuralEquatable
-WoofWare.PosixKernel.PausedInotifyAddWatch`2.Equals [method]: (WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.PausedInotifyAddWatch`2 inherit obj
 WoofWare.PosixKernel.PausedLink`2 inherit obj
 WoofWare.PosixKernel.PausedPWrite inherit obj
 WoofWare.PosixKernel.PausedPWrite.copyRange [static method]: WoofWare.PosixKernel.PausedPWrite<'Task, 'Handler> -> WoofWare.PosixKernel.CopyRange
@@ -3599,26 +3503,6 @@ WoofWare.PosixKernel.RefusalError.IsReported [property]: [read-only] bool
 WoofWare.PosixKernel.RefusalError.Pending [static property]: [read-only] WoofWare.PosixKernel.RefusalError
 WoofWare.PosixKernel.RefusalError.Reported [static property]: [read-only] WoofWare.PosixKernel.RefusalError
 WoofWare.PosixKernel.RefusalError.Tag [property]: [read-only] int
-WoofWare.PosixKernel.RenameProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.RenameProgress`2+Answered inherit WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.RenameProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.RenameProgress`2+Answered.get_system [method]: unit -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+Answered.system [property]: [read-only] WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+NeedsDestination inherit WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+NeedsDestination.get_paused [method]: unit -> WoofWare.PosixKernel.PausedRename<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+NeedsDestination.paused [property]: [read-only] WoofWare.PosixKernel.PausedRename<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2+Tags inherit obj
-WoofWare.PosixKernel.RenameProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.RenameProgress`2+Tags.NeedsDestination [static field]: int = 1
-WoofWare.PosixKernel.RenameProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.RenameProgress`2.get_IsNeedsDestination [method]: unit -> bool
-WoofWare.PosixKernel.RenameProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.RenameProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.RenameProgress`2.IsNeedsDestination [property]: [read-only] bool
-WoofWare.PosixKernel.RenameProgress`2.NewAnswered [static method]: (WoofWare.PosixKernel.SyscallAnswer, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2.NewNeedsDestination [static method]: WoofWare.PosixKernel.PausedRename<'Task, 'Handler> -> WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
-WoofWare.PosixKernel.RenameProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.RenameRules inherit obj, implements WoofWare.PosixKernel.RenameRules System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.RenameRules System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.RenameRules..ctor [constructor]: (WoofWare.PosixKernel.TrailingSeparatorPolicy, WoofWare.PosixKernel.RenameWalkOrder)
 WoofWare.PosixKernel.RenameRules.Equals [method]: (WoofWare.PosixKernel.RenameRules, System.Collections.IEqualityComparer) -> bool
@@ -4701,24 +4585,6 @@ WoofWare.PosixKernel.SymlinkPolicy.IsFollow [property]: [read-only] bool
 WoofWare.PosixKernel.SymlinkPolicy.IsNoFollowFinal [property]: [read-only] bool
 WoofWare.PosixKernel.SymlinkPolicy.NoFollowFinal [static property]: [read-only] WoofWare.PosixKernel.SymlinkPolicy
 WoofWare.PosixKernel.SymlinkPolicy.Tag [property]: [read-only] int
-WoofWare.PosixKernel.SymlinkProgress`2 inherit obj - union type with 2 cases
-WoofWare.PosixKernel.SymlinkProgress`2+Answered inherit WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2+Answered.answer [property]: [read-only] WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.SymlinkProgress`2+Answered.get_answer [method]: unit -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.SymlinkProgress`2+NeedsPath inherit WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2+NeedsPath.get_paused [method]: unit -> WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2+NeedsPath.paused [property]: [read-only] WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2+Tags inherit obj
-WoofWare.PosixKernel.SymlinkProgress`2+Tags.Answered [static field]: int = 0
-WoofWare.PosixKernel.SymlinkProgress`2+Tags.NeedsPath [static field]: int = 1
-WoofWare.PosixKernel.SymlinkProgress`2.get_IsAnswered [method]: unit -> bool
-WoofWare.PosixKernel.SymlinkProgress`2.get_IsNeedsPath [method]: unit -> bool
-WoofWare.PosixKernel.SymlinkProgress`2.get_Tag [method]: unit -> int
-WoofWare.PosixKernel.SymlinkProgress`2.IsAnswered [property]: [read-only] bool
-WoofWare.PosixKernel.SymlinkProgress`2.IsNeedsPath [property]: [read-only] bool
-WoofWare.PosixKernel.SymlinkProgress`2.NewAnswered [static method]: WoofWare.PosixKernel.SyscallAnswer -> WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2.NewNeedsPath [static method]: WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler> -> WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.SymlinkProgress`2.Tag [property]: [read-only] int
 WoofWare.PosixKernel.SymlinkProtection inherit obj, implements WoofWare.PosixKernel.SymlinkProtection System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SymlinkProtection System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.SymlinkProtection+Tags inherit obj
 WoofWare.PosixKernel.SymlinkProtection+Tags.InWorldWritableStickyDirectories [static field]: int = 1
@@ -6147,8 +6013,7 @@ WoofWare.PosixKernel.UnixErrorModule.rawNumbering [static method]: WoofWare.Posi
 WoofWare.PosixKernel.UnixErrorModule.toRawErrnoUnder [static method]: WoofWare.PosixKernel.RawErrnoNumbering -> WoofWare.PosixKernel.UnixError -> int
 WoofWare.PosixKernel.UnixErrorModule.tryToRawErrnoUnder [static method]: WoofWare.PosixKernel.RawErrnoNumbering -> WoofWare.PosixKernel.UnixError -> int option
 WoofWare.PosixKernel.UnixInotify inherit obj
-WoofWare.PosixKernel.UnixInotify.inotifyAddWatch [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> System.UInt32 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixInotify.inotifyAddWatchScreenPhase [static method]: int -> System.UInt32 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.InotifyAddWatchProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixInotify.inotifyAddWatch [static method]: int -> System.UInt32 -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
 WoofWare.PosixKernel.UnixInotify.inotifyAddWatchWithPath [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedInotifyAddWatch<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixInotify.inotifyInit1 [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> Microsoft.FSharp.Core.FSharpResult<(int * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>), WoofWare.PosixKernel.UnixError>
 WoofWare.PosixKernel.UnixInotify.inotifyRmWatch [static method]: int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
@@ -6172,14 +6037,11 @@ WoofWare.PosixKernel.UnixMachineStateModule.isProtectedFilesOf [static method]: 
 WoofWare.PosixKernel.UnixMachineStateModule.isUserBufferCheckOf [static method]: WoofWare.PosixKernel.SimulatedUnixPlatform -> WoofWare.PosixKernel.UserBufferCheck -> bool
 WoofWare.PosixKernel.UnixMachineStateModule.maxBootTimeSeconds [static field]: System.Int64 = 9223372027631403770
 WoofWare.PosixKernel.UnixNamespace inherit obj
-WoofWare.PosixKernel.UnixNamespace.cloneFile [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.cloneFileFlagsPhase [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CloneFileScreen<'Task, 'Handler>
-WoofWare.PosixKernel.UnixNamespace.cloneFileSourcePhase [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler> -> WoofWare.PosixKernel.CloneFileProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixNamespace.cloneFile [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
 WoofWare.PosixKernel.UnixNamespace.cloneFileWithDestination [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedCloneFile<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.link [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.linkat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.linkatSourcePhase [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.UnixNamespace.linkSourcePhase [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.LinkProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixNamespace.cloneFileWithSource [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedCloneFileSource<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedCloneFile<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
+WoofWare.PosixKernel.UnixNamespace.link [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedLink<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
+WoofWare.PosixKernel.UnixNamespace.linkat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedLink<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
 WoofWare.PosixKernel.UnixNamespace.linkWithDestination [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedLink<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.mkdir [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.mkdirat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
@@ -6190,16 +6052,12 @@ WoofWare.PosixKernel.UnixNamespace.openPath [static method]: 'Task -> int -> Woo
 WoofWare.PosixKernel.UnixNamespace.readDirectoryEntry [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.ReadDirectoryAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.readlink [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UserBuffer -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ReadLinkAnswer
 WoofWare.PosixKernel.UnixNamespace.readlinkat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UserBuffer -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.ReadLinkAnswer
-WoofWare.PosixKernel.UnixNamespace.rename [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.renameat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.renameatSourcePhase [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
-WoofWare.PosixKernel.UnixNamespace.renameSourcePhase [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.RenameProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixNamespace.rename [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedRename<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
+WoofWare.PosixKernel.UnixNamespace.renameat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedRename<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
 WoofWare.PosixKernel.UnixNamespace.renameWithDestination [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedRename<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.rmdir [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.symlink [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.symlinkat [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
-WoofWare.PosixKernel.UnixNamespace.symlinkatTargetPhase [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
-WoofWare.PosixKernel.UnixNamespace.symlinkTargetPhase [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.SymlinkProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixNamespace.symlink [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
+WoofWare.PosixKernel.UnixNamespace.symlinkat [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler>, (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)>
 WoofWare.PosixKernel.UnixNamespace.symlinkWithPath [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedSymlink<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.unlink [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixNamespace.unlinkat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
@@ -6240,15 +6098,13 @@ WoofWare.PosixKernel.UnixPathModule.toByteString [static method]: WoofWare.Posix
 WoofWare.PosixKernel.UnixPathModule.toEscaped [static method]: WoofWare.PosixKernel.UnixPath -> string
 WoofWare.PosixKernel.UnixPathModule.tryToString [static method]: WoofWare.PosixKernel.UnixPath -> string option
 WoofWare.PosixKernel.UnixPathResolution inherit obj
-WoofWare.PosixKernel.UnixPathResolution.access [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.UnixPathResolution.accessScreenPhase [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixPathResolution.access [static method]: int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>, WoofWare.PosixKernel.SyscallAnswer>
 WoofWare.PosixKernel.UnixPathResolution.accessWithPath [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.PausedAccess<'Task, 'Handler> -> WoofWare.PosixKernel.SyscallAnswer
 WoofWare.PosixKernel.UnixPathResolution.chdir [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPathResolution.chmod [static method]: WoofWare.PosixKernel.PathArgumentBytes -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPathResolution.chown [static method]: WoofWare.PosixKernel.PathArgumentBytes -> WoofWare.PosixKernel.UserId option -> WoofWare.PosixKernel.GroupId option -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPathResolution.currentDirectoryPath [static method]: WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.AbsoluteUnixPath option
-WoofWare.PosixKernel.UnixPathResolution.faccessat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.SyscallAnswer
-WoofWare.PosixKernel.UnixPathResolution.faccessatScreenPhase [static method]: int -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.AccessProgress<'Task, 'Handler>
+WoofWare.PosixKernel.UnixPathResolution.faccessat [static method]: int -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> WoofWare.PosixKernel.CallProgress<WoofWare.PosixKernel.PausedAccess<'Task, 'Handler>, WoofWare.PosixKernel.SyscallAnswer>
 WoofWare.PosixKernel.UnixPathResolution.fchmod [static method]: int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPathResolution.fchmodat [static method]: int -> WoofWare.PosixKernel.PathArgumentBytes -> int -> int -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)
 WoofWare.PosixKernel.UnixPathResolution.fchown [static method]: int -> WoofWare.PosixKernel.UserId option -> WoofWare.PosixKernel.GroupId option -> WoofWare.PosixKernel.UnixSystem<'Task, 'Handler> -> (WoofWare.PosixKernel.SyscallAnswer * WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>)

@@ -162,7 +162,7 @@ module internal InotifyReplay =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixInotify.tryInotifyAddWatch fd (PathArg.ofText path) mask system with
+        match UnixInotify.tryInotifyAddWatchEager fd (PathArg.ofText path) mask system with
         | Ok answered -> answered
         | Error refusal ->
             failwith
@@ -386,15 +386,15 @@ module internal InotifyReplay =
         |> completed $"unlink(%s{path})"
 
     let link (existing : string) (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.tryLink (PathArg.ofText existing) (PathArg.ofText path) system
+        UnixNamespace.tryLinkEager (PathArg.ofText existing) (PathArg.ofText path) system
         |> completed $"link(%s{existing}, %s{path})"
 
     let symlinkAt (target : string) (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.trySymlink (PathArg.ofText target) (PathArg.ofText path) system
+        UnixNamespace.trySymlinkEager (PathArg.ofText target) (PathArg.ofText path) system
         |> completed $"symlink(%s{target}, %s{path})"
 
     let rename (source : string) (destination : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.tryRename (PathArg.ofText source) (PathArg.ofText destination) system
+        UnixNamespace.tryRenameEager (PathArg.ofText source) (PathArg.ofText destination) system
         |> completed $"rename(%s{source}, %s{destination})"
 
     let chdir (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =

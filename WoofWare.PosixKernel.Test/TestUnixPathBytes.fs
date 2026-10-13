@@ -240,7 +240,7 @@ module TestUnixPathBytes =
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
-            match UnixNamespace.tryRename (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
+            match UnixNamespace.tryRenameEager (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
             | Ok (answer, _) -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"
 

@@ -1385,9 +1385,9 @@ module NativeSystemNative =
 
         let outcome =
             try
-                match UnixNamespace.renameatSourcePhase atFdCwd source atFdCwd system with
-                | RenameProgress.Answered (syscallAnswer, system) -> syscallAnswer, system
-                | RenameProgress.NeedsDestination paused ->
+                match UnixNamespace.renameat atFdCwd source atFdCwd system with
+                | CallProgress.Answered outcome -> outcome
+                | CallProgress.NeedsCopyIn paused ->
                     pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
                     |> fun destination -> UnixNamespace.renameWithDestination destination paused
             with :? UnmodelledException as e ->
@@ -1418,9 +1418,9 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.linkSourcePhase source state.Kernel.System with
-        | LinkProgress.Answered syscallAnswer -> answer (syscallAnswer, state.Kernel.System)
-        | LinkProgress.NeedsDestination paused ->
+        match UnixNamespace.link source state.Kernel.System with
+        | CallProgress.Answered outcome -> answer outcome
+        | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.linkWithDestination destination paused
             |> answer
@@ -1448,9 +1448,9 @@ module NativeSystemNative =
         let target =
             pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.symlinkTargetPhase target state.Kernel.System with
-        | SymlinkProgress.Answered syscallAnswer -> answer (syscallAnswer, state.Kernel.System)
-        | SymlinkProgress.NeedsPath paused ->
+        match UnixNamespace.symlink target state.Kernel.System with
+        | CallProgress.Answered outcome -> answer outcome
+        | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state
             |> fun path -> UnixNamespace.symlinkWithPath path paused
             |> answer
@@ -3476,9 +3476,9 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    match UnixPathResolution.accessScreenPhase mode state.Kernel.System with
-                    | AccessProgress.Answered answer -> answer
-                    | AccessProgress.NeedsPath paused ->
+                    match UnixPathResolution.access mode state.Kernel.System with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
                         // Read only now: a pointer this interpreter cannot
                         // dereference would refuse at transfer, where Linux
                         // answers a bad mode without looking at it.
@@ -4439,9 +4439,9 @@ module NativeSystemNative =
 
                 let answer =
                     try
-                        match UnixInotify.inotifyAddWatchScreenPhase fd mask state.Kernel.System with
-                        | InotifyAddWatchProgress.Answered answer -> Choice1Of2 answer
-                        | InotifyAddWatchProgress.NeedsPath paused ->
+                        match UnixInotify.inotifyAddWatch fd mask state.Kernel.System with
+                        | CallProgress.Answered outcome -> outcome
+                        | CallProgress.NeedsCopyIn paused ->
                             // Read only now: Linux answers a bad mask and every
                             // descriptor error without copying the path in, so
                             // the pointer may name memory this interpreter
@@ -4449,7 +4449,7 @@ module NativeSystemNative =
                             let path =
                                 pathArgumentBytes ctx operation "pathName" instruction.Arguments.[1] state
 
-                            Choice2Of2 (UnixInotify.inotifyAddWatchWithPath path paused)
+                            UnixInotify.inotifyAddWatchWithPath path paused
                     with :? UnmodelledException as e ->
                         // A fact about CoreLib, from `TranslateFilters`: the
                         // only refused bit FileSystemWatcher ever asks for.
@@ -4462,11 +4462,8 @@ module NativeSystemNative =
                         KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}, mask 0x%08x{mask}" advice e
 
                 match answer with
-                // Answered by the screen, which changes nothing.
-                | Choice1Of2 (SyscallAnswer.Failed error) -> -1, withErrnoOnly ctx error state
-                | Choice1Of2 (SyscallAnswer.Completed watch) -> int watch, state
-                | Choice2Of2 (SyscallAnswer.Completed watch, system) -> int watch, withAnswered system state
-                | Choice2Of2 (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
+                | SyscallAnswer.Completed watch, system -> int watch, withAnswered system state
+                | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread

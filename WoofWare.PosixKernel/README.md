@@ -309,7 +309,7 @@ Before 1.0, any version may change anything.
 
 ### The syscalls
 
-In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, `PausedWrite` is `PausedWrite<'Task, 'Handler>`, and `ProcessFate<WriteOutcome>` is `ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>`.
+In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, a paused call such as `PausedWrite` is `PausedWrite<'Task, 'Handler>`, and `ProcessFate<WriteOutcome>` is `ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>`.
 A path is the argument's bytes (`PathArgumentBytes`), which the kernel copies in where the call's kernel does.
 A buffer is a `UserBuffer` (see "User memory"), which says whether the address the caller passed is mapped; the bytes it holds cross the API separately.
 
@@ -357,8 +357,9 @@ A `SyscallOutcome` is a `SyscallAnswer` (`SyscallOutcome.Answered`), the task as
 | `fstatfs(2)` | `UnixPathResolution.fstatfs (fd : int)` | `FileSystemStatisticsAnswer` |
 | `getcwd(3)` | `UnixPathResolution.getcwd (destination : UserBuffer) (capacity : uint64)` | `GetCwdAnswer` |
 | `chdir(2)` | `UnixPathResolution.chdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `access(2)` | `UnixPathResolution.access (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer` |
-| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `SyscallAnswer` |
+| `access(2)` | `UnixPathResolution.access (mode : int)` | `CallProgress<PausedAccess, SyscallAnswer>` |
+| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (mode : int) (flags : int)` | `CallProgress<PausedAccess, SyscallAnswer>` |
+| `access(2)` or `faccessat(2)`, given the path | `UnixPathResolution.accessWithPath (path : PathArgumentBytes) (paused : PausedAccess)` | `SyscallAnswer` |
 
 `UnixPathResolution.currentDirectoryPath` is the current directory's path, for a client that wants it without a buffer.
 
@@ -383,13 +384,18 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `unlink(2)` | `UnixNamespace.unlink (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
 | `rmdir(2)` | `UnixNamespace.rmdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
 | `unlinkat(2)` | `UnixNamespace.unlinkat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
-| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes) (destination : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (source : PathArgumentBytes) (destination : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
-| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes)` | `CallProgress<PausedRename, SyscallAnswer * UnixSystem>` |
+| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int)` | `CallProgress<PausedRename, SyscallAnswer * UnixSystem>` |
+| `rename(2)` or `renameat(2)`, given the destination | `UnixNamespace.renameWithDestination (destination : PathArgumentBytes) (paused : PausedRename)` | `SyscallAnswer * UnixSystem` |
+| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (flags : int)` | `CallProgress<PausedCloneFileSource, SyscallAnswer * UnixSystem>` |
+| `clonefile(2)`, given the source | `UnixNamespace.cloneFileWithSource (source : PathArgumentBytes) (paused : PausedCloneFileSource)` | `CallProgress<PausedCloneFile, SyscallAnswer * UnixSystem>` |
+| `clonefile(2)`, given the destination | `UnixNamespace.cloneFileWithDestination (destination : PathArgumentBytes) (paused : PausedCloneFile)` | `SyscallAnswer * UnixSystem` |
+| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes)` | `CallProgress<PausedSymlink, SyscallAnswer * UnixSystem>` |
+| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int)` | `CallProgress<PausedSymlink, SyscallAnswer * UnixSystem>` |
+| `symlink(2)` or `symlinkat(2)`, given the link's path | `UnixNamespace.symlinkWithPath (path : PathArgumentBytes) (paused : PausedSymlink)` | `SyscallAnswer * UnixSystem` |
+| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes)` | `CallProgress<PausedLink, SyscallAnswer * UnixSystem>` |
+| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (flags : int)` | `CallProgress<PausedLink, SyscallAnswer * UnixSystem>` |
+| `link(2)` or `linkat(2)`, given the new path | `UnixNamespace.linkWithDestination (newpath : PathArgumentBytes) (paused : PausedLink)` | `SyscallAnswer * UnixSystem` |
 
 `UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
 Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
@@ -488,7 +494,8 @@ Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 | Call | Function | Answers |
 | --- | --- | --- |
 | `inotify_init1(2)` | `UnixInotify.inotifyInit1 (flags : int)` | `Result<int * UnixSystem, UnixError>` |
-| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (path : PathArgumentBytes) (mask : uint32)` | `SyscallAnswer * UnixSystem` |
+| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (mask : uint32)` | `CallProgress<PausedInotifyAddWatch, SyscallAnswer * UnixSystem>` |
+| `inotify_add_watch(2)`, given the path | `UnixInotify.inotifyAddWatchWithPath (path : PathArgumentBytes) (paused : PausedInotifyAddWatch)` | `SyscallAnswer * UnixSystem` |
 | `inotify_rm_watch(2)` | `UnixInotify.inotifyRmWatch (fd : int) (wd : int)` | `SyscallAnswer * UnixSystem` |
 
 #### Signals
@@ -553,8 +560,9 @@ The paused call's `copyRange` says which bytes of the caller's buffer to copy, a
 A `getsockopt` stops where the kernel reads the caller's length cell instead, and `UnixSocket.getsockoptWithLength` takes the `socklen_t` it holds.
 Nothing else can be done to the system in between, since the paused call holds it.
 
-Calls that copy in two pathnames come as phases too, for a client that reads its arguments out of a live process, where reading the second pathname too early is itself observable: `UnixNamespace.renameatSourcePhase` or `UnixNamespace.renameSourcePhase` then `UnixNamespace.renameWithDestination`; `UnixNamespace.linkatSourcePhase` or `UnixNamespace.linkSourcePhase` then `UnixNamespace.linkWithDestination`; `UnixNamespace.symlinkatTargetPhase` or `UnixNamespace.symlinkTargetPhase` then `UnixNamespace.symlinkWithPath`; `UnixNamespace.cloneFileFlagsPhase`, `UnixNamespace.cloneFileSourcePhase` then `UnixNamespace.cloneFileWithDestination`; `UnixPathResolution.faccessatScreenPhase` or `UnixPathResolution.accessScreenPhase` then `UnixPathResolution.accessWithPath`; and `UnixInotify.inotifyAddWatchScreenPhase` then `UnixInotify.inotifyAddWatchWithPath`, since Linux answers a bad mask or descriptor without reading the path.
-A client that holds every argument already, such as a replayer, uses the one-shot functions in the tables.
+A call whose pathname is copied in after something observable stops there too, and takes that pathname in its resume function: `rename` and `renameat` stop before the destination (`UnixNamespace.renameWithDestination`), `link` and `linkat` before the new path (`UnixNamespace.linkWithDestination`), `symlink` and `symlinkat` before the link's own path (`UnixNamespace.symlinkWithPath`), `access` and `faccessat` before the path (`UnixPathResolution.accessWithPath`), since Linux answers a bad mode or flag word without reading it, and `inotify_add_watch` before the path (`UnixInotify.inotifyAddWatchWithPath`), since Linux answers a bad mask or descriptor without reading it.
+`clonefile` stops twice: before the source (`UnixNamespace.cloneFileWithSource`) and before the destination (`UnixNamespace.cloneFileWithDestination`).
+A client that holds every argument already, such as a replayer, makes the call through `UnixSystem.step` where the call has a `Syscall` case, or resumes each paused call as soon as it is answered.
 
 #### One entry point
 

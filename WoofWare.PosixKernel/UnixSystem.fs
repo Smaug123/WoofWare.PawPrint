@@ -1266,15 +1266,15 @@ module UnixSystem =
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
         | Syscall.FAccessAt (dirfd, path, mode, flags) ->
-            UnixPathResolution.tryFaccessat dirfd path mode flags system
+            UnixPathResolution.tryFaccessatEager dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Access
         | Syscall.SymlinkAt (target, dirfd, path) ->
-            UnixNamespace.trySymlinkat target dirfd path system
+            UnixNamespace.trySymlinkatEager target dirfd path system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Symlink
         | Syscall.LinkAt (olddirfd, oldpath, newdirfd, newpath, flags) ->
-            UnixNamespace.tryLinkat olddirfd oldpath newdirfd newpath flags system
+            UnixNamespace.tryLinkatEager olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
         | Syscall.UTimensAt (dirfd, path, times, flags) ->
@@ -1290,7 +1290,7 @@ module UnixSystem =
             |> Result.map (fun error -> SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
             |> Result.mapError SyscallRefusal.FileClone
         | Syscall.CloneFile (source, destination, flags) ->
-            UnixNamespace.tryCloneFile source destination flags system
+            UnixNamespace.tryCloneFileEager source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
         | Syscall.SetResUid (real, effective, saved) ->

@@ -76,10 +76,11 @@ The laws, which every pausing call keeps:
   system today on one side and not the other, it includes it on both.
 - **The paused type says what to copy.** It is opaque and holds the system, so
   no other system can be passed back with it. A paused call that copies bytes
-  exposes `copyRange : CopyRange` (an offset into the buffer the call was made
-  with, and a count); one that copies a path needs no accessor, since the
-  type names the path argument; `getsockopt`'s reads the length cell, a
-  `socklen_t`, which the client passes as the `uint32` it holds.
+  exposes `copyRange : CopyRange` (`FirstByte`, an offset into the buffer the
+  call was made with, and `ByteCount`); one that copies a path needs no
+  accessor, since the type names the path argument; `getsockopt`'s reads the
+  length cell, a `socklen_t`, which the client passes as the `uint32` it
+  holds.
 - **A resume checks only what the type cannot**: that the supplied bytes are
   exactly `copyRange.Count` long.
 
@@ -98,7 +99,7 @@ each resume is named `<call>With<Operand>`.
 | call | starts with | paused type | copies | resumed with | answers |
 | --- | --- | --- | --- | --- | --- |
 | `write(2)` | `UnixReadWrite.write task fd buffer count` | `PausedWrite` | `copyRange` | `writeWithBytes` | `ProcessFate<WriteOutcome>` |
-| `send(2)` | `UnixReadWrite.send task fd buffer count flags` | `PausedWrite` | `copyRange` | `writeWithBytes` | `ProcessFate<WriteOutcome>` |
+| `send(2)` | `UnixReadWrite.send task fd buffer count flags` | `PausedSend` | `copyRange` | `sendWithBytes` | `ProcessFate<WriteOutcome>` |
 | a sleeping `write` or `send`, woken | `UnixReadWrite.finishWrite task` | `PausedWrite` | `copyRange` | `writeWithBytes` | `ProcessFate<WriteOutcome>` |
 | `pwrite(2)` | `UnixReadWrite.pwrite task fd buffer count offset` | `PausedPWrite` | `copyRange` | `pwriteWithBytes` | `WriteAnswer * UnixSystem` |
 | `bind(2)` | `UnixSocket.bind fd address declaredLength` | `PausedBind` | `copyRange` | `bindWithAddress` | `BindAnswer * UnixSystem` |
@@ -114,22 +115,30 @@ each resume is named `<call>With<Operand>`.
 
 Notes:
 
-- `send`'s pause is a write's: the paused value remembers which call it was,
-  and `writeThenSleep`, `sendThenSleep` and `admitFinishWrite` disappear into
-  `writeWithBytes`. A write that takes part of its bytes and sleeps for the
-  rest is a `WriteOutcome.WouldBlock` from `writeWithBytes`.
-- `setsockopt` and `getsockopt` that copy nothing (Linux's null
-  `IPV6_V6ONLY` value; Darwin's null value buffer, whose length cell it
-  never reads) answer at once rather than asking for nothing.
+- `send` has a paused type of its own, `PausedSend`, because its refusals are
+  `SendRefusal`'s where a write's are `WriteRefusal`'s; a `send` that sleeps is
+  woken by `finishWrite` and resumed by `writeWithBytes`, as a write is. Each
+  paused value remembers which call it was, and `writeThenSleep`,
+  `sendThenSleep` and `admitFinishWrite` disappear into the resume functions.
+  A write that takes part of its bytes and sleeps for the rest is a
+  `WriteOutcome.WouldBlock` from its resume function.
+- A call that copies nothing answers at once rather than asking for
+  nothing: a `bind` or `connect` whose sockaddr copy takes no bytes, Linux's
+  `setsockopt` of `IPV6_V6ONLY` through a null value, and Darwin's
+  `getsockopt` through a null value buffer, whose length cell it never
+  reads. So a `NeedsCopyIn` always asks for at least one byte.
 - `access` changes nothing, so it carries no system on either side, as
   today.
 - The public one-shot forms of the path calls (`link oldpath newpath` and so
   on) go, so each call has one public entry. The eager form, for a client
   that has every argument up front, is `UnixSystem.step`'s `Syscall`, which
-  keeps using the internal one-shot functions.
-- The internal step functions (`tryAdmitWrite`, `tryWrite`,
-  `tryAdmitSockaddrCopy`, `tryBind`, …) stay as they are and become the
-  implementation of the pauses. The test suite probes each step through them,
+  uses them as internal functions, now named `tryLinkEager` and so on; the
+  tests that probe the whole call use those too.
+- The internal step functions (`tryAdmitWrite`, `tryAdmitSockaddrCopy`, …)
+  stay as they are and become the implementation of the pauses; those that
+  took the copied bytes are renamed for what they take (`tryWriteBytes`,
+  `tryBindBytes`, `trySetsockoptBytes`, `tryGetsockoptLength`, …), and the
+  canonical `tryX` names go to the `try` forms of the new public calls. The test suite probes each step through them,
   and keeps doing so. `WriteAdmission`, `WriteResumption`, `PWriteAdmission`,
   `SockaddrCopyAdmission`, `SetSockOptAdmission` and `GetSockOptAdmission`
   become internal. The write family's internal generic outcome, which carries
@@ -182,11 +191,18 @@ The existing suites are the main oracle: they pin every answer the calls
 give, and after step 2 the write tests run through the paused values. On top
 of them:
 
-- Properties over the generated write and socket scenarios the suites already
-  have: every `copyRange` lies inside the buffer the call was made with, and
-  resuming with exactly those bytes answers what the internal admit-then-call
-  path answers.
-- A resume given bytes of the wrong length fails loudly.
+- The helpers every test writes, binds, connects and sets or gets a socket
+  option through (`WriteOutcomes`, `CopyIn`, `SockOptCalls`) make the call
+  through the public protocol and fail unless it answers what the internal
+  admit-then-call steps answer, and unless every `copyRange` lies inside the
+  buffer the call was made with. So every existing test of those calls is a
+  case of that property.
+- `TestCallProgress`: a property over pipe writes (each platform, a pipe
+  partly filled, blocking or not, of every size) that a paused write asks for
+  between one byte and all of them from the start of its buffer, that a
+  resume given one byte too few or too many throws
+  `InvalidOperationException`, and that resuming twice answers the same; and
+  examples of a bind and a `getsockopt` that copy nothing answering at once.
 - PawPrint's Guest fixtures, for the client side of the migration.
 
 ## Not in scope
