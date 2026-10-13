@@ -158,40 +158,53 @@ module TestFSharpPureCases =
             "SprintfPercentO"
         ]
 
-    /// F# cases not expected to pass under PawPrint.
+    /// F# cases parked on every runtime, each with why it is parked, what would un-park it, and how
+    /// it was verified to behave on real .NET. `onRuntime` folds these into every runtime's parks.
     ///
-    /// A case named here is skipped as Inconclusive by `F# pure tests`, and only its *real-runtime*
+    /// A parked case is skipped as Inconclusive by `F# pure tests`, and only its *real-runtime*
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
+    let parkedEverywhere : Map<string, string> =
+        [
+            "PrintfCacheHit",
+            """Parked for a different reason from the usual "PawPrint cannot do this yet": PawPrint refuses it on purpose, because the guest image FSC produced contains an unverifiable call (see the guest's own comment, and dotnet/fsharp#20270). Real .NET runs it, so the case cannot pass the differential comparison, and should not -- its passing would mean PawPrint had started accepting IL it is designed to reject. So it stays parked for as long as the image contains that call. The refusal is asserted by `PawPrint refuses the unverifiable call in PrintfCacheHit` instead."""
+        ]
+        |> Map.ofList
+
+    /// How each F# case ends, on every runtime, when that is not a normal exit with code 0.
+    /// `onRuntime` folds these into every runtime's endings.
     ///
-    /// `PrintfCacheHit` is parked for a different reason from the usual "PawPrint cannot do this
-    /// yet": PawPrint refuses it on purpose, because the guest image FSC produced contains an
-    /// unverifiable call (see the guest's own comment, and dotnet/fsharp#20270). Real .NET runs it,
-    /// so the case cannot pass the differential comparison, and should not — its passing would mean
-    /// PawPrint had started accepting IL it is designed to reject. The refusal is asserted by
-    /// `PawPrint refuses the unverifiable call in PrintfCacheHit` instead.
-    let unimplemented : Set<string> = Set.ofList [ "PrintfCacheHit" ]
+    /// An unhandled exception is declared only when the throw is the intended observable: without
+    /// the declaration, a case that crashes both runtimes would silently pass. `AbstractDispatch`
+    /// returns the sum computed by its `Combine` call (see issue #693: 40 + 2 = 42) rather than a
+    /// boolean success/failure code, so a wrong dispatch is directly observable as a wrong number
+    /// rather than being laundered through an if/else into 0-or-1.
+    let endingsEverywhere : Map<string, GuestEnding> =
+        [
+            "AbstractDispatch", GuestEnding.ExitCode 42
+            "ByrefDispatch", GuestEnding.ExitCode 42
+        ]
+        |> Map.ofList
 
-    // F# test cases that legitimately throw under both runtimes. Without this set, a test
-    // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
-    // mechanism. Add a case here only when the throw is the intended observable.
-    let expectsUnhandledException : Set<string> = Set.empty
+    /// Which F# cases are parked on `runtime`, and how each case is expected to end there.
+    let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =
+        match runtime with
+        | EmulatedRuntime.Net10 ->
+            {
+                Parked = parkedEverywhere
+                Endings = endingsEverywhere
+            }
 
-    // F# test cases whose successful exit code is not 0 — same mechanism as
-    // `customExitCodes` in TestPureCases.fs. `AbstractDispatch` returns the sum computed by
-    // its `Combine` call (see issue #693: 40 + 2 = 42) rather than a boolean success/failure
-    // code, so a wrong dispatch is directly observable as a wrong number rather than being
-    // laundered through an if/else into 0-or-1.
-    let customExitCodes : Map<string, int> =
-        [ "AbstractDispatch", 42 ; "ByrefDispatch", 42 ] |> Map.ofList
+    /// The F# cases parked on the runtime under test.
+    let unimplemented () : string list =
+        (onRuntime (FrameworkUnderTest.runtime ())).Parked |> Map.keys |> List.ofSeq
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending testCaseName
 
         let dotnetRuntimes =
             seq {
@@ -227,12 +240,12 @@ module TestFSharpPureCases =
 
             match realResult, ExpectRun.ended pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _, _) ->
-                exitCode |> shouldEqual expectedExitCode
+                GuestEnding.ExitCode exitCode |> shouldEqual ending
                 terminalState.LatchedExitCode |> shouldEqual exitCode
             | RealRuntimeResult.UnhandledException realExn, RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
-                if not (expectsUnhandledException.Contains testCaseName) then
+                if ending <> GuestEnding.UnhandledException then
                     failwith
-                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
+                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Declare its ending as an unhandled exception if that is intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -259,8 +272,9 @@ module TestFSharpPureCases =
 
     [<TestCaseSource(nameof testCases)>]
     let ``F# pure tests`` (testCaseName : string) =
-        if unimplemented.Contains testCaseName then
-            Assert.Inconclusive $"Test case '%s{testCaseName}' is not yet implemented in PawPrint"
+        match (onRuntime (FrameworkUnderTest.runtime ())).Parked.TryFind testCaseName with
+        | Some reason -> Assert.Inconclusive $"Test case '%s{testCaseName}' is parked: %s{reason}"
+        | None -> ()
 
         runTest testCaseName
 
@@ -448,12 +462,7 @@ module TestFSharpPureCases =
         // This case never runs PawPrint, so it needs the publish rather than the image.
         publishOnce.Force ()
 
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending testCaseName
 
-        match RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath with
-        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException report ->
-            failwith $"Real runtime terminated with an unhandled exception for %s{testCaseName}:\n%s{report}"
-        | RealRuntimeResult.Aborted (_code, report) ->
-            failwith $"Real runtime called Environment.FailFast for %s{testCaseName}:\n%s{report}"
+        RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath
+        |> GuestEnding.assertReal testCaseName ending
