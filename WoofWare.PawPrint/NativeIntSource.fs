@@ -612,6 +612,23 @@ module NativeIntSource =
         SyntheticCrossArrayOffset.make targetStorage targetByteOffset originStorage originByteOffset
         |> NativeIntSource.SyntheticCrossArrayOffset
 
+    /// A managed pointer held as a native int, as `conv.u` or a store into an `IntPtr` leaves it.
+    /// A pointer of known bits (`Null`, or a `NativeIntPlaceholder`) becomes those bits as
+    /// `Verbatim`: CoreCLR cannot tell such a native int from the integer, so neither may
+    /// PawPrint, and the evaluation stack refuses any native int that holds one as a pointer.
+    /// Only a pointer into storage stays a `ManagedPointer`.
+    let ofManagedPointer (ptr : ManagedPointerSource) : NativeIntSource =
+        match ManagedPointerSource.tryBitPatternBits ptr with
+        | ValueSome bits -> NativeIntSource.Verbatim bits
+        | ValueNone -> NativeIntSource.ManagedPointer ptr
+
+    /// Whether `n` holds a pointer of known bits as a pointer, which `ofManagedPointer` never
+    /// produces.
+    let holdsBitPatternPointer (n : NativeIntSource) : bool =
+        match n with
+        | NativeIntSource.ManagedPointer ptr -> (ManagedPointerSource.tryBitPatternBits ptr).IsSome
+        | _ -> false
+
     /// A freshly-minted GC handle, as the runtime hands it to managed code:
     /// untagged. Managed code is what adds tag bits, via `and`/`or`/`xor`.
     let gcHandlePtr (handle : GcHandleAddress) : NativeIntSource =
@@ -704,10 +721,9 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.OpaqueHashBits b -> a < b
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.Verbatim b
         | NativeIntSource.Verbatim a, NativeIntSource.OpaqueHashBits b -> a < b
-        // `ManagedPointer Null` is the value 0 (cf. `cliTypeZeroOf` planting
-        // it for `IntPtr.Zero`/`UIntPtr.Zero`, and for every zero-initialised
-        // `nint` local or field). Signed comparison against a known bit pattern
-        // therefore reduces to comparing the bits against 0L.
+        // `ManagedPointer Null` is the value 0, though `ofManagedPointer` never builds a native
+        // int of that shape. Signed comparison against a known bit pattern therefore reduces to
+        // comparing the bits against 0L.
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> a < 0L
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits b -> 0L < b
         | NativeIntSource.Verbatim a, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> a < 0L

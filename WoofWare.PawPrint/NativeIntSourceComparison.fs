@@ -88,6 +88,11 @@ module NativeIntSourceComparison =
         | NativeIntSource.EvpMdCtxPtr f1, NativeIntSource.EvpMdCtxPtr f2 -> f1 = f2
         | NativeIntSource.AssemblyBinderPtr f1, NativeIntSource.AssemblyBinderPtr f2 -> f1 = f2
         | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
+        // Whether a cross-storage offset is 0 is what `isZero` decides; against any other number
+        // it is unknown.
+        | NativeIntSource.Verbatim 0L, (NativeIntSource.SyntheticCrossArrayOffset _ as offset)
+        | (NativeIntSource.SyntheticCrossArrayOffset _ as offset), NativeIntSource.Verbatim 0L ->
+            NativeIntSource.isZero offset
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"

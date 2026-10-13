@@ -1461,21 +1461,25 @@ module ArithmeticOperation =
                 failwith "refusing to div SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
-                match ptr1, ptr2 with
-                | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
+                match ManagedPointerSource.tryBitPatternBits ptr1, ManagedPointerSource.tryBitPatternBits ptr2 with
+                | ValueSome a, ValueSome b ->
+                    hostFaultingArith (fun () -> (# "div" a b : int64 #))
+                    |> NativeIntSource.Verbatim
+                    |> Choice2Of2
                 | _, _ -> failwith "refusing to divide two managed pointers"
 
             member _.Int64ManagedPtr _ _ a ptr =
-                if a = 0L then
-                    Choice2Of2 0L
-                else
-                    failwith "refusing to divide pointers"
+                match ManagedPointerSource.tryBitPatternBits ptr with
+                | ValueSome b -> hostFaultingArith (fun () -> (# "div" a b : int64 #)) |> Choice2Of2
+                // A pointer into storage is never 0, so 0 divided by it is 0.
+                | ValueNone when a = 0L -> Choice2Of2 0L
+                | ValueNone -> failwith "refusing to divide pointers"
 
             member _.ManagedPtrInt64 _ _ ptr a =
-                if a = 1L then
-                    Choice1Of2 ptr
-                else
-                    failwith "refusing to divide a pointer"
+                match ManagedPointerSource.tryBitPatternBits ptr with
+                | ValueSome b -> hostFaultingArith (fun () -> (# "div" b a : int64 #)) |> Choice2Of2
+                | ValueNone when a = 1L -> Choice1Of2 ptr
+                | ValueNone -> failwith "refusing to divide a pointer"
 
             member _.Name = "div"
         }
@@ -1527,12 +1531,12 @@ module BinaryArithmetic =
 
         let managedPtrChoiceAsNativeInt (result : Choice<ManagedPointerSource, int64>) : EvalStackValue =
             match result with
-            | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+            | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr)
             | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
 
         let managedPtrManagedPtrAsNativeInt (result : Choice<ManagedPointerSource, NativeIntSource>) : EvalStackValue =
             match result with
-            | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+            | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr)
             | Choice2Of2 offset -> EvalStackValue.NativeInt offset
 
         // The offset stays native-int wide here. Narrowing to the int32

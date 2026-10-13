@@ -51,11 +51,8 @@ class Program
             return 4;
         }
 
-        // `UIntPtr.Zero` and `IntPtr.Zero` lower to `cliTypeZeroOf`'s
-        // `NativeIntSource.ManagedPointer ManagedPointerSource.Null`, not
-        // to `Verbatim 0L`, so this exercises the OpaqueHashBits-vs-Null
-        // unsigned comparison arms — distinct from the `(nuint)0` literal
-        // path above (which lowers to `Verbatim 0L`).
+        // `UIntPtr.Zero` and `IntPtr.Zero` are read from a static slot rather
+        // than built from a literal, unlike the `(nuint)0` path above.
         if (!(narrowed > UIntPtr.Zero))
         {
             return 5;
