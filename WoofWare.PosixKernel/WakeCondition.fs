@@ -647,10 +647,13 @@ module WakeCondition =
                 select.Deadline
                 |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
                 |> Option.toList
-            // An awaited signal, its deadline, or a signal with a handler
-            // outside its set. Under Darwin no signal outside the set ends the
-            // call (measured, `docs/probes/sigwait`): the handler runs only once
-            // the call returns.
+            // An awaited signal, its deadline, or (below, as for every park) a
+            // signal with a handler outside its set. Under Darwin a signal
+            // outside the set does not end the call (measured,
+            // `docs/probes/sigwait`): its handler runs only once the call
+            // returns. Saying so for a Darwin task in a signal wait is
+            // `SignalDeliverable`'s evaluation's, which is not modelled:
+            // evaluating this condition fails at `AwaitedSignalPending`.
             | ParkedSyscall.SignalWait wait ->
                 let deadline =
                     wait.Deadline
