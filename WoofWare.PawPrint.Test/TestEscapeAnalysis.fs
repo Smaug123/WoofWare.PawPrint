@@ -1185,6 +1185,36 @@ public static class SR
         let analysis, escapes = EscapeAnalysis.escapes analysis key
         analysis, render analysis escapes
 
+    /// The host CoreLib's `TypeLoadException(string, string, string, int)` constructor, which the
+    /// runtime runs to make the exception of a type that fails to bind.
+    let private typeLoadConstructor () : MethodKey =
+        let corelib = hostCoreLib ()
+
+        match corelib.TryGetTopLevelTypeDef "System" "TypeLoadException" with
+        | None -> failwith "CoreLib defines no System.TypeLoadException"
+        | Some ty ->
+            ty.Methods
+            |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.Length = 4)
+            |> Seq.exactlyOne
+            |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+
+    /// The host CoreLib's `String.Format(string, object, object, object)`, which formats a
+    /// `TypeLoadException`'s message.
+    let private stringFormat () : MethodKey =
+        let corelib = hostCoreLib ()
+
+        let parameters =
+            TypeDefn.PrimitiveType PrimitiveType.String
+            :: List.replicate 3 (TypeDefn.PrimitiveType PrimitiveType.Object)
+
+        match corelib.TryGetTopLevelTypeDef "System" "String" with
+        | None -> failwith "CoreLib defines no System.String"
+        | Some ty ->
+            ty.Methods
+            |> Seq.filter (fun m -> m.Name = "Format" && m.IsStatic && m.Signature.ParameterTypes = parameters)
+            |> Seq.exactlyOne
+            |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+
     /// An analysis over the host's CoreLib and `assemblies`, with `bind` applied to the load
     /// context, for the host's JIT on a CPU `profile` describes.
     let private analysisUnder
@@ -2424,7 +2454,11 @@ public static class Uses
         let providerImage1 = compile "Provider" [] version1
         let clientAssembly = read "Client" (compile "Client" [ providerImage1 ] client)
 
-        let answers (provider : DumpedAssembly) : (string -> Set<string> * bool) * (string -> Set<string>) =
+        let answers
+            (provider : DumpedAssembly)
+            : (string -> Set<string> * bool) *
+              ((EscapeAnalysisState -> EscapeAnalysisState * Set<string>) -> Set<string>)
+            =
             let providerReference =
                 clientAssembly.AssemblyReferences.Values
                 |> Seq.find (fun r -> r.Name.Name = "Provider")
@@ -2441,15 +2475,15 @@ public static class Uses
                 analysis <- next
                 render analysis escapes, escapes.Unknown
             ),
-            fun fullName ->
-                let next, made = making analysis fullName
+            fun ask ->
+                let next, made = ask analysis
                 analysis <- next
                 made
 
         let against1, _ = answers (read "Provider" providerImage1)
         let against2, making2 = answers (read "Provider" (compile "Provider" [] version2))
 
-        for methodName, failure in
+        let failures =
             [
                 "Read", "=System.MissingFieldException"
                 "CallGone", "=System.MissingMethodException"
@@ -2476,7 +2510,9 @@ public static class Uses
                 "InstantiateWithGone", "=System.TypeLoadException"
                 // The type a `constrained.` prefix names.
                 "ConstrainedOnGone", "=System.TypeLoadException"
-            ] do
+            ]
+
+        for methodName, failure in failures do
             let bound, _ = against1 methodName
             let unbound, _ = against2 methodName
 
@@ -2493,12 +2529,38 @@ public static class Uses
                 "Read", "System.MissingFieldException"
                 "CallGone", "System.MissingMethodException"
             ] do
-            let made = making2 failure
+            let made = making2 (fun analysis -> making analysis failure)
             let unbound, _ = against2 methodName
 
             if not (Set.isSubset made unbound) then
                 failwith
                     $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}, lacking some of what making %s{failure} raises, %A{Set.toList made}"
+
+        // The runtime makes a missing type's exception by running a constructor taking its name,
+        // which formats its message; what that raises escapes in its place.
+        let madeTypeLoad =
+            making2 (fun analysis ->
+                let analysis, escapes = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+                analysis, render analysis escapes
+            )
+
+        let unmade =
+            failures
+            |> List.filter (fun (_, failure) -> failure = "=System.TypeLoadException")
+            |> List.map fst
+            |> List.append [ "ConstrainedReachesGoneLocal" ]
+            |> List.choose (fun methodName ->
+                let unbound, _ = against2 methodName
+                let missing = Set.difference madeTypeLoad unbound
+
+                if missing.IsEmpty then
+                    None
+                else
+                    Some $"%s{methodName} against the provider lacking what it uses lacks %A{Set.toList missing}"
+            )
+
+        if not unmade.IsEmpty then
+            failwith (String.concat "\n" unmade)
 
         // With no provider at all, binding any token naming it fails to find the assembly. The real
         // runtime raises `FileNotFoundException` if nothing else supplies one; but first it runs the
@@ -2538,13 +2600,39 @@ public static class Uses
         if not unmet.IsEmpty then
             failwith (String.concat "\n" unmet)
 
+        let opaqueIn (method : MethodKey) (analysis : EscapeAnalysisState) : EscapeAnalysisState * Set<string> =
+            let analysis, sources = EscapeAnalysis.unknownSources analysis method
+            analysis, Set.map (renderSite analysis) sources
+
         // A `constrained.` call reaching a method whose local's type is gone: the JIT throws
-        // compiling that method, out of the call, where the caller's handlers see it.
+        // compiling that method, out of the call, where the caller's handlers see it. Nothing is
+        // opaque but what making that exception runs.
         match against2 "ConstrainedReachesGoneLocal" with
-        | shown, false when shown.Contains "=System.TypeLoadException" -> ()
+        | shown, _ when shown.Contains "=System.TypeLoadException" ->
+            let opaque =
+                making2 (opaqueIn (methodNamed clientAssembly "Client.Uses" "ConstrainedReachesGoneLocal"))
+
+            let others = Set.difference opaque (making2 (opaqueIn (typeLoadConstructor ())))
+
+            if not others.IsEmpty then
+                failwith
+                    $"ConstrainedReachesGoneLocal against the provider lacking its local's type is opaque beyond making its exception: %A{Set.toList others}"
         | shown, unknown ->
             failwith
                 $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // Making that exception is opaque where `String.Format` formats the strings it is given, and
+        // nowhere else.
+        let makingOpaque = making2 (opaqueIn (typeLoadConstructor ()))
+
+        if makingOpaque.IsEmpty then
+            failwith "Making a TypeLoadException is no longer opaque; the analysis's documentation says it is"
+
+        let beyondFormat =
+            Set.difference makingOpaque (making2 (opaqueIn (stringFormat ())))
+
+        if not beyondFormat.IsEmpty then
+            failwith $"Making a TypeLoadException is opaque beyond what String.Format is: %A{Set.toList beyondFormat}"
 
         // A method the call does not reach names the type, so nothing fails.
         match against2 "ConstrainedBesideGoneHelper" with

@@ -17,6 +17,12 @@ type internal ExceptionMaking =
     /// (`EEResourceException`), so what either of those raises can escape in place of the
     /// exception.
     | ResourceMessage
+    /// It allocates a `TypeLoadException` and runs its `(string, string, string, int)` constructor
+    /// on the type's name, its assembly's name, an argument for the message, and the number of the
+    /// runtime's resource saying why the load failed (`EETypeLoadException::CreateThrowable`). That
+    /// constructor formats its message from the runtime's native resources, so what it raises can
+    /// escape in place of the exception.
+    | TypeLoadConstructor
     /// It runs `TypeInitializationException`'s `(string, Exception)` constructor around what a type
     /// initializer raised, and should that constructor fail, raises what the initializer raised
     /// instead, throwing it again: that runs `Exception.InternalPreserveStackTrace` on it, whose
