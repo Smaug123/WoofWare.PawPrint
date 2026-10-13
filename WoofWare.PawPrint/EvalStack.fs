@@ -692,6 +692,21 @@ module EvalStackValue =
         | ConvRUnSource.Bits64 u -> convRUnFromInt64 (int64<uint64> u)
         | ConvRUnSource.Float f -> EvalStackFloat.toDouble f
 
+    /// Whether `value`, used as the address of an indirection (`ldind`, `stind`, `ldobj`, `stobj`,
+    /// `initobj` and the like), is null, so that the access raises `NullReferenceException`.
+    ///
+    /// A null address has four spellings on the stack: a null object reference, which IL can
+    /// push where an address belongs; a null managed pointer; a native int holding one, which is
+    /// what a default `IntPtr` holds; and the native int 0, which is what an unmanaged null
+    /// (`ldc.i4.0; conv.u`, as in `*(int*)0`) and any `conv` round-trip of a null pointer give.
+    let isNullAddress (value : EvalStackValue) : bool =
+        match value with
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) -> true
+        | _ -> false
+
     /// The integer bits of a stack value, but only when PawPrint already knows them —
     /// never by synthesising an address for a pointer it does not model.
     ///
