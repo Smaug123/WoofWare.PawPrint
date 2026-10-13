@@ -647,7 +647,18 @@ module WakeCondition =
                 select.Deadline
                 |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
                 |> Option.toList
-            | ParkedSyscall.SignalWait _ -> []
+            // An awaited signal, its deadline, or a signal with a handler
+            // outside its set. Under Darwin no signal outside the set ends the
+            // call (measured, `docs/probes/sigwait`): the handler runs only once
+            // the call returns.
+            | ParkedSyscall.SignalWait wait ->
+                let deadline =
+                    wait.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
+
+                WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending wait.Awaited)
+                :: deadline
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

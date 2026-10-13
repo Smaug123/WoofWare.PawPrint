@@ -2928,6 +2928,15 @@ WoofWare.PosixKernel.ParkedPollEntry.NewWatched [static method]: (int, WoofWare.
 WoofWare.PosixKernel.ParkedPollEntry.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ParkedSelect inherit obj, implements WoofWare.PosixKernel.ParkedSelect System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSelect System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ParkedSelect.Equals [method]: (WoofWare.PosixKernel.ParkedSelect, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.ParkedSignalWait inherit obj, implements WoofWare.PosixKernel.ParkedSignalWait System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSignalWait System.IComparable, System.IComparable, System.Collections.IStructuralComparable
+WoofWare.PosixKernel.ParkedSignalWait..ctor [constructor]: (WoofWare.PosixKernel.SignalMask, System.Int64 option, WoofWare.PosixKernel.UserBuffer option)
+WoofWare.PosixKernel.ParkedSignalWait.Awaited [property]: [read-only] WoofWare.PosixKernel.SignalMask
+WoofWare.PosixKernel.ParkedSignalWait.Deadline [property]: [read-only] System.Int64 option
+WoofWare.PosixKernel.ParkedSignalWait.Destination [property]: [read-only] WoofWare.PosixKernel.UserBuffer option
+WoofWare.PosixKernel.ParkedSignalWait.Equals [method]: (WoofWare.PosixKernel.ParkedSignalWait, System.Collections.IEqualityComparer) -> bool
+WoofWare.PosixKernel.ParkedSignalWait.get_Awaited [method]: unit -> WoofWare.PosixKernel.SignalMask
+WoofWare.PosixKernel.ParkedSignalWait.get_Deadline [method]: unit -> System.Int64 option
+WoofWare.PosixKernel.ParkedSignalWait.get_Destination [method]: unit -> WoofWare.PosixKernel.UserBuffer option
 WoofWare.PosixKernel.ParkedSleep inherit obj, implements WoofWare.PosixKernel.ParkedSleep System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSleep System.IComparable, System.IComparable, System.Collections.IStructuralComparable
 WoofWare.PosixKernel.ParkedSleep..ctor [constructor]: (System.Int64, WoofWare.PosixKernel.SleepRemainder)
 WoofWare.PosixKernel.ParkedSleep.Deadline [property]: [read-only] System.Int64
@@ -2935,7 +2944,7 @@ WoofWare.PosixKernel.ParkedSleep.Equals [method]: (WoofWare.PosixKernel.ParkedSl
 WoofWare.PosixKernel.ParkedSleep.get_Deadline [method]: unit -> System.Int64
 WoofWare.PosixKernel.ParkedSleep.get_Remainder [method]: unit -> WoofWare.PosixKernel.SleepRemainder
 WoofWare.PosixKernel.ParkedSleep.Remainder [property]: [read-only] WoofWare.PosixKernel.SleepRemainder
-WoofWare.PosixKernel.ParkedSyscall inherit obj, implements WoofWare.PosixKernel.ParkedSyscall System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSyscall System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 15 cases
+WoofWare.PosixKernel.ParkedSyscall inherit obj, implements WoofWare.PosixKernel.ParkedSyscall System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ParkedSyscall System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 16 cases
 WoofWare.PosixKernel.ParkedSyscall+Accept inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Accept.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedAccept
 WoofWare.PosixKernel.ParkedSyscall+Accept.Item [property]: [read-only] WoofWare.PosixKernel.ParkedAccept
@@ -2975,6 +2984,9 @@ WoofWare.PosixKernel.ParkedSyscall+Poll.Item [property]: [read-only] WoofWare.Po
 WoofWare.PosixKernel.ParkedSyscall+Select inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Select.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedSelect
 WoofWare.PosixKernel.ParkedSyscall+Select.Item [property]: [read-only] WoofWare.PosixKernel.ParkedSelect
+WoofWare.PosixKernel.ParkedSyscall+SignalWait inherit WoofWare.PosixKernel.ParkedSyscall
+WoofWare.PosixKernel.ParkedSyscall+SignalWait.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedSignalWait
+WoofWare.PosixKernel.ParkedSyscall+SignalWait.Item [property]: [read-only] WoofWare.PosixKernel.ParkedSignalWait
 WoofWare.PosixKernel.ParkedSyscall+Sleep inherit WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall+Sleep.get_Item [method]: unit -> WoofWare.PosixKernel.ParkedSleep
 WoofWare.PosixKernel.ParkedSyscall+Sleep.Item [property]: [read-only] WoofWare.PosixKernel.ParkedSleep
@@ -2992,6 +3004,7 @@ WoofWare.PosixKernel.ParkedSyscall+Tags.PipeRead [static field]: int = 6
 WoofWare.PosixKernel.ParkedSyscall+Tags.PipeWrite [static field]: int = 7
 WoofWare.PosixKernel.ParkedSyscall+Tags.Poll [static field]: int = 3
 WoofWare.PosixKernel.ParkedSyscall+Tags.Select [static field]: int = 14
+WoofWare.PosixKernel.ParkedSyscall+Tags.SignalWait [static field]: int = 15
 WoofWare.PosixKernel.ParkedSyscall+Tags.SigSuspend [static field]: int = 10
 WoofWare.PosixKernel.ParkedSyscall+Tags.Sleep [static field]: int = 11
 WoofWare.PosixKernel.ParkedSyscall.Equals [method]: (WoofWare.PosixKernel.ParkedSyscall, System.Collections.IEqualityComparer) -> bool
@@ -3008,6 +3021,7 @@ WoofWare.PosixKernel.ParkedSyscall.get_IsPipeRead [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsPipeWrite [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsPoll [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsSelect [method]: unit -> bool
+WoofWare.PosixKernel.ParkedSyscall.get_IsSignalWait [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsSigSuspend [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_IsSleep [method]: unit -> bool
 WoofWare.PosixKernel.ParkedSyscall.get_SigSuspend [static method]: unit -> WoofWare.PosixKernel.ParkedSyscall
@@ -3025,6 +3039,7 @@ WoofWare.PosixKernel.ParkedSyscall.IsPipeRead [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsPipeWrite [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsPoll [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsSelect [property]: [read-only] bool
+WoofWare.PosixKernel.ParkedSyscall.IsSignalWait [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsSigSuspend [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.IsSleep [property]: [read-only] bool
 WoofWare.PosixKernel.ParkedSyscall.NewAccept [static method]: WoofWare.PosixKernel.ParkedAccept -> WoofWare.PosixKernel.ParkedSyscall
@@ -3040,6 +3055,7 @@ WoofWare.PosixKernel.ParkedSyscall.NewPipeRead [static method]: WoofWare.PosixKe
 WoofWare.PosixKernel.ParkedSyscall.NewPipeWrite [static method]: WoofWare.PosixKernel.ParkedPipeWrite -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewPoll [static method]: WoofWare.PosixKernel.ParkedPoll -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewSelect [static method]: WoofWare.PosixKernel.ParkedSelect -> WoofWare.PosixKernel.ParkedSyscall
+WoofWare.PosixKernel.ParkedSyscall.NewSignalWait [static method]: WoofWare.PosixKernel.ParkedSignalWait -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.NewSleep [static method]: WoofWare.PosixKernel.ParkedSleep -> WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.SigSuspend [static property]: [read-only] WoofWare.PosixKernel.ParkedSyscall
 WoofWare.PosixKernel.ParkedSyscall.Tag [property]: [read-only] int
@@ -6832,10 +6848,13 @@ WoofWare.PosixKernel.WakeCondition.NewPrimitive [static method]: WoofWare.PosixK
 WoofWare.PosixKernel.WakeCondition.Tag [property]: [read-only] int
 WoofWare.PosixKernel.WakeConditionModule inherit obj
 WoofWare.PosixKernel.WakeConditionModule.ofPark [static method]: WoofWare.PosixKernel.ParkedSyscall -> WoofWare.PosixKernel.WakeCondition
-WoofWare.PosixKernel.WakePrimitive inherit obj, implements WoofWare.PosixKernel.WakePrimitive System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WakePrimitive System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 19 cases
+WoofWare.PosixKernel.WakePrimitive inherit obj, implements WoofWare.PosixKernel.WakePrimitive System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.WakePrimitive System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 20 cases
 WoofWare.PosixKernel.WakePrimitive+AcceptQueueNonEmpty inherit WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive+AcceptQueueNonEmpty.get_listener [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
 WoofWare.PosixKernel.WakePrimitive+AcceptQueueNonEmpty.listener [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
+WoofWare.PosixKernel.WakePrimitive+AwaitedSignalPending inherit WoofWare.PosixKernel.WakePrimitive
+WoofWare.PosixKernel.WakePrimitive+AwaitedSignalPending.awaited [property]: [read-only] WoofWare.PosixKernel.SignalMask
+WoofWare.PosixKernel.WakePrimitive+AwaitedSignalPending.get_awaited [method]: unit -> WoofWare.PosixKernel.SignalMask
 WoofWare.PosixKernel.WakePrimitive+ConnectionReadable inherit WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive+ConnectionReadable.get_reader [method]: unit -> WoofWare.PosixKernel.OpenFileDescriptionId
 WoofWare.PosixKernel.WakePrimitive+ConnectionReadable.reader [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
@@ -6897,6 +6916,7 @@ WoofWare.PosixKernel.WakePrimitive+PipeWriteEndClosed.get_reader [method]: unit 
 WoofWare.PosixKernel.WakePrimitive+PipeWriteEndClosed.reader [property]: [read-only] WoofWare.PosixKernel.OpenFileDescriptionId
 WoofWare.PosixKernel.WakePrimitive+Tags inherit obj
 WoofWare.PosixKernel.WakePrimitive+Tags.AcceptQueueNonEmpty [static field]: int = 6
+WoofWare.PosixKernel.WakePrimitive+Tags.AwaitedSignalPending [static field]: int = 19
 WoofWare.PosixKernel.WakePrimitive+Tags.ConnectionReadable [static field]: int = 12
 WoofWare.PosixKernel.WakePrimitive+Tags.ConnectionWritable [static field]: int = 13
 WoofWare.PosixKernel.WakePrimitive+Tags.DeadlinePassed [static field]: int = 15
@@ -6919,6 +6939,7 @@ WoofWare.PosixKernel.WakePrimitive.EndedByClose [static property]: [read-only] W
 WoofWare.PosixKernel.WakePrimitive.Equals [method]: (WoofWare.PosixKernel.WakePrimitive, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.WakePrimitive.get_EndedByClose [static method]: unit -> WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.get_IsAcceptQueueNonEmpty [method]: unit -> bool
+WoofWare.PosixKernel.WakePrimitive.get_IsAwaitedSignalPending [method]: unit -> bool
 WoofWare.PosixKernel.WakePrimitive.get_IsConnectionReadable [method]: unit -> bool
 WoofWare.PosixKernel.WakePrimitive.get_IsConnectionWritable [method]: unit -> bool
 WoofWare.PosixKernel.WakePrimitive.get_IsDeadlinePassed [method]: unit -> bool
@@ -6941,6 +6962,7 @@ WoofWare.PosixKernel.WakePrimitive.get_KqueuePollReportable [static method]: uni
 WoofWare.PosixKernel.WakePrimitive.get_SignalDeliverable [static method]: unit -> WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.WakePrimitive.IsAcceptQueueNonEmpty [property]: [read-only] bool
+WoofWare.PosixKernel.WakePrimitive.IsAwaitedSignalPending [property]: [read-only] bool
 WoofWare.PosixKernel.WakePrimitive.IsConnectionReadable [property]: [read-only] bool
 WoofWare.PosixKernel.WakePrimitive.IsConnectionWritable [property]: [read-only] bool
 WoofWare.PosixKernel.WakePrimitive.IsDeadlinePassed [property]: [read-only] bool
@@ -6961,6 +6983,7 @@ WoofWare.PosixKernel.WakePrimitive.IsPipeWriteEndClosed [property]: [read-only] 
 WoofWare.PosixKernel.WakePrimitive.IsSignalDeliverable [property]: [read-only] bool
 WoofWare.PosixKernel.WakePrimitive.KqueuePollReportable [static property]: [read-only] WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.NewAcceptQueueNonEmpty [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.WakePrimitive
+WoofWare.PosixKernel.WakePrimitive.NewAwaitedSignalPending [static method]: WoofWare.PosixKernel.SignalMask -> WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.NewConnectionReadable [static method]: WoofWare.PosixKernel.OpenFileDescriptionId -> WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.NewConnectionWritable [static method]: (WoofWare.PosixKernel.OpenFileDescriptionId, int) -> WoofWare.PosixKernel.WakePrimitive
 WoofWare.PosixKernel.WakePrimitive.NewDeadlinePassed [static method]: System.Int64 -> WoofWare.PosixKernel.WakePrimitive
