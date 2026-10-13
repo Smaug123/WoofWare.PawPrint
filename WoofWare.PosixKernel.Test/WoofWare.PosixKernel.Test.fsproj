@@ -151,6 +151,7 @@
     <Compile Include="TestSelectPark.fs" />
     <Compile Include="TestSignalWaitPark.fs" />
     <Compile Include="TestDatagramPark.fs" />
+    <Compile Include="TestConnectPark.fs" />
     <Compile Include="TestSigcontGeneration.fs" />
     <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />

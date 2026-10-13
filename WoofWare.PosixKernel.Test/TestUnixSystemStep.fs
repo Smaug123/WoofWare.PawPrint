@@ -3311,6 +3311,33 @@ module TestUnixSystemStep =
         | other -> failwith $"the holder's open answered %A{other}"
 
     [<Test>]
+    let ``a parked task may not issue a connect, and nor may a task the table does not hold`` () : unit =
+        // A connect can sleep, so it takes its task as flock does, and fails
+        // loudly for one that is already parked or is not a task at all, before
+        // it looks at the descriptor.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixDescriptor.tryFlock holderTask first 2 system |> granted
+        let _, parkedIn = UnixDescriptor.tryFlock waiterTask second 2 held |> parked
+
+        let connect (task : int) : unit =
+            UnixConnection.tryConnect task first UserBuffer.Mapped 0u System.Collections.Immutable.ImmutableArray.Empty parkedIn
+            |> ignore
+
+        let parkedExn = Assert.Throws<exn> (fun () -> connect waiterTask)
+        parkedExn.Message |> shouldContainText "UnixConnection.connect"
+        parkedExn.Message |> shouldContainText "is parked in"
+
+        let unknownExn = Assert.Throws<exn> (fun () -> connect 99)
+        unknownExn.Message |> shouldContainText "names no task"
+
+        // The holder is neither, and its connect is answered: `first` is not a
+        // socket.
+        match UnixConnection.tryConnect holderTask first UserBuffer.Mapped 0u System.Collections.Immutable.ImmutableArray.Empty parkedIn with
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOTSOCK), _) -> ()
+        | other -> failwith $"the holder's connect answered %A{other}"
+
+    [<Test>]
     let ``a grant through flockAcquire clears the record, and a beaten resume keeps it`` () : unit =
         let first, second, system = withTwoDescriptions linux
         let another, system = withAnotherDescription first system
