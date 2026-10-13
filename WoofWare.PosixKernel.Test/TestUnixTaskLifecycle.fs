@@ -61,8 +61,8 @@ module TestUnixTaskLifecycle =
 
     let private exitOrFail (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixTaskLifecycle.tryExitThread task 0 system with
-        | Ok (TaskOutcome.Continues system) -> system
-        | Ok (TaskOutcome.ProcessEnded ended) ->
+        | Ok (ProcessFate.Continues ((), system)) -> system
+        | Ok (ProcessFate.ProcessEnded ended) ->
             failwith $"expected the process to carry on, but it ended: %O{ended.Termination}"
         | Error refusal -> failwith $"expected the exit to be answered, got: %s{ThreadExitRefusal.describe refusal}"
 
@@ -196,7 +196,7 @@ module TestUnixTaskLifecycle =
 
             for status, kept in [ 0, 0 ; 5, 5 ; 256, 0 ; 263, 7 ; -1, 255 ; System.Int32.MinValue, 0 ] do
                 match UnixTaskLifecycle.tryExitThread 0 status system with
-                | Ok (TaskOutcome.ProcessEnded ended) ->
+                | Ok (ProcessFate.ProcessEnded ended) ->
                     match ended.Termination with
                     | ProcessTermination.Exited exitStatus ->
                         (status, ExitStatus.waitidStatus exitStatus) |> shouldEqual (status, kept)
@@ -236,7 +236,7 @@ module TestUnixTaskLifecycle =
             let system = system |> exitOrFail 2
 
             match SimulatedUnixPlatform.flavour platform, UnixTaskLifecycle.tryExitThread 0 0 system with
-            | SimulatedUnixFlavour.Linux, Ok (TaskOutcome.ProcessEnded _) -> ()
+            | SimulatedUnixFlavour.Linux, Ok (ProcessFate.ProcessEnded _) -> ()
             | SimulatedUnixFlavour.Darwin, Error (ThreadExitRefusal.LastTaskOnDarwin 0) -> ()
             | flavour, other ->
                 failwith $"%O{flavour}: expected the lone leader's exit to be the last task's, got %A{other}"
@@ -326,7 +326,7 @@ module TestUnixTaskLifecycle =
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixTaskLifecycle.tryExitThread 3 0 system
-                |> ignore<Result<TaskOutcome<int, string>, ThreadExitRefusal<int>>>
+                |> ignore<Result<ProcessFate<unit, int, string>, ThreadExitRefusal<int>>>
             )
 
         exn.Message |> shouldContainText "names no task"
@@ -611,7 +611,7 @@ module TestUnixTaskLifecycle =
                         match SimulatedUnixPlatform.flavour platform with
                         | SimulatedUnixFlavour.Linux ->
                             match result with
-                            | Ok (TaskOutcome.ProcessEnded ended) -> assertExited platform status system ended
+                            | Ok (ProcessFate.ProcessEnded ended) -> assertExited platform status system ended
                             | other -> failwith $"expected the last task's exit to end the process, got %A{other}"
 
                             cover LifecycleLabel.EndedByLastExit
@@ -624,8 +624,8 @@ module TestUnixTaskLifecycle =
                     else
                         let after =
                             match result with
-                            | Ok (TaskOutcome.Continues after) -> after
-                            | Ok (TaskOutcome.ProcessEnded ended) ->
+                            | Ok (ProcessFate.Continues ((), after)) -> after
+                            | Ok (ProcessFate.ProcessEnded ended) ->
                                 failwith
                                     $"expected task %d{task}'s exit to leave the process running, but it ended: %O{ended.Termination}"
                             | Error refusal ->

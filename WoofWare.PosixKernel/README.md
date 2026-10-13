@@ -56,6 +56,7 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three pa
 Those records are opaque outside the library.
 A client reads a system through `UnixSystem`'s queries, such as `UnixSystem.leader`, `UnixSystem.tasks`, `UnixSystem.signals`, `UnixSystem.credentials`, `UnixSystem.fileDescriptors`, `UnixSystem.openFiles`, `UnixSystem.delivered` and `UnixSystem.descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described under "When time passes".
 `UnixSystem.descriptorTarget` answers what a descriptor's description refers to, an `OpenFileTarget`, of which `OpenFileTarget.Fifo` (a FIFO's inode and an opaque `FifoAttachment`) is reserved: nothing opens a FIFO yet, `FileDescriptorRegistry.checkInvariants` reports a description naming one as a defect, and the case exists so that a client's matches already handle it when FIFOs arrive.
+`OpenFileTarget.CharacterDevice` carries, besides the device and its node, an opaque `CharacterDeviceState`: the description's own state, which holds nothing in this version, because Linux keeps no position for a device and Darwin's devices, which keep one per description, are refused.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
@@ -218,6 +219,9 @@ A client replaying a record of raw system calls, such as an `strace` log, uses t
 
 A syscall answers what the kernel does: perhaps an errno (a `UnixError`), or the calling task asleep (see "Sleeping and waking"). Either way it comes with the system after the call; a failing call can still change the system, just as a real one can.
 
+A call that can end the process answers a `ProcessFate`: `ProcessFate.Continues (outcome, system)`, with the call's own outcome and the system the process carries on as, or `ProcessFate.ProcessEnded ended`, with no system, since nothing can make another call in an ended process (see "Threads, and the end of the process").
+Those calls are a write or `send` that raises `SIGPIPE`, `kill` and `pthreadKill`, the return to user mode, and a thread's exit.
+
 A few functions answer a `Result` whose `Error` is an errno: those whose own failure is a value the client reports to the process, such as `UnixSocket.socket`, `UnixPoll.epollCreate1`, `UnixSignal.kill` and `UnixClock.clockGettime`, and the four that answer nothing else, `UnixSignal.sigaction`, `UnixSignal.sigactionSyscall`, `UnixSignal.pthreadSigmask` and `UnixSignal.rtSigprocmask`.
 A function that cannot fail, such as `UnixClock.gettimeofday`, answers without a `Result` at all.
 The errors of the parsers that build a value, such as `UnixByteString.ofString`'s, say what was wrong with the input.
@@ -249,20 +253,29 @@ let fd, socketSystem =
     | Error error -> failwith $"socket failed with %O{error}"
 
 // Linux's struct sockaddr_in: the family in host order, then the port and the address in network order.
-let sockaddr (address : byte[]) : ImmutableArray<byte> =
-    ImmutableArray.CreateRange (Array.concat [ [| 2uy ; 0uy ; 0x13uy ; 0x88uy |] ; address ; Array.zeroCreate 8 ])
+let sockaddr (address : byte[]) : byte[] =
+    Array.concat [ [| 2uy ; 0uy ; 0x13uy ; 0x88uy |] ; address ; Array.zeroCreate 8 ]
+
+// bind(fd, &sockaddr, 16): the call stops where the kernel copies the sockaddr in, and
+// bindWithAddress takes the bytes copyRange names.
+let bind (address : byte[]) (system : UnixSystem<int, unit>) : BindAnswer * UnixSystem<int, unit> =
+    match UnixSocket.bind fd UserBuffer.Mapped 16u system with
+    | CallProgress.Answered answered -> answered
+    | CallProgress.NeedsCopyIn paused ->
+        let range = PausedBind.copyRange paused
+        UnixSocket.bindWithAddress (ImmutableArray.Create (sockaddr address, range.FirstByte, range.ByteCount)) paused
 
 // A bind to the multicast group 224.0.0.1 is not modelled: this library models no group membership.
 let multicast =
     try
-        Some (UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 224uy ; 0uy ; 0uy ; 1uy |]) socketSystem)
+        Some (bind [| 224uy ; 0uy ; 0uy ; 1uy |] socketSystem)
     with :? UnmodelledException ->
         None
 
 printfn "multicast bind answered: %b" multicast.IsSome
 
 // The throw left socketSystem as it was, so the client carries on from it: bind 127.0.0.1:5000.
-match UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 127uy ; 0uy ; 0uy ; 1uy |]) socketSystem with
+match bind [| 127uy ; 0uy ; 0uy ; 1uy |] socketSystem with
 | BindAnswer.Bound (SocketAddress.Inet endpoint), _ ->
     printfn "bound %s:%d" (Ipv4Address.toString endpoint.Address) endpoint.Port
 | answer, _ -> failwith $"unexpected bind: %A{answer}"
@@ -285,7 +298,7 @@ A value no `parse` could have produced, such as one built with `Unchecked.defaul
 From version 1.0, adding a case to any union whose cases are public is a breaking change, and comes only in a major version.
 F# code compiled against a union dispatches on its case numbers, so code built against an older version can silently run the wrong arm for a new case.
 The model will still grow: a refusal becomes an answer once its behaviour is measured, and each newly measured difference between Linux and Darwin adds a place that throws `UnmodelledException` (see "Answers, and what this library will not answer"), which needs no new case.
-Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`, `ParkedSyscall.Select` and `WakePrimitive.FifoPartnerOpened`.
+Cases that are certain to appear are already present, and nothing produces them yet: `InodeContent.Socket`, `InodeContent.Fifo`, `DirectoryEntryKind.Socket`, `DirectoryEntryKind.Fifo`, `CharacterDevice.Zero`, `CharacterDevice.Random`, `CharacterDevice.Tty`, `OpenFileTarget.Fifo`, `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`, `ParkedSyscall.Select`, `ParkedSyscall.SignalWait`, `ParkedSyscall.DatagramReceive`, `ParkedSyscall.DatagramSend`, `ParkedSyscall.Connect`, `SocketPhase.Connecting`, `WakePrimitive.FifoPartnerOpened`, `WakePrimitive.AwaitedSignalPending` and `WakePrimitive.AcceptQueueHasRoom`.
 Removing a case, changing a case's fields, or changing the shape of any other type is breaking too.
 
 The defects the `checkInvariants` functions report (`UnixSystemDefect`, `VirtualFileSystemDefect`, `FileDescriptorRegistryDefect` and `SimulatedMachineDefect`) are open too, and have no patterns at all.
@@ -296,7 +309,7 @@ Before 1.0, any version may change anything.
 
 ### The syscalls
 
-In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, and `WriteOutcome<WriteAnswer>` is `WriteOutcome<WriteAnswer, 'Task, 'Handler>`.
+In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, a paused call such as `PausedWrite` is `PausedWrite<'Task, 'Handler>`, and `ProcessFate<WriteOutcome>` is `ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>`.
 A path is the argument's bytes (`PathArgumentBytes`), which the kernel copies in where the call's kernel does.
 A buffer is a `UserBuffer` (see "User memory"), which says whether the address the caller passed is mapped; the bytes it holds cross the API separately.
 
@@ -344,8 +357,9 @@ A `SyscallOutcome` is a `SyscallAnswer` (`SyscallOutcome.Answered`), the task as
 | `fstatfs(2)` | `UnixPathResolution.fstatfs (fd : int)` | `FileSystemStatisticsAnswer` |
 | `getcwd(3)` | `UnixPathResolution.getcwd (destination : UserBuffer) (capacity : uint64)` | `GetCwdAnswer` |
 | `chdir(2)` | `UnixPathResolution.chdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `access(2)` | `UnixPathResolution.access (path : PathArgumentBytes) (mode : int)` | `SyscallAnswer` |
-| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (path : PathArgumentBytes) (mode : int) (flags : int)` | `SyscallAnswer` |
+| `access(2)` | `UnixPathResolution.access (mode : int)` | `CallProgress<PausedAccess, SyscallAnswer>` |
+| `faccessat(2)` | `UnixPathResolution.faccessat (dirfd : int) (mode : int) (flags : int)` | `CallProgress<PausedAccess, SyscallAnswer>` |
+| `access(2)` or `faccessat(2)`, given the path | `UnixPathResolution.accessWithPath (path : PathArgumentBytes) (paused : PausedAccess)` | `SyscallAnswer` |
 
 `UnixPathResolution.currentDirectoryPath` is the current directory's path, for a client that wants it without a buffer.
 
@@ -370,13 +384,18 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `unlink(2)` | `UnixNamespace.unlink (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
 | `rmdir(2)` | `UnixNamespace.rmdir (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
 | `unlinkat(2)` | `UnixNamespace.unlinkat (dirfd : int) (path : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
-| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes) (destination : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (source : PathArgumentBytes) (destination : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
-| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `SyscallAnswer * UnixSystem` |
-| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `SyscallAnswer * UnixSystem` |
+| `rename(2)` | `UnixNamespace.rename (source : PathArgumentBytes)` | `CallProgress<PausedRename, SyscallAnswer * UnixSystem>` |
+| `renameat(2)` | `UnixNamespace.renameat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int)` | `CallProgress<PausedRename, SyscallAnswer * UnixSystem>` |
+| `rename(2)` or `renameat(2)`, given the destination | `UnixNamespace.renameWithDestination (destination : PathArgumentBytes) (paused : PausedRename)` | `SyscallAnswer * UnixSystem` |
+| Darwin's `clonefile(2)` | `UnixNamespace.cloneFile (flags : int)` | `CallProgress<PausedCloneFileSource, SyscallAnswer * UnixSystem>` |
+| `clonefile(2)`, given the source | `UnixNamespace.cloneFileWithSource (source : PathArgumentBytes) (paused : PausedCloneFileSource)` | `CallProgress<PausedCloneFile, SyscallAnswer * UnixSystem>` |
+| `clonefile(2)`, given the destination | `UnixNamespace.cloneFileWithDestination (destination : PathArgumentBytes) (paused : PausedCloneFile)` | `SyscallAnswer * UnixSystem` |
+| `symlink(2)` | `UnixNamespace.symlink (target : PathArgumentBytes)` | `CallProgress<PausedSymlink, SyscallAnswer * UnixSystem>` |
+| `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int)` | `CallProgress<PausedSymlink, SyscallAnswer * UnixSystem>` |
+| `symlink(2)` or `symlinkat(2)`, given the link's path | `UnixNamespace.symlinkWithPath (path : PathArgumentBytes) (paused : PausedSymlink)` | `SyscallAnswer * UnixSystem` |
+| `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes)` | `CallProgress<PausedLink, SyscallAnswer * UnixSystem>` |
+| `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (flags : int)` | `CallProgress<PausedLink, SyscallAnswer * UnixSystem>` |
+| `link(2)` or `linkat(2)`, given the new path | `UnixNamespace.linkWithDestination (newpath : PathArgumentBytes) (paused : PausedLink)` | `SyscallAnswer * UnixSystem` |
 
 `UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
 Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
@@ -392,14 +411,13 @@ The cases exist so that a client's matches already handle them when pathname soc
 | `read(2)` | `UnixReadWrite.read (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `ReadOutcome * UnixSystem` |
 | `recv(2)` | `UnixReadWrite.recv (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `ReadOutcome * UnixSystem` |
 | `pread(2)` | `UnixReadWrite.pread (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `ReadAnswer * UnixSystem` |
-| `write(2)`, before the copy | `UnixReadWrite.admitWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `WriteOutcome<WriteAdmission>` |
-| `write(2)`, given the bytes | `UnixReadWrite.write (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
-| `write(2)`, given the first bytes of a write that then sleeps | `UnixReadWrite.writeThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>)` | `WriteOutcome<WriteAnswer>` |
-| `send(2)`, before the copy | `UnixReadWrite.admitSend (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `WriteOutcome<WriteAdmission>` |
-| `send(2)`, given the bytes | `UnixReadWrite.send (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
-| `send(2)`, given the first bytes of a send that then sleeps | `UnixReadWrite.sendThenSleep (task : 'Task) (fd : int) (total : int) (bytes : ImmutableArray<byte>) (flags : int)` | `WriteOutcome<WriteAnswer>` |
-| `pwrite(2)`, before the copy | `UnixReadWrite.admitPWrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `PWriteAdmission` |
-| `pwrite(2)`, given the bytes | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (bytes : ImmutableArray<byte>) (offset : int64)` | `WriteAnswer * UnixSystem` |
+| `write(2)` | `UnixReadWrite.write (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64)` | `CallProgress<PausedWrite, ProcessFate<WriteOutcome>>` |
+| `write(2)` or `send(2)`, woken | `UnixReadWrite.finishWrite (task : 'Task)` | `CallProgress<PausedWrite, ProcessFate<WriteOutcome>>` |
+| `write(2)`, given the bytes | `UnixReadWrite.writeWithBytes (bytes : ImmutableArray<byte>) (paused : PausedWrite)` | `ProcessFate<WriteOutcome>` |
+| `send(2)` | `UnixReadWrite.send (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (flags : int)` | `CallProgress<PausedSend, ProcessFate<WriteOutcome>>` |
+| `send(2)`, given the bytes | `UnixReadWrite.sendWithBytes (bytes : ImmutableArray<byte>) (paused : PausedSend)` | `ProcessFate<WriteOutcome>` |
+| `pwrite(2)` | `UnixReadWrite.pwrite (task : 'Task) (fd : int) (buffer : UserBuffer) (count : uint64) (offset : int64)` | `CallProgress<PausedPWrite, WriteAnswer * UnixSystem>` |
+| `pwrite(2)`, given the bytes | `UnixReadWrite.pwriteWithBytes (bytes : ImmutableArray<byte>) (paused : PausedPWrite)` | `WriteAnswer * UnixSystem` |
 | `copy_file_range(2)` | `UnixReadWrite.copyFileRange (inFd : int) (outFd : int) (length : uint64) (flags : int)` | `SyscallAnswer * UnixSystem` |
 | `pipe2(2)`, and `pipe(2)` as `pipe2` with no flags | `UnixPipe.pipe2 (flags : int) (destination : UserBuffer)` | `Pipe2Answer * UnixSystem` |
 
@@ -408,29 +426,32 @@ The cases exist so that a client's matches already handle them when pathname soc
 | Call | Function | Answers |
 | --- | --- | --- |
 | `socket(2)` | `UnixSocket.socket (domain : int) (socketType : int) (protocol : int)` | `Result<int * UnixSystem, UnixError>` |
-| `bind(2)` and `connect(2)`, before the copy | `UnixSocket.admitSockaddrCopy (syscall : SockaddrCopySyscall) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `SockaddrCopyAdmission` |
-| `bind(2)`, given the bytes | `UnixSocket.bind (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `BindAnswer * UnixSystem` |
-| `connect(2)`, given the bytes | `UnixConnection.connect (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `ConnectOutcome * UnixSystem` |
+| `bind(2)` | `UnixSocket.bind (fd : int) (address : UserBuffer) (declaredLength : uint32)` | `CallProgress<PausedBind, BindAnswer * UnixSystem>` |
+| `bind(2)`, given the bytes | `UnixSocket.bindWithAddress (copied : ImmutableArray<byte>) (paused : PausedBind)` | `BindAnswer * UnixSystem` |
+| `connect(2)` | `UnixConnection.connect (task : 'Task) (fd : int) (address : UserBuffer) (declaredLength : uint32)` | `CallProgress<PausedConnect, SyscallOutcome * UnixSystem>` |
+| `connect(2)`, given the bytes | `UnixConnection.connectWithAddress (copied : ImmutableArray<byte>) (paused : PausedConnect)` | `SyscallOutcome * UnixSystem` |
 | `listen(2)` | `UnixSocket.listen (fd : int) (backlog : int)` | `ListenAnswer * UnixSystem` |
 | `accept(2)` | `UnixConnection.accept (task : 'Task) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `AcceptOutcome * UnixSystem` |
 | `shutdown(2)` | `UnixConnection.shutdown (fd : int) (how : int)` | `ShutdownAnswer * UnixSystem` |
 | `getsockname(2)` | `UnixSocket.getsockname (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
 | `getpeername(2)` | `UnixSocket.getpeername (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
-| `setsockopt(2)`, before the copy | `UnixSocket.admitSetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `SetSockOptAdmission` |
-| `setsockopt(2)`, given the bytes | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32) (supplied : ImmutableArray<byte> option)` | `SetSockOptAnswer * UnixSystem` |
-| `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `GetSockOptAdmission` |
-| `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `GetSockOptAnswer * UnixSystem` |
+| `setsockopt(2)` | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `CallProgress<PausedSetSockOpt, SetSockOptAnswer * UnixSystem>` |
+| `setsockopt(2)`, given the bytes | `UnixSocket.setsockoptWithValue (copied : ImmutableArray<byte>) (paused : PausedSetSockOpt)` | `SetSockOptAnswer * UnixSystem` |
+| `getsockopt(2)` | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `CallProgress<PausedGetSockOpt, GetSockOptAnswer * UnixSystem>` |
+| `getsockopt(2)`, given the length | `UnixSocket.getsockoptWithLength (declaredLength : uint32) (paused : PausedGetSockOpt)` | `GetSockOptAnswer * UnixSystem` |
 
 An address crosses the syscall boundary as bytes, laid out as the platform's `struct sockaddr`: `bind` and `connect` take them, and `getsockname`, `getpeername` and `accept` answer them.
 Where the kernel hands out an address already decoded, in an answer or a socket's `SocketPhase.DatagramPeer`, it is a `SocketAddress`: an `Ipv4Endpoint`, an `Ipv6Endpoint`, or a `UnixSocketName`, whose representation is hidden and which `UnixSocketName.view` reads as a path or a Linux abstract name (`UnixSocketNameView`).
 `BindAnswer.Bound` and `ListenAnswer.Listening` carry the address as `getsockname` would report it at once, and so in the socket's own family: a dual-mode IPv6 socket (`IPV6_V6ONLY` off) bound to an IPv4 address answers it v4-mapped, `::ffff:a.b.c.d`.
 This kernel's IPv6 sockets reach only IPv4 peers, through v4-mapped addresses, so a refused `connect` names the IPv4 endpoint it resolved, even from an IPv6 socket.
+`UnixConnection.connect` takes the task because a connect can sleep: under Linux, a blocking connect to a listener whose accept queue is full waits for room. The paused call holds the task, so the connect `UnixConnection.connectWithAddress` finishes is the one that would park it. No connect sleeps in this version (that one is refused), so both always answer `SyscallOutcome.Answered`, with 0 or the errno the call leaves; `EINPROGRESS` is such an errno, and the connection it defers is already settled on the socket.
+A Linux TCP connect left in flight against a full listener, non-blocking or interrupted by a signal without `SA_RESTART`, will put its socket in `SocketPhase.Connecting`, whose `ConnectAttempt` has an internal representation. The phase is reserved: nothing puts a socket in it yet, and `UnixSystem.checkInvariants` reports a socket in it as a defect.
 It binds no Unix-domain socket yet, so nothing it hands out holds a `UnixSocketName`.
 A socket's own state, which `UnixSystem.socket` reads, keeps its local address in its domain's own types: `SocketAddressing.Inet` holds an IPv4 binding, `SocketAddressing.Inet6DualMode` a `DualModeBinding`, `SocketAddressing.Inet6V6Only` an IPv6 binding, and `SocketAddressing.Unix` a `UnixSocketName`, each as an option that is `None` while the socket is unbound. An IP binding is an `InetBinding` over the family's endpoint and address types, so an IPv4 socket cannot hold an IPv6 address.
 A dual-mode socket bound to an IPv4 address holds it as `DualModeBinding.Mapped`, the IPv4 transport, and presents it v4-mapped.
 Only IPv4 bindings are made yet: `UnixSystem.checkInvariants` reports an IPv6 binding or a Unix-domain name as a defect, as it does a datagram peer outside its socket's family.
 
-A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, each direction's FIN (not sent, queued behind unsent bytes, or arrived), and each end's state: open, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. A listener's last close resets every client still in its accept queue, oldest first, whatever the listener's `SO_LINGER`. Each queued connection keeps the options the listener held when it completed (`QueuedConnection`), so a change to a listener's options does not reach the connections already queued, and the socket `accept` makes for one holds them; under Darwin a listener lingering for no time gives it a linger of 120 seconds. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
+A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, each direction's FIN (not sent, queued behind unsent bytes, or arrived), and each end's state: open, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. A close under `SO_LINGER` {1, 0} resets the peer unless both FINs have arrived, when it is the ordinary close, and frees the closer's endpoint at once wherever it resets (and, under Darwin, even where it does not); a client that resets while its connection waits in an accept queue leaves the accept a reset socket. A listener's last close resets every client still in its accept queue, oldest first, whatever the listener's `SO_LINGER`. Each queued connection keeps the options the listener held when it completed (`QueuedConnection`), so a change to a listener's options does not reach the connections already queued, and the socket `accept` makes for one holds them; under Darwin a listener lingering for no time gives it a linger of 120 seconds. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
 
 `shutdown` shuts a connected TCP socket's sides by each flavour's measured rules: shutting the send side sends a FIN behind what is still unsent, and every later write answers `EPIPE`; shutting the receive side makes reads answer end of file once what was queued is read, which Darwin discards, and an arrival at a Darwin socket shut for receiving, or a Linux one shut both ways, resets the connection. Linux answers 0 to every call on a connection neither reset nor done with its FINs, and `ENOTCONN` otherwise; Darwin answers `ENOTCONN` to a side already shut and applies `SHUT_RDWR` side by side. The socket's readiness, its waiters, its sleeping reads and writes, `getpeername`, Darwin's `setsockopt` and the endpoint it holds follow: an end whose FIN was made after the peer's and has arrived frees its endpoint, open or closed (on Linux, an explicitly bound port only once the socket closes), where one made first holds it. While an end holds its endpoint, a `bind` of it is refused as one over a connected socket is, whether the end's socket is open or has closed: on Linux unless both that socket and the new one carry `SO_REUSEADDR` (a closed end keeps the flag its socket carried), and on Darwin unless the new one does. Linux judges an end in `TIME_WAIT` by the flag it had on entering it, so a Linux `setsockopt` changing the flag there is refused. A connection is forgotten once neither socket refers to it, so the `TIME_WAIT` that an end whose FIN was made first goes on holding after both sockets have closed is not modelled; nor is any TCP timer, so an end that still holds its endpoint once its socket has closed goes on holding it until a reset reaches the connection, its passive FIN arrives, or its peer's socket closes too. Refused: a listener, a Linux socket with no connection (whose `ENOTCONN` still shuts its sides), and Darwin's receive side shut before the peer's unsent bytes, after which only a timer decides; so is Darwin's close behind its own queued FIN once the peer's has arrived, over bytes unread.
 
@@ -475,15 +496,16 @@ Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 | Call | Function | Answers |
 | --- | --- | --- |
 | `inotify_init1(2)` | `UnixInotify.inotifyInit1 (flags : int)` | `Result<int * UnixSystem, UnixError>` |
-| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (path : PathArgumentBytes) (mask : uint32)` | `SyscallAnswer * UnixSystem` |
+| `inotify_add_watch(2)` | `UnixInotify.inotifyAddWatch (fd : int) (mask : uint32)` | `CallProgress<PausedInotifyAddWatch, SyscallAnswer * UnixSystem>` |
+| `inotify_add_watch(2)`, given the path | `UnixInotify.inotifyAddWatchWithPath (path : PathArgumentBytes) (paused : PausedInotifyAddWatch)` | `SyscallAnswer * UnixSystem` |
 | `inotify_rm_watch(2)` | `UnixInotify.inotifyRmWatch (fd : int) (wd : int)` | `SyscallAnswer * UnixSystem` |
 
 #### Signals
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<KillOutcome, UnixError>` |
-| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<KillOutcome, UnixError>` |
+| `kill(2)` | `UnixSignal.kill (pid : int) (signo : int)` | `Result<ProcessFate<KillOutcome>, UnixError>` |
+| `pthread_kill(3)`, `raise(3)` | `UnixSignal.pthreadKill (target : 'Task) (signo : int)` | `Result<ProcessFate<KillOutcome>, UnixError>` |
 | `sigaction(3)` | `UnixSignal.sigaction (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `sigaction(2)`: Linux's `rt_sigaction` | `UnixSignal.sigactionSyscall (signo : int) (newAction : SignalDisposition option)` | `Result<SignalDisposition * UnixSystem, UnixError>` |
 | `pthread_sigmask(3)` | `UnixSignal.pthreadSigmask (task : 'Task) (how : int) (set : SignalMask option)` | `Result<SignalMask * UnixSystem, UnixError>` |
@@ -493,7 +515,7 @@ Darwin has no inotify, and every call throws `PlatformNotSupportedException`.
 | `sigsuspend(2)` | `UnixSignal.sigsuspend (task : 'Task) (mask : SignalMask)` | `SigsuspendOutcome * UnixSystem` |
 | Linux's `rt_sigsuspend(2)` | `UnixSignal.rtSigsuspend (task : 'Task) (mask : SignalMask) (sigsetSize : uint64)` | `SigsuspendOutcome * UnixSystem` |
 | `pause(2)` | `UnixSignal.pause (task : 'Task)` | `SigsuspendOutcome * UnixSystem` |
-| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `ReturnToUserOutcome` |
+| the return to user mode | `UnixSignal.onReturnToUser (task : 'Task)` | `ProcessFate<ReturnToUserOutcome>` |
 | `sigreturn(2)` | `UnixSignal.sigreturn (task : 'Task) (frame : HandlerFrameId)` | `UnixSystem` |
 
 A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`, `SignalMask.ofSignals`), because Darwin keeps a bit that names no signal.
@@ -516,7 +538,7 @@ A signal number is raw, under the process's own numbering: `Signal.toRawSignoUnd
 | `setresgid(2)` | `UnixCredentials.setresgid (real : GroupId option) (effective : GroupId option) (saved : GroupId option)` | `SyscallAnswer * UnixSystem` |
 | `setgroups(2)` | `UnixCredentials.setgroups (size : int) (words : GroupListWords)` | `SyscallAnswer * UnixSystem` |
 | `clone(2)` with `CLONE_THREAD`, as `pthread_create(3)` makes it | `UnixTaskLifecycle.spawn (parent : 'Task) (child : 'Task) (cpu : CpuId)` | `SpawnAnswer * UnixSystem` |
-| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `TaskOutcome` |
+| Linux's thread `exit(2)`, as `pthread_exit(3)` makes it | `UnixTaskLifecycle.exitThread (task : 'Task) (status : int)` | `ProcessFate<unit>` |
 | `exit_group(2)`, as `exit(3)` and `_exit(2)` make it | `UnixTaskLifecycle.exitGroup (task : 'Task) (status : int)` | `EndedProcess` |
 | the client's report that a task runs on a processor | `UnixScheduling.dispatch (task : 'Task) (cpu : CpuId)` | `UnixSystem` |
 | where a task is running | `UnixScheduling.runningOn (task : 'Task)` | `CpuId option` |
@@ -534,13 +556,15 @@ These calls have no function, and a client should refuse them rather than guess:
 #### Calls that copy in from the caller's memory
 
 A real kernel copies an argument in from the caller's memory at a point in the call, and what happens before that point is observable: a bad descriptor is `EBADF` whatever the buffer holds.
-So each call that copies bytes in comes as two functions.
-The first, an admission, answers either the call's answer, reached before the copy, or how many bytes to copy; the second takes exactly those bytes.
-`UnixReadWrite.admitPWrite`, `UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt` and `UnixSocket.admitGetSockOpt` change nothing, and answer no system.
-`UnixReadWrite.admitWrite` and `UnixReadWrite.admitSend` answer a `WriteOutcome`, which carries the system the admission left: a blocking write with no room has parked the task, a write into a broken pipe has raised `SIGPIPE`, and on Darwin a write can move a pipe's timestamps without taking a byte. The client carries on from that system, as from any other call's (see "Moving bytes").
+So a call that copies bytes in stops there.
+`UnixReadWrite.write`, `UnixReadWrite.send`, `UnixReadWrite.finishWrite`, `UnixReadWrite.pwrite`, `UnixSocket.bind`, `UnixConnection.connect`, `UnixSocket.setsockopt` and `UnixSocket.getsockopt` answer a `CallProgress`: the call's answer, reached before the copy (`CallProgress.Answered`), or the call stopped at the copy (`CallProgress.NeedsCopyIn`), holding the system and everything the call has decided.
+The paused call's `copyRange` says which bytes of the caller's buffer to copy, and its resume function (`UnixReadWrite.writeWithBytes`, `sendWithBytes`, `pwriteWithBytes`, `UnixSocket.bindWithAddress`, `UnixConnection.connectWithAddress`, `UnixSocket.setsockoptWithValue`) takes exactly those and finishes the call, answering the same type `CallProgress.Answered` carries.
+A `getsockopt` stops where the kernel reads the caller's length cell instead, and `UnixSocket.getsockoptWithLength` takes the `socklen_t` it holds.
+Nothing else can be done to the system in between, since the paused call holds it.
 
-Calls that copy in two pathnames come as phases too, for a client that reads its arguments out of a live process, where reading the second pathname too early is itself observable: `UnixNamespace.renameatSourcePhase` or `UnixNamespace.renameSourcePhase` then `UnixNamespace.renameWithDestination`; `UnixNamespace.linkatSourcePhase` or `UnixNamespace.linkSourcePhase` then `UnixNamespace.linkWithDestination`; `UnixNamespace.symlinkatTargetPhase` or `UnixNamespace.symlinkTargetPhase` then `UnixNamespace.symlinkWithPath`; `UnixNamespace.cloneFileFlagsPhase`, `UnixNamespace.cloneFileSourcePhase` then `UnixNamespace.cloneFileWithDestination`; `UnixPathResolution.faccessatScreenPhase` or `UnixPathResolution.accessScreenPhase` then `UnixPathResolution.accessWithPath`; and `UnixInotify.inotifyAddWatchScreenPhase` then `UnixInotify.inotifyAddWatchWithPath`, since Linux answers a bad mask or descriptor without reading the path.
-A client that holds every argument already, such as a replayer, uses the one-shot functions in the tables.
+A call whose pathname is copied in after something observable stops there too, and takes that pathname in its resume function: `rename` and `renameat` stop before the destination (`UnixNamespace.renameWithDestination`), `link` and `linkat` before the new path (`UnixNamespace.linkWithDestination`), `symlink` and `symlinkat` before the link's own path (`UnixNamespace.symlinkWithPath`), `access` and `faccessat` before the path (`UnixPathResolution.accessWithPath`), since Linux answers a bad mode or flag word without reading it, and `inotify_add_watch` before the path (`UnixInotify.inotifyAddWatchWithPath`), since Linux answers a bad mask or descriptor without reading it.
+`clonefile` stops twice: before the source (`UnixNamespace.cloneFileWithSource`) and before the destination (`UnixNamespace.cloneFileWithDestination`).
+A client that holds every argument already, such as a replayer, makes the call through `UnixSystem.step` where the call has a `Syscall` case, or resumes each paused call as soon as it is answered.
 
 #### One entry point
 
@@ -569,22 +593,19 @@ A call that moves bytes takes them or returns them, and the client copies them t
 `ReadOutcome.Answered` holds a `ReadAnswer`: the bytes read (`ReadAnswer.Completed`), for the client to copy into the caller's buffer, and whose length the call returns; or, for `/dev/urandom`, a draw from the entropy pool (`ReadAnswer.Drawn`), whose bytes the client takes with `EntropyDraw.bytes` and whose length is `EntropyDraw.count`; or an errno (`ReadAnswer.Failed`).
 `ReadOutcome.WouldBlock` is a read that sleeps, and `ReadOutcome.Restarts` one a signal handler interrupted, which the client issues again once the handlers have run.
 
-**Writing.** A write is up to four calls.
+**Writing.** A write stops where the kernel copies from the caller's buffer, as every call that copies in does (see "Calls that copy in from the caller's memory").
 
-1. `UnixReadWrite.admitWrite` answers a `WriteAdmission`, before the kernel reads the caller's buffer:
-   * `WriteAdmission.Answered` is the call's answer, with no bytes read.
-   * `WriteAdmission.Transfer count`: copy exactly `count` bytes from the start of the caller's buffer and pass them to `UnixReadWrite.write`.
-   * `WriteAdmission.TransferThenSleep (count, total)`: a blocking write of `total` bytes, of which only `count` fit now. Copy those `count` and pass them to `UnixReadWrite.writeThenSleep`, which puts them in and sleeps for the rest. A blocking write of more than a pipe holds (64 KiB on Linux) reaches this at once.
-2. A write that sleeps answers `WriteOutcome.WouldBlock`, from whichever of these functions it reached. Once `UnixWait.wakes` wakes it, `UnixReadWrite.admitFinishWrite` answers a `WriteResumption`: the call's answer (`WriteResumption.Answered`), or `WriteResumption.Transfer (offset, count)`, the next `count` bytes of the caller's buffer from `offset` on, which the client passes to `UnixReadWrite.finishWrite`. That may sleep again, and the client repeats this step.
+1. `UnixReadWrite.write` answers a `CallProgress`, before the kernel reads the caller's buffer: `CallProgress.Answered` is the call's answer, with no bytes read, and `CallProgress.NeedsCopyIn paused` is the call stopped at the copy. `PausedWrite.copyRange paused` says which bytes: the client copies exactly those from the caller's buffer and passes them to `UnixReadWrite.writeWithBytes`, which finishes the call. A blocking write with room for only part of it copies that part, and sleeps for the rest; a blocking write of more than a pipe holds (64 KiB on Linux) does that at once.
+2. A write that sleeps answers `WriteOutcome.WouldBlock`, before or after the copy. Once `UnixWait.wakes` wakes it, `UnixReadWrite.finishWrite` answers a `CallProgress` again: the call's answer, or the call stopped at the copy of its next bytes, which start `copyRange.Offset` bytes into the caller's buffer, past those already written. That may sleep again, and the client repeats this step.
 
-Every step answers a `WriteOutcome`, whose cases besides `WouldBlock` are:
+Every answer is a `ProcessFate<WriteOutcome>`: the process ended (`ProcessFate.ProcessEnded ended`), because the write raised `SIGPIPE` at its default (see "Ending the process"), or it carries on with one of these, and the system:
 
-* `WriteOutcome.Returns (answer, system)`: the call answers.
-* `WriteOutcome.ReturnsRaising (answer, signal, system)`: the call answers, and raised `signal`, which is now pending (or was discarded). The one signal a write raises is `SIGPIPE`, with `EPIPE`, for a write into a pipe with no reader, into a Linux stream socket with no peer, or to a connection that was reset.
-* `WriteOutcome.ProcessEnded ended`: that `SIGPIPE`, at its default, killed the process (see "Ending the process").
-* `WriteOutcome.Restarts system`: a signal handler interrupted the sleep before anything was written, and the client issues the `write` again once the handlers have run. Only `admitFinishWrite` answers this.
+* `WriteOutcome.Returns answer`: the call answers.
+* `WriteOutcome.ReturnsRaising (answer, signal)`: the call answers, and raised `signal`, which is now pending (or was discarded). The one signal a write raises is `SIGPIPE`, with `EPIPE`, for a write into a pipe with no reader, into a Linux stream socket with no peer, or to a connection that was reset.
+* `WriteOutcome.WouldBlock condition`: the call sleeps, as above.
+* `WriteOutcome.Restarts`: a signal handler interrupted the sleep before anything was written, and the client issues the `write` again once the handlers have run. Only `finishWrite` answers this.
 
-`send` is the same with `UnixReadWrite.admitSend`, `UnixReadWrite.send` and `UnixReadWrite.sendThenSleep`, and `pwrite` with `UnixReadWrite.admitPWrite` and `UnixReadWrite.pwrite`, which never sleeps.
+`send` is the same with `UnixReadWrite.send` and `UnixReadWrite.sendWithBytes`, and is woken with `finishWrite` as a write is; `pwrite` with `UnixReadWrite.pwrite` and `UnixReadWrite.pwriteWithBytes`, never sleeps or raises a signal, and answers `WriteAnswer * UnixSystem`.
 
 **Buffers.** Where a real kernel would check a buffer's address, the client describes the address as a `UserBuffer`, and the library decides whether and when the call answers `EFAULT`, against the limit set by `UnixBootImage.withUserAddressLimit`.
 A client with a flat address space uses `UserBuffer.Mapped` for an address whose bytes it can read or write and `UserBuffer.Unmapped address` for one it cannot.
@@ -612,14 +633,15 @@ A woken task finishes its call through its family's finishing function, which ma
 | `ParkedSyscall.Kevent` | `UnixKqueue.finishKevent (task : 'Task)` |
 | `ParkedSyscall.Accept` | `UnixConnection.finishAccept (task : 'Task)` |
 | `ParkedSyscall.PipeRead`, `ParkedSyscall.ConnectionRead`, `ParkedSyscall.InotifyRead` (a `read` or `recv`) | `UnixReadWrite.finishRead (task : 'Task)` |
-| `ParkedSyscall.PipeWrite`, `ParkedSyscall.ConnectionWrite` (a `write` or `send`) | `UnixReadWrite.admitFinishWrite (task : 'Task)`, then `UnixReadWrite.finishWrite (task : 'Task) (bytes : ImmutableArray<byte>)` |
+| `ParkedSyscall.PipeWrite`, `ParkedSyscall.ConnectionWrite` (a `write` or `send`) | `UnixReadWrite.finishWrite (task : 'Task)`, then, if it stops at the copy, `UnixReadWrite.writeWithBytes (bytes : ImmutableArray<byte>) (paused : PausedWrite)` |
 | `ParkedSyscall.SigSuspend` (a `sigsuspend`, `rt_sigsuspend` or `pause`) | `UnixSignal.finishSigsuspend (task : 'Task)` |
 
 Each answers what the call that parked answered, as in the tables above.
 
-`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`), `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`) and `ParkedSyscall.Select` (a `select` or `pselect`, carrying a `ParkedSelect`, whose representation is internal) are reserved: nothing parks a task in any of them yet, and none has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
-So is the primitive a FIFO open waits for, `WakePrimitive.FifoPartnerOpened`, which no condition contains yet.
-The cases exist so that a client's matches already handle them when sleeps and FIFOs arrive.
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`), `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`), `ParkedSyscall.Select` (a `select` or `pselect`, carrying a `ParkedSelect`, whose representation is internal), `ParkedSyscall.SignalWait` (a `sigwait`, `sigwaitinfo` or `sigtimedwait`, carrying a `ParkedSignalWait`), `ParkedSyscall.DatagramReceive` (a blocking receive on a datagram socket, carrying a `ParkedDatagramReceive`), `ParkedSyscall.DatagramSend` (a blocking Linux Unix-domain datagram send, carrying a `ParkedDatagramSend`) and `ParkedSyscall.Connect` (a blocking Linux `connect` to a full listener, carrying a `ParkedConnect`) are reserved: nothing parks a task in any of them yet, and none has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as a defect.
+The payloads of the datagram parks and the connect park have internal representations too.
+So are the primitives a FIFO open, a signal wait and a Unix-domain connect wait for, `WakePrimitive.FifoPartnerOpened`, `WakePrimitive.AwaitedSignalPending` and `WakePrimitive.AcceptQueueHasRoom`, which no condition contains yet.
+The cases exist so that a client's matches already handle them when sleeps, FIFOs, `select`, signal waits, datagram transfers and sleeping connects arrive.
 
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.
@@ -645,7 +667,7 @@ let booted : UnixSystem<int, unit> =
 // its signals. This client installs no handler, so it expects none to run.
 let resume (task : int) (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
     match UnixSignal.onReturnToUser task system with
-    | ReturnToUserOutcome.Resumes system -> system
+    | ProcessFate.Continues (ReturnToUserOutcome.Resumes, system) -> system
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pipe2(fds, 0) by task 0. UserBuffer.Mapped: the array for the two descriptors is writable.
@@ -666,19 +688,21 @@ let asleep, parked =
     | ReadOutcome.WouldBlock _, system -> Set.singleton 1, system
     | outcome, _ -> failwith $"expected the read to sleep: %A{outcome}"
 
-// Task 0 writes "hello": admitWrite says how many bytes the call takes from
-// the caller's buffer, and write takes them.
+// Task 0 writes "hello": the call stops where the kernel copies from the
+// caller's buffer, and writeWithBytes takes the bytes copyRange names.
 let written =
     let payload = "hello"B
 
-    match UnixReadWrite.admitWrite 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked with
-    | WriteOutcome.Returns (WriteAdmission.Transfer count, system) ->
-        match UnixReadWrite.write 0 writeFd (ImmutableArray.Create (payload, 0, count)) system with
-        | WriteOutcome.Returns (WriteAnswer.Completed n, system) ->
+    match UnixReadWrite.write 0 writeFd UserBuffer.Mapped (uint64 payload.Length) parked with
+    | CallProgress.NeedsCopyIn paused ->
+        let range = PausedWrite.copyRange paused
+
+        match UnixReadWrite.writeWithBytes (ImmutableArray.Create (payload, range.FirstByte, range.ByteCount)) paused with
+        | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed n), system) ->
             printfn "task 0 wrote %d bytes" n
             resume 0 system
         | outcome -> failwith $"unexpected write: %A{outcome}"
-    | outcome -> failwith $"unexpected admission: %A{outcome}"
+    | CallProgress.Answered outcome -> failwith $"unexpected before the copy: %A{outcome}"
 
 // The write woke task 1, and finishRead finishes its call.
 let woken =
@@ -694,7 +718,7 @@ let woken =
 // Task 1 exits, and then task 0 calls exit_group(3), which ends the process.
 let ended =
     match UnixTaskLifecycle.exitThread 1 0 woken with
-    | TaskOutcome.Continues system -> UnixTaskLifecycle.exitGroup 0 3 system
+    | ProcessFate.Continues ((), system) -> UnixTaskLifecycle.exitGroup 0 3 system
     | other -> failwith $"task 0 is still running, so expected the process to continue: %A{other}"
 
 // The client ends the process on its machine, which closes its descriptors.
@@ -711,7 +735,7 @@ printfn "the process ended: shell status %d" (ProcessTermination.shellStatus (Si
 
 ## Signals
 
-`UnixSignal.kill` and `UnixSignal.pthreadKill` generate a signal, and answer a `KillOutcome`: the process carries on (`KillOutcome.ProcessContinues`), with the signal pending or discarded; the signal stopped it (`KillOutcome.ProcessStopped`); or the signal killed it at once (`KillOutcome.ProcessEnded`).
+`UnixSignal.kill` and `UnixSignal.pthreadKill` generate a signal, and answer a `ProcessFate<KillOutcome>`: the process runs on (`KillOutcome.ProcessRuns`), with the signal pending or discarded; the signal stopped it (`KillOutcome.ProcessStopped`); or the signal killed it at once (`ProcessFate.ProcessEnded`).
 `kill` of another process, or of a process group, is refused.
 A signal the process ignores, and a `SIGCONT` at its default, which has nothing to resume, are discarded as they are sent, unless the task they are aimed at blocks them: for a signal sent to the process, that is the leader under Linux and every task under Darwin. So such a signal never wakes a sleeping call.
 One sent while blocked stays pending, and is discarded as a task takes it.
@@ -724,16 +748,15 @@ Under Linux, `kill` of such a signal that the leader blocks while another task d
 ### The return to user mode
 
 A signal is taken as a task returns to user mode, so after each call a task makes, and before it runs any of its own code, the client asks `UnixSignal.onReturnToUser task`.
-It answers a `ReturnToUserOutcome`:
+It answers a `ProcessFate<ReturnToUserOutcome>`: the process ended (`ProcessFate.ProcessEnded ended`), because a signal whose default action terminates the process killed it (see below), or it carries on (`ProcessFate.Continues (outcome, system)`) with one of these outcomes:
 
-* `ReturnToUserOutcome.Resumes system`: the task took nothing the client acts on, and runs its own code next.
-* `ReturnToUserOutcome.RunHandlers (frames, system)`: the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore. The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame's `HandlerFrame.Id` and asks `onReturnToUser` again.
-* `ReturnToUserOutcome.ProcessEnded ended`: a signal whose default action terminates the process killed it (see below).
-* `ReturnToUserOutcome.ProcessStopped (signal, system)`: a signal whose default action stops the process stopped it (see below).
-* `ReturnToUserOutcome.ContinueDiscarded (signal, system)`: the kernel discarded a `SIGCONT` at its default, pending while the task blocked it, as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
+* `ReturnToUserOutcome.Resumes`: the task took nothing the client acts on, and runs its own code next.
+* `ReturnToUserOutcome.RunHandlers frames`: the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore. The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame's `HandlerFrame.Id` and asks `onReturnToUser` again.
+* `ReturnToUserOutcome.ProcessStopped signal`: a signal whose default action stops the process stopped it (see below).
+* `ReturnToUserOutcome.ContinueDiscarded signal`: the kernel discarded a `SIGCONT` at its default, pending while the task blocked it, as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
-A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (`KillOutcome.ProcessEnded`, and `WriteOutcome.ProcessEnded` for a write's `SIGPIPE`), and otherwise when a task that blocked it can take it, as the task returns to user mode (`ReturnToUserOutcome.ProcessEnded`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
-Either answer is the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
+A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (from `kill`, `pthreadKill`, or a write that raises `SIGPIPE`), and otherwise when a task that blocked it can take it, as the task returns to user mode (from `onReturnToUser`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
+Either answer is `ProcessFate.ProcessEnded` of the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
 
 A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `ReturnToUserOutcome.ProcessStopped`) for the client to act on.
 The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
@@ -752,12 +775,12 @@ let booted : UnixSystem<int, unit> =
 
     UnixSystem.initial platform |> UnixBootImage.boot launch
 
-let returnToUser (system : UnixSystem<int, unit>) : ReturnToUserOutcome<int, unit> =
+let returnToUser (system : UnixSystem<int, unit>) : ProcessFate<ReturnToUserOutcome<int, unit>, int, unit> =
     UnixSignal.onReturnToUser 0 system
 
-let resumed (outcome : ReturnToUserOutcome<int, unit>) : UnixSystem<int, unit> =
-    match outcome with
-    | ReturnToUserOutcome.Resumes system -> system
+let resumed (fate : ProcessFate<ReturnToUserOutcome<int, unit>, int, unit>) : UnixSystem<int, unit> =
+    match fate with
+    | ProcessFate.Continues (ReturnToUserOutcome.Resumes, system) -> system
     | other -> failwith $"unexpected at the return to user mode: %A{other}"
 
 // pthread_sigmask(how, {SIGTERM}, NULL), with `how` under Linux's numbering:
@@ -777,14 +800,14 @@ let pending =
     let signo = Signal.toRawSignoUnder numbering Signal.SIGTERM
 
     match UnixSignal.kill pid signo blocked with
-    | Ok (KillOutcome.ProcessContinues system) -> system |> returnToUser |> resumed
+    | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system |> returnToUser |> resumed
     | Ok outcome -> failwith $"unexpected kill: %A{outcome}"
     | Error errno -> failwith $"kill failed: %O{errno}"
 
 // Unblocking it: as task 0 returns to user mode it takes SIGTERM, whose
 // default action ends the process.
 match pending |> mask 1 |> returnToUser with
-| ReturnToUserOutcome.ProcessEnded ended ->
+| ProcessFate.ProcessEnded ended ->
     let termination, _ =
         SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended
 
@@ -800,7 +823,7 @@ match pending |> mask 1 |> returnToUser with
 ## Threads, and the end of the process
 
 `UnixTaskLifecycle.spawn parent child cpu` starts a task the client names `child`, on processor `cpu`, with a copy of `parent`'s signal mask, and answers its thread ID, an `OsThreadId` (`SpawnAnswer.Spawned`).
-`UnixTaskLifecycle.exitThread task status` ends one task, and answers `TaskOutcome.Continues` with the process carrying on, or `TaskOutcome.ProcessEnded` if it was the last.
+`UnixTaskLifecycle.exitThread task status` ends one task, and answers `ProcessFate.Continues` with the process carrying on, or `ProcessFate.ProcessEnded` if it was the last.
 It throws `InvalidOperationException` for a task parked in a syscall, and refuses the process's leader while any other task lives and, on Darwin, the process's last task: a Darwin client ends a process with `exitGroup`, never by its last thread exiting.
 `UnixTaskLifecycle.exitGroup task status` ends every task at once, parked ones included.
 
@@ -810,7 +833,7 @@ A call that ends the process answers an `EndedProcess` instead of a system: `exi
 Only such a call makes one, and `SimulatedMachine.endProcess` takes nothing else.
 
 `SimulatedMachine.endProcess ended machine` ends the process on the machine: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, resetting the clients left in its listeners' accept queues, whichever process holds them, and letting its locks, pipes, listeners and event queues go, and removes the process.
-It refuses where a close would: so far, the last close of a connected socket whose `SO_LINGER` would make it reset the connection or wait.
+It refuses where a close would: so far, the last close of a connected socket whose `SO_LINGER` would make it wait, and two Darwin closes whose outcome waits on a timer or on the peer's reads.
 A process alone on its machine is ended on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
 
 ## Several processes
@@ -839,6 +862,9 @@ A client that asks after every step, as one that interleaves instructions does, 
 It answers what `wakes` answers, and asks no wake condition when the last sweep woke nobody and nothing a condition reads has changed since but the clock, which has not reached any sleeping task's deadline.
 Advancing the clock, and dispatching a task to the processor it is on, leave the memo answering; a syscall, and a dispatch that moves a task to another processor, make the next call sweep.
 A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
+A client reads that kqueue through `UnixSystem.pollQueue`, then `PollQueue.registered`, `PollQueue.entry` and `PollQueue.activated`.
+A kqueue's own registrations, and what each is attached to, are not public (`KqueueState`'s representation is internal), so a later version can attach a registration to a pipe or a timer without a change of shape.
+`KqueueFilter.Timer` is reserved: `kevent` refuses `EVFILT_TIMER`, and a poll registers only `KqueueFilter.Read` and `KqueueFilter.Write`, so nothing registers a timer yet.
 
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
@@ -982,7 +1008,7 @@ The filesystem type is chosen separately (see "Giving the machine files"), from 
 The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
 On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
 Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
-`CharacterDevice.Zero` and `CharacterDevice.Random` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names either.
+`CharacterDevice.Zero`, `CharacterDevice.Random` and `CharacterDevice.Tty` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names any of them.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 Some interfaces are one flavour's alone, and the other flavour refuses every call of them rather than answering: no kernel of that flavour has the call, so there is no answer to measure.

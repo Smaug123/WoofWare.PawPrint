@@ -96,7 +96,7 @@ module TestSocketAddressLength =
                 (CopyIn.inet system.Machine.UnixPlatform (loopback listenerPort))
                 system
         with
-        | Ok (ConnectOutcome.Completed, system) -> fd, system
+        | Ok (SyscallAnswer.Completed 0L, system) -> fd, system
         | other -> failwith $"connecting a client: %A{other}"
 
     let private queueOf (fd : int) (system : UnixSystem<int, string>) : ConnectionId list =
@@ -170,8 +170,8 @@ module TestSocketAddressLength =
 
                 let actual =
                     match CopyIn.connect fd UserBuffer.Mapped word (CopyIn.inet platform target) system with
-                    | Ok (ConnectOutcome.Completed, _) -> None
-                    | Ok (ConnectOutcome.Failed error, _) -> Some error
+                    | Ok (SyscallAnswer.Completed _, _) -> None
+                    | Ok (SyscallAnswer.Failed error, _) -> Some error
                     | Error refusal -> failwith $"word 0x%08x{word}: %s{ConnectRefusal.describe refusal}"
 
                 if actual <> measuredCopyIn platform word then
@@ -340,7 +340,7 @@ module TestSocketAddressLength =
                                     (CopyIn.inet system.Machine.UnixPlatform (loopback listenerPort))
                                     system
                             with
-                            | Ok (ConnectOutcome.Failed UnixError.EINPROGRESS, system) -> fd, system
+                            | Ok (SyscallAnswer.Failed UnixError.EINPROGRESS, system) -> fd, system
                             | other -> failwith $"connecting a non-blocking client: %A{other}"
                         else
                             connectClient system

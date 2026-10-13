@@ -68,11 +68,11 @@ module TestSignalReceiver =
         [ 0..3 ]
         |> List.map (fun task ->
             match UnixSignal.tryOnReturnToUser task system with
-            | Ok (ReturnToUserOutcome.Resumes _) -> None
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, _)) -> Some frames
-            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other)
-            | Ok (ReturnToUserOutcome.ProcessEnded _ as other) -> failwith $"task %d{task} took %A{other}"
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, _)) -> None
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, _)) -> Some frames
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped _, _) as other)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, _) as other)
+            | Ok (ProcessFate.ProcessEnded _ as other) -> failwith $"task %d{task} took %A{other}"
             | Error refusal -> failwith $"task %d{task} was refused: %O{refusal}"
         )
 
@@ -82,7 +82,7 @@ module TestSignalReceiver =
             systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) blocking
 
         match UnixSignal.tryKill (self system) (usr1 flavour) system with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) ->
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) ->
             takenBy system
             |> List.indexed
             |> List.choose (fun (task, delivery) ->
@@ -184,7 +184,7 @@ module TestSignalReceiver =
                 systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) (Set.ofList [ 0..3 ])
 
             match UnixSignal.tryKill (self system) (usr1 flavour) system with
-            | Ok (Ok (KillOutcome.ProcessContinues after)) ->
+            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) ->
                 SignalState.pending after.Process.Signals
                 |> shouldEqual
                     [
@@ -205,7 +205,7 @@ module TestSignalReceiver =
             let system = systemWith flavour SignalDisposition.Default (Set.ofList [ 0 ; 2 ])
 
             match UnixSignal.tryKill (self system) (usr1 flavour) system with
-            | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+            | Ok (Ok (ProcessFate.ProcessEnded ended)) ->
                 ended.Termination
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGUSR1, false))
             | other -> failwith $"%O{flavour}: %A{other}"
@@ -220,7 +220,7 @@ module TestSignalReceiver =
             let system = systemWith flavour SignalDisposition.Ignore (Set.ofList [ 0 ; 2 ])
 
             match flavour, UnixSignal.tryKill (self system) (usr1 flavour) system with
-            | SimulatedUnixFlavour.Darwin, Ok (Ok (KillOutcome.ProcessContinues after)) ->
+            | SimulatedUnixFlavour.Darwin, Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) ->
                 SignalState.pending after.Process.Signals |> shouldBeEmpty
             | SimulatedUnixFlavour.Linux, Error refusal ->
                 refusal
@@ -239,7 +239,7 @@ module TestSignalReceiver =
                 systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) (Set.ofList [ 0..3 ])
 
             match UnixSignal.tryKill (self system) (usr1 flavour) system with
-            | Ok (Ok (KillOutcome.ProcessContinues after)) ->
+            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) ->
                 let after =
                     { after with
                         Process =

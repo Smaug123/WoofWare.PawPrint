@@ -399,7 +399,7 @@ module TestSigaction =
                                         |> Result.mapError string
 
                                 match answer with
-                                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                                 | other -> failwith $"%O{flavour} %d{signo}: generating it answered %A{other}"
 
                             let isPending (system : UnixSystem<int, string>) : bool =
@@ -441,7 +441,7 @@ module TestSigaction =
                         |> HandlerFrames.enterIn "carrier" leader (Set.singleton signal)
                         |> UnixSignal.tryPthreadKill leader pendingSigno
                     with
-                    | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                    | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                     | other -> failwith $"generating %d{pendingSigno}: %A{other}"
                 | _ -> systemOn flavour
 

@@ -643,10 +643,9 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     /// Whether `outcome` is a process ended by `SIGPIPE`'s default action.
-    let private endedBySigPipe (outcome : Result<WriteOutcome<'Answer, int, string>, WriteRefusal>) : bool =
+    let private endedBySigPipe (outcome : Result<WriteStep<'Answer, int, string>, WriteRefusal>) : bool =
         match outcome with
-        | Ok (WriteOutcome.ProcessEnded ended) ->
-            ended.Termination = ProcessTermination.Signaled (Signal.SIGPIPE, false)
+        | Ok (WriteStep.ProcessEnded ended) -> ended.Termination = ProcessTermination.Signaled (Signal.SIGPIPE, false)
         | _ -> false
 
     [<Test>]
@@ -716,7 +715,7 @@ module TestUnixSystemStep =
             |> endedBySigPipe
             |> shouldEqual true
 
-        UnixReadWrite.tryWrite idle.Leader fd (ImmutableArray.CreateRange [ 1uy ]) idle
+        UnixReadWrite.tryWriteBytes idle.Leader fd (ImmutableArray.CreateRange [ 1uy ]) idle
         |> endedBySigPipe
         |> shouldEqual true
 
@@ -749,7 +748,7 @@ module TestUnixSystemStep =
                     UnixReadWrite.tryAdmitWrite system.Leader fd UserBuffer.Mapped count system
                     |> shouldEqual refused
 
-                UnixReadWrite.tryWrite system.Leader fd (ImmutableArray.CreateRange [ 1uy ]) system
+                UnixReadWrite.tryWriteBytes system.Leader fd (ImmutableArray.CreateRange [ 1uy ]) system
                 |> shouldEqual refused
 
     [<Test>]
@@ -1173,7 +1172,7 @@ module TestUnixSystemStep =
                 | Ok (_, system) -> system
                 | other -> failwith $"could not advance the offset: %A{other}"
 
-            match UnixReadWrite.tryPwrite 0 fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
+            match UnixReadWrite.tryPwriteBytes 0 fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
             | Ok (WriteAnswer.Completed written, after) ->
                 written |> shouldEqual 2L
 
@@ -1193,7 +1192,7 @@ module TestUnixSystemStep =
     let ``a pwrite past the end of the file extends it`` () : unit =
         let fd, system = withOpenFile linux
 
-        match UnixReadWrite.tryPwrite 0 fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
+        match UnixReadWrite.tryPwriteBytes 0 fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 1L
 
@@ -1433,18 +1432,18 @@ module TestUnixSystemStep =
         // an inconsistent one, which is what lets the second call take no buffer.
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        UnixReadWrite.tryPwrite 0 7 bytes 0L linux
+        UnixReadWrite.tryPwriteBytes 0 7 bytes 0L linux
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
 
         let fd, system = withReadOnlyFile linux
 
-        UnixReadWrite.tryPwrite 0 fd bytes 0L system
+        UnixReadWrite.tryPwriteBytes 0 fd bytes 0L system
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
         // Including the negative offset, which precedes them all.
         let good, goodSystem = withOpenFile linux
 
-        UnixReadWrite.tryPwrite 0 good bytes -1L goodSystem
+        UnixReadWrite.tryPwriteBytes 0 good bytes -1L goodSystem
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EINVAL, goodSystem))
 
     [<Test>]
@@ -1455,12 +1454,12 @@ module TestUnixSystemStep =
         // measured, `pwrite(f, buf, 0, 100000)` on a five-byte file leaves it five
         // bytes long.
         for offset in [ 0L ; 100000L ] do
-            UnixReadWrite.tryPwrite 0 fd ImmutableArray<byte>.Empty offset system
+            UnixReadWrite.tryPwriteBytes 0 fd ImmutableArray<byte>.Empty offset system
             |> shouldEqual (Ok (WriteAnswer.Completed 0L, system))
 
         let readOnlyFd, readOnly = withReadOnlyFile linux
 
-        UnixReadWrite.tryPwrite 0 readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
+        UnixReadWrite.tryPwriteBytes 0 readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     [<Test>]
@@ -1472,7 +1471,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        match UnixReadWrite.tryPwrite 0 fd bytes VirtualFileSystem.maxFileLength system with
+        match UnixReadWrite.tryPwriteBytes 0 fd bytes VirtualFileSystem.maxFileLength system with
         | Error (PWriteRefusal.ExceedsRepresentableLength (_, offset, count)) ->
             offset |> shouldEqual VirtualFileSystem.maxFileLength
             count |> shouldEqual 1
@@ -1487,7 +1486,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixReadWrite.tryPwrite 0 fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
+                UnixReadWrite.tryPwriteBytes 0 fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
                 |> ignore<Result<WriteAnswer * UnixSystem<int, string>, PWriteRefusal>>
             )
 
@@ -3312,6 +3311,32 @@ module TestUnixSystemStep =
         | other -> failwith $"the holder's open answered %A{other}"
 
     [<Test>]
+    let ``a parked task may not issue a connect, and nor may a task the table does not hold`` () : unit =
+        // A connect can sleep, so it takes its task as flock does, and fails
+        // loudly for one that is already parked or is not a task at all, before
+        // it looks at the descriptor.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixDescriptor.tryFlock holderTask first 2 system |> granted
+        let _, parkedIn = UnixDescriptor.tryFlock waiterTask second 2 held |> parked
+
+        let connect (task : int) : unit =
+            UnixConnection.tryConnect task first UserBuffer.Mapped 0u parkedIn |> ignore
+
+        let parkedExn = Assert.Throws<exn> (fun () -> connect waiterTask)
+        parkedExn.Message |> shouldContainText "UnixConnection.connect"
+        parkedExn.Message |> shouldContainText "is parked in"
+
+        let unknownExn = Assert.Throws<exn> (fun () -> connect 99)
+        unknownExn.Message |> shouldContainText "names no task"
+
+        // The holder is neither, and its connect is answered: `first` is not a
+        // socket.
+        match UnixConnection.tryConnect holderTask first UserBuffer.Mapped 0u parkedIn with
+        | Ok (CallProgress.Answered (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOTSOCK), _)) -> ()
+        | other -> failwith $"the holder's connect answered %A{other}"
+
+    [<Test>]
     let ``a grant through flockAcquire clears the record, and a beaten resume keeps it`` () : unit =
         let first, second, system = withTwoDescriptions linux
         let another, system = withAnotherDescription first system
@@ -4117,7 +4142,8 @@ module TestUnixSystemStep =
         // write to the destination on these paths -- a NUL at the last byte, and
         // the stale path too once the buffer reaches PATH_MAX -- and this
         // library deliberately reports none of it: see
-        // `GetCwdOrphanAnswer.ShortestPathFirst` and docs/divergences.md.
+        // `GetCwdOrphanAnswer.ShortestPathFirst` and
+        // https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
         for capacity in [ 2UL ; 3UL ; 8UL ; 64UL ; 1023UL ; 1024UL ; 1025UL ; 4096UL ] do
             UnixPathResolution.tryGetcwd UserBuffer.Mapped capacity (atOrphan darwin)
             |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
@@ -5301,7 +5327,7 @@ module TestUnixSystemStep =
         (system : UnixSystem<int, string>)
         : Result<unit, UnixError>
         =
-        match UnixNamespace.tryRename source destination system with
+        match UnixNamespace.tryRenameEager source destination system with
         | Ok (SyscallAnswer.Completed 0L, _) -> Ok ()
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | other -> failwith $"unexpected answer %A{other}"
@@ -5522,7 +5548,7 @@ module TestUnixSystemStep =
             }
 
         let moved =
-            match UnixNamespace.tryRename (arg "f") (arg "victim") system with
+            match UnixNamespace.tryRenameEager (arg "f") (arg "victim") system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
@@ -5570,7 +5596,7 @@ module TestUnixSystemStep =
             // A symbolic link rather than `dir`: displacing a regular file with
             // a *directory* is ENOTDIR, which would make this row measure the
             // type rule instead of the reap.
-            match UnixNamespace.tryRename (arg "lf") (arg "f") system with
+            match UnixNamespace.tryRenameEager (arg "lf") (arg "f") system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
@@ -5595,7 +5621,7 @@ module TestUnixSystemStep =
 
         let before = system.Machine.FileSystem
 
-        match UnixNamespace.tryRename (arg "f") (arg "f") system with
+        match UnixNamespace.tryRenameEager (arg "f") (arg "f") system with
         | Ok (SyscallAnswer.Completed 0L, after) -> after.Machine.FileSystem |> shouldEqual before
         | other -> failwith $"expected a success, got %A{other}"
 
@@ -5635,7 +5661,7 @@ module TestUnixSystemStep =
         let moved =
             // Absolute, because the cwd is now /dir/sub and a relative "dir"
             // would resolve from there.
-            match UnixNamespace.tryRename (arg "/dir") (arg "/moved") system with
+            match UnixNamespace.tryRenameEager (arg "/dir") (arg "/moved") system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
@@ -5711,25 +5737,25 @@ module TestUnixSystemStep =
 
         // Darwin: the source's ENOENT is settled before the destination's
         // pathname is copied in at all.
-        UnixNamespace.tryRename (arg "nope") unreadable (withRenameTree darwin)
+        UnixNamespace.tryRenameEager (arg "nope") unreadable (withRenameTree darwin)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree darwin))
 
         // Linux: the source's *parent* walk fails before the destination's
         // pathname is copied in.
-        UnixNamespace.tryRename (arg "nodir/kid") unreadable (withRenameTree linux)
+        UnixNamespace.tryRenameEager (arg "nodir/kid") unreadable (withRenameTree linux)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree linux))
 
         // ...and when the syscall does reach it, the EFAULT is reported rather
         // than swallowed -- otherwise the two rows above would pass for a
         // kernel that never copies anything in.
-        UnixNamespace.tryRename (arg "f") unreadable (withRenameTree linux)
+        UnixNamespace.tryRenameEager (arg "f") unreadable (withRenameTree linux)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree linux))
 
-        UnixNamespace.tryRename (arg "f") unreadable (withRenameTree darwin)
+        UnixNamespace.tryRenameEager (arg "f") unreadable (withRenameTree darwin)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree darwin))
 
         // A bad *source* is EFAULT on both, being copied in first either way.
-        UnixNamespace.tryRename unreadable (arg "nope") (withRenameTree linux)
+        UnixNamespace.tryRenameEager unreadable (arg "nope") (withRenameTree linux)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree linux))
 
     [<Test>]
@@ -5737,11 +5763,11 @@ module TestUnixSystemStep =
         // The structural version of the row above, and the one that matters for
         // the boundary: *reading* a pathname out of a process's memory can
         // refuse, so a caller must be told whether the kernel wants the second
-        // one at all. `RenameProgress.Answered` is that answer, and a caller
+        // one at all. `CallProgress.Answered` is that answer, and a caller
         // holding it has nothing to read.
         let ended (source : PathArgumentBytes) (system : UnixSystem<int, string>) : UnixError =
-            match UnixNamespace.tryRenameSourcePhase source system with
-            | Ok (RenameProgress.Answered (SyscallAnswer.Failed error, _)) -> error
+            match UnixNamespace.tryRename source system with
+            | Ok (CallProgress.Answered (SyscallAnswer.Failed error, _)) -> error
             | other -> failwith $"expected the source phase to end the call, got %A{other}"
 
         // Darwin ends on a source that does not exist...
@@ -5765,14 +5791,14 @@ module TestUnixSystemStep =
         // And the calls that *do* need one say so, or the rows above would pass
         // for a kernel that never asks for a destination.
         for system in [ withRenameTree linux ; withRenameTree darwin ] do
-            match UnixNamespace.tryRenameSourcePhase (arg "f") system with
-            | Ok (RenameProgress.NeedsDestination _) -> ()
+            match UnixNamespace.tryRename (arg "f") system with
+            | Ok (CallProgress.NeedsCopyIn _) -> ()
             | other -> failwith $"expected the kernel to want a destination, got %A{other}"
 
         // Linux gets that far even for a source whose final name is free, since
         // it has not looked it up yet — where Darwin has, and stopped.
-        match UnixNamespace.tryRenameSourcePhase (arg "nope") (withRenameTree linux) with
-        | Ok (RenameProgress.NeedsDestination _) -> ()
+        match UnixNamespace.tryRename (arg "nope") (withRenameTree linux) with
+        | Ok (CallProgress.NeedsCopyIn _) -> ()
         | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
 
     // The `## walk` and `## orphan` sections of `docs/probes/rename/rename.py`,

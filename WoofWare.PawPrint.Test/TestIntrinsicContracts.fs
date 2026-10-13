@@ -121,10 +121,17 @@ module TestIntrinsicContracts =
             match LinuxCoreLibFlavour.linuxFrameworkDir with
             | Some dir ->
                 let _, loggerFactory = LoggerFactory.makeTest ()
-                Assembly.readFile loggerFactory (LinuxCoreLibFlavour.corelibPath dir)
+                let corelib = Assembly.readFile loggerFactory (LinuxCoreLibFlavour.corelibPath dir)
+
+                // A leg audits only its own runtime's images.
+                FrameworkUnderTest.checkServes (FrameworkUnderTest.runtime ()) corelib
+                |> Result.mapError FrameworkUnderTest.describe
+                |> shouldEqual (Ok ())
+
+                corelib
             | None ->
                 let _, loggerFactory = LoggerFactory.makeTest ()
-                Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+                Assembly.readFile loggerFactory (FrameworkUnderTest.coreLibPath ())
 
         let performed =
             corelib.Methods.Keys

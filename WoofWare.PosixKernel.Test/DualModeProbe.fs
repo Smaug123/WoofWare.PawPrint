@@ -69,7 +69,7 @@ module DualModeProbe =
             | Result.Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create<byte> (bytes, 0, count))
             | _ -> None
 
-        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied libc.System with
+        match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped length supplied libc.System with
         | Result.Ok (SetSockOptAnswer.Set, system) ->
             libc.System <- system
             Answer.Ok
@@ -87,7 +87,7 @@ module DualModeProbe =
             | Result.Ok GetSockOptAdmission.ReadLength -> Some 4u
             | _ -> None
 
-        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
+        match UnixSocket.tryGetsockoptLength fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
         | Result.Ok (GetSockOptAnswer.Reported bytes, system) ->
             libc.System <- system
             Answer.Ok, SimulatedUnixPlatform.decodeCInt libc.Platform bytes 0
@@ -160,10 +160,10 @@ module DualModeProbe =
 
     let private connect (libc : Libc) (fd : int) (blob : byte[]) (length : int) : Answer =
         match CopyIn.connect fd UserBuffer.Mapped (uint32 length) blob libc.System with
-        | Result.Ok (ConnectOutcome.Completed, system) ->
+        | Result.Ok (SyscallAnswer.Completed _, system) ->
             libc.System <- system
             Answer.Ok
-        | Result.Ok (ConnectOutcome.Failed error, system) ->
+        | Result.Ok (SyscallAnswer.Failed error, system) ->
             libc.System <- system
             Answer.Errno error
         | Result.Error refusal -> Answer.Refused (ConnectRefusal.describe refusal)
@@ -369,9 +369,9 @@ module DualModeProbe =
     /// A one-byte `write` of `'x'`, as `transfer` prints it: the count, or the
     /// errno.
     let private writeByte (libc : Libc) (fd : int) : string =
-        match UnixReadWrite.tryWrite 0 fd (ImmutableArray.Create<byte> (byte 'x')) libc.System with
-        | Result.Ok (WriteOutcome.Returns (answer, system))
-        | Result.Ok (WriteOutcome.ReturnsRaising (answer, _, system)) ->
+        match UnixReadWrite.tryWriteBytes 0 fd (ImmutableArray.Create<byte> (byte 'x')) libc.System with
+        | Result.Ok (WriteStep.Returns (answer, system))
+        | Result.Ok (WriteStep.ReturnsRaising (answer, _, system)) ->
             libc.System <- system
 
             match answer with
@@ -458,8 +458,8 @@ module DualModeProbe =
             |> ignore
 
             let wrote =
-                match UnixReadWrite.tryWrite 0 s (ImmutableArray.Create<byte> (byte 'x')) libc.System with
-                | Result.Ok (WriteOutcome.Returns (WriteAnswer.Completed count, system)) ->
+                match UnixReadWrite.tryWriteBytes 0 s (ImmutableArray.Create<byte> (byte 'x')) libc.System with
+                | Result.Ok (WriteStep.Returns (WriteAnswer.Completed count, system)) ->
                     libc.System <- system
                     $"%d{count}"
                 | Result.Error _ -> "REFUSED"
@@ -1116,17 +1116,12 @@ module DualModeProbe =
                 (Seq.toArray (OptionValue.ofLinger 1 0))
             |> ignore<Answer>
 
-            // The model refuses this close while the client still holds the
-            // connection, so the rows after it read a connection still open.
-            let closed = tryClose libc srv
+            close libc srv
             nameLine $"R3 %s{who}, abortive close: getsockname" getsockname c 28
             nameLine $"R3 %s{who}, abortive close: getpeername" getpeername c 28
             soErrorLine $"R3 %s{who}, abortive close: SO_ERROR" c
             nameLine $"R3 %s{who}, error taken: getsockname" getsockname c 28
             close libc c
-
-            if not closed then
-                close libc srv
 
         close libc l
 

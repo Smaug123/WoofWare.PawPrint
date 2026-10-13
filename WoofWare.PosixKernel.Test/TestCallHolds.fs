@@ -314,23 +314,12 @@ module TestCallHolds =
                     }
         | _ -> UnixWait.park task parked system
 
-    let private kindOf (parked : ParkedSyscall) : int =
-        match parked with
-        | ParkedSyscall.EpollWait _ -> 0
-        | ParkedSyscall.Flock _ -> 1
-        | ParkedSyscall.Poll _ -> 2
-        | ParkedSyscall.Accept _ -> 3
-        | ParkedSyscall.PipeRead _ -> 4
-        | ParkedSyscall.PipeWrite _ -> 5
-        | ParkedSyscall.Kevent _ -> 6
-        | ParkedSyscall.KqueuePoll _ -> 7
-        | ParkedSyscall.ConnectionRead _ -> 8
-        | ParkedSyscall.ConnectionWrite _ -> 9
-        | ParkedSyscall.SigSuspend -> 10
-        | ParkedSyscall.Sleep _ -> 11
-        | ParkedSyscall.FifoOpen _ -> 12
-        | ParkedSyscall.InotifyRead _ -> 13
-        | ParkedSyscall.Select _ -> 14
+    // Which syscall a park is of: its case's name, which no two cases share.
+    let private kindOf (parked : ParkedSyscall) : string =
+        let case, _ =
+            Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields (parked, typeof<ParkedSyscall>)
+
+        case.Name
 
     /// The recorded facts against the model: each description's holds, which
     /// descriptions exist, and which thread IDs are live.
@@ -517,7 +506,7 @@ module TestCallHolds =
                     else
 
                     match UnixTaskLifecycle.tryExitThread task 0 system with
-                    | Ok (TaskOutcome.Continues after) ->
+                    | Ok (ProcessFate.Continues ((), after)) ->
                         cover Reached.Exit
 
                         after,

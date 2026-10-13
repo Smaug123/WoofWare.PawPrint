@@ -109,23 +109,23 @@ module TestStreamReaderGone =
 
                 // `write` without the admission, as a caller holding the bytes
                 // may make it, answers the same.
-                UnixReadWrite.tryWrite task fd bytes system |> shouldEqual actual
+                UnixReadWrite.tryWriteBytes task fd bytes system |> shouldEqual actual
 
                 if Set.contains fd gone && not (flavour = SimulatedUnixFlavour.Linux && count = 0) then
                     let raised = sigPipeFrom flavour task
 
                     match disposition, actual with
-                    | SignalDisposition.Default, Ok (WriteOutcome.ProcessEnded endedProcess) ->
+                    | SignalDisposition.Default, Ok (WriteStep.ProcessEnded endedProcess) ->
                         endedProcess.Termination
                         |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
 
                         ended <- true
                     | SignalDisposition.Ignore,
-                      Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                      Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
                         signal |> shouldEqual raised
                         after |> shouldEqual system
                     | SignalDisposition.Catch _,
-                      Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                      Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
                         signal |> shouldEqual raised
                         pending <- Set.add raised pending
                         Set.ofList (SignalState.pending after.Process.Signals) |> shouldEqual pending
@@ -142,7 +142,7 @@ module TestStreamReaderGone =
                     | _ -> failwith $"%s{where}: expected EPIPE and SIGPIPE, got %A{actual}"
                 else
                     match actual with
-                    | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, after)) ->
+                    | Ok (WriteStep.Returns (WriteAnswer.Completed written, after)) ->
                         written |> shouldEqual (int64 count)
 
                         if count > 0 then
@@ -220,7 +220,7 @@ module TestStreamReaderGone =
             | SimulatedUnixFlavour.Darwin,
               Error (WriteRefusal.SignalReceiver (_, SignalReceiverRefusal.LeaderBlocks Signal.SIGPIPE)) -> ()
             | SimulatedUnixFlavour.Linux,
-              Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+              Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
                 signal |> shouldEqual (sigPipeFrom SimulatedUnixFlavour.Linux system.Leader)
                 SignalState.pending after.Process.Signals |> shouldEqual [ signal ]
             | flavour, other -> failwith $"%O{flavour}: %A{other}"
@@ -271,15 +271,15 @@ module TestStreamReaderGone =
                 let admit =
                     Assert.Throws (fun () ->
                         UnixReadWrite.tryAdmitWrite 7 fd UserBuffer.Mapped 1UL system
-                        |> ignore<Result<WriteOutcome<WriteAdmission, int, string>, WriteRefusal>>
+                        |> ignore<Result<WriteStep<WriteAdmission, int, string>, WriteRefusal>>
                     )
 
                 admit.Message |> shouldContainText "task 7 is not one of the process's tasks"
 
                 let write =
                     Assert.Throws (fun () ->
-                        UnixReadWrite.tryWrite 7 fd (payload 0 1) system
-                        |> ignore<Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>>
+                        UnixReadWrite.tryWriteBytes 7 fd (payload 0 1) system
+                        |> ignore<Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>>
                     )
 
                 write.Message |> shouldContainText "task 7 is not one of the process's tasks"
@@ -304,8 +304,8 @@ module TestStreamReaderGone =
 
                 match
                     SimulatedUnixPlatform.flavour platform,
-                    UnixReadWrite.tryWrite system.Leader 1 ImmutableArray.Empty system
+                    UnixReadWrite.tryWriteBytes system.Leader 1 ImmutableArray.Empty system
                 with
-                | SimulatedUnixFlavour.Linux, Ok (WriteOutcome.Returns (WriteAnswer.Completed 0L, _))
+                | SimulatedUnixFlavour.Linux, Ok (WriteStep.Returns (WriteAnswer.Completed 0L, _))
                 | SimulatedUnixFlavour.Darwin, Error (WriteRefusal.InitProcess _) -> ()
                 | flavour, other -> failwith $"%O{flavour}, %A{disposition}, zero-length: %A{other}"

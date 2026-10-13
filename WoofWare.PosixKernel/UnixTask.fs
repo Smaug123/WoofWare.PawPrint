@@ -54,7 +54,7 @@ type ParkedKevent =
         /// The descriptor the call was made through.
         ///
         /// Kept beside the description because a close of this descriptor, and
-        /// of no other, ends the wait (see `KqueueState.Drained`).
+        /// of no other, ends the wait (see `WakePrimitive.KqueueDrained`).
         Fd : int
         /// The `nevents` the call was made with: positive, since a call with
         /// none to take returns at once.
@@ -150,7 +150,7 @@ type ParkedPoll =
 /// Darwin's `poll` registers, for each entry, one filter per group of the bits
 /// it asks for, each added once only (`EV_ONESHOT`): the first report it makes
 /// removes it, whether or not that report adds anything to the entry.
-type PollRegistration =
+type internal PollRegistration =
     {
         /// The index, in the call's entries, of the entry the filter reports
         /// into: the last entry naming this descriptor and filter, since a
@@ -197,31 +197,59 @@ type PollQueueId =
 /// in which order -- not only on what its descriptors present then.
 ///
 /// Held on the machine rather than in the call's park, because a socket event
-/// in any process's call activates its filters, as one does a kqueue's
-/// (`KqueueRegistration.Socket`), and no process's view holds another's tasks.
-/// It lives exactly as long as the park naming it (`ParkedKqueuePoll.Queue`):
-/// the park's end destroys it.
+/// in any process's call activates its filters, as one does a kqueue's, and no
+/// process's view holds another's tasks. It lives exactly as long as the park
+/// naming it (`ParkedKqueuePoll.Queue`): the park's end destroys it.
+///
+/// Its representation is internal, so a later version may change what a
+/// registration holds and what it is attached to without breaking a client. A
+/// client reads one through `PollQueue.registered`, `PollQueue.entry` and
+/// `PollQueue.activated`, and builds none.
 type PollQueue =
-    {
-        /// The process whose `poll` made the queue, whose descriptor table its
-        /// registrations' descriptor numbers are read in.
-        Owner : ProcessId
-        /// The filters still registered: those that have not yet reported, keyed
-        /// by descriptor number and filter. Closing a descriptor removes every
-        /// one made through it, as it does from a kqueue a process holds.
-        Registrations : Map<int * KqueueFilter, PollRegistration>
-        /// The registrations of sockets' filters something has activated since
-        /// the call last scanned, in the order they were activated: the order
-        /// a scan reports them in, which decides whether a reported `POLLHUP`
-        /// suppresses a socket's `POLLOUT`. Always a subset of
-        /// `Registrations`, with no duplicates, naming sockets alone.
-        ///
-        /// A pipe's filters are not listed: every operation that makes one
-        /// ready activates it (measured), and the order a pipe entry's two
-        /// filters report in cannot change what the entry answers, so a scan
-        /// reports a pipe's registration exactly while its filter is ready.
-        Active : (int * KqueueFilter) list
-    }
+    internal
+        {
+            /// The process whose `poll` made the queue, whose descriptor table its
+            /// registrations' descriptor numbers are read in.
+            Owner : ProcessId
+            /// The filters still registered: those that have not yet reported, keyed
+            /// by descriptor number and filter. Closing a descriptor removes every
+            /// one made through it, as it does from a kqueue a process holds.
+            Registrations : Map<int * KqueueFilter, PollRegistration>
+            /// The registrations of sockets' filters something has activated since
+            /// the call last scanned, in the order they were activated: the order
+            /// a scan reports them in, which decides whether a reported `POLLHUP`
+            /// suppresses a socket's `POLLOUT`. Always a subset of
+            /// `Registrations`, with no duplicates, naming sockets alone.
+            ///
+            /// A pipe's filters are not listed: every operation that makes one
+            /// ready activates it (measured), and the order a pipe entry's two
+            /// filters report in cannot change what the entry answers, so a scan
+            /// reports a pipe's registration exactly while its filter is ready.
+            Active : (int * KqueueFilter) list
+        }
+
+/// What a client reads of a sleeping Darwin poll's kqueue (`UnixSystem.pollQueue`).
+[<RequireQualifiedAccess>]
+module PollQueue =
+    /// The filters the call registered that have not yet reported, each as the
+    /// descriptor it was registered through and its filter, in ascending order.
+    let registered (queue : PollQueue) : (int * KqueueFilter) list =
+        queue.Registrations |> Map.toList |> List.map fst
+
+    /// The index, in the call's entries, of the entry that the filter `filter`
+    /// registered through `fd` reports into; `None` when no such filter is
+    /// registered. Where several entries name the same descriptor and filter,
+    /// it is the last of them.
+    let entry (fd : int) (filter : KqueueFilter) (queue : PollQueue) : int option =
+        queue.Registrations
+        |> Map.tryFind (fd, filter)
+        |> Option.map (fun (registration : PollRegistration) -> registration.Entry)
+
+    /// The registered filters that something has activated since the call
+    /// last scanned, in the order they were activated, which is the order the
+    /// call reports them in. In this version only a socket's filters are
+    /// listed: the call reports a pipe's filter exactly while it is ready.
+    let activated (queue : PollQueue) : (int * KqueueFilter) list = queue.Active
 
 /// One task's in-flight Darwin-flavoured `poll(2)`: its entries, the kqueue
 /// the call made for its own use, and when it times out.
@@ -515,6 +543,89 @@ type ParkedSelect =
             Deadline : int64 option
         }
 
+/// One task's in-flight `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`:
+/// Linux's `rt_sigtimedwait(2)` or Darwin's `__sigwait`, asleep until a signal
+/// in a set is pending. The state the call fixed when it was entered.
+///
+/// Reserved: nothing parks a task in a signal wait yet
+/// (`ParkedSyscall.SignalWait`).
+type ParkedSignalWait =
+    {
+        /// The signals the call takes, from the set its caller passed. They
+        /// need not be blocked: on both flavours the call takes an awaited
+        /// signal that arrives unblocked with a handler, and the handler does
+        /// not run.
+        Awaited : SignalMask
+        /// The instant, in nanoseconds since boot on the machine's virtual
+        /// clock, at which a Linux call with a timeout gives up and answers
+        /// `EAGAIN`. Fixed at the call: Linux never writes the remaining time
+        /// back. `None` for a call with no timeout, which is every Darwin call,
+        /// since Darwin has `sigwait(3)` alone.
+        Deadline : int64 option
+        /// Where the kernel reports the signal the call takes, as the caller
+        /// classified it when the call was entered: Linux writes a `siginfo_t`
+        /// to `info`, and Darwin an `int` to `sig`. `None` when that pointer
+        /// is null, which both kernels test for, and then write nothing. On
+        /// both flavours a destination the kernel cannot write fails the call
+        /// with `EFAULT`, and the signal is taken all the same.
+        Destination : UserBuffer option
+    }
+
+/// One task's in-flight blocking receive on a datagram socket that had
+/// nothing queued: a `read(2)`, `recv(2)`, `recvfrom(2)` or `recvmsg(2)`.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.DatagramReceive`.
+type ParkedDatagramReceive =
+    internal
+        {
+            // What else it must hold is the datagram data path's design: which
+            // call it is, where `recvfrom`'s address and `recvmsg`'s message
+            // header go, and, under Darwin, that a close of the descriptor has
+            // ended it (`docs/probes/datagram-park`, row R3).
+            /// The open file description of the socket the call was made
+            /// through, which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
+/// One task's in-flight blocking send of a datagram on a Unix-domain socket
+/// whose receiver, or whose own send buffer, had no room for it: a Linux
+/// `write(2)`, `send(2)`, `sendto(2)` or `sendmsg(2)`.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.DatagramSend`.
+type ParkedDatagramSend =
+    internal
+        {
+            // What else it must hold is the datagram data path's design: the
+            // datagram's destination, and which of Linux's two waits (the
+            // receiver's queue, or the sender's buffer) it is in.
+            /// The open file description of the socket the call was made
+            /// through, which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
+/// One task's in-flight blocking `connect(2)` to a listener whose accept queue
+/// was full.
+///
+/// Its representation is internal, so a later version may change what it
+/// holds without breaking a client; a client builds none. Nothing in this
+/// version makes one: see `ParkedSyscall.Connect`.
+type ParkedConnect =
+    internal
+        {
+            // What else it must hold is the design of the connect that sleeps:
+            // for TCP, the SYN retransmit schedule (the attempt, the next
+            // deadline, the destination); for a Unix-domain stream, the
+            // listener and the name the call looked up, which it looks up again
+            // when it wakes (`docs/probes/connect-park`).
+            /// The open file description of the connecting socket, through
+            /// which the call was made, and which it holds while it sleeps.
+            Socket : OpenFileDescriptionId
+        }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -570,6 +681,43 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
     /// defect.
     | Select of ParkedSelect
+    /// `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`: waiting for a
+    /// signal in its set to be pending, for its deadline if it has one, or,
+    /// under Linux, for a signal with a handler outside its set. Holds no open
+    /// file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | SignalWait of ParkedSignalWait
+    /// A blocking receive on a datagram socket, UDP or Unix-domain, connected
+    /// or not, through `read(2)`, `recv(2)`, `recvfrom(2)` or `recvmsg(2)`:
+    /// it sleeps until a datagram arrives, on both flavours, or a signal with
+    /// a handler interrupts it. Holds the socket's open file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | DatagramReceive of ParkedDatagramReceive
+    /// A blocking send of a datagram on a Unix-domain socket, which under Linux
+    /// sleeps while the receiver's queue or the sender's own buffer is full. A
+    /// UDP send never sleeps, and a Darwin Unix-domain send that has no room
+    /// fails with `ENOBUFS`. Holds the socket's open file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | DatagramSend of ParkedDatagramSend
+    /// A blocking `connect(2)` to a listener whose accept queue is full, under
+    /// Linux: a TCP connect sleeps until a retransmitted SYN finds room, and a
+    /// Unix-domain stream connect until the listener has room or is gone. A
+    /// Darwin connect never sleeps. Holds the connecting socket's open file
+    /// description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | Connect of ParkedConnect
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -616,6 +764,12 @@ module ParkedSyscall =
         // Reserved, and holding nothing yet: Linux's will hold the description
         // behind each selected descriptor, as its `poll` does.
         | ParkedSyscall.Select _ -> []
+        | ParkedSyscall.SignalWait _ -> []
+        // Measured under Linux (`docs/probes/datagram-park`, row R3): a close
+        // of the descriptor leaves a sleeping receive holding the socket.
+        | ParkedSyscall.DatagramReceive receive -> [ receive.Socket ]
+        | ParkedSyscall.DatagramSend send -> [ send.Socket ]
+        | ParkedSyscall.Connect connect -> [ connect.Socket ]
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -841,6 +995,10 @@ module UnixTaskTable =
             | ParkedSyscall.FifoOpen _ -> 12
             | ParkedSyscall.InotifyRead _ -> 13
             | ParkedSyscall.Select _ -> 14
+            | ParkedSyscall.SignalWait _ -> 15
+            | ParkedSyscall.DatagramReceive _ -> 16
+            | ParkedSyscall.DatagramSend _ -> 17
+            | ParkedSyscall.Connect _ -> 18
 
         let sameSyscall =
             match existing.Parked with

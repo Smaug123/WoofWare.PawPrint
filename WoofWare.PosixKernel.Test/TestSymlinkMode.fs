@@ -150,7 +150,9 @@ module TestSymlinkMode =
         // caller is neither the link's owner nor in its group, so "other"
         // decides.
         let ask (linkBits : int) : SyscallAnswer =
-            match UnixPathResolution.tryFaccessat -2 (PathArg.ofText "/l") 4 0x20 (systemWithLink darwin linkBits) with
+            match
+                UnixPathResolution.tryFaccessatEager -2 (PathArg.ofText "/l") 4 0x20 (systemWithLink darwin linkBits)
+            with
             | Ok answer -> answer
             | Error refusal -> failwith $"%s{context}: faccessat was refused: %s{AccessRefusal.describe refusal}"
 

@@ -91,15 +91,7 @@ module TestDualModeMeasured =
                 Unmodelled.Row ("G8 dual-mode client", "SO_SNDBUF, SO_RCVBUF and TCP_MAXSEG are not modelled options")
             ]
 
-        let abortive =
-            "the close under SO_LINGER {1, 0} is refused while the client still holds the connection (DescriptionReleaseRefusal.AbortiveClose), so no reset reaches the client here"
-
         both
-        @ [
-            for who in [ "dual-mode" ; "AF_INET" ] do
-                Unmodelled.Row ($"R3 %s{who}, abortive close: getpeername", abortive)
-                Unmodelled.Row ($"R3 %s{who}, abortive close: SO_ERROR", abortive)
-        ]
         @ match flavour with
           | SimulatedUnixFlavour.Linux ->
               [
@@ -145,8 +137,6 @@ module TestDualModeMeasured =
                   Unmodelled.Row ("F12 V6ONLY=0, sockaddr_in at length 23", darwinShort)
                   Unmodelled.Row ("G1 V6ONLY=1, mapped at length 16", darwinShort)
                   Unmodelled.Row ("G7 established, connect at length 16", darwinShort)
-                  Unmodelled.Row ("R3 dual-mode, abortive close: getsockname", abortive)
-                  Unmodelled.Row ("R3 dual-mode, error taken: getsockname", abortive)
                   for phase in
                       [
                           "H1 established"

@@ -41,7 +41,7 @@ module TestThreadIds =
 
     let private exitOrFail (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixTaskLifecycle.tryExitThread task 0 system with
-        | Ok (TaskOutcome.Continues system) -> system
+        | Ok (ProcessFate.Continues ((), system)) -> system
         | other -> failwith $"expected task %d{task}'s exit to leave the process running, got %A{other}"
 
     /// Spawn `child` and exit it at once, as `pthread_create` then `pthread_join`
@@ -272,7 +272,7 @@ module TestThreadIds =
             UnixSystem.checkInvariants written |> shouldEqual []
 
             match UnixSignal.tryKill 5000 0 written with
-            | Ok (Ok (KillOutcome.ProcessContinues after)) -> after |> shouldEqual written
+            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) -> after |> shouldEqual written
             | other -> failwith $"kill(5000, 0) at pid_max %d{pidMax}: %A{other}"
 
             let joined, after =
@@ -468,7 +468,7 @@ module TestThreadIds =
                 let creator =
                     if pendOnCreator then
                         match UnixSignal.tryPthreadKill 0 (Signal.toRawSignoUnder numbering Signal.SIGUSR2) creator with
-                        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                         | other -> failwith $"pthread_kill answered %A{other}"
                     else
                         creator
@@ -508,12 +508,12 @@ module TestThreadIds =
 
             let system =
                 match UnixSignal.tryPthreadKill 0 usr1 system with
-                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                 | other -> failwith $"pthread_kill answered %A{other}"
 
             let frame, inHandler =
                 match UnixSignal.tryOnReturnToUser 0 system with
-                | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) -> frame, system
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers [ frame ], system)) -> frame, system
                 | other -> failwith $"onReturnToUser answered %A{other}"
 
             let _, spawned = spawnOrFail 1 inHandler

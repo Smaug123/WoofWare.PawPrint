@@ -81,6 +81,7 @@ module TestDeviceDescriptors =
         | CharacterDevice.URandom -> "/dev/urandom"
         | CharacterDevice.Zero -> "/dev/zero"
         | CharacterDevice.Random -> "/dev/random"
+        | CharacterDevice.Tty -> "/dev/tty"
 
     let private openWith
         (flags : OpenFlags)
@@ -154,7 +155,7 @@ module TestDeviceDescriptors =
         : WriteAdmission * UnixSystem<int, string>
         =
         match UnixReadWrite.tryAdmitWrite task fd buffer count system with
-        | Ok (WriteOutcome.Returns (admission, system)) -> admission, system
+        | Ok (WriteStep.Returns (admission, system)) -> admission, system
         | other -> failwith $"admitWrite(%d{fd}, %A{buffer}, %d{count}): expected an admission, got %A{other}"
 
     // ------------------------------------------------------------------ open
@@ -185,7 +186,7 @@ module TestDeviceDescriptors =
             match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors opened) with
             | Some description ->
                 match description.Target with
-                | OpenFileTarget.CharacterDevice (_, opened) -> opened |> shouldEqual device
+                | OpenFileTarget.CharacterDevice (_, opened, _) -> opened |> shouldEqual device
                 | other -> failwith $"expected a device's description, got %A{other}"
 
                 description.AccessMode |> shouldEqual access
@@ -314,7 +315,7 @@ module TestDeviceDescriptors =
             | Ok (FileStatusAnswer.Reported status) -> status.Inode
             | other -> failwith $"stat /dev/urandom: %A{other}"
 
-        for device in [ CharacterDevice.Zero ; CharacterDevice.Random ] do
+        for device in [ CharacterDevice.Zero ; CharacterDevice.Random ; CharacterDevice.Tty ] do
             let fd, registry =
                 FileDescriptorRegistry.openCharacterDevice
                     (ForgedName.ofInode booted urandom)
@@ -553,7 +554,7 @@ module TestDeviceDescriptors =
                 | Error other -> failwith $"admitPWrite: %A{other}"
 
                 // The commit asks too, for a caller that skipped the admission.
-                match UnixReadWrite.tryPwrite task fd bytes 0L system with
+                match UnixReadWrite.tryPwriteBytes task fd bytes 0L system with
                 | Error (PWriteRefusal.SignalAtPageBoundary _) -> refused |> shouldEqual true
                 | Ok (answer, _) ->
                     refused |> shouldEqual false
@@ -564,7 +565,7 @@ module TestDeviceDescriptors =
                 | Error (WriteRefusal.SignalAtPageBoundary refusedCount) ->
                     refused |> shouldEqual true
                     refusedCount |> shouldEqual count
-                | Ok (WriteOutcome.Returns (admission, _)) ->
+                | Ok (WriteStep.Returns (admission, _)) ->
                     refused |> shouldEqual false
 
                     match admission with
@@ -573,9 +574,9 @@ module TestDeviceDescriptors =
                     | WriteAdmission.TransferThenSleep _ -> failwith "a device write never sleeps"
                 | other -> failwith $"admitWrite: %A{other}"
 
-                match UnixReadWrite.tryWrite task fd bytes system with
+                match UnixReadWrite.tryWriteBytes task fd bytes system with
                 | Error (WriteRefusal.SignalAtPageBoundary _) -> refused |> shouldEqual true
-                | Ok (WriteOutcome.Returns (answer, _)) ->
+                | Ok (WriteStep.Returns (answer, _)) ->
                     refused |> shouldEqual false
                     answer |> shouldEqual (WriteAnswer.Completed (int64 count))
                 | other -> failwith $"write: %A{other}"
@@ -662,7 +663,8 @@ module TestDeviceDescriptors =
             | CharacterDevice.URandom, Ok bytes ->
                 Seq.toList bytes |> shouldEqual (Seq.toList (fst (getRandomOf count system)))
             | CharacterDevice.Zero, _
-            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
+            | CharacterDevice.Random, _
+            | CharacterDevice.Tty, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | _, Error error -> failwith $"pread %d{count}@%d{offset}: %O{error}"
 
         let offsetGen =
@@ -744,7 +746,7 @@ module TestDeviceDescriptors =
                 buffer |> shouldEqual UserBuffer.Opaque
                 count |> shouldNotEqual 0UL
             | Error refusal -> failwith $"admitWrite refused: %A{refusal}"
-            | Ok (WriteOutcome.Returns (admission, after)) ->
+            | Ok (WriteStep.Returns (admission, after)) ->
                 after |> shouldEqual system
 
                 match admission with
@@ -760,8 +762,8 @@ module TestDeviceDescriptors =
 
                     let bytes = ImmutableArray.CreateRange (Seq.init transfer byte)
 
-                    match UnixReadWrite.tryWrite task fd bytes after with
-                    | Ok (WriteOutcome.Returns (answer, written)) ->
+                    match UnixReadWrite.tryWriteBytes task fd bytes after with
+                    | Ok (WriteStep.Returns (answer, written)) ->
                         answer |> shouldEqual (WriteAnswer.Completed (int64 transfer))
                         // Bytes written to the device are not what it reads back:
                         // the next read is the one the write did not precede.
@@ -809,7 +811,8 @@ module TestDeviceDescriptors =
 
             match device, admission with
             | CharacterDevice.Zero, _
-            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
+            | CharacterDevice.Random, _
+            | CharacterDevice.Tty, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | CharacterDevice.Null, _ ->
                 admission
                 |> shouldEqual (PWriteAdmission.Answered (WriteAnswer.Completed (int64 count)))
@@ -820,7 +823,7 @@ module TestDeviceDescriptors =
                 transfer |> shouldEqual (int count)
                 let bytes = ImmutableArray.CreateRange (Seq.init transfer byte)
 
-                match UnixReadWrite.tryPwrite 0 fd bytes offset system with
+                match UnixReadWrite.tryPwriteBytes 0 fd bytes offset system with
                 | Ok (answer, after) ->
                     answer |> shouldEqual (WriteAnswer.Completed (int64 transfer))
                     after |> shouldEqual system

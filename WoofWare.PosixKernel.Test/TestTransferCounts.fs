@@ -609,7 +609,7 @@ module TestTransferCounts =
                 (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
                 |> shouldEqual (machine, length, "write", expected)
 
-                (machine, length, "pwrite", outcome (UnixReadWrite.tryPwrite 0 fd bytes nearTop system))
+                (machine, length, "pwrite", outcome (UnixReadWrite.tryPwriteBytes 0 fd bytes nearTop system))
                 |> shouldEqual (machine, length, "pwrite", expected)
 
         for machine, length, expected in
@@ -625,7 +625,7 @@ module TestTransferCounts =
             (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
             |> shouldEqual (machine, length, "write", expected)
 
-            (machine, length, "pwrite", outcome (UnixReadWrite.tryPwrite 0 fd bytes Int64.MaxValue system))
+            (machine, length, "pwrite", outcome (UnixReadWrite.tryPwriteBytes 0 fd bytes Int64.MaxValue system))
             |> shouldEqual (machine, length, "pwrite", expected)
 
     // --------------------------------------- the descriptors, as measured
@@ -764,11 +764,11 @@ module TestTransferCounts =
                 }
 
             match UnixReadWrite.tryAdmitWrite system.Leader fd buffer count system with
-            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, _)) when
+            | Ok (WriteStep.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, _)) when
                 signal.Signal = Signal.SIGPIPE
                 ->
                 Seen.ErrnoRaisingSigPipe error
-            | Ok (WriteOutcome.Returns (admission, after)) ->
+            | Ok (WriteStep.Returns (admission, after)) ->
                 if after <> system then
                     failwith $"admitWrite on fd %d{fd} changed the system for an admission of %A{admission}"
 
@@ -1126,7 +1126,7 @@ module TestTransferCountsLarge =
         exn.Message |> shouldContainText "one call moves"
 
         let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.tryPwrite 0 fd bytes 0L system |> ignore)
+            Assert.Throws<Exception> (fun () -> UnixReadWrite.tryPwriteBytes 0 fd bytes 0L system |> ignore)
 
         exn.Message |> shouldContainText "one call moves"
 

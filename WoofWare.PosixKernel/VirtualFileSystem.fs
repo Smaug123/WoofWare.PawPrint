@@ -472,7 +472,8 @@ module DirectoryStreamName =
 /// real filesystem, and neither is this one: tmpfs yields the newest link first
 /// and resumes by a per-directory offset, APFS yields in the order of a hash of
 /// the name and resumes after the last key it returned. This model's order is
-/// its own. See `docs/divergences.md`.
+/// its own. See
+/// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
 ///
 /// The cases are declared in the order the stream visits them.
 [<RequireQualifiedAccess>]
@@ -2679,7 +2680,7 @@ module VirtualFileSystem =
 
         // Nothing in this version makes a socket inode or a FIFO inode:
         // `mknodat` of `S_IFSOCK` or `S_IFIFO`, and a Unix-domain `bind`, all
-        // refuse. Nor a node for zero or random: only the device filesystem's
+        // refuse. Nor a node for zero, random or tty: only the device filesystem's
         // mount makes device nodes, one for each device in
         // `CharacterDevice.all`, and `mknod` makes none. So one here came from
         // a bug.
@@ -2691,7 +2692,8 @@ module VirtualFileSystem =
                 | InodeContent.Socket _
                 | InodeContent.Fifo _
                 | InodeContent.CharacterDevice (CharacterDevice.Zero, _)
-                | InodeContent.CharacterDevice (CharacterDevice.Random, _) ->
+                | InodeContent.CharacterDevice (CharacterDevice.Random, _)
+                | InodeContent.CharacterDevice (CharacterDevice.Tty, _) ->
                     Some (VirtualFileSystemDefect.ReservedContent inode)
                 | InodeContent.CharacterDevice (CharacterDevice.Null, _)
                 | InodeContent.CharacterDevice (CharacterDevice.URandom, _)

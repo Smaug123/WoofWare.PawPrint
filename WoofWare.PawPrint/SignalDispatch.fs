@@ -63,8 +63,8 @@ type SignalPoll =
 /// and the refusal fails the run.
 ///
 /// A default action the leader's return applies is refused loudly when it
-/// terminates or stops (`ReturnToUserOutcome`'s `ProcessEnded` and
-/// `ProcessStopped`): such a default is applied when the signal is generated
+/// terminates or stops (`ProcessFate.ProcessEnded` and
+/// `ReturnToUserOutcome.ProcessStopped`): such a default is applied when the signal is generated
 /// (see `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this
 /// poll only by becoming receivable later, as a handler frame's mask is popped
 /// or a mask call unblocks it, and applying it at delivery is not modelled.
@@ -250,36 +250,37 @@ module SignalDispatch =
         // there, and the kernel answers for whatever that is.
         let leader = state.Kernel.Leader
 
-        let describe (outcome : WriteOutcome<'Answer, ThreadId, NativeSignalHandler>) : string =
-            match outcome with
-            | WriteOutcome.Returns (answer, _) -> $"%O{answer}"
-            | WriteOutcome.ReturnsRaising (answer, raised, _) -> $"%O{answer}, raising %O{raised.Signal}"
-            | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
-            | WriteOutcome.WouldBlock _ -> "that the write sleeps, the pipe being full"
-            | WriteOutcome.Restarts _ -> "a restart"
+        let describe (fate : ProcessFate<WriteOutcome<ThreadId>, ThreadId, NativeSignalHandler>) : string =
+            match fate with
+            | ProcessFate.Continues (WriteOutcome.Returns answer, _) -> $"%O{answer}"
+            | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, raised), _) ->
+                $"%O{answer}, raising %O{raised.Signal}"
+            | ProcessFate.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
+            | ProcessFate.Continues (WriteOutcome.WouldBlock _, _) -> "that the write sleeps, the pipe being full"
+            | ProcessFate.Continues (WriteOutcome.Restarts, _) -> "a restart"
 
         let refused (e : exn) : 'a =
             KernelRefusal.fail
                 $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which it was given as its signal pipe's write end, and the kernel will not answer the write; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither"
                 e
 
-        let admission =
+        let progress =
             try
-                UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system
+                UnixReadWrite.write leader pipe.WriteEnd UserBuffer.Mapped 1UL system
             with :? UnmodelledException as e ->
                 refused e
 
-        match admission with
-        | WriteOutcome.Returns (WriteAdmission.Transfer _, system) ->
+        match progress with
+        | CallProgress.NeedsCopyIn paused ->
 
             let outcome =
                 try
-                    UnixReadWrite.write leader pipe.WriteEnd bytes system
+                    UnixReadWrite.writeWithBytes bytes paused
                 with :? UnmodelledException as e ->
                     refused e
 
             match outcome with
-            | WriteOutcome.Returns (WriteAnswer.Completed 1L, written) ->
+            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), written) ->
                 // A byte that reached a pipe the host drains, one of the
                 // standard output streams, is guest-visible output, which only
                 // a step's effect streams; this poll has no step to carry one.
@@ -292,7 +293,7 @@ module SignalDispatch =
 
                 state.MapKernel (EmulatedKernel.withUnix written) |> SignalPoll.Continues
             | outcome -> refuse $"the kernel answers %s{describe outcome}"
-        | outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
+        | CallProgress.Answered outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
     /// Whether the leader may take a signal on its return to user mode: one is pending, and
     /// the leader is not asleep in a syscall. Read from the process's own state alone.
@@ -343,7 +344,10 @@ module SignalDispatch =
             SignalPoll.Continues state
         else
 
-        let returnToUser (state : IlMachineState) : ReturnToUserOutcome<ThreadId, NativeSignalHandler> =
+        let returnToUser
+            (state : IlMachineState)
+            : ProcessFate<ReturnToUserOutcome<ThreadId, NativeSignalHandler>, ThreadId, NativeSignalHandler>
+            =
             try
                 UnixSignal.onReturnToUser leader state.Kernel.System
             with :? UnmodelledException as e ->
@@ -399,14 +403,15 @@ module SignalDispatch =
 
         and returnToUserThen (continuation : IlMachineState -> SignalPoll) (state : IlMachineState) : SignalPoll =
             match returnToUser state with
-            | ReturnToUserOutcome.Resumes after -> continuation (persist after state)
-            | ReturnToUserOutcome.RunHandlers (frames, after) ->
+            | ProcessFate.Continues (ReturnToUserOutcome.Resumes, after) -> continuation (persist after state)
+            | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after) ->
                 match runFrames frames (persist after state) with
                 | SignalPoll.Continues state -> continuation state
                 | killed -> killed
             // The kernel has discarded it: the process was never stopped, so
             // there is nothing to resume. The return goes on.
-            | ReturnToUserOutcome.ContinueDiscarded (_, after) -> returnToUserThen continuation (persist after state)
+            | ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, after) ->
+                returnToUserThen continuation (persist after state)
             // A pending signal at its default disposition, whose kernel default
             // is to terminate or stop the process. `SignalState.generate`
             // applies such a default at generation whenever some thread can
@@ -415,10 +420,10 @@ module SignalDispatch =
             // since unblocked it. Applying a default at delivery is refused
             // rather than half-modelled, a termination's included, though the
             // kernel has ended the process.
-            | ReturnToUserOutcome.ProcessEnded ended ->
+            | ProcessFate.ProcessEnded ended ->
                 failwith
                     $"SignalDispatch.poll: a pending signal at its default disposition, whose kernel default is to terminate, ended the process as the leader took it (%O{EndedProcess.termination ended}); applying a default disposition at delivery rather than at generation is not modelled."
-            | ReturnToUserOutcome.ProcessStopped (signal, _) ->
+            | ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped signal, _) ->
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 
@@ -542,7 +547,7 @@ module SignalDispatch =
         | OpenFileTarget.Kqueue _ -> "a kqueue"
         | OpenFileTarget.Socket socket -> $"a socket (%O{socket})"
         | OpenFileTarget.Pipe (pipe, pipeEnd) -> $"the %O{pipeEnd} end of pipe %O{pipe}"
-        | OpenFileTarget.CharacterDevice (_, device) -> $"the character device %O{device}"
+        | OpenFileTarget.CharacterDevice (_, device, _) -> $"the character device %O{device}"
         | OpenFileTarget.Fifo (inode, _) -> $"a FIFO (inode %O{inode})"
         | OpenFileTarget.Inotify _ -> "an inotify instance"
 
@@ -630,7 +635,9 @@ module SignalDispatch =
         // Empty, with the write end open: the read sleeps, and so does the
         // dispatcher, until a poll finds the kernel has woken it.
         | Some (ReadOutcome.WouldBlock _, system) ->
-            state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
+            state.MapKernel (EmulatedKernel.withUnix system)
+            |> Scheduler.withDispatcherInRead dispatcher true
+            |> SignalPoll.Continues
         | Some (ReadOutcome.Restarts, _) ->
             refuse "is restarted by a signal, which PawPrint never directs at the dispatcher"
         | Some (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> refuse $"fails with %O{error}"
@@ -641,7 +648,10 @@ module SignalDispatch =
         if bytes.Length <> 1 then
             refuse $"reads %d{bytes.Length} bytes rather than one"
 
-        let state = state.MapKernel (EmulatedKernel.withUnix system)
+        let state =
+            state.MapKernel (EmulatedKernel.withUnix system)
+            |> Scheduler.withDispatcherInRead dispatcher false
+
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
         let signo = int bytes.[0]
 

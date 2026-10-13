@@ -1341,7 +1341,7 @@ module TestUTimensAt =
                 }
 
         let system =
-            match UnixNamespace.trySymlinkat (PathArg.ofText "f") (atFdCwd user) (PathArg.ofText "wl") system with
+            match UnixNamespace.trySymlinkatEager (PathArg.ofText "f") (atFdCwd user) (PathArg.ofText "wl") system with
             | Ok (SyscallAnswer.Completed _, system) -> dropped user system
             | other -> failwith $"%s{context}: symlink: %A{other}"
 

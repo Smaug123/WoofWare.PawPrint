@@ -202,7 +202,7 @@ module TestStartingDirectory =
         | "moved" ->
             let fd, system = opened "d" system
 
-            match UnixNamespace.tryRename (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
+            match UnixNamespace.tryRenameEager (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
             | Ok answer -> Some (fd, completed "rename(d, d-moved)" answer)
             | Error refusal -> failwith $"%s{context}: rename was refused: %s{RenameRefusal.describe refusal}"
         | "locked" ->
@@ -281,7 +281,7 @@ module TestStartingDirectory =
                             | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
                             | Some (dirfd, system) ->
                                 let actual =
-                                    UnixPathResolution.tryFaccessat
+                                    UnixPathResolution.tryFaccessatEager
                                         dirfd
                                         (pathArgument path envelope.Platform)
                                         0
@@ -323,7 +323,7 @@ module TestStartingDirectory =
                     | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
                     | Some (dirfd, system) ->
                         let actual =
-                            UnixNamespace.trySymlinkat
+                            UnixNamespace.trySymlinkatEager
                                 (PathArg.ofText "target")
                                 dirfd
                                 (pathArgument path envelope.Platform)
@@ -368,8 +368,8 @@ module TestStartingDirectory =
 
                         let actual =
                             match side with
-                            | "old" -> UnixNamespace.tryLinkat dirfd p atFdCwd (PathArg.ofText "newlink") 0 system
-                            | _ -> UnixNamespace.tryLinkat atFdCwd (PathArg.ofText "f2") dirfd p 0 system
+                            | "old" -> UnixNamespace.tryLinkatEager dirfd p atFdCwd (PathArg.ofText "newlink") 0 system
+                            | _ -> UnixNamespace.tryLinkatEager atFdCwd (PathArg.ofText "f2") dirfd p 0 system
                             |> renderedLink
 
                         if actual <> expected then
@@ -1786,8 +1786,8 @@ module TestStartingDirectory =
 
                         let actual =
                             match side with
-                            | "old" -> UnixNamespace.tryRenameat dirfd p atFdCwd (PathArg.ofText "renamed") system
-                            | _ -> UnixNamespace.tryRenameat atFdCwd (PathArg.ofText "f2") dirfd p system
+                            | "old" -> UnixNamespace.tryRenameatEager dirfd p atFdCwd (PathArg.ofText "renamed") system
+                            | _ -> UnixNamespace.tryRenameatEager atFdCwd (PathArg.ofText "f2") dirfd p system
                             |> renderedRenameAt
 
                         if actual <> expected then
@@ -1841,7 +1841,7 @@ module TestStartingDirectory =
                     let newdirfd, newpath = side newState false
 
                     let actual =
-                        UnixNamespace.tryRenameat olddirfd oldpath newdirfd newpath (boot envelope)
+                        UnixNamespace.tryRenameatEager olddirfd oldpath newdirfd newpath (boot envelope)
                         |> renderedRenameAt
 
                     if actual <> expected then
@@ -1962,7 +1962,7 @@ module TestStartingDirectory =
             | Error fault -> failwith $"%s{context}: could not build renameat-rules.c's cell: %A{fault}"
 
         // The probe made `g` with link(2), after `f`.
-        UnixNamespace.tryLink (PathArg.ofText "/c/w/d/f") (PathArg.ofText "/c/w/d/g") system
+        UnixNamespace.tryLinkEager (PathArg.ofText "/c/w/d/f") (PathArg.ofText "/c/w/d/g") system
         |> function
             | Ok answer -> completed "link(d/f, d/g)" answer
             | Error refusal -> failwith $"%s{context}: link was refused: %s{LinkRefusal.describe refusal}"
@@ -2148,7 +2148,7 @@ module TestStartingDirectory =
                         let newdirfd, system = descriptor nfd system
 
                         let actual =
-                            UnixNamespace.tryRenameat olddirfd (pathOf old) newdirfd (pathOf newPath) system
+                            UnixNamespace.tryRenameatEager olddirfd (pathOf old) newdirfd (pathOf newPath) system
                             |> renderedRename system
 
                         if actual <> at then
@@ -2158,7 +2158,10 @@ module TestStartingDirectory =
                         let system = renameAtCell envelope (if cwd = "." then "/c/w" else "/c/w/" + cwd)
 
                         let actual =
-                            UnixNamespace.tryRename (pathOf (field "pold=" pold)) (pathOf (field "pnew=" pnew)) system
+                            UnixNamespace.tryRenameEager
+                                (pathOf (field "pold=" pold))
+                                (pathOf (field "pnew=" pnew))
+                                system
                             |> renderedRename system
 
                         if actual <> plain then
@@ -2184,7 +2187,12 @@ module TestStartingDirectory =
                     let firstDone, system =
                         match first with
                         | "rename" ->
-                            UnixNamespace.tryRenameat fd (PathArg.ofText "../sub") fd (PathArg.ofText "../sub2") before
+                            UnixNamespace.tryRenameatEager
+                                fd
+                                (PathArg.ofText "../sub")
+                                fd
+                                (PathArg.ofText "../sub2")
+                                before
                             |> firstAnswer
                         | _ ->
                             UnixNamespace.tryUnlinkat fd (PathArg.ofText "../sub") (atRemoveDir flavour) before
@@ -2193,7 +2201,7 @@ module TestStartingDirectory =
                     let actual =
                         firstDone
                         + ";"
-                        + (UnixNamespace.tryRenameat fd old fd newPath system |> renderedRename before)
+                        + (UnixNamespace.tryRenameatEager fd old fd newPath system |> renderedRename before)
 
                     if actual <> at then
                         yield
@@ -2205,14 +2213,14 @@ module TestStartingDirectory =
                     let firstDone, system =
                         match first with
                         | "rename" ->
-                            UnixNamespace.tryRename (PathArg.ofText "../sub") (PathArg.ofText "../sub2") before
+                            UnixNamespace.tryRenameEager (PathArg.ofText "../sub") (PathArg.ofText "../sub2") before
                             |> firstAnswer
                         | _ -> UnixNamespace.tryRmdir (PathArg.ofText "../sub") before |> firstAnswer
 
                     let actual =
                         firstDone
                         + ";"
-                        + (UnixNamespace.tryRename old newPath system |> renderedRename before)
+                        + (UnixNamespace.tryRenameEager old newPath system |> renderedRename before)
 
                     if actual <> plain then
                         yield
@@ -2303,7 +2311,7 @@ module TestStartingDirectory =
                     let newdirfd, newpath, system = side newKind false system
 
                     let actual =
-                        UnixNamespace.tryRenameat olddirfd oldpath newdirfd newpath system
+                        UnixNamespace.tryRenameatEager olddirfd oldpath newdirfd newpath system
                         |> renderedRename system
 
                     if actual <> expected then
@@ -2354,7 +2362,7 @@ module TestStartingDirectory =
                     let expected = field "at=" at
 
                     let actual =
-                        UnixNamespace.tryRenameat
+                        UnixNamespace.tryRenameatEager
                             (dirfd ofd)
                             (PathArg.ofText (field "old=" old))
                             (dirfd ("ofd=" + field "nfd=" nfd))
@@ -3342,8 +3350,8 @@ module TestStartingDirectory =
 
             let inCwd = walkSystem platform credentials cwd
 
-            UnixNamespace.tryRenameat (atFdCwd flavour) (argument path) (atFdCwd flavour) (argument newPath) inCwd
-            |> shouldEqual (UnixNamespace.tryRename (argument path) (argument newPath) inCwd)
+            UnixNamespace.tryRenameatEager (atFdCwd flavour) (argument path) (atFdCwd flavour) (argument newPath) inCwd
+            |> shouldEqual (UnixNamespace.tryRenameEager (argument path) (argument newPath) inCwd)
 
             // Opened as root, as the descriptor properties above do: one
             // descriptor on the current directory, and one on `newDirectory`.
@@ -3376,15 +3384,18 @@ module TestStartingDirectory =
 
             // The same descriptor on both sides is rename from its directory
             // as the current one.
-            UnixNamespace.tryRenameat oldFd (argument path) oldFd (argument newPath) atRoot
+            UnixNamespace.tryRenameatEager oldFd (argument path) oldFd (argument newPath) atRoot
             |> outcome
-            |> shouldEqual (UnixNamespace.tryRename (argument path) (argument newPath) heldInCwd |> outcome)
+            |> shouldEqual (
+                UnixNamespace.tryRenameEager (argument path) (argument newPath) heldInCwd
+                |> outcome
+            )
 
             // Two descriptors are rename with each path written from its own
             // descriptor's directory, in the very same system.
-            UnixNamespace.tryRenameat oldFd (argument path) newFd (argument newPath) atRoot
+            UnixNamespace.tryRenameatEager oldFd (argument path) newFd (argument newPath) atRoot
             |> shouldEqual (
-                UnixNamespace.tryRename
+                UnixNamespace.tryRenameEager
                     (argument (writtenFrom cwd path))
                     (argument (writtenFrom newDirectory newPath))
                     atRoot

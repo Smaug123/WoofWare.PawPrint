@@ -248,8 +248,8 @@ module TestStateQueries =
             UnixSystem.descriptorTarget 3 system |> shouldEqual None
 
             // And a write that reaches the client is what `delivered` reports.
-            match UnixReadWrite.tryWrite 0 1 (ImmutableArray.Create<byte> [| 7uy |]) system with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, written)) ->
+            match UnixReadWrite.tryWriteBytes 0 1 (ImmutableArray.Create<byte> [| 7uy |]) system with
+            | Ok (WriteStep.Returns (WriteAnswer.Completed 1L, written)) ->
                 UnixSystem.delivered written
                 |> DeliveryLog.toList
                 |> List.map (fun delivery -> List.ofSeq delivery.Bytes)

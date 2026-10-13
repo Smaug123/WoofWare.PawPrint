@@ -639,4 +639,4 @@ module TestIlDecoding =
 
     [<Test>]
     let ``every method body in CoreLib decodes to instructions that tile it exactly`` () =
-        assertDecodesCleanly typeof<obj>.Assembly.Location
+        assertDecodesCleanly HostImage.coreLibPath

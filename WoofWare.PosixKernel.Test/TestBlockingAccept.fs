@@ -78,7 +78,7 @@ module TestBlockingAccept =
         match
             CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
         with
-        | Ok (ConnectOutcome.Completed, system) -> system
+        | Ok (SyscallAnswer.Completed 0L, system) -> system
         | other -> failwith $"connecting to port %d{port}: %A{other}"
 
     let private queueOf (fd : int) (system : UnixSystem<int, string>) : ConnectionId list =
@@ -583,7 +583,7 @@ module TestBlockingAccept =
     // ------------------------------------------------------------------
 
     /// A new client socket's connect to loopback at `port`: what it answered.
-    let private connectAnswer (port : uint16) (system : UnixSystem<int, string>) : ConnectOutcome =
+    let private connectAnswer (port : uint16) (system : UnixSystem<int, string>) : SyscallAnswer =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
@@ -634,7 +634,7 @@ module TestBlockingAccept =
         UnixSystem.checkInvariants system |> shouldEqual []
 
         connectAnswer 5000us system
-        |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
     /// The control for the row above (`open-file-references.c` section A2):
     /// with a `dup` kept, the listener outlives the accept, and the next
@@ -658,7 +658,7 @@ module TestBlockingAccept =
         |> Map.containsKey listener
         |> shouldEqual true
 
-        connectAnswer 5000us system |> shouldEqual ConnectOutcome.Completed
+        connectAnswer 5000us system |> shouldEqual (SyscallAnswer.Completed 0L)
 
     /// Once nothing else holds the listener, the accept's return releases it,
     /// which resets the connection still queued behind the one the accept
@@ -701,7 +701,7 @@ module TestBlockingAccept =
         resetAt left |> shouldEqual true
 
         connectAnswer 5000us system
-        |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
     /// Measured (`blocking-accept.c`, sections C2 and C3): on Linux, closing
     /// either of two descriptors onto the listener -- the one the accept came
@@ -796,7 +796,7 @@ module TestBlockingAccept =
                 | answer -> failwith $"expected the drained listener to hand over a queued connection, got %A{answer}"
             else
                 connectAnswer 5000us system
-                |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+                |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
     /// Measured (`blocking-accept.c`, section C3): closing a descriptor onto
     /// the listener that no accept was made through ends nothing, and a
@@ -1118,8 +1118,8 @@ module TestBlockingAccept =
 
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixSignal.tryOnReturnToUser task system with
-        | Ok (ReturnToUserOutcome.Resumes system) -> system
-        | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> system
+        | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
             (system, frames)
             ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
             |> returnToUser task
@@ -1255,7 +1255,7 @@ module TestBlockingAccept =
                         Some (System.Collections.Immutable.ImmutableArray.Create (value, 0, count))
                     | other -> failwith $"setsockopt of %A{change} through fd %d{fd} was admitted as %A{other}"
 
-                UnixSocket.trySetsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+                UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
 
             // The accepted socket must hold what its client's connection
             // completed with, and is then closed at once, its linger turned off
@@ -1391,7 +1391,7 @@ module TestBlockingAccept =
                             (CopyIn.inet (UnixSystem.platform created) (loopback 5000us))
                             created
                     with
-                    | Ok (ConnectOutcome.Completed, after) when reference.Alive ->
+                    | Ok (SyscallAnswer.Completed 0L, after) when reference.Alive ->
                         system <- after
 
                         reference <-
@@ -1402,7 +1402,7 @@ module TestBlockingAccept =
                                     Map.add client (completedUnder linux reference.ListenerOptions) reference.Completed
                                 Clients = Map.add client ClientFate.Queued reference.Clients
                             }
-                    | Ok (ConnectOutcome.Failed UnixError.ECONNREFUSED, after) when not reference.Alive ->
+                    | Ok (SyscallAnswer.Failed UnixError.ECONNREFUSED, after) when not reference.Alive ->
                         cover $"%s{flavourName} connect: refused, the listener gone"
                         system <- after
 

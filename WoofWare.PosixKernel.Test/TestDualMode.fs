@@ -37,7 +37,7 @@ module TestDualMode =
         let name = SimulatedUnixPlatform.ipv6OnlyOption platform
 
         match
-            UnixSocket.trySetsockopt
+            UnixSocket.trySetsockoptBytes
                 fd
                 level
                 name
@@ -121,7 +121,7 @@ module TestDualMode =
         viaSocket |> shouldEqual viaDescriptor
 
         match viaSocket with
-        | Ok (ConnectOutcome.Completed, system) ->
+        | Ok (SyscallAnswer.Completed 0L, system) ->
             let socket = UnixMachineState.socket socketId system.Machine
 
             match socket.Addressing, socket.Phase with
@@ -157,7 +157,7 @@ module TestDualMode =
 
         let connectWith (blob : uint16 -> byte[]) (length : uint32) (port : uint16) (fd : int) system =
             match CopyIn.connect fd UserBuffer.Mapped length (blob port) system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect answered %A{other}"
 
         let dual =
@@ -311,5 +311,5 @@ module TestDualMode =
 
         // From 24 it is answered.
         match CopyIn.connect client UserBuffer.Mapped 24u blob system with
-        | Ok (ConnectOutcome.Completed, _) -> ()
+        | Ok (SyscallAnswer.Completed 0L, _) -> ()
         | other -> failwith $"connect at 24 answered %A{other}"

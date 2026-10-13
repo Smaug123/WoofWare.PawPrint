@@ -19,7 +19,7 @@ module TestFieldIdDiagnostics =
         // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over
         // its sinks, and disposing while the assembly is still live would silently drop events.
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory (typeof<obj>.Assembly.Location)
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 

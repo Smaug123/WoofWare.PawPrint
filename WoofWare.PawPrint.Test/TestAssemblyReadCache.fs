@@ -27,7 +27,7 @@ module TestAssemblyReadCache =
 
     [<Test>]
     let ``readFile reuses cached parse for repeated files`` () : unit =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, firstLoggerFactory = LoggerFactory.makeTest ()
         let _, secondLoggerFactory = LoggerFactory.makeTest ()
 
@@ -39,7 +39,7 @@ module TestAssemblyReadCache =
 
     [<Test>]
     let ``readFile gives cache hits the caller's logger`` () : unit =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let firstLogs, firstLoggerFactory = LoggerFactory.makeTest ()
         let secondLogs, secondLoggerFactory = LoggerFactory.makeTest ()
 
@@ -70,7 +70,7 @@ module TestAssemblyReadCache =
 
     [<Test>]
     let ``disposing a readFile result does not poison the cache`` () : unit =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         let first = readAssembly loggerFactory corelibPath
 

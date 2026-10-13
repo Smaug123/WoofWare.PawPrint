@@ -123,9 +123,13 @@ class Program
                 | Some (ParkedSyscall.PipeRead _)
                 | Some ParkedSyscall.SigSuspend
                 | Some (ParkedSyscall.Sleep _)
+                | Some (ParkedSyscall.SignalWait _)
                 | Some (ParkedSyscall.FifoOpen _)
                 | Some (ParkedSyscall.InotifyRead _)
                 | Some (ParkedSyscall.Select _)
+                | Some (ParkedSyscall.DatagramReceive _)
+                | Some (ParkedSyscall.DatagramSend _)
+                | Some (ParkedSyscall.Connect _)
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)

@@ -32,7 +32,7 @@ open WoofWare.PosixKernel
 module TestSignalDispatch =
 
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
@@ -204,7 +204,7 @@ module TestSignalDispatch =
             let signo = Signal.toRawSignoUnder (numberingOf state) signal
 
             match UnixSignal.kill pid signo kernel.System with
-            | Ok (KillOutcome.ProcessContinues system) -> EmulatedKernel.withUnix system kernel
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
             | other ->
                 let masks =
                     UnixSystem.tasks kernel.System
@@ -942,9 +942,12 @@ module TestSignalDispatch =
         let listener, system = socket system
 
         let system =
-            match UnixSocket.bind listener UserBuffer.Mapped length address system with
-            | BindAnswer.Bound _, system -> system
-            | other -> failwith $"bind answered %A{other}"
+            match UnixSocket.bind listener UserBuffer.Mapped length system with
+            | CallProgress.NeedsCopyIn paused ->
+                match UnixSocket.bindWithAddress address paused with
+                | BindAnswer.Bound _, system -> system
+                | other -> failwith $"bind answered %A{other}"
+            | other -> failwith $"bind answered %A{other} before the copy"
 
         let system =
             match UnixSocket.listen listener 1 system with
@@ -954,9 +957,12 @@ module TestSignalDispatch =
         let client, system = socket system
 
         let system =
-            match UnixConnection.connect client UserBuffer.Mapped length address system with
-            | ConnectOutcome.Completed, system -> system
-            | other -> failwith $"connect answered %A{other}"
+            match UnixConnection.connect state.Kernel.Leader client UserBuffer.Mapped length system with
+            | CallProgress.NeedsCopyIn paused ->
+                match UnixConnection.connectWithAddress address paused with
+                | SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system -> system
+                | other -> failwith $"connect answered %A{other}"
+            | other -> failwith $"connect answered %A{other} before the copy"
 
         let system =
             match UnixConnection.accept state.Kernel.Leader listener UserBuffer.Mapped 16u system with
@@ -1405,20 +1411,16 @@ module TestSignalDispatch =
 
         // Fill the pipe to capacity through its write end.
         let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
-            match UnixReadWrite.admitWrite (UnixSystem.leader system) pipe.WriteEnd UserBuffer.Mapped 4096UL system with
-            | WriteOutcome.Returns (WriteAdmission.Transfer count, system) ->
-                match
-                    UnixReadWrite.write
-                        (UnixSystem.leader system)
-                        pipe.WriteEnd
-                        (ImmutableArray.CreateRange (Array.create count 1uy))
-                        system
-                with
-                | WriteOutcome.Returns (WriteAnswer.Completed _, system) -> fill system
+            match UnixReadWrite.write (UnixSystem.leader system) pipe.WriteEnd UserBuffer.Mapped 4096UL system with
+            | CallProgress.NeedsCopyIn paused ->
+                let count = (PausedWrite.copyRange paused).ByteCount
+
+                match UnixReadWrite.writeWithBytes (ImmutableArray.CreateRange (Array.create count 1uy)) paused with
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system) -> fill system
                 | other -> failwith $"filling the pipe answered %O{other}"
             // Full: the write would sleep, and the pipe is kept as it was.
-            | WriteOutcome.WouldBlock _ -> system
-            | other -> failwith $"filling the pipe was admitted as %O{other}"
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock _, _)) -> system
+            | other -> failwith $"filling the pipe answered %O{other} before the copy"
 
         let full =
             state.MapKernel (fun kernel -> EmulatedKernel.withUnix (fill kernel.System) kernel)
@@ -1446,11 +1448,13 @@ module TestSignalDispatch =
             state.MapKernel (fun kernel ->
                 let system = kernel.System
 
-                match
-                    UnixReadWrite.write (UnixSystem.leader system) pipe.WriteEnd (ImmutableArray.Create 0uy) system
-                with
-                | WriteOutcome.Returns (WriteAnswer.Completed 1L, system) -> EmulatedKernel.withUnix system kernel
-                | other -> failwith $"writing to the pipe answered %O{other}"
+                match UnixReadWrite.write (UnixSystem.leader system) pipe.WriteEnd UserBuffer.Mapped 1UL system with
+                | CallProgress.NeedsCopyIn paused ->
+                    match UnixReadWrite.writeWithBytes (ImmutableArray.Create 0uy) paused with
+                    | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system) ->
+                        EmulatedKernel.withUnix system kernel
+                    | other -> failwith $"writing to the pipe answered %O{other}"
+                | other -> failwith $"writing to the pipe answered %O{other} before the copy"
             )
 
         let exn = Assert.Throws (fun () -> poll written |> ignore<IlMachineState>)

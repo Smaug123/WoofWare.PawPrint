@@ -1,0 +1,20 @@
+Darwin 27.0.0 (xnu-13432.1.9) arm64, uid 501
+R1 UDP read, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R1 UDP recv, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=101
+R1 UDP recvfrom, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R1 UDP recvmsg, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R2 UDP recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=102
+R2 UDP recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=1: ret=5 errno=- handled=1 took_ms=305
+R2 Unix-domain socketpair recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=105
+R2 Unix-domain socketpair recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=1: ret=5 errno=- handled=1 took_ms=305
+R3 UDP recv, close of its descriptor at 100ms, datagram at 300ms: ret=-1 errno=Bad file descriptor handled=1 took_ms=104
+R4 UDP recv, shutdown(SHUT_RD) at 100ms (signal at 600ms): ret=-1 errno=Interrupted system call handled=1 took_ms=602
+R5 Unix-domain socketpair recv, peer closes at 100ms (signal at 600ms): ret=-1 errno=Interrupted system call handled=1 took_ms=604
+R6 UDP recv, SO_RCVTIMEO 200ms (setsockopt=0): ret=-1 errno=Resource temporarily unavailable handled=1 took_ms=201
+S1 UDP sendto a bound socket nobody reads: sent=113717 last_ret=100 errno=- blocked_until_watchdog=0 took_ms=1007
+S2 Unix-domain socketpair send, peer reads nothing: sent=32 last_ret=-1 errno=No buffer space available blocked_until_watchdog=0 took_ms=0
+S3 Unix-domain sendto a bound socket nobody reads: sent=32 last_ret=-1 errno=No buffer space available blocked_until_watchdog=0 took_ms=0
+S4 Unix-domain socketpair, filled with 32 (then No buffer space available), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=0: ret=-1 errno=No buffer space available handled=1 took_ms=0
+S4 Unix-domain socketpair, filled with 32 (then No buffer space available), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=1: ret=-1 errno=No buffer space available handled=1 took_ms=0
+S4 Unix-domain sendto a bound socket, filled with 32 (then No buffer space available), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=0: ret=-1 errno=No buffer space available handled=1 took_ms=0
+S4 Unix-domain sendto a bound socket, filled with 32 (then No buffer space available), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=1: ret=-1 errno=No buffer space available handled=1 took_ms=0

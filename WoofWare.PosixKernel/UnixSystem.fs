@@ -340,7 +340,7 @@ type UnixSystemDefect<'Task> =
     /// No descriptor names the open file description of the connected stream
     /// socket `socket`, whose `SO_LINGER` is on, and only syscalls in flight
     /// hold it. The socket is closed when the last of those calls returns, and
-    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin`,
     /// `DescriptionReleaseRefusal.LingeringClose`), which a call's return has
     /// no way to answer. `close` refuses the close that would leave the socket
     /// so (`CloseRefusal.LingeringCloseDeferredToCall`).
@@ -671,9 +671,10 @@ type UnixSystemDefect<'Task> =
     /// processor is the one it runs on (`UnixTaskState.cpu`).
     | OccupantOnAnotherCpu of task : 'Task * occupied : CpuId * cpu : CpuId
     /// A task is parked in a syscall that nothing in this version parks a task
-    /// in, such as `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen` or
-    /// `ParkedSyscall.Select`: a case reserved for behaviour not yet modelled,
-    /// which no call produces and no finishing call answers.
+    /// in, such as `ParkedSyscall.Sleep`, `ParkedSyscall.FifoOpen`,
+    /// `ParkedSyscall.Select` or `ParkedSyscall.SignalWait`: a case reserved
+    /// for behaviour not yet modelled, which no call produces and no finishing
+    /// call answers.
     | ReservedPark of task : 'Task * parked : ParkedSyscall
     /// A task is parked in a read of an inotify instance through the open file
     /// description `description`, which names `target` rather than an
@@ -725,6 +726,10 @@ type UnixSystemDefect<'Task> =
         description : OpenFileDescriptionId *
         inode : InodeNumber *
         oldParent : InodeNumber
+    /// A socket is in a phase that nothing in this version puts a socket in,
+    /// such as `SocketPhase.Connecting`: a case reserved for behaviour not yet
+    /// modelled.
+    | ReservedSocketPhase of socket : SocketId * phase : SocketPhase
 
 [<RequireQualifiedAccess>]
 module UnixSystemDefect =
@@ -1265,15 +1270,15 @@ module UnixSystem =
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
         | Syscall.FAccessAt (dirfd, path, mode, flags) ->
-            UnixPathResolution.tryFaccessat dirfd path mode flags system
+            UnixPathResolution.tryFaccessatEager dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Access
         | Syscall.SymlinkAt (target, dirfd, path) ->
-            UnixNamespace.trySymlinkat target dirfd path system
+            UnixNamespace.trySymlinkatEager target dirfd path system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Symlink
         | Syscall.LinkAt (olddirfd, oldpath, newdirfd, newpath, flags) ->
-            UnixNamespace.tryLinkat olddirfd oldpath newdirfd newpath flags system
+            UnixNamespace.tryLinkatEager olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
         | Syscall.UTimensAt (dirfd, path, times, flags) ->
@@ -1289,7 +1294,7 @@ module UnixSystem =
             |> Result.map (fun error -> SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
             |> Result.mapError SyscallRefusal.FileClone
         | Syscall.CloneFile (source, destination, flags) ->
-            UnixNamespace.tryCloneFile source destination flags system
+            UnixNamespace.tryCloneFileEager source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
         | Syscall.SetResUid (real, effective, saved) ->
@@ -1468,7 +1473,7 @@ module UnixSystem =
                     | Some (InodeContent.Socket _)
                     | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
-                | OpenFileTarget.CharacterDevice (inode, device) ->
+                | OpenFileTarget.CharacterDevice (inode, device, _) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
@@ -1635,7 +1640,9 @@ module UnixSystem =
                     |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> []
+                | SocketPhase.DatagramPeer _
+                // A connect in flight has no connection yet.
+                | SocketPhase.Connecting _ -> []
             )
 
         let danglingConnections =
@@ -2053,7 +2060,19 @@ module UnixSystem =
                     | SocketPhase.Listening _
                     | SocketPhase.EstablishedPendingReport _
                     | SocketPhase.Established _
-                    | SocketPhase.Refused _ -> []
+                    | SocketPhase.Refused _
+                    | SocketPhase.Connecting _ -> []
+
+                // Nothing in this version puts a socket in it.
+                let reservedPhase =
+                    match socket.Phase with
+                    | SocketPhase.Connecting _ -> [ UnixSystemDefect.ReservedSocketPhase (socketId, socket.Phase) ]
+                    | SocketPhase.Idle
+                    | SocketPhase.Listening _
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _
+                    | SocketPhase.Refused _
+                    | SocketPhase.DatagramPeer _ -> []
 
                 let portZero =
                     match socket.Ipv4Binding with
@@ -2077,7 +2096,12 @@ module UnixSystem =
                             [ UnixSystemDefect.BoundToPortZero socketId ]
                     | _ -> []
 
-                unboundListener @ unaddressable @ unmodelledBinding @ peerFamily @ portZero
+                unboundListener
+                @ unaddressable
+                @ unmodelledBinding
+                @ peerFamily
+                @ reservedPhase
+                @ portZero
             )
 
         let fileSystemType =
@@ -2616,7 +2640,11 @@ module UnixSystem =
                 | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Sleep _ as parked)
                 | Some (ParkedSyscall.FifoOpen _ as parked)
-                | Some (ParkedSyscall.Select _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
+                | Some (ParkedSyscall.Select _ as parked)
+                | Some (ParkedSyscall.SignalWait _ as parked)
+                | Some (ParkedSyscall.DatagramReceive _ as parked)
+                | Some (ParkedSyscall.DatagramSend _ as parked)
+                | Some (ParkedSyscall.Connect _ as parked) -> [ UnixSystemDefect.ReservedPark (task, parked) ]
                 | Some (ParkedSyscall.InotifyRead read) ->
                     match Map.tryFind read.Instance descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Instance) ]

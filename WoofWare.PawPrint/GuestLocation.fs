@@ -376,9 +376,8 @@ module GuestLocation =
                             let watched =
                                 match UnixSystem.pollQueue parked.Queue state.Kernel.System with
                                 | Some queue ->
-                                    queue.Registrations
-                                    |> Map.toList
-                                    |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
+                                    PollQueue.registered queue
+                                    |> List.map (fun (fd, filter) -> $"fd %d{fd} (%O{filter})")
                                     |> String.concat ", "
                                 | None -> $"nothing: its kqueue, %O{parked.Queue}, is not on the machine"
 
@@ -415,6 +414,18 @@ module GuestLocation =
                         | Some (ParkedSyscall.InotifyRead parked) ->
                             Some $"in a read of the inotify instance of open file description %O{parked.Instance}"
                         | Some (ParkedSyscall.Select _) -> Some "in select or pselect"
+                        | Some (ParkedSyscall.SignalWait parked) ->
+                            let until =
+                                match parked.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
+                            Some
+                                $"in sigwait, sigwaitinfo or sigtimedwait, for a signal of %s{parked.Awaited.Display}%s{until}"
+                        | Some (ParkedSyscall.DatagramReceive _) -> Some "in a receive on a datagram socket"
+                        | Some (ParkedSyscall.DatagramSend _) -> Some "in a send on a datagram socket"
+                        | Some (ParkedSyscall.Connect _) ->
+                            Some "in a connect to a listener whose accept queue is full"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

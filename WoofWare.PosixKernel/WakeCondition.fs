@@ -38,7 +38,7 @@ type WakePrimitive =
     | EpollEventDeliverable of epoll : OpenFileDescriptionId
     /// The kqueue the open file description `kqueue` names has been drained:
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
-    /// has ended every wait on it (see `KqueueState.Drained`).
+    /// has ended every wait on it (see `UnixDescriptor.close`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
     /// A wait for events on the kqueue the open file description `kqueue`
     /// names would report at least one now.
@@ -170,6 +170,29 @@ type WakePrimitive =
     /// takes the record, which a change to what the instance watches queues,
     /// in any process, or `inotify_rm_watch(2)`.
     | InotifyRecordQueued of reader : OpenFileDescriptionId
+    /// A signal in `awaited` is pending to the task that waits.
+    ///
+    /// What a signal wait (`sigwait(3)`, `sigwaitinfo(2)`, `sigtimedwait(2)`)
+    /// waits for. `awaited` is the call's set (`ParkedSignalWait.Awaited`).
+    /// Not `SignalDeliverable`: an awaited signal is taken by the call rather
+    /// than delivered, and is commonly blocked, or at its default action.
+    ///
+    /// Reserved: nothing parks a task in a signal wait yet, so no condition
+    /// this library hands out contains it.
+    | AwaitedSignalPending of awaited : SignalMask
+    /// The listening socket `listener` has room in its accept queue for one
+    /// more connection, or can no longer take one: it has been closed or shut
+    /// down, so that a connect asleep on it wakes to be refused.
+    ///
+    /// What a blocking Linux Unix-domain stream `connect(2)` to a full listener
+    /// waits for. Names the listener by the machine's identity for the socket,
+    /// since the sleeping call holds the socket and no description of it. A
+    /// TCP connect to a full listener waits for its SYN retransmit instead
+    /// (`DeadlinePassed`), and looks for room only then.
+    ///
+    /// Reserved: nothing parks a task in a connect yet, so no condition this
+    /// library hands out contains it.
+    | AcceptQueueHasRoom of listener : SocketId
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -288,10 +311,14 @@ module WakeCondition =
         | Some (ParkedSyscall.KqueuePoll _)
         | Some ParkedSyscall.SigSuspend
         | Some (ParkedSyscall.Sleep _)
+        | Some (ParkedSyscall.SignalWait _)
         | Some (ParkedSyscall.FifoOpen _)
         // Only Linux has inotify, and its close leaves the read asleep.
         | Some (ParkedSyscall.InotifyRead _)
         | Some (ParkedSyscall.Select _)
+        | Some (ParkedSyscall.DatagramReceive _)
+        | Some (ParkedSyscall.DatagramSend _)
+        | Some (ParkedSyscall.Connect _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -398,11 +425,17 @@ module WakeCondition =
         | WakePrimitive.FifoPartnerOpened _ ->
             failwith
                 $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but this library keeps no count of a FIFO's opens to evaluate it against: nothing parks a task in a FIFO open yet (`ParkedSyscall.FifoOpen` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
+        | WakePrimitive.AcceptQueueHasRoom _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but nothing parks a task in a connect yet (`ParkedSyscall.Connect` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
         | WakePrimitive.InotifyRecordQueued reader ->
             not (
                 InotifyQueue.isEmpty
                     (OpenFileTable.inotifyState "WakeCondition.satisfied" reader system.Machine.OpenFiles).Queue
             )
+        | WakePrimitive.AwaitedSignalPending _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but nothing parks a task in a signal wait yet (`ParkedSyscall.SignalWait` is reserved), and which pending signals such a wait may take is not modelled, so the park was recorded by hand (this is a bug in the caller that recorded it)."
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -492,7 +525,9 @@ module WakeCondition =
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
         | WakeCondition.Primitive WakePrimitive.EndedByClose
         | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _)
-        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _) -> []
+        | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _)
+        | WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending _)
+        | WakeCondition.Primitive (WakePrimitive.AcceptQueueHasRoom _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -632,6 +667,29 @@ module WakeCondition =
                 select.Deadline
                 |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
                 |> Option.toList
+            // An awaited signal, its deadline, or (below, as for every park) a
+            // signal with a handler outside its set. Under Darwin a signal
+            // outside the set does not end the call (measured,
+            // `docs/probes/sigwait`): its handler runs only once the call
+            // returns. Saying so for a Darwin task in a signal wait is
+            // `SignalDeliverable`'s evaluation's, which is not modelled:
+            // evaluating this condition fails at `AwaitedSignalPending`.
+            | ParkedSyscall.SignalWait wait ->
+                let deadline =
+                    wait.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
+
+                WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending wait.Awaited)
+                :: deadline
+            // A signal alone, while they are reserved: what a datagram transfer
+            // waits for joins this when something parks a task in one.
+            | ParkedSyscall.DatagramReceive _
+            | ParkedSyscall.DatagramSend _ -> []
+            // A signal alone, while it is reserved: a retransmit deadline, or
+            // room in the listener's queue, joins this when something parks a
+            // task in it.
+            | ParkedSyscall.Connect _ -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

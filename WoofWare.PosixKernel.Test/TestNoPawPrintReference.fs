@@ -18,10 +18,11 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 module TestNoPawPrintReference =
 
-    /// Assemblies of this repository's own, none of which this one may depend
-    /// on. Matched by prefix so a future `WoofWare.PawPrint.Anything` is caught
-    /// without this list being updated; `WoofWare.PosixKernel` itself is of
-    /// course exempt, being the assembly under test.
+    /// Assemblies of WoofWare.PawPrint, the library's first client, none of
+    /// which this one may depend on. Matched by prefix so a future
+    /// `WoofWare.PawPrint.Anything` is caught without this list being updated;
+    /// `WoofWare.PosixKernel` itself is of course exempt, being the assembly
+    /// under test.
     let private forbiddenPrefix = "WoofWare.PawPrint"
 
     [<Test>]

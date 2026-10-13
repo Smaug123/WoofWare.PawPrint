@@ -213,7 +213,7 @@ module TestTotalQueries =
 
             let system =
                 match UnixTaskLifecycle.tryExitThread child 0 system with
-                | Ok (TaskOutcome.Continues system) -> system
+                | Ok (ProcessFate.Continues ((), system)) -> system
                 | other -> failwith $"task %d{child}'s exit: %A{other}"
 
             Map.tryFind child (UnixSystem.tasks system) |> shouldEqual None

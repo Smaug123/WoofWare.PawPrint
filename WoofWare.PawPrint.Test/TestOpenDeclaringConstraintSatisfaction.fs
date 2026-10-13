@@ -137,7 +137,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
         loggerFactory
 
     let private corelib : DumpedAssembly =
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private guest : DumpedAssembly =
         use stream = new MemoryStream (image)

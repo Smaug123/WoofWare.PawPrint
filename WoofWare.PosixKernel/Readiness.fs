@@ -429,6 +429,7 @@ module internal DarwinReadiness =
         | SocketPhase.DatagramPeer _ ->
             failwith
                 "DarwinReadiness.sendBufferSpace: a stream socket holds a datagram peer, which this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
+        | SocketPhase.Connecting _ -> ReservedConnecting.failOfPhase "DarwinReadiness.sendBufferSpace"
 
     /// What the kqueue filter `filter` reports of the socket `socketId` right
     /// now, or `None` when the filter is not ready.
@@ -455,6 +456,8 @@ module internal DarwinReadiness =
             | RefusalError.Reported -> None
 
         match socket.Phase, filter with
+        | _, KqueueFilter.Timer -> ReservedTimerFilter.fail "DarwinReadiness.ofSocket"
+        | SocketPhase.Connecting _, _ -> ReservedConnecting.fail "DarwinReadiness.ofSocket" socketId
         | SocketPhase.Listening listenState, KqueueFilter.Read ->
             // Ready while a connection is queued, reporting how many are.
             match listenState.Queue with
@@ -481,6 +484,7 @@ module internal DarwinReadiness =
                 |> Option.map TcpError.toUnixError
 
             match filter, inbound.Receiver with
+            | KqueueFilter.Timer, _ -> ReservedTimerFilter.fail "DarwinReadiness.ofSocket"
             | _, TcpEndState.Closed _ ->
                 failwith
                     $"DarwinReadiness.ofSocket: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
@@ -555,6 +559,7 @@ module internal DarwinReadiness =
         let held = int64 (PipeBuffer.held pipe.Buffer)
 
         match pipeEnd, filter with
+        | _, KqueueFilter.Timer -> ReservedTimerFilter.fail "DarwinReadiness.ofPipe"
         | PipeEnd.Read, KqueueFilter.Read ->
             if ended then
                 Some (KqueueFilterReport.EndOfFile (held, None))

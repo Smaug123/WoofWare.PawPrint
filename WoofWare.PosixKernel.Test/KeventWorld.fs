@@ -69,23 +69,45 @@ module KeventWorld =
         let fd, system = stream false system
         fd, system |> bind fd port |> listen fd
 
-    let connect
+    /// A connect of `fd` to `port`, made by `task`, which must be awake.
+    let connectAs
+        (task : int)
         (fd : int)
         (port : uint16)
         (system : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match
-            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+            CopyIn.connectAs
+                task
+                fd
+                UserBuffer.Mapped
+                16u
+                (CopyIn.inet (UnixSystem.platform system) (loopback port))
+                system
         with
         | Ok answered -> answered
         | Error refusal -> failwith $"connecting fd %d{fd} to port %d{port}: %s{ConnectRefusal.describe refusal}"
 
-    /// A new non-blocking socket connecting to `port`, as the probe's `client` makes.
-    let client (port : uint16) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    /// A connect of `fd` to `port`, made by the process's leader.
+    let connect
+        (fd : int)
+        (port : uint16)
+        (system : UnixSystem<int, string>)
+        : SyscallAnswer * UnixSystem<int, string>
+        =
+        connectAs system.Leader fd port system
+
+    /// A new non-blocking socket connecting to `port`, as the probe's `client`
+    /// makes, connected by `task`, which must be awake.
+    let clientAs (task : int) (port : uint16) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, system = stream true system
-        let _, system = connect fd port system
+        let _, system = connectAs task fd port system
         fd, system
+
+    /// `clientAs` the process's leader.
+    let client (port : uint16) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        clientAs system.Leader port system
 
     /// Accept one connection through `fd`, which must hold one.
     let accept (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -116,7 +138,7 @@ module KeventWorld =
             | Ok (GetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        match UnixSocket.tryGetsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockoptLength fd level optionName UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok answer -> answer
         | Error refusal -> failwith $"getsockopt refused: %s{SocketOptionRefusal.describe refusal}"
 

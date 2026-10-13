@@ -48,16 +48,16 @@ module NativeLibcFile =
 
         // Each pathname is read out of guest memory only when the kernel
         // reaches its copy-in: flags it refuses are answered without either.
-        match UnixNamespace.cloneFileFlagsPhase flags state.Kernel.System with
-        | CloneFileScreen.Answered (answer, system) -> answered (answer, system)
-        | CloneFileScreen.NeedsSource screened ->
+        match UnixNamespace.cloneFile flags state.Kernel.System with
+        | CallProgress.Answered outcome -> answered outcome
+        | CallProgress.NeedsCopyIn screened ->
 
         let source =
             NativeSystemNative.pathArgumentBytes ctx operation "src" instruction.Arguments.[0] state
 
-        match UnixNamespace.cloneFileSourcePhase source screened with
-        | CloneFileProgress.Answered (answer, system) -> answered (answer, system)
-        | CloneFileProgress.NeedsDestination paused ->
+        match UnixNamespace.cloneFileWithSource source screened with
+        | CallProgress.Answered outcome -> answered outcome
+        | CallProgress.NeedsCopyIn paused ->
             let destination =
                 NativeSystemNative.pathArgumentBytes ctx operation "dst" instruction.Arguments.[1] state
 

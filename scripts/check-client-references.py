@@ -28,9 +28,18 @@ The last two are whole words, so `shimmer`, `PALETTE` and `guesthouse` are
 silent, as is "a .NET string": the library is written in .NET, and its own API
 takes and returns .NET values.
 
-There is no allowlist: nothing in the library has a reason to name them. Say "a
-client", "the caller", "the process", or name the library's own function
-instead; if something genuinely belongs to a client, move it there.
+There is one exemption, and it is a form rather than a list: a permalink into
+the `docs/` of WoofWare.PawPrint's repository, pinned to a full commit hash
+(`https://github.com/Smaug123/WoofWare.PawPrint/blob/<40 hex digits>/docs/...`).
+Some measurements the library rests on were written up there before the
+library had a repository of its own, and a pinned link cites that record
+without sending the reader into a client's moving code. The link alone is
+masked; the rest of its line is scanned as usual. A link to a branch, an
+abbreviated hash or anything outside `docs/` is still a reference.
+
+Otherwise nothing in the library has a reason to name them. Say "a client",
+"the caller", "the process", or name the library's own function instead; if
+something genuinely belongs to a client, move it there.
 
 What it does not see, accepted deliberately:
 
@@ -85,6 +94,10 @@ MARKERS = PAWPRINT_MARKERS + CORECLR_MARKERS + PROCESS_MARKERS
 
 PATTERN = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(MARKERS) + r")")
 
+PINNED_DOCS_PERMALINK = re.compile(
+    r"https://github\.com/Smaug123/WoofWare\.PawPrint/blob/[0-9a-f]{40}/docs/[A-Za-z0-9_./-]+"
+)
+
 
 def main() -> int:
     if len(sys.argv) != 2:
@@ -106,7 +119,7 @@ def main() -> int:
     hits = []
     for source in sources:
         for number, line in enumerate(source.read_text().splitlines(), start=1):
-            for match in PATTERN.finditer(line):
+            for match in PATTERN.finditer(PINNED_DOCS_PERMALINK.sub("", line)):
                 hits.append(f"{source.relative_to(library)}:{number}: {match.group(0)}: {line.strip()}")
 
     if hits:

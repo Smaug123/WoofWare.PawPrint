@@ -97,7 +97,7 @@ module TestWakeCondition =
             match
                 CopyIn.connect clientFd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) loopback) system
             with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connecting: %A{other}"
 
         let system =
@@ -164,7 +164,7 @@ module TestWakeCondition =
         let emptyFd, system = created system
 
         let system =
-            match UnixInotify.tryInotifyAddWatch queuedFd (PathArg.ofText "/") 0x100u system with
+            match UnixInotify.tryInotifyAddWatchEager queuedFd (PathArg.ofText "/") 0x100u system with
             | Ok (SyscallAnswer.Completed 1L, system) -> system
             | other -> failwith $"watching the root: %A{other}"
 
@@ -267,7 +267,9 @@ module TestWakeCondition =
         | WakePrimitive.ConnectionReadable _
         | WakePrimitive.ConnectionWritable _
         | WakePrimitive.FifoPartnerOpened _
-        | WakePrimitive.InotifyRecordQueued _ ->
+        | WakePrimitive.InotifyRecordQueued _
+        | WakePrimitive.AwaitedSignalPending _
+        | WakePrimitive.AcceptQueueHasRoom _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -495,6 +497,8 @@ module TestWakeCondition =
                         | WakePrimitive.ConnectionWritable _
                         | WakePrimitive.FifoPartnerOpened _
                         | WakePrimitive.InotifyRecordQueued _
+                        | WakePrimitive.AwaitedSignalPending _
+                        | WakePrimitive.AcceptQueueHasRoom _
                         | WakePrimitive.SignalDeliverable -> None
                     )
                 )

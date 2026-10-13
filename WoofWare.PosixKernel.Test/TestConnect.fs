@@ -128,7 +128,7 @@ module TestConnect =
         (declaredLength : uint32)
         (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         let blob =
             CopyIn.blob system.Machine.UnixPlatform (inetFamily system.Machine.UnixPlatform) destination
@@ -250,7 +250,7 @@ module TestConnect =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
             viaSocket
-            |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EINVAL, unixSystem))
+            |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EINVAL, unixSystem))
         | SimulatedUnixFlavour.Darwin ->
             viaSocket
             |> shouldEqual (
@@ -407,7 +407,7 @@ module TestConnect =
         for passed in [ 0 ; 2 ; 8 ; 15 ; 17 ] do
             let e =
                 Assert.Throws<exn> (fun () ->
-                    UnixConnection.tryConnect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
+                    UnixConnection.tryConnectBytes fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
                     |> ignore<_>
                 )
 
@@ -417,8 +417,8 @@ module TestConnect =
     /// so a caller that never asked is not punished for it.
     [<TestCaseSource(nameof platforms)>]
     let ``connect repeats the admission's answers`` (platform : SimulatedUnixPlatform) : unit =
-        UnixConnection.tryConnect 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
-        |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EBADF, systemOn platform))
+        UnixConnection.tryConnectBytes 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, systemOn platform))
 
     // ------------------------------------------------------------------
     // A floor under the ladder itself
@@ -431,7 +431,7 @@ module TestConnect =
         let fd, system = clientAndListener platform 5000us
 
         let outcome, system = connectTo fd 16u (loopback 5000us) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match (UnixMachineState.socket (SocketId 0L) system.Machine).Phase with
         | SocketPhase.Established _ -> ()
@@ -453,7 +453,7 @@ module TestConnect =
                 system
 
         let outcome, system = connectTo fd 16u (loopback 5000us) system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         // The connection is made whatever the syscall answered.
         match (UnixMachineState.socket (SocketId 1L) system.Machine).Phase with
@@ -469,7 +469,7 @@ module TestConnect =
 
         connectTo fd 16u (loopback 5000us) system
         |> fst
-        |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
 
     /// Nothing is listening, so the SYN is refused. Blocking, so the refusal is
     /// delivered inline rather than latched.
@@ -479,7 +479,7 @@ module TestConnect =
 
         connectTo fd 16u (loopback 5000us) system
         |> fst
-        |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
     // ------------------------------------------------------------------
     // What this kernel refuses, by type
@@ -555,7 +555,7 @@ module TestConnect =
     let ``a copy refusal is carried as a connect refusal`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = client platform
 
-        match UnixConnection.tryConnect fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
+        match UnixConnection.tryConnectBytes fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
         | Error (ConnectRefusal.Copy _) -> ()
         | other -> failwith $"expected a copy refusal, got %A{other}"
 
@@ -585,7 +585,7 @@ module TestConnect =
 
         let completes fd endpoint system =
             match connectTo fd endpoint system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect answered %A{other}"
 
         let first, system = udp system
@@ -621,7 +621,9 @@ module TestConnect =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let option = SimulatedUnixPlatform.reuseAddressOption platform
 
-            match UnixSocket.trySetsockopt fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system with
+            match
+                UnixSocket.trySetsockoptBytes fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system
+            with
             | Ok (SetSockOptAnswer.Set, system) -> fd, system
             | other -> failwith $"setsockopt answered %A{other}"
 
@@ -632,7 +634,7 @@ module TestConnect =
                 | other -> failwith $"bind answered %A{other}"
 
             match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform (loopback 6000us)) system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect answered %A{other}"
 
         let first, system = reusable system

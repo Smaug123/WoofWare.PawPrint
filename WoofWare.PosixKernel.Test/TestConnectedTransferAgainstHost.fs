@@ -631,7 +631,7 @@ module TestConnectedTransferAgainstHost =
 
         let system =
             match CopyIn.connect client UserBuffer.Mapped 16u (kernelLoopback platform) system with
-            | Ok (ConnectOutcome.Completed, system) -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"connect: %A{other}"
 
         let server, system =
@@ -655,9 +655,9 @@ module TestConnectedTransferAgainstHost =
         let bytes = System.Collections.Immutable.ImmutableArray.Create (payload, 0, count)
 
         match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> Seen.Returned written, system
-        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Seen.Failed (error, false), system
-        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
+        | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> Seen.Returned written, system
+        | Ok (WriteStep.Returns (WriteAnswer.Failed error, system)) -> Seen.Failed (error, false), system
+        | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
             Seen.Failed (error, true), system
         | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
 
@@ -808,7 +808,9 @@ module TestConnectedTransferAgainstHost =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
-            match UnixSocket.tryGetsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
+            match
+                UnixSocket.tryGetsockoptLength s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+            with
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int 0), system) -> [ Seen.PendingError None ], system
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int raw), system) ->
                 [

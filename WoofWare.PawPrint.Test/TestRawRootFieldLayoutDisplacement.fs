@@ -36,7 +36,7 @@ module TestRawRootFieldLayoutDisplacement =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
 
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
 

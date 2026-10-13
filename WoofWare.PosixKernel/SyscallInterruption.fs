@@ -118,7 +118,9 @@ module SyscallInterruption =
     /// a handler interrupts it.
     ///
     /// A park `flavour` never makes (an `epoll_wait` under Darwin, a `kevent`
-    /// under Linux) is answered as the flavour that makes it ends it.
+    /// under Linux) is answered as the flavour that makes it ends it. So is a
+    /// signal wait (`ParkedSyscall.SignalWait`, reserved) under Darwin, where a
+    /// handler does not end one: it is answered as Linux ends it.
     let ruleOf (flavour : SimulatedUnixFlavour) (parked : ParkedSyscall) : SignalRestartRule =
         // Measured on Linux 6.18.5 and Darwin 25.6.0
         // (`docs/plans/2026-08-23-posix-kernel-extraction/signal-sigaction-flags.c`),
@@ -180,6 +182,25 @@ module SyscallInterruption =
         // (`docs/probes/select-park`, row A3): a `select` a caught signal
         // interrupts answers EINTR under SA_RESTART too.
         | ParkedSyscall.Select _ -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 (`docs/probes/sigwait`, the "outside" rows):
+        // `rt_sigtimedwait` a handler's signal outside its set interrupts
+        // answers EINTR under SA_RESTART too. On Darwin 27.0.0 such a signal
+        // does not end `__sigwait` at all: the call sleeps on, and the handler
+        // runs once it returns. So no rule applies there, and this answers
+        // Linux's.
+        | ParkedSyscall.SignalWait _ -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 and Darwin 27.0.0
+        // (`docs/probes/datagram-park`, rows R2 and S4): a receive on a UDP or
+        // Unix-domain datagram socket returned EINTR without SA_RESTART and
+        // went on sleeping with it, and so did a Linux Unix-domain datagram
+        // send. A Darwin one never sleeps.
+        | ParkedSyscall.DatagramReceive _
+        | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
+        // Measured on Linux 6.18.5 (`docs/probes/connect-park`, rows T3 and
+        // U3): a TCP or Unix-domain connect asleep on a full listener returned
+        // EINTR without SA_RESTART and went on sleeping with it. A Darwin
+        // connect never sleeps.
+        | ParkedSyscall.Connect _ -> SignalRestartRule.RestartsUnderSaRestart
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]

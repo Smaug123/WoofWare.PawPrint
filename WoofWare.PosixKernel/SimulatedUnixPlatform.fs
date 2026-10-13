@@ -172,8 +172,9 @@ type GetCwdOrphanAnswer =
     /// reproducing it approximately means inventing bytes a process can read.
     /// So this library reports the errno and leaves the buffer alone, a
     /// divergence only a caller that reads the destination after a NULL return
-    /// could see — recorded in `docs/divergences.md` rather than left to be
-    /// discovered.
+    /// could see — recorded in
+    /// https://github.com/Smaug123/WoofWare.PawPrint/blob/6b4aeb4fce455e8c187157ce020d1058fb0821bf/docs/divergences.md
+    /// rather than left to be discovered.
     ///
     /// Linux writes nothing on any failure path at any capacity, which is why
     /// only this case needs the note.

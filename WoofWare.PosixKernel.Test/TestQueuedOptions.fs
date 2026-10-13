@@ -96,7 +96,7 @@ module TestQueuedOptions =
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | other -> failwith $"setsockopt(%d{level}, %d{option}) on fd %d{fd} was admitted as %A{other}"
 
-        match UnixSocket.trySetsockopt fd level option UserBuffer.Mapped (uint32 value.Length) supplied system with
+        match UnixSocket.trySetsockoptBytes fd level option UserBuffer.Mapped (uint32 value.Length) supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | other -> failwith $"setsockopt(%d{level}, %d{option}) of %A{value} on fd %d{fd}: %A{other}"
 
@@ -109,7 +109,7 @@ module TestQueuedOptions =
             | Ok GetSockOptAdmission.ReadLength -> Some size
             | other -> failwith $"getsockopt(%d{level}, %d{option}) on fd %d{fd} was admitted as %A{other}"
 
-        match UnixSocket.tryGetsockopt fd level option UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockoptLength fd level option UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported bytes, _) when bytes.Length = int size ->
             let field (offset : int) =
                 BitConverter.ToInt32 (bytes.AsSpan().Slice (offset, 4))
@@ -126,7 +126,7 @@ module TestQueuedOptions =
         let fd, system = KeventWorld.stream false system
 
         match KeventWorld.connect fd port system with
-        | ConnectOutcome.Completed, system -> fd, system
+        | SyscallAnswer.Completed 0L, system -> fd, system
         | other, _ -> failwith $"connect: %A{other}"
 
     // ------------------------------------------------------------------
@@ -256,16 +256,12 @@ module TestQueuedOptions =
         | other -> failwith $"expected two D lines, got %A{other}"
 
     /// The other row: a connection that completed under {1, 0} is reset as
-    /// it is dropped, which this kernel refuses, as it refuses every abortive
-    /// close of a connection something still refers to.
+    /// it is dropped, and its client reads ECONNRESET.
     [<Test>]
-    let ``Linux: a dropped connection that completed lingering for no time is refused`` () : unit =
+    let ``Linux: a dropped connection that completed lingering for no time is reset`` () : unit =
         match measuredD () with
         | [ _ ; (line, completed, accepted) ] ->
             completed |> shouldEqual "{1,0}"
             line |> shouldContainText "client-read=-1 ECONNRESET"
-
-            match kernelD completed accepted with
-            | Error (AcceptRefusal.AbortiveDrop (listener, _), socket) -> listener |> shouldEqual socket
-            | other -> failwith $"expected the drop to be refused, got %A{other}"
+            kernelD completed accepted |> Result.mapError fst |> shouldEqual (Ok line)
         | other -> failwith $"expected two D lines, got %A{other}"

@@ -409,7 +409,7 @@ module TestOpcodeFaults =
         // Factory intentionally undisposed: corelib.Logger outlives this scope.
         let corelib =
             let _, loggerFactory = LoggerFactory.makeTest ()
-            Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+            Assembly.readFile loggerFactory HostImage.coreLibPath
 
         let bct = BaseClassTypes.ofCorelib corelib
 

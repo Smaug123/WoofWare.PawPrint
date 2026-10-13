@@ -105,7 +105,7 @@ module DifferentialOracle =
           RunOutcome.GuestUnhandledException (finalState, _, exn, termination) ->
             if not expectsUnhandledException then
                 failwith
-                    $"Both runtimes threw unhandled exceptions for %s{fileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
+                    $"Both runtimes threw unhandled exceptions for %s{fileName}, but this test was not expected to throw. Declare its ending as an unhandled exception if that is intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
             // The real runtime aborts, which is what the oracle's classification of it
             // as an unhandled exception rests on.

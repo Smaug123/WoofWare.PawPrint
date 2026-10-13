@@ -69,7 +69,7 @@ module TestConnectedTransfer =
 
         let system =
             match KeventWorld.connect client port system with
-            | ConnectOutcome.Completed, system -> system
+            | SyscallAnswer.Completed 0L, system -> system
             | other, _ -> failwith $"connect: %A{other}"
 
         let server, system = KeventWorld.accept listener system
@@ -83,7 +83,7 @@ module TestConnectedTransfer =
         (fd : int)
         (count : int)
         (system : UnixSystem<int, string>)
-        : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>
+        : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>
         =
         WriteOutcomes.admitThenWrite
             system.Leader
@@ -94,7 +94,7 @@ module TestConnectedTransfer =
 
     let private sent (fd : int) (count : int) (system : UnixSystem<int, string>) : int64 * UnixSystem<int, string> =
         match send fd count system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> written, system
+        | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> written, system
         | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
 
     let private sentAll (fd : int) (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -126,8 +126,8 @@ module TestConnectedTransfer =
     let private fill (fd : int) (system : UnixSystem<int, string>) : int64 * UnixSystem<int, string> =
         let rec go (total : int64) (system : UnixSystem<int, string>) =
             match send fd 65536 system with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> go (total + written) system
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> total, system
+            | Ok (WriteStep.Returns (WriteAnswer.Completed written, system)) -> go (total + written) system
+            | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> total, system
             | other -> failwith $"filling fd %d{fd}: %A{other}"
 
         go 0L system
@@ -186,7 +186,7 @@ module TestConnectedTransfer =
 
         KeventWorld.connect client port system
         |> fst
-        |> shouldEqual ConnectOutcome.Completed
+        |> shouldEqual (SyscallAnswer.Completed 0L)
 
         assertClean system
 
@@ -196,9 +196,9 @@ module TestConnectedTransfer =
 
     [<Test>]
     let ``a blocking transfer that would sleep sleeps, and one that need not is answered`` () : unit =
-        let sleeps (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) : unit =
+        let sleeps (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) : unit =
             match outcome with
-            | Ok (WriteOutcome.WouldBlock _) -> ()
+            | Ok (WriteStep.WouldBlock _) -> ()
             | other -> failwith $"expected the write to sleep, got %A{other}"
 
         for platform in Machines.platforms do
@@ -264,7 +264,7 @@ module TestConnectedTransfer =
             UnixReadWrite.tryAdmitWrite system.Leader client unmapped 0UL system
             |> Result.map (fun outcome ->
                 match outcome with
-                | WriteOutcome.Returns (admission, _) -> admission
+                | WriteStep.Returns (admission, _) -> admission
                 | other -> failwith $"%A{other}"
             )
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
@@ -667,7 +667,7 @@ module TestConnectedTransfer =
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | other -> failwith $"admitting SO_LINGER on fd %d{fd}: %A{other}"
 
-        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied system with
+        match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped length supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"
 
@@ -868,10 +868,10 @@ module TestConnectedTransfer =
     /// bytes each way, from each state a close can leave the writer in.
     [<Test>]
     let ``a write that skips its admission answers a connection as one that makes it`` () : unit =
-        let summary (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) =
+        let summary (outcome : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>) =
             match outcome with
-            | Ok (WriteOutcome.Returns (answer, system)) -> (answer, None), system
-            | Ok (WriteOutcome.ReturnsRaising (answer, entry, system)) -> (answer, Some entry.Signal), system
+            | Ok (WriteStep.Returns (answer, system)) -> (answer, None), system
+            | Ok (WriteStep.ReturnsRaising (answer, entry, system)) -> (answer, Some entry.Signal), system
             | other -> failwith $"%A{other}"
 
         for platform in Machines.platforms do
@@ -886,7 +886,7 @@ module TestConnectedTransfer =
                     | _ -> system
 
                 let thrice
-                    (write : UnixSystem<int, string> -> Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>)
+                    (write : UnixSystem<int, string> -> Result<WriteStep<WriteAnswer, int, string>, WriteRefusal>)
                     =
                     ((system, []), [ 1..3 ])
                     ||> List.fold (fun (system, seen) _ ->
@@ -899,7 +899,7 @@ module TestConnectedTransfer =
 
                 let direct =
                     thrice (fun system ->
-                        UnixReadWrite.tryWrite system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
+                        UnixReadWrite.tryWriteBytes system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
                     )
 
                 (build, direct) |> shouldEqual (build, admitted)
@@ -984,7 +984,7 @@ module TestConnectedTransfer =
 
                 let system =
                     match KeventWorld.connect client port system with
-                    | ConnectOutcome.Completed, system -> system
+                    | SyscallAnswer.Completed 0L, system -> system
                     | other, _ -> failwith $"connect: %A{other}"
 
                 let accepted, system = KeventWorld.accept listener system
@@ -1017,7 +1017,7 @@ module TestConnectedTransfer =
                     | Ok (SetSockOptAdmission.Answered error) -> Some error, system
                     | Ok (SetSockOptAdmission.Transfer _) ->
                         match
-                            UnixSocket.trySetsockopt
+                            UnixSocket.trySetsockoptBytes
                                 keep
                                 level
                                 reuse
@@ -1094,7 +1094,7 @@ module TestConnectedTransfer =
 
                     let system =
                         match KeventWorld.connect client port system with
-                        | ConnectOutcome.Completed, system -> system
+                        | SyscallAnswer.Completed 0L, system -> system
                         | other, _ -> failwith $"connect: %A{other}"
 
                     let accepted, system = KeventWorld.accept listener system
@@ -1122,7 +1122,7 @@ module TestConnectedTransfer =
                             (CopyIn.inet platform (KeventWorld.loopback port))
                             system
                     with
-                    | Ok (ConnectOutcome.Completed, system) when reset -> assertClean system
+                    | Ok (SyscallAnswer.Completed 0L, system) when reset -> assertClean system
                     | Error (ConnectRefusal.DuplicateFourTuple _) when not reset -> ()
                     | other -> failwith $"%O{platform} reset %b{reset}: %A{other}"
 
@@ -1148,7 +1148,7 @@ module TestConnectedTransfer =
             match
                 CopyIn.connect second UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback port)) system
             with
-            | Ok (ConnectOutcome.Completed, system) ->
+            | Ok (SyscallAnswer.Completed 0L, system) ->
                 (UnixMachineState.socket (socketOf second system) system.Machine).Ipv4Binding
                 |> Option.map (fun binding -> binding.Endpoint.Port)
                 |> shouldEqual (Some 40000us)
@@ -1412,7 +1412,7 @@ module TestConnectedTransfer =
                     match UnixSocket.tryAdmitSetSockOpt client level name UserBuffer.Mapped 4u system with
                     | Ok (SetSockOptAdmission.Answered _) -> Ok ("-1", system)
                     | Ok (SetSockOptAdmission.Transfer _) ->
-                        match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u value system with
+                        match UnixSocket.trySetsockoptBytes client level name UserBuffer.Mapped 4u value system with
                         | Ok (SetSockOptAnswer.Set, system) -> Ok ("0", system)
                         | Ok (SetSockOptAnswer.Failed _, system) -> Ok ("-1", system)
                         | Error refusal -> Error refusal
@@ -1425,7 +1425,7 @@ module TestConnectedTransfer =
                     // Setting the value it has changes no copy, and is served.
                     let unchanged = Some (OptionValue.ofInt (if before then 1 else 0))
 
-                    match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u unchanged system with
+                    match UnixSocket.trySetsockoptBytes client level name UserBuffer.Mapped 4u unchanged system with
                     | Ok (SetSockOptAnswer.Set, _) -> ()
                     | other -> failwith $"Linux %s{row}: setting the value it has answered %A{other}"
                 | Error refusal -> failwith $"%A{flavour} %s{row}: refused %A{refusal}"
@@ -1557,7 +1557,7 @@ module TestConnectedTransfer =
             // The other flavour's rules.
             let other =
                 match flavour with
-                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin Map.empty
+                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin (Map.empty, Set.empty)
                 | SimulatedUnixFlavour.Darwin -> TcpTransferRules.Linux Set.empty
 
             let otherFlavour =

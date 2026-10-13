@@ -1,10 +1,10 @@
 namespace WoofWare.Pawprint.Test
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
-open System.Runtime.InteropServices
 open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
@@ -21,8 +21,6 @@ open WoofWare.PawPrint.Test
 module TestFSharpPureCases =
 
     type private TestAssemblyMarker = class end
-
-    let private rid = RuntimeInformation.RuntimeIdentifier
 
     // We cannot use __SOURCE_DIRECTORY__: when ContinuousIntegrationBuild is set
     // (Directory.Build.props turns it on whenever GITHUB_ACTION is non-empty), the
@@ -53,35 +51,53 @@ module TestFSharpPureCases =
 
     // Output goes to a path we control so the test isn't coupled to the project's TargetFramework.
     let private publishDir =
-        Path.Combine (projectDir, "bin", "Release", "pawprint-test-publish", rid)
+        Path.Combine (projectDir, "bin", "Release", "pawprint-test-publish")
 
     let private dllPath =
         Path.Combine (publishDir, "WoofWare.PawPrint.Test.FSharpPureCases.dll")
 
-    // The real-runtime oracle runs the app out of process, so it needs the apphost rather than the
-    // managed image: this is a self-contained publish, whose dependencies (FSharp.Core among them)
-    // live beside the dll and are only resolvable from that directory.
-    let private exePath =
-        Path.Combine (
-            publishDir,
-            if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                "WoofWare.PawPrint.Test.FSharpPureCases.exe"
-            else
-                "WoofWare.PawPrint.Test.FSharpPureCases"
-        )
+    /// The files in `publishDir` whose names are also those of files in `frameworkDir`, compared
+    /// ignoring case as `AssemblyProbe` binds. PawPrint searches `publishDir` ahead of the
+    /// framework, so each such file is one it would bind in place of the framework's own.
+    let private frameworkFilesIn (publishDir : string) (frameworkDir : string) : string list =
+        let frameworkFiles =
+            HashSet<string> (
+                Directory.EnumerateFiles frameworkDir |> Seq.map Path.GetFileName,
+                StringComparer.OrdinalIgnoreCase
+            )
 
+        // Guards against the comparison passing vacuously on a listing that found nothing.
+        if not (frameworkFiles.Contains "System.Private.CoreLib.dll") then
+            failwith $"logic error: the framework directory %s{frameworkDir} holds no System.Private.CoreLib.dll"
+
+        Directory.EnumerateFiles publishDir
+        |> Seq.map Path.GetFileName
+        |> Seq.filter frameworkFiles.Contains
+        |> Seq.sort
+        |> List.ofSeq
+
+    /// Publishes the cases framework-dependent, so that both PawPrint and the real-runtime oracle run
+    /// them on the framework under test. A self-contained publish would carry a framework of its
+    /// own, which is the host SDK's runtime pack whatever framework is under test, and PawPrint
+    /// would bind it ahead of `FrameworkUnderTest.runtimeDirs ()`.
     let private publishOnce : Lazy<unit> =
         lazy
             if not (File.Exists projectFile) then
                 failwith $"Cannot publish F# test cases: project file %s{projectFile} does not exist."
 
+            // `dotnet publish` adds to an existing output directory rather than replacing it, so a
+            // file left by an earlier publish of another shape would survive this one.
+            if Directory.Exists publishDir then
+                Directory.Delete (publishDir, true)
+
             let psi = ProcessStartInfo "dotnet"
             psi.ArgumentList.Add "publish"
             psi.ArgumentList.Add "--configuration"
             psi.ArgumentList.Add "Release"
-            psi.ArgumentList.Add "--self-contained"
-            psi.ArgumentList.Add "--runtime"
-            psi.ArgumentList.Add rid
+            psi.ArgumentList.Add "--no-self-contained"
+            // The oracle runs the dll through the muxer of the framework under test; an apphost
+            // would find a framework by its own lookup instead.
+            psi.ArgumentList.Add "-p:UseAppHost=false"
             psi.ArgumentList.Add "--output"
             psi.ArgumentList.Add publishDir
             psi.ArgumentList.Add projectFile
@@ -110,6 +126,19 @@ module TestFSharpPureCases =
                 failwith
                     $"dotnet publish completed but %s{dllPath} does not exist.\nSTDOUT:\n%s{stdout}\nSTDERR:\n%s{stderr}"
 
+            // Only the shared framework, not the whole of `FrameworkUnderTest.runtimeDirs ()`: that
+            // list also holds the test assembly's own directory, whose FSharp.Core the publish's is
+            // meant to shadow.
+            let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
+
+            match frameworkFilesIn publishDir frameworkDir with
+            | [] -> ()
+            | files ->
+                let files = String.concat ", " files
+
+                failwith
+                    $"The F# cases' publish in %s{publishDir} holds files named as in the framework under test's %s{frameworkDir}, which PawPrint would bind ahead of that framework's own: %s{files}. Publish framework-dependent."
+
     let private loadImage () : byte array =
         publishOnce.Force ()
         File.ReadAllBytes dllPath
@@ -129,40 +158,53 @@ module TestFSharpPureCases =
             "SprintfPercentO"
         ]
 
-    /// F# cases not expected to pass under PawPrint.
+    /// F# cases parked on every runtime, each with why it is parked, what would un-park it, and how
+    /// it was verified to behave on real .NET. `onRuntime` folds these into every runtime's parks.
     ///
-    /// A case named here is skipped as Inconclusive by `F# pure tests`, and only its *real-runtime*
+    /// A parked case is skipped as Inconclusive by `F# pure tests`, and only its *real-runtime*
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
+    let parkedEverywhere : Map<string, string> =
+        [
+            "PrintfCacheHit",
+            """Parked for a different reason from the usual "PawPrint cannot do this yet": PawPrint refuses it on purpose, because the guest image FSC produced contains an unverifiable call (see the guest's own comment, and dotnet/fsharp#20270). Real .NET runs it, so the case cannot pass the differential comparison, and should not -- its passing would mean PawPrint had started accepting IL it is designed to reject. So it stays parked for as long as the image contains that call. The refusal is asserted by `PawPrint refuses the unverifiable call in PrintfCacheHit` instead."""
+        ]
+        |> Map.ofList
+
+    /// How each F# case ends, on every runtime, when that is not a normal exit with code 0.
+    /// `onRuntime` folds these into every runtime's endings.
     ///
-    /// `PrintfCacheHit` is parked for a different reason from the usual "PawPrint cannot do this
-    /// yet": PawPrint refuses it on purpose, because the guest image FSC produced contains an
-    /// unverifiable call (see the guest's own comment, and dotnet/fsharp#20270). Real .NET runs it,
-    /// so the case cannot pass the differential comparison, and should not — its passing would mean
-    /// PawPrint had started accepting IL it is designed to reject. The refusal is asserted by
-    /// `PawPrint refuses the unverifiable call in PrintfCacheHit` instead.
-    let unimplemented : Set<string> = Set.ofList [ "PrintfCacheHit" ]
+    /// An unhandled exception is declared only when the throw is the intended observable: without
+    /// the declaration, a case that crashes both runtimes would silently pass. `AbstractDispatch`
+    /// returns the sum computed by its `Combine` call (see issue #693: 40 + 2 = 42) rather than a
+    /// boolean success/failure code, so a wrong dispatch is directly observable as a wrong number
+    /// rather than being laundered through an if/else into 0-or-1.
+    let endingsEverywhere : Map<string, GuestEnding> =
+        [
+            "AbstractDispatch", GuestEnding.ExitCode 42
+            "ByrefDispatch", GuestEnding.ExitCode 42
+        ]
+        |> Map.ofList
 
-    // F# test cases that legitimately throw under both runtimes. Without this set, a test
-    // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
-    // mechanism. Add a case here only when the throw is the intended observable.
-    let expectsUnhandledException : Set<string> = Set.empty
+    /// Which F# cases are parked on `runtime`, and how each case is expected to end there.
+    let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =
+        match runtime with
+        | EmulatedRuntime.Net10 ->
+            {
+                Parked = parkedEverywhere
+                Endings = endingsEverywhere
+            }
 
-    // F# test cases whose successful exit code is not 0 — same mechanism as
-    // `customExitCodes` in TestPureCases.fs. `AbstractDispatch` returns the sum computed by
-    // its `Combine` call (see issue #693: 40 + 2 = 42) rather than a boolean success/failure
-    // code, so a wrong dispatch is directly observable as a wrong number rather than being
-    // laundered through an if/else into 0-or-1.
-    let customExitCodes : Map<string, int> =
-        [ "AbstractDispatch", 42 ; "ByrefDispatch", 42 ] |> Map.ofList
+    /// The F# cases parked on the runtime under test.
+    let unimplemented () : string list =
+        (onRuntime (FrameworkUnderTest.runtime ())).Parked |> Map.keys |> List.ofSeq
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
         let messages, loggerFactory = LoggerFactory.makeTest ()
 
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending testCaseName
 
         let dotnetRuntimes =
             seq {
@@ -179,7 +221,7 @@ module TestFSharpPureCases =
             // `DifferentialOracle.alongsideInterpreted`.
             let realResult, pawPrintResult =
                 DifferentialOracle.alongsideInterpreted
-                    (fun () -> RealRuntime.executePublishedApp [| testCaseName |] exePath)
+                    (fun () -> RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath)
                     (fun () ->
                         Program.run
                             loggerFactory
@@ -193,17 +235,17 @@ module TestFSharpPureCases =
                             }
                     )
 
-            // The publish is self-contained, so the guest runs on the publish's own CoreLib.
+            // The publish holds no framework, so the guest runs on the framework under test's CoreLib.
             FrameworkUnderTest.assertOutcomeServes pawPrintResult
 
             match realResult, ExpectRun.ended pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _, _) ->
-                exitCode |> shouldEqual expectedExitCode
+                GuestEnding.ExitCode exitCode |> shouldEqual ending
                 terminalState.LatchedExitCode |> shouldEqual exitCode
             | RealRuntimeResult.UnhandledException realExn, RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
-                if not (expectsUnhandledException.Contains testCaseName) then
+                if ending <> GuestEnding.UnhandledException then
                     failwith
-                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
+                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Declare its ending as an unhandled exception if that is intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -230,8 +272,9 @@ module TestFSharpPureCases =
 
     [<TestCaseSource(nameof testCases)>]
     let ``F# pure tests`` (testCaseName : string) =
-        if unimplemented.Contains testCaseName then
-            Assert.Inconclusive $"Test case '%s{testCaseName}' is not yet implemented in PawPrint"
+        match (onRuntime (FrameworkUnderTest.runtime ())).Parked.TryFind testCaseName with
+        | Some reason -> Assert.Inconclusive $"Test case '%s{testCaseName}' is parked: %s{reason}"
+        | None -> ()
 
         runTest testCaseName
 
@@ -419,12 +462,7 @@ module TestFSharpPureCases =
         // This case never runs PawPrint, so it needs the publish rather than the image.
         publishOnce.Force ()
 
-        let expectedExitCode =
-            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
+        let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending testCaseName
 
-        match RealRuntime.executePublishedApp [| testCaseName |] exePath with
-        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException report ->
-            failwith $"Real runtime terminated with an unhandled exception for %s{testCaseName}:\n%s{report}"
-        | RealRuntimeResult.Aborted (_code, report) ->
-            failwith $"Real runtime called Environment.FailFast for %s{testCaseName}:\n%s{report}"
+        RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath
+        |> GuestEnding.assertReal testCaseName ending

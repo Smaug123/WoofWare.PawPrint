@@ -186,16 +186,16 @@ module TestSigsuspend =
                 =
                 match UnixSignal.tryOnReturnToUser main system with
                 | Error refusal -> failwith $"onReturnToUser refused: %A{refusal}"
-                | Ok (ReturnToUserOutcome.Resumes system) -> continuation system ran
-                | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> continuation system ran
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
                     runFrames frames system ran
                     |> Result.bind (fun (system, ran) -> continuation system ran)
-                | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+                | Ok (ProcessFate.ProcessEnded ended) ->
                     match EndedProcess.termination ended with
                     | ProcessTermination.Signaled (signal, _) -> Error (Stop.Killed (signal, r))
                     | other -> failwith $"the main thread's return ended the process with %O{other}"
-                | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
-                | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped _, _) as other)
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, _) as other) ->
                     failwith $"the main thread's return took %A{other}"
 
             and runFrames
@@ -296,22 +296,22 @@ module TestSigsuspend =
                             }
             | Some other -> failwith $"the main thread is parked in %A{other}"
 
-    let private afterKill (outcome : Result<KillOutcome<int, string>, UnixError>) : Step =
+    let private afterKill (outcome : Result<ProcessFate<KillOutcome, int, string>, UnixError>) : Step =
         fun r ->
             match outcome with
             | Error errno -> failwith $"the send failed with %O{errno}"
-            | Ok (KillOutcome.ProcessContinues system)
-            | Ok (KillOutcome.ProcessStopped (_, system)) ->
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessStopped _, system)) ->
                 wakeIfDue
                     { r with
                         System = system
                     }
-            | Ok (KillOutcome.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded ended) ->
                 match ended.Termination with
                 | ProcessTermination.Signaled (signal, _) -> Error (Stop.Killed (signal, r))
                 | other -> failwith $"the process ended by %O{other}"
 
-    let private kill (r : Replay) (signal : Signal) : Result<KillOutcome<int, string>, UnixError> =
+    let private kill (r : Replay) (signal : Signal) : Result<ProcessFate<KillOutcome, int, string>, UnixError> =
         let pid = ProcessId.toInt32 (UnixSystem.processId r.System)
 
         match UnixSignal.tryKill pid (signo r signal) r.System with
@@ -488,7 +488,7 @@ module TestSigsuspend =
         let stop : Step =
             fun r ->
                 match kill r Signal.SIGSTOP with
-                | Ok (KillOutcome.ProcessStopped (_, system)) ->
+                | Ok (ProcessFate.Continues (KillOutcome.ProcessStopped _, system)) ->
                     parent
                         (fun _ -> " stopped=1")
                         { r with
@@ -889,8 +889,8 @@ module TestSigsuspend =
 
             let returnToUser (system : UnixSystem<int, string>) : UnixSystem<int, string> =
                 match UnixSignal.tryOnReturnToUser main system with
-                | Ok (ReturnToUserOutcome.Resumes system)
-                | Ok (ReturnToUserOutcome.RunHandlers (_, system)) -> system
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system))
+                | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers _, system)) -> system
                 | other -> failwith $"the main thread's return took %A{other}"
 
             let setmask = how flavour SignalMaskChange.SetMask
@@ -1117,7 +1117,7 @@ module TestSigsuspend =
                         || (numbering = SignalNumbering.Linux && blocked)
 
                     match UnixSignal.tryPthreadKill main (Signal.toRawSignoUnder numbering signal) system with
-                    | Ok (Ok (KillOutcome.ProcessContinues after)) -> system <- after
+                    | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after))) -> system <- after
                     | other -> failwith $"pthread_kill answered %A{other}"
 
                     if keeps then
@@ -1370,7 +1370,7 @@ module TestSigsuspend =
 
             let sent =
                 match UnixSignal.tryKill (ProcessId.toInt32 (UnixSystem.processId blocking)) contSigno blocking with
-                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
                 | other -> failwith $"kill: %A{other}"
 
             let asleep =

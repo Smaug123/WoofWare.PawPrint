@@ -18,7 +18,7 @@ open WoofWare.PosixKernel.Test
 module TestNullaryIlOp =
 
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         use stream = File.OpenRead corelibPath
         Assembly.read loggerFactory (Some corelibPath) stream
@@ -2877,6 +2877,57 @@ module TestNullaryIlOp =
 
         for following in [ None ; Some NullaryIlOp.Conv_R8 ; Some NullaryIlOp.Pop ] do
             convRUnBefore following input |> doubleBits |> shouldEqual 0x43E0000010000000L
+
+    /// `ldarg.0; conv.r.un; ret` on the host, then `conv.r4` before the `ret` when `thenConvR4`.
+    let private hostConvRUn<'source, 'result> (thenConvR4 : bool) : Func<'source, 'result> =
+        let dm =
+            DynamicMethod ($"conv_r_un_%s{typeof<'source>.Name}_%b{thenConvR4}", typeof<'result>, [| typeof<'source> |])
+
+        let il = dm.GetILGenerator ()
+        il.Emit OpCodes.Ldarg_0
+        il.Emit OpCodes.Conv_R_Un
+
+        if thenConvR4 then
+            il.Emit OpCodes.Conv_R4
+
+        il.Emit OpCodes.Ret
+        dm.CreateDelegate typeof<Func<'source, 'result>> :?> Func<'source, 'result>
+
+    [<Test>]
+    let ``conv.r.un on a float converts it as the host does, at the width the next opcode decides`` () : unit =
+        let singleToSingle = hostConvRUn<float32, float32> true
+        let singleToDouble = hostConvRUn<float32, float> false
+        let doubleToSingle = hostConvRUn<float, float32> true
+        let doubleToDouble = hostConvRUn<float, float> false
+
+        // Every bit pattern of either width, so NaN payloads, both zeros, subnormals and the
+        // doubles that round to a float32 tie are all reached.
+        let property (singleBitsIn : int32, doubleBitsIn : uint64) : unit =
+            let s = BitConverter.Int32BitsToSingle singleBitsIn
+            let d = BitConverter.Int64BitsToDouble (int64<uint64> doubleBitsIn)
+            let single = EvalStackValue.Float (EvalStackFloat.Single s)
+            let double = EvalStackValue.Float (EvalStackFloat.Double d)
+
+            convRUnBefore (Some NullaryIlOp.Conv_R4) single
+            |> singleBits
+            |> shouldEqual (BitConverter.SingleToInt32Bits (singleToSingle.Invoke s))
+
+            convRUnBefore None single
+            |> doubleBits
+            |> shouldEqual (BitConverter.DoubleToInt64Bits (singleToDouble.Invoke s))
+
+            convRUnBefore (Some NullaryIlOp.Conv_R4) double
+            |> singleBits
+            |> shouldEqual (BitConverter.SingleToInt32Bits (doubleToSingle.Invoke d))
+
+            convRUnBefore None double
+            |> doubleBits
+            |> shouldEqual (BitConverter.DoubleToInt64Bits (doubleToDouble.Invoke d))
+
+        Check.One (
+            config,
+            Prop.forAll (Arb.fromGen (Gen.zip (Gen.choose (Int32.MinValue, Int32.MaxValue)) genUInt64)) property
+        )
 
     /// The stack type a checked conversion pushes. The host oracle's `DynamicMethod` returns
     /// exactly this type: returning anything narrower would let the host discard the slot's

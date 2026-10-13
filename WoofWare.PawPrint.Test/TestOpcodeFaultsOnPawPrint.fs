@@ -28,10 +28,11 @@ open WoofWare.PawPrint
 [<Explicit>]
 module TestOpcodeFaultsOnPawPrint =
 
-    /// Instructions on which PawPrint is known to disagree with the host, with the disagreement.
-    /// Each is parked until the interpreter is fixed. Every disagreement so far is a refusal: PawPrint
-    /// stops the run where the host completes or raises, rather than raising something else.
-    let private parked : Map<NullaryIlOp, string> =
+    /// Instructions on which PawPrint is known to disagree with the host on every runtime, with the
+    /// disagreement. Each is parked until the interpreter is fixed. Every disagreement so far is a
+    /// refusal: PawPrint stops the run where the host completes or raises, rather than raising
+    /// something else. `parkedOn` folds these into every runtime's parks.
+    let private parkedEverywhere : Map<NullaryIlOp, string> =
         // `CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer, which is what
         // an element a C# array initialiser leaves at its default holds. `add`, `sub` and `mul`
         // take that as 0; these refuse it.
@@ -39,7 +40,6 @@ module TestOpcodeFaultsOnPawPrint =
             "refuses a native int whose zero is a null managed pointer (CliType.zeroOfPrimitive), where the host computes with 0"
 
         [
-            NullaryIlOp.Conv_r_un, "refuses a float operand (EvalStack.fs), which the host converts without raising"
             NullaryIlOp.Div, nullNativeIntZero
             NullaryIlOp.Div_un, nullNativeIntZero
             NullaryIlOp.Rem, nullNativeIntZero
@@ -53,6 +53,11 @@ module TestOpcodeFaultsOnPawPrint =
             NullaryIlOp.Mul_ovf_un, nullNativeIntZero
         ]
         |> Map.ofList
+
+    /// The instructions parked on `runtime`, each with its disagreement.
+    let private parkedOn (runtime : EmulatedRuntime) : Map<NullaryIlOp, string> =
+        match runtime with
+        | EmulatedRuntime.Net10 -> parkedEverywhere
 
     let private csType (operand : NumericOpcodeGrid.Operand) : string =
         match operand with
@@ -191,7 +196,7 @@ module TestOpcodeFaultsOnPawPrint =
             let case =
                 (TestCaseData [| box op |]).SetName $"PawPrint raises what the host raises: %O{op}"
 
-            match parked.TryFind op with
+            match (parkedOn (FrameworkUnderTest.runtime ())).TryFind op with
             | Some reason -> case.Explicit reason
             | None -> case
         )

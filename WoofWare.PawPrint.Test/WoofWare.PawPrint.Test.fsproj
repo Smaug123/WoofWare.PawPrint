@@ -20,6 +20,8 @@
     <Compile Include="TestPublishedXmlDocumentation.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="FrameworkUnderTest.fs" />
+    <Compile Include="HostImage.fs" />
+    <Compile Include="ParkedOn.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
@@ -54,9 +56,11 @@
              Link="HostStat.fs" />
     <Compile Include="HostCLibrary.fs" />
     <Compile Include="RealRuntime.fs" />
+    <Compile Include="GuestEnding.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestFrameworkUnderTest.fs" />
+    <Compile Include="TestParkedOn.fs" />
     <Compile Include="DifferentialOracle.fs" />
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
@@ -407,6 +411,7 @@
     <Compile Include="TestEmulatedKernelAbort.fs" />
     <Compile Include="TestInheritedSignalIgnores.fs" />
     <Compile Include="TestOraclePolicy.fs" />
+    <Compile Include="TestGuestParking.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />
     <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
@@ -429,6 +434,7 @@
     <Compile Include="TestMultiProgram.fs" />
     <Compile Include="TestProgramChoice.fs" />
     <Compile Include="TestSeveralPrograms.fs" />
+    <Compile Include="TestMultiProgramWakes.fs" />
     <Compile Include="TestAspNetTwoProcess.fs" />
     <Compile Include="TestFinallyChain.fs" />
   </ItemGroup>

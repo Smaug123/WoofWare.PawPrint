@@ -304,8 +304,8 @@ module TestUnblockForAnotherTask =
                     (ImmutableArray.CreateRange (Array.create chunk 0x61uy))
                     system
             with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill chunk system
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Completed _, system)) -> fill chunk system
+            | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) ->
                 if chunk = 1 then system else fill 1 system
             | other -> failwith $"filling the pipe: %A{other}"
 
@@ -376,7 +376,7 @@ module TestUnblockForAnotherTask =
                     (ImmutableArray.Create 0x62uy)
                     system
             with
-            | Ok (WriteOutcome.WouldBlock (_, system)) -> Some system
+            | Ok (WriteStep.WouldBlock (_, system)) -> Some system
             | Ok _ -> None
             | Error refusal -> failwith $"the write was refused: %A{refusal}"
         | Sleep.EventPort ->
@@ -412,7 +412,7 @@ module TestUnblockForAnotherTask =
                 |> Result.mapError (fun refusal -> $"%A{refusal}")
 
         match outcome with
-        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> system
         | other -> failwith $"%A{case}: generating the signal answered %A{other}"
 
     /// What the unblocker's call answered.

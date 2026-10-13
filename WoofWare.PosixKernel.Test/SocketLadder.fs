@@ -113,7 +113,7 @@ module SocketLadder =
                 match
                     CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform (loopback (peerPort kind))) system
                 with
-                | Ok (ConnectOutcome.Completed, system) -> system
+                | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"setUp: connect answered %A{other}"
             | State.Listening -> system |> bindTo fd (loopback 0us) |> listen fd
 

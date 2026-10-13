@@ -37,7 +37,7 @@ open WoofWare.PosixKernel.Test
 [<Parallelizable(ParallelScope.All)>]
 module TestGenericEnvironmentCycles =
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 
     /// The text the resolver uses to report a cyclic environment. Every failure these tests

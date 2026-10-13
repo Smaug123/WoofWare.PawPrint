@@ -352,44 +352,43 @@ module TestPipe =
 
                     let mutable transferred = None
 
-                    let actual : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal> =
+                    let actual : Result<WriteStep<WriteAnswer, int, string>, WriteRefusal> =
                         match UnixReadWrite.tryAdmitWrite system.Leader fd buffer (uint64 count) system with
                         | Error refusal -> Error refusal
-                        | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
-                            Ok (WriteOutcome.Returns (answer, after))
-                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
-                            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
-                        | Ok (WriteOutcome.ProcessEnded endedProcess) -> Ok (WriteOutcome.ProcessEnded endedProcess)
-                        | Ok (WriteOutcome.WouldBlock (condition, after)) ->
-                            Ok (WriteOutcome.WouldBlock (condition, after))
-                        | Ok (WriteOutcome.Restarts _) as other ->
+                        | Ok (WriteStep.Returns (WriteAdmission.Answered answer, after)) ->
+                            Ok (WriteStep.Returns (answer, after))
+                        | Ok (WriteStep.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
+                            Ok (WriteStep.ReturnsRaising (answer, signal, after))
+                        | Ok (WriteStep.ProcessEnded endedProcess) -> Ok (WriteStep.ProcessEnded endedProcess)
+                        | Ok (WriteStep.WouldBlock (condition, after)) -> Ok (WriteStep.WouldBlock (condition, after))
+                        | Ok (WriteStep.Restarts _) as other ->
                             failwith $"%s{where}: a write that never slept restarted: %A{other}"
-                        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
+                        | Ok (WriteStep.Returns (WriteAdmission.Transfer n, admitted)) ->
                             transferred <- Some n
-                            UnixReadWrite.tryWrite system.Leader fd (payload reference.Offered n) admitted
-                        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
+                            UnixReadWrite.tryWriteBytes system.Leader fd (payload reference.Offered n) admitted
+                        | Ok (WriteStep.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
                             transferred <- Some n
                             total |> shouldEqual count
 
-                            UnixReadWrite.tryWriteThenSleep
+                            UnixReadWrite.tryWriteBytesThenSleep
                                 system.Leader
                                 fd
                                 total
                                 (payload reference.Offered n)
                                 admitted
-                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _))
-                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
+                        | Ok (WriteStep.ReturnsRaising (WriteAdmission.Transfer _, _, _))
+                        | Ok (WriteStep.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
                             failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"
 
                     match Map.tryFind fd reference.Fds with
                     | None ->
                         match actual with
-                        | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
+                        | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
                             after |> shouldEqual system
                         | other -> failwith $"%s{where}: expected EBADF, got %A{other}"
                     | Some (PipeEnd.Read, _) ->
                         match actual with
-                        | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
+                        | Ok (WriteStep.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
                             after |> shouldEqual system
                         | other -> failwith $"%s{where}: expected EBADF on the read end, got %A{other}"
                     | Some (PipeEnd.Write, _) ->
@@ -404,18 +403,18 @@ module TestPipe =
                         let raised = sigPipeFrom flavour system.Leader
 
                         match sigPipe, actual with
-                        | SignalDisposition.Default, Ok (WriteOutcome.ProcessEnded endedProcess) ->
+                        | SignalDisposition.Default, Ok (WriteStep.ProcessEnded endedProcess) ->
                             endedProcess.Termination
                             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
 
                             EndedMachine.assertTasksGone system endedProcess
                             ended <- true
                         | SignalDisposition.Ignore,
-                          Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                          Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
                             signal |> shouldEqual raised
                             after |> shouldEqual system
                         | SignalDisposition.Catch _,
-                          Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                          Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
                             signal |> shouldEqual raised
                             // Pending once, however many writes raised it.
                             SignalState.pending after.Process.Signals |> shouldEqual [ raised ]
@@ -447,7 +446,7 @@ module TestPipe =
                             Ok (WriteAnswer.Completed (int64 takes), true)
 
                     match expected, actual with
-                    | Error (), Ok (WriteOutcome.WouldBlock (condition, after)) when readerOpen ->
+                    | Error (), Ok (WriteStep.WouldBlock (condition, after)) when readerOpen ->
                         // The write sleeps, having put in what fits. The
                         // property's one task is then asleep, so the call is
                         // checked here and not kept: the sequence carries on
@@ -475,7 +474,7 @@ module TestPipe =
                         // A write that sleeps reads only the bytes it puts in,
                         // and the rest only once it can put them in.
                         transferred |> shouldEqual (if takes = 0 then None else Some takes)
-                    | Ok (answer, _), Ok (WriteOutcome.Returns (actualAnswer, after)) when answer = actualAnswer ->
+                    | Ok (answer, _), Ok (WriteStep.Returns (actualAnswer, after)) when answer = actualAnswer ->
                         match answer with
                         | WriteAnswer.Completed n when n > 0L ->
                             // The caller extracts only what the pipe takes.
@@ -1021,22 +1020,18 @@ module TestPipe =
                                 let raises = not (flavour = SimulatedUnixFlavour.Linux && count = 0)
 
                                 match raises, disposition, actual with
-                                | false, _, Ok (WriteOutcome.Returns (answer, after)) ->
+                                | false, _, Ok (WriteStep.Returns (answer, after)) ->
                                     // Nothing raised, nothing changed.
                                     answer |> shouldEqual (WriteAnswer.Completed 0L)
                                     after |> shouldEqual system
-                                | true, SignalDisposition.Default, Ok (WriteOutcome.ProcessEnded endedProcess) ->
+                                | true, SignalDisposition.Default, Ok (WriteStep.ProcessEnded endedProcess) ->
                                     endedProcess.Termination
                                     |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
-                                | true,
-                                  SignalDisposition.Ignore,
-                                  Ok (WriteOutcome.ReturnsRaising (answer, signal, after)) ->
+                                | true, SignalDisposition.Ignore, Ok (WriteStep.ReturnsRaising (answer, signal, after)) ->
                                     (answer, signal) |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, raised)
                                     // No timestamp moves, even on Darwin.
                                     after |> shouldEqual system
-                                | true,
-                                  SignalDisposition.Catch _,
-                                  Ok (WriteOutcome.ReturnsRaising (answer, signal, after)) ->
+                                | true, SignalDisposition.Catch _, Ok (WriteStep.ReturnsRaising (answer, signal, after)) ->
                                     (answer, signal) |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, raised)
                                     SignalState.pending after.Process.Signals |> shouldEqual [ raised ]
                                     withSignals system.Process.Signals after |> shouldEqual system
@@ -1071,7 +1066,7 @@ module TestPipe =
             let (_, w), system = pipeOrFail 0 (systemOn platform)
 
             match WriteOutcomes.admitThenWrite system.Leader w UserBuffer.Mapped (payload 0 70000) system with
-            | Ok (WriteOutcome.WouldBlock (_, after)) ->
+            | Ok (WriteStep.WouldBlock (_, after)) ->
                 match UnixTaskTable.parkedFor system.Leader after.Tasks with
                 | Some (ParkedSyscall.PipeWrite parked) -> (parked.Count, parked.Written) |> shouldEqual (70000, 65536)
                 | other -> failwith $"%O{platform}: %A{other}"

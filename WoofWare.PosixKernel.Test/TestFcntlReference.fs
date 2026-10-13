@@ -430,11 +430,11 @@ module TestFcntlReference =
             match
                 WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped (ImmutableArray.Create 1uy) system
             with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system))
-            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Completed n, _, system)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Completed n, system))
+            | Ok (WriteStep.ReturnsRaising (WriteAnswer.Completed n, _, system)) ->
                 Outcome.Answered (SyscallAnswer.Completed n), system
-            | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system))
-            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, _, system)) ->
+            | Ok (WriteStep.Returns (WriteAnswer.Failed error, system))
+            | Ok (WriteStep.ReturnsRaising (WriteAnswer.Failed error, _, system)) ->
                 Outcome.Answered (SyscallAnswer.Failed error), system
             | other -> failwith $"write: %A{other}"
         | FcntlOp.Close fd ->

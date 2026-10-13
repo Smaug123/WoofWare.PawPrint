@@ -218,8 +218,8 @@ module TestSocketErrorAgainstHost =
         match
             CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform (loopback port)) system
         with
-        | Ok (ConnectOutcome.Completed, system) -> Some (0, system)
-        | Ok (ConnectOutcome.Failed error, system) -> Some (errnoOf system.Machine.UnixPlatform error, system)
+        | Ok (SyscallAnswer.Completed _, system) -> Some (0, system)
+        | Ok (SyscallAnswer.Failed error, system) -> Some (errnoOf system.Machine.UnixPlatform error, system)
         | Error _ -> None
 
     /// A model holding a listener at `listenerPort` and a fresh TCP socket,
@@ -351,7 +351,7 @@ module TestSocketErrorAgainstHost =
             | Buffer.Null
             | Buffer.Faulting -> None
 
-        match UnixSocket.tryGetsockopt fd level optionName (userBuffer value) lengthBuffer read system with
+        match UnixSocket.tryGetsockoptLength fd level optionName (userBuffer value) lengthBuffer read system with
         | Error refusal -> failwith $"the model refused SO_ERROR: %s{SocketOptionRefusal.describe refusal}"
         | Ok (GetSockOptAnswer.Failed (error, overwritten), system) ->
             {

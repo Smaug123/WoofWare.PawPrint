@@ -70,7 +70,7 @@ public class GenericHolder<T>
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
@@ -1167,7 +1167,7 @@ public static class HasRvaData
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
@@ -1380,7 +1380,7 @@ public static class HasRvaData
     let ``RVA field whose signature mentions a type parameter is sized without an instantiation`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
