@@ -650,7 +650,7 @@ module TestSocketOptions =
             | other -> failwith $"%O{platform} %s{label}, unmapped: expected EFAULT, got %A{other}"
 
     [<TestCaseSource(nameof platforms)>]
-    let ``a close that would reset a connection is refused, and every other close is orderly``
+    let ``a close lingering for no time resets the connection, and every other close is orderly``
         (platform : SimulatedUnixPlatform)
         =
         let listener, system = listening platform
@@ -668,19 +668,33 @@ module TestSocketOptions =
             | Ok (SyscallAnswer.Failed error, _) -> failwith $"close answered %O{error}"
             | Error refusal -> Error refusal
 
-        let refusedClose (fd : int) (system : UnixSystem<int, string>) =
-            match close fd system with
-            | Error (CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _)) -> ()
-            | other -> failwith $"%O{platform} fd %d{fd}: expected a refusal, got %A{other}"
+        let read (fd : int) (system : UnixSystem<int, string>) : ReadAnswer =
+            match UnixReadWrite.tryRead 0 fd UserBuffer.Mapped 16UL system with
+            | Ok (ReadOutcome.Answered answer, _) -> answer
+            | other -> failwith $"%O{platform} fd %d{fd}: expected a read to answer, got %A{other}"
 
         // Lingering for no time resets the peer, connected or still queued.
         let zero = setOk Option.Linger client (OptionValue.ofLinger 1 0) system
-        refusedClose client zero
+
+        match close client zero with
+        | Ok reset ->
+            UnixSystem.checkInvariants reset |> shouldEqual []
+            read accepted reset |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
+        | Error refusal -> failwith $"%O{platform}: %s{CloseRefusal.describe refusal}"
 
         let queuedClient, queued = socketOf SocketDomain.Inet SocketKind.Stream zero
         let queued = connectTo 5000us queuedClient queued
         let queued = setOk Option.Linger queuedClient (OptionValue.ofLinger 1 0) queued
-        refusedClose queuedClient queued
+
+        match close queuedClient queued with
+        | Ok reset ->
+            UnixSystem.checkInvariants reset |> shouldEqual []
+
+            match UnixConnection.tryAccept 0 listener UserBuffer.Mapped 16u reset with
+            | Ok (AcceptOutcome.Accepted (fd, _, _), reset) ->
+                read fd reset |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
+            | other -> failwith $"%O{platform}: accepting the reset connection answered %A{other}"
+        | Error refusal -> failwith $"%O{platform}, queued: %s{CloseRefusal.describe refusal}"
 
         // Lingering for some time, or not at all, is an orderly close.
         for onOff, time in [ 1, 1 ; 0, 0 ] do
@@ -699,7 +713,7 @@ module TestSocketOptions =
         | Error refusal -> failwith $"closing the peer: %s{CloseRefusal.describe refusal}"
 
     [<Test>]
-    let ``a Linux accept that drops a connection whose end would reset it is refused`` () : unit =
+    let ``a Linux accept that drops a connection whose end lingers for no time resets it`` () : unit =
         let withLinger (time : int) =
             let listener, system = listening linux
             let system = setOk Option.Linger listener (OptionValue.ofLinger 1 time) system
@@ -707,15 +721,24 @@ module TestSocketOptions =
             let system = connectTo 5000us client system
             // A negative length: Linux takes the connection, then answers
             // EINVAL and drops it.
-            UnixConnection.tryAccept 0 listener UserBuffer.Mapped System.UInt32.MaxValue system
+            client, UnixConnection.tryAccept 0 listener UserBuffer.Mapped System.UInt32.MaxValue system
+
+        let clientRead (client : int) (system : UnixSystem<int, string>) : ReadAnswer =
+            match UnixReadWrite.tryRead 0 client UserBuffer.Mapped 16UL system with
+            | Ok (ReadOutcome.Answered answer, _) -> answer
+            | other -> failwith $"expected the client's read to answer, got %A{other}"
 
         match withLinger 0 with
-        | Error (AcceptRefusal.AbortiveDrop _) -> ()
-        | other -> failwith $"expected a refusal, got %A{other}"
+        | client, Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, system) ->
+            UnixSystem.checkInvariants system |> shouldEqual []
+            clientRead client system |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
+        | other -> failwith $"expected a dropped connection, got %A{other}"
 
-        // Lingering for some time drops it in order, as before.
+        // Lingering for some time drops it in order.
         match withLinger 1 with
-        | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, _) -> ()
+        | client, Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, system) ->
+            clientRead client system
+            |> shouldEqual (ReadAnswer.Completed ImmutableArray.Empty)
         | other -> failwith $"expected a dropped connection, got %A{other}"
 
     // ------------------------------------------------------------------

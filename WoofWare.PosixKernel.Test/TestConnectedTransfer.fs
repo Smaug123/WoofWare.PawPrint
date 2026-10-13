@@ -1557,7 +1557,7 @@ module TestConnectedTransfer =
             // The other flavour's rules.
             let other =
                 match flavour with
-                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin Map.empty
+                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin (Map.empty, Set.empty)
                 | SimulatedUnixFlavour.Darwin -> TcpTransferRules.Linux Set.empty
 
             let otherFlavour =
