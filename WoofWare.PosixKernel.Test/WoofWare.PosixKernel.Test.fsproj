@@ -18,6 +18,7 @@
     <Compile Include="WriteAdmissions.fs" />
     <Compile Include="ReadOutcomes.fs" />
     <Compile Include="OpenOutcomes.fs" />
+    <Compile Include="ConnectOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="CopyIn.fs" />
     <Compile Include="OptionValue.fs" />

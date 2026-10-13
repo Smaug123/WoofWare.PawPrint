@@ -73,7 +73,7 @@ module KeventWorld =
         (fd : int)
         (port : uint16)
         (system : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match
             CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system

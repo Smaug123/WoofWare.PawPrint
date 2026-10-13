@@ -3321,8 +3321,7 @@ module TestUnixSystemStep =
         let _, parkedIn = UnixDescriptor.tryFlock waiterTask second 2 held |> parked
 
         let connect (task : int) : unit =
-            UnixConnection.tryConnect task first UserBuffer.Mapped 0u System.Collections.Immutable.ImmutableArray.Empty parkedIn
-            |> ignore
+            UnixConnection.tryConnect task first UserBuffer.Mapped 0u parkedIn |> ignore
 
         let parkedExn = Assert.Throws<exn> (fun () -> connect waiterTask)
         parkedExn.Message |> shouldContainText "UnixConnection.connect"
@@ -3333,8 +3332,8 @@ module TestUnixSystemStep =
 
         // The holder is neither, and its connect is answered: `first` is not a
         // socket.
-        match UnixConnection.tryConnect holderTask first UserBuffer.Mapped 0u System.Collections.Immutable.ImmutableArray.Empty parkedIn with
-        | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOTSOCK), _) -> ()
+        match UnixConnection.tryConnect holderTask first UserBuffer.Mapped 0u parkedIn with
+        | Ok (CallProgress.Answered (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOTSOCK), _)) -> ()
         | other -> failwith $"the holder's connect answered %A{other}"
 
     [<Test>]

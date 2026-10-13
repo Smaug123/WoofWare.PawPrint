@@ -166,7 +166,7 @@ module TestSocketEventDelivery =
         (nonBlocking : bool)
         (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match
             UnixConnection.connectSocket
@@ -488,7 +488,7 @@ module TestSocketEventDelivery =
         // Nothing listens at 5999: the refusal latches and signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -509,7 +509,7 @@ module TestSocketEventDelivery =
         // The delivering connect resets the socket, and the reset signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -549,7 +549,7 @@ module TestSocketEventDelivery =
         delivered |> shouldEqual []
 
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNABORTED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNABORTED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
@@ -833,7 +833,7 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 6UL ]
 
         let outcome, kernel = connect clientId false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 
@@ -854,7 +854,7 @@ module TestSocketEventDelivery =
 
         let outcome, kernel = connect clientId false (loopback 5999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverEpollEvents queueId 8 kernel
 

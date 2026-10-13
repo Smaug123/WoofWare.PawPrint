@@ -958,7 +958,7 @@ module TestBlockingConnection =
 
         let system =
             match KeventWorld.connect client port system with
-            | ConnectOutcome.Completed, system -> system
+            | SyscallAnswer.Completed 0L, system -> system
             | other, _ -> failwith $"connect: %A{other}"
 
         let server, system = KeventWorld.accept listener system
@@ -3022,7 +3022,7 @@ module TestBlockingConnection =
                         let fd, view = KeventWorld.stream false view
 
                         match KeventWorld.connect fd port view with
-                        | ConnectOutcome.Completed, view -> fd, view
+                        | SyscallAnswer.Completed 0L, view -> fd, view
                         | other, _ -> failwith $"connect: %A{other}"
                     )
                     machine

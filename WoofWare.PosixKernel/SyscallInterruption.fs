@@ -196,6 +196,11 @@ module SyscallInterruption =
         // send. A Darwin one never sleeps.
         | ParkedSyscall.DatagramReceive _
         | ParkedSyscall.DatagramSend _ -> SignalRestartRule.RestartsUnderSaRestart
+        // Measured on Linux 6.18.5 (`docs/probes/connect-park`, rows T3 and
+        // U3): a TCP or Unix-domain connect asleep on a full listener returned
+        // EINTR without SA_RESTART and went on sleeping with it. A Darwin
+        // connect never sleeps.
+        | ParkedSyscall.Connect _ -> SignalRestartRule.RestartsUnderSaRestart
 
     /// What a task in `sigsuspend` does now, its temporary mask in force.
     [<RequireQualifiedAccess>]

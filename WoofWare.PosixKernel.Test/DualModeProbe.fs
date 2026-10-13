@@ -160,10 +160,10 @@ module DualModeProbe =
 
     let private connect (libc : Libc) (fd : int) (blob : byte[]) (length : int) : Answer =
         match CopyIn.connect fd UserBuffer.Mapped (uint32 length) blob libc.System with
-        | Result.Ok (ConnectOutcome.Completed, system) ->
+        | Result.Ok (SyscallAnswer.Completed _, system) ->
             libc.System <- system
             Answer.Ok
-        | Result.Ok (ConnectOutcome.Failed error, system) ->
+        | Result.Ok (SyscallAnswer.Failed error, system) ->
             libc.System <- system
             Answer.Errno error
         | Result.Error refusal -> Answer.Refused (ConnectRefusal.describe refusal)
