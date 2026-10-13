@@ -224,7 +224,7 @@ class WaitsOnADuplicatedPort
                         match
                             UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
                         with
-                        | Ok (KillOutcome.ProcessContinues system) -> system
+                        | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
                         | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
                     match UnixPoll.finishEpollWait thread interrupted with

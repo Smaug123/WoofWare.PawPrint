@@ -297,7 +297,7 @@ module TestSockOptAgainstHost =
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.trySetsockopt fd level name (userBuffer buffer) length supplied system
+        UnixSocket.trySetsockoptBytes fd level name (userBuffer buffer) length supplied system
 
     /// What a read through real buffers of the option's size answers, on the
     /// host: the errno, and the bytes and length on success.
@@ -329,7 +329,7 @@ module TestSockOptAgainstHost =
             | Ok GetSockOptAdmission.ReadLength -> Some 8u
             | _ -> None
 
-        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockoptLength fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported copied, _) -> 0, Seq.toArray copied
         | Ok (GetSockOptAnswer.Failed (error, _), _) -> errnoOf platform error, [||]
         | Error refusal -> failwith $"reading the model back was refused: %s{SocketOptionRefusal.describe refusal}"
@@ -524,7 +524,7 @@ module TestSockOptAgainstHost =
 
                         let model =
                             match
-                                UnixSocket.tryGetsockopt
+                                UnixSocket.tryGetsockoptLength
                                     modelFd
                                     level
                                     name

@@ -28,7 +28,7 @@ module ReuseAddress =
                 failwith $"ReuseAddress.set: fd %d{fd} answered %O{error} before the value was read"
             | Error refusal -> failwith $"ReuseAddress.set: %s{SocketOptionRefusal.describe refusal}"
 
-        match UnixSocket.trySetsockopt fd level optionName UserBuffer.Mapped optionLength supplied system with
+        match UnixSocket.trySetsockoptBytes fd level optionName UserBuffer.Mapped optionLength supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | Ok (SetSockOptAnswer.Failed error, _) -> failwith $"ReuseAddress.set: fd %d{fd} answered %O{error}"
         | Error refusal -> failwith $"ReuseAddress.set: %s{SocketOptionRefusal.describe refusal}"

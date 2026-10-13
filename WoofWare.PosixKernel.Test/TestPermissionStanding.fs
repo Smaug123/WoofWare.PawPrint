@@ -578,7 +578,7 @@ module TestPermissionStanding =
             | Call.Unlink p -> sticky (UnixNamespace.tryUnlink (PathArg.ofPath (path p)) system)
             | Call.RmDir p -> sticky (UnixNamespace.tryRmdir (PathArg.ofPath (path p)) system)
             | Call.Rename (source, destination) ->
-                match UnixNamespace.tryRename (argument source) (argument destination) system with
+                match UnixNamespace.tryRenameEager (argument source) (argument destination) system with
                 | Ok answer -> Ok answer
                 | Error (RenameRefusal.Sticky refusal) -> Error refusal
                 | Error other ->
@@ -1073,7 +1073,7 @@ module TestPermissionStanding =
         let changes : (string * (int -> UnixSystem<int, string> -> UnixSystem<int, string>)) list =
             [
                 "write", (fun fd system -> WriteOutcomes.write fd one system |> ok |> snd)
-                "pwrite", (fun fd system -> UnixReadWrite.tryPwrite 0 fd one 0L system |> ok |> snd)
+                "pwrite", (fun fd system -> UnixReadWrite.tryPwriteBytes 0 fd one 0L system |> ok |> snd)
                 "ftruncate", (fun fd system -> UnixDescriptor.tryFtruncate fd 0L system |> ok |> snd)
             ]
 
@@ -1127,7 +1127,7 @@ module TestPermissionStanding =
         | Error refusal -> refusal |> shouldEqual (WriteRefusal.UnmeasuredSetIdChange (inode, written))
         | Ok (answer, _) -> failwith $"write answered %A{answer}"
 
-        match UnixReadWrite.tryPwrite 0 fd one 0L opened with
+        match UnixReadWrite.tryPwriteBytes 0 fd one 0L opened with
         | Error refusal -> refusal |> shouldEqual (PWriteRefusal.UnmeasuredSetIdChange (inode, written))
         | Ok (answer, _) -> failwith $"pwrite answered %A{answer}"
 
@@ -1292,7 +1292,7 @@ module TestPermissionStanding =
             | SyscallAnswer.Failed error -> failwith $"expected success or EACCES, got %O{error}"
 
         let renamed (source : string) (destination : string) (system : UnixSystem<int, string>) : bool =
-            UnixNamespace.tryRename (argument source) (argument destination) system
+            UnixNamespace.tryRenameEager (argument source) (argument destination) system
             |> ok
             |> succeeds
 
@@ -1370,7 +1370,7 @@ module TestPermissionStanding =
 
                 [
                     WriteOutcomes.write fd one opened |> refused
-                    UnixReadWrite.tryPwrite 0 fd one 0L opened |> refused
+                    UnixReadWrite.tryPwriteBytes 0 fd one 0L opened |> refused
                     UnixDescriptor.tryFtruncate fd 0L opened |> refused
                     UnixDescriptor.tryFtruncate fd 4L opened |> refused
                 ]
@@ -1395,7 +1395,7 @@ module TestPermissionStanding =
                     "/w/k", "/d/f"
                 ] do
                 yield
-                    UnixNamespace.tryRename (argument source) (argument destination) system
+                    UnixNamespace.tryRenameEager (argument source) (argument destination) system
                     |> refused
         ]
         |> List.choose id

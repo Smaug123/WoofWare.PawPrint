@@ -88,8 +88,9 @@ module internal InotifyAddWatchRefusal =
 
 /// An `inotify_add_watch(2)` whose mask and descriptor this kernel has
 /// screened and accepted, paused at the point where it copies its path in.
-/// Obtain one from `UnixInotify.inotifyAddWatchScreenPhase`, and finish it
-/// with `UnixInotify.inotifyAddWatchWithPath`.
+/// Obtain one from `UnixInotify.inotifyAddWatch`, and finish it with
+/// `UnixInotify.inotifyAddWatchWithPath`.
+[<NoEquality ; NoComparison>]
 type PausedInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
@@ -98,19 +99,6 @@ type PausedInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler 
             State : InotifyState
             Word : InotifyMaskWord
         }
-
-/// What screening an `inotify_add_watch(2)`'s mask and descriptor found:
-/// either the call is over without its path having been read at all, or the
-/// kernel has reached the point where it copies the path in.
-[<RequireQualifiedAccess>]
-[<NoEquality ; NoComparison>]
-type InotifyAddWatchProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-    /// Finished, and changing nothing. The path was never read, and must not
-    /// be: Linux answers these errors whatever the path pointer is.
-    | Answered of answer : SyscallAnswer
-    /// The kernel is at the path's copy-in. Hand its bytes to
-    /// `UnixInotify.inotifyAddWatchWithPath`.
-    | NeedsPath of paused : PausedInotifyAddWatch<'Task, 'Handler>
 
 /// `inotify_init1(2)`, `inotify_add_watch(2)` and `inotify_rm_watch(2)`: Linux's
 /// interface for watching the filesystem.
@@ -262,15 +250,18 @@ module UnixInotify =
         tryInotifyInit1 flags system
         |> Refusal.orRaise "UnixInotify.inotifyInit1" InotifyRefusal.kind InotifyRefusal.describe
 
-    /// `inotifyAddWatchScreenPhase`, with a refusal answered as the `Error` rather than raised.
-    let internal tryInotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `inotifyAddWatch`, with a refusal answered as the `Error` rather than raised.
+    let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (mask : uint32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<InotifyAddWatchProgress<'Task, 'Handler>, InotifyAddWatchRefusal>
+        : Result<
+              CallProgress<PausedInotifyAddWatch<'Task, 'Handler>, SyscallAnswer * UnixSystem<'Task, 'Handler>>,
+              InotifyAddWatchRefusal
+           >
         =
         let failed (error : UnixError) =
-            Ok (InotifyAddWatchProgress.Answered (SyscallAnswer.Failed error))
+            Ok (CallProgress.Answered (SyscallAnswer.Failed error, system))
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Darwin -> Error (InotifyAddWatchRefusal.Flavour SimulatedUnixFlavour.Darwin)
@@ -293,7 +284,7 @@ module UnixInotify =
         | Ok (instance, state) ->
 
         Ok (
-            InotifyAddWatchProgress.NeedsPath
+            CallProgress.NeedsCopyIn
                 {
                     System = system
                     Instance = instance
@@ -303,30 +294,54 @@ module UnixInotify =
         )
 
     /// <summary>
-    /// The first half of `inotify_add_watch(2)`: screen its raw `mask` and its
-    /// descriptor `fd`, before the path is read.
+    /// `inotify_add_watch(2)`: watch the inode a path names, through the
+    /// inotify instance `fd` names, for what `mask` asks; or change what an
+    /// existing watch of that inode asks. Answers the watch's descriptor.
+    ///
+    /// `mask` is raw, in Linux's `&lt;sys/inotify.h&gt;` numbering. Linux's checks,
+    /// in its order (measured, `inotify-probe.c` section W and
+    /// `inotify-instance-probe.c` sections G, M and U):
+    /// - a bit `&lt;sys/inotify.h&gt;` does not define, or no bit at all, is
+    ///   `EINVAL`, ahead of the descriptor;
+    /// - a descriptor not open is `EBADF`;
+    /// - `IN_MASK_ADD` with `IN_MASK_CREATE` is `EINVAL`, and so is a
+    ///   descriptor that names anything but an inotify instance;
+    /// - the path is copied in and walked from the current directory, the
+    ///   final symbolic link followed unless `IN_DONT_FOLLOW`; with
+    ///   `IN_ONLYDIR`, an inode that is not a directory is `ENOTDIR`;
+    /// - a caller who may not read the inode is `EACCES`;
+    /// - a watch of the inode already held answers its descriptor, `EEXIST`
+    ///   under `IN_MASK_CREATE`. Its events and `IN_EXCL_UNLINK` are replaced,
+    ///   or added to under `IN_MASK_ADD`;
+    /// - otherwise a new watch takes the next descriptor, which is never
+    ///   reused. If the instance's owner already holds
+    ///   `InotifyLimits.MaxUserWatches` watches, in any of its instances, the
+    ///   call is `ENOSPC`, and the descriptor it took is spent all the same.
+    ///
+    /// The first three checks never read the path: a call they answer is
+    /// `CallProgress.Answered`, with the system unchanged, and the path may be
+    /// a pointer the client could not read at all. Otherwise the call stops
+    /// where the kernel copies the path in, and `inotifyAddWatchWithPath`,
+    /// given its bytes, finishes it.
+    ///
+    /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
+    /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
+    /// succeed asking for an event this kernel does not raise, or with
+    /// `IN_ONESHOT`, is refused; one that fails answers its errno.
+    ///
+    /// Adding a watch queues nothing. Under the Darwin flavour every call is
+    /// refused.
     /// </summary>
-    /// <remarks>
-    /// A client that reads the path out of a caller's memory calls this first,
-    /// and reads the path only on `InotifyAddWatchProgress.NeedsPath`: Linux
-    /// answers a bad mask, a descriptor not open, `IN_MASK_ADD` with
-    /// `IN_MASK_CREATE`, and a descriptor naming anything but an inotify
-    /// instance without reading the path, so the path may be a pointer the
-    /// client could not read at all. `inotifyAddWatch` is this followed by
-    /// `inotifyAddWatchWithPath`; see it for what each answers.
-    /// </remarks>
     /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify.</exception>
-    let inotifyAddWatchScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let inotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (mask : uint32)
         (system : UnixSystem<'Task, 'Handler>)
-        : InotifyAddWatchProgress<'Task, 'Handler>
+        : CallProgress<PausedInotifyAddWatch<'Task, 'Handler>, SyscallAnswer * UnixSystem<'Task, 'Handler>>
         =
-        tryInotifyAddWatchScreenPhase fd mask system
-        |> Refusal.orRaise
-            "UnixInotify.inotifyAddWatchScreenPhase"
-            InotifyAddWatchRefusal.kind
-            InotifyAddWatchRefusal.describe
+        tryInotifyAddWatch fd mask system
+        |> Refusal.orRaise "UnixInotify.inotifyAddWatch" InotifyAddWatchRefusal.kind InotifyAddWatchRefusal.describe
+
 
     /// `inotifyAddWatchWithPath`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyAddWatchWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -337,7 +352,7 @@ module UnixInotify =
         match box paused with
         | null ->
             failwith
-                "UnixInotify.inotifyAddWatchWithPath: this paused call is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixInotify.inotifyAddWatchScreenPhase instead."
+                "UnixInotify.inotifyAddWatchWithPath: this paused call is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixInotify.inotifyAddWatch instead."
         | _ -> ()
 
         let system = paused.System
@@ -505,66 +520,19 @@ module UnixInotify =
             InotifyAddWatchRefusal.kind
             InotifyAddWatchRefusal.describe
 
-    /// `inotifyAddWatch`, with a refusal answered as the `Error` rather than raised.
-    let internal tryInotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `inotify_add_watch(2)` given its path up front: `tryInotifyAddWatch`,
+    /// then `tryInotifyAddWatchWithPath` of `path` if the call reaches the copy.
+    let internal tryInotifyAddWatchEager<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (path : PathArgumentBytes)
         (mask : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InotifyAddWatchRefusal>
         =
-        match tryInotifyAddWatchScreenPhase fd mask system with
+        match tryInotifyAddWatch fd mask system with
         | Error refusal -> Error refusal
-        | Ok (InotifyAddWatchProgress.Answered answer) -> Ok (answer, system)
-        | Ok (InotifyAddWatchProgress.NeedsPath paused) -> tryInotifyAddWatchWithPath path paused
-
-    /// <summary>
-    /// `inotify_add_watch(2)`: watch the inode `path` names, through the
-    /// inotify instance `fd` names, for what `mask` asks; or change what an
-    /// existing watch of that inode asks. Answers the watch's descriptor.
-    ///
-    /// `mask` is raw, in Linux's `&lt;sys/inotify.h&gt;` numbering. Linux's checks,
-    /// in its order (measured, `inotify-probe.c` section W and
-    /// `inotify-instance-probe.c` sections G, M and U):
-    /// - a bit `&lt;sys/inotify.h&gt;` does not define, or no bit at all, is
-    ///   `EINVAL`, ahead of the descriptor;
-    /// - a descriptor not open is `EBADF`;
-    /// - `IN_MASK_ADD` with `IN_MASK_CREATE` is `EINVAL`, and so is a
-    ///   descriptor that names anything but an inotify instance;
-    /// - the path is copied in and walked from the current directory, the
-    ///   final symbolic link followed unless `IN_DONT_FOLLOW`; with
-    ///   `IN_ONLYDIR`, an inode that is not a directory is `ENOTDIR`;
-    /// - a caller who may not read the inode is `EACCES`;
-    /// - a watch of the inode already held answers its descriptor, `EEXIST`
-    ///   under `IN_MASK_CREATE`. Its events and `IN_EXCL_UNLINK` are replaced,
-    ///   or added to under `IN_MASK_ADD`;
-    /// - otherwise a new watch takes the next descriptor, which is never
-    ///   reused. If the instance's owner already holds
-    ///   `InotifyLimits.MaxUserWatches` watches, in any of its instances, the
-    ///   call is `ENOSPC`, and the descriptor it took is spent all the same.
-    ///
-    /// The bits Linux adds to a record (`IN_ISDIR`, `IN_IGNORED`,
-    /// `IN_Q_OVERFLOW`) are accepted and mean nothing. A call that would
-    /// succeed asking for an event this kernel does not raise, or with
-    /// `IN_ONESHOT`, is refused; one that fails answers its errno.
-    ///
-    /// Adding a watch queues nothing. Under the Darwin flavour every call is
-    /// refused.
-    ///
-    /// The first three checks never read the path. A client that has yet to
-    /// read it out of a caller's memory calls `inotifyAddWatchScreenPhase` and
-    /// `inotifyAddWatchWithPath` instead, which this is.
-    /// </summary>
-    /// <exception cref="T:System.PlatformNotSupportedException">This kernel is of `flavour` (Darwin), which has no inotify.</exception>
-    let inotifyAddWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (path : PathArgumentBytes)
-        (mask : uint32)
-        (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
-        =
-        tryInotifyAddWatch fd path mask system
-        |> Refusal.orRaise "UnixInotify.inotifyAddWatch" InotifyAddWatchRefusal.kind InotifyAddWatchRefusal.describe
+        | Ok (CallProgress.Answered answered) -> Ok answered
+        | Ok (CallProgress.NeedsCopyIn paused) -> tryInotifyAddWatchWithPath path paused
 
     /// `inotifyRmWatch`, with a refusal answered as the `Error` rather than raised.
     let internal tryInotifyRmWatch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

@@ -67,7 +67,7 @@ module TestNativeLibc =
                 |> Result.mapError (sprintf "%A")
 
         match outcome with
-        | Ok (KillOutcome.ProcessContinues system) -> system
+        | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
         | other -> failwith $"sending %A{entry}: %A{other}"
 
     let private signal (numbering : SignalNumbering) (signo : int) : Signal =

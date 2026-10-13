@@ -348,10 +348,10 @@ module TestPipeAgainstHost =
                                     UnixReadWrite.tryAdmitWrite system.Leader modelFd buffer (uint64 count) system
                                 with
                                 | Error refusal -> Error refusal
-                                | Ok (WriteOutcome.WouldBlock _) -> Ok None
-                                | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
+                                | Ok (WriteStep.WouldBlock _) -> Ok None
+                                | Ok (WriteStep.Returns (WriteAdmission.Answered answer, after)) ->
                                     Ok (Some (answer, after))
-                                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, after)) ->
+                                | Ok (WriteStep.ReturnsRaising (WriteAdmission.Answered answer, raised, after)) ->
                                     // The one signal a write raises, discarded
                                     // as the ignored signal it is.
                                     (answer, raised.Signal)
@@ -359,20 +359,20 @@ module TestPipeAgainstHost =
 
                                     after.Process.Signals |> shouldEqual system.Process.Signals
                                     Ok (Some (answer, after))
-                                | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
+                                | Ok (WriteStep.Returns (WriteAdmission.Transfer n, admitted)) ->
                                     match
-                                        UnixReadWrite.tryWrite
+                                        UnixReadWrite.tryWriteBytes
                                             system.Leader
                                             modelFd
                                             (ImmutableArray.Create<byte> (Array.sub bytes 0 n))
                                             admitted
                                     with
                                     | Error refusal -> Error refusal
-                                    | Ok (WriteOutcome.WouldBlock _) -> Ok None
-                                    | Ok (WriteOutcome.Returns (answer, after)) -> Ok (Some (answer, after))
+                                    | Ok (WriteStep.WouldBlock _) -> Ok None
+                                    | Ok (WriteStep.Returns (answer, after)) -> Ok (Some (answer, after))
                                     | Ok other -> failwith $"%s{where}: model %A{other}"
                                 // The host would sleep with part of it in.
-                                | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep _, _)) -> Ok None
+                                | Ok (WriteStep.Returns (WriteAdmission.TransferThenSleep _, _)) -> Ok None
                                 | Ok other -> failwith $"%s{where}: model %A{other}"
 
                             let hostCall () =

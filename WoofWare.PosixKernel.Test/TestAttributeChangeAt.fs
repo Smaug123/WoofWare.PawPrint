@@ -391,7 +391,7 @@ module TestAttributeChangeAt =
         let made (system : UnixSystem<int, string>) (name : string) =
             match subject with
             | Subject.Link ->
-                match UnixNamespace.trySymlink (PathArg.ofText "f") (PathArg.ofText name) system with
+                match UnixNamespace.trySymlinkEager (PathArg.ofText "f") (PathArg.ofText name) system with
                 | Ok (SyscallAnswer.Completed _, system) -> system
                 | other -> failwith $"%s{context}: symlink(f, %s{name}): %A{other}"
             | Subject.File ->
@@ -777,7 +777,7 @@ module TestAttributeChangeAt =
             | "moved" ->
                 let fd, system = opened "d" system
 
-                match UnixNamespace.tryRename (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
+                match UnixNamespace.tryRenameEager (PathArg.ofText "d") (PathArg.ofText "d-moved") system with
                 | Ok answer -> Some (fd, completed "rename(d, d-moved)" answer)
                 | Error refusal -> failwith $"%s{context}: rename: %s{RenameRefusal.describe refusal}"
             | "theirs" -> Some (opened "tf" system)
@@ -1050,7 +1050,7 @@ module TestAttributeChangeAt =
 
                 let access =
                     match
-                        UnixPathResolution.tryFaccessat
+                        UnixPathResolution.tryFaccessatEager
                             (atFdCwd caller)
                             (PathArg.ofText "lf")
                             4

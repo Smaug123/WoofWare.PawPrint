@@ -168,7 +168,9 @@ module TestPeerName =
         let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
         let system =
-            match UnixSocket.tryGetsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
+            match
+                UnixSocket.tryGetsockoptLength fd level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+            with
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int error), system) when error <> 0 -> system
             | other -> failwith $"SO_ERROR answered %A{other}"
 
@@ -239,7 +241,7 @@ module TestPeerName =
                     (ImmutableArray.Create<byte> (Array.zeroCreate 10))
                     system
             with
-            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 10L, system)) -> system
+            | Ok (WriteStep.Returns (WriteAnswer.Completed 10L, system)) -> system
             | other -> failwith $"the client's write answered %A{other}"
 
         // Measured on both (T9): the server closes over the ten bytes it has
@@ -253,7 +255,14 @@ module TestPeerName =
 
         let system =
             match
-                UnixSocket.tryGetsockopt client level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+                UnixSocket.tryGetsockoptLength
+                    client
+                    level
+                    optionName
+                    UserBuffer.Mapped
+                    UserBuffer.Mapped
+                    (Some 4u)
+                    system
             with
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int error), system) when error <> 0 -> system
             | other -> failwith $"SO_ERROR on the reset client answered %A{other}"

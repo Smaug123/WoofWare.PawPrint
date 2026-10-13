@@ -106,13 +106,15 @@ type HandlerFrame<'Task, 'Handler> =
 /// What the kernel does with the signals a task takes as it returns to user
 /// mode: run handlers, or apply a signal's kernel default.
 /// `UnixSignal.onReturnToUser` answers it as the `ReturnToUserOutcome` of the
-/// same case, whose docstrings state what each means for a client, with a
-/// default that terminates the process applied.
+/// same case, whose docstrings state what each means for a client, or, for a
+/// default that terminates the process, applies it and answers the ended
+/// process.
 [<RequireQualifiedAccess>]
 type internal SignalDelivery<'Task, 'Handler> =
     /// `ReturnToUserOutcome.RunHandlers`. Never empty.
     | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list
-    /// `ReturnToUserOutcome.ProcessEnded`, before the process is ended.
+    /// `ProcessFate.ProcessEnded` of `UnixSignal.onReturnToUser`, before the
+    /// process is ended.
     | DefaultTerminate of signal : Signal * coreDumped : bool
     /// `ReturnToUserOutcome.ProcessStopped`.
     | DefaultStop of Signal

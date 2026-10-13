@@ -119,9 +119,11 @@ module TestSigcontGeneration =
         fun r ->
             match UnixSignal.tryOnReturnToUser task r.System with
             | Error refusal -> Error (Stop.Receiver refusal)
-            | Ok (ReturnToUserOutcome.Resumes system) -> Ok (withSystem system r)
-            | Ok (ReturnToUserOutcome.ContinueDiscarded (_, system)) -> returns task (withSystem system r)
-            | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) -> runFrames task frames (withSystem system r)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.Resumes, system)) -> Ok (withSystem system r)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.ContinueDiscarded _, system)) ->
+                returns task (withSystem system r)
+            | Ok (ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, system)) ->
+                runFrames task frames (withSystem system r)
             | Ok other -> failwith $"task %d{task}'s return to user mode: %A{other}"
 
     /// Each of `frames`' handlers runs, innermost first; each `sigreturn` is a
@@ -202,7 +204,7 @@ module TestSigcontGeneration =
 
             match outcome with
             | Error stop -> Error stop
-            | Ok (Ok (KillOutcome.ProcessContinues system)) -> returns sender (withSystem system r)
+            | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system))) -> returns sender (withSystem system r)
             | Ok other -> failwith $"sending %O{signal}: %A{other}"
 
     /// `sigpending` by `task`, printed as the probe prints it.
@@ -685,7 +687,7 @@ module TestSigcontGeneration =
                 let pid = ProcessId.toInt32 (UnixSystem.processId r.System)
 
                 match UnixSignal.tryKill pid (signo r Signal.SIGSTOP) r.System with
-                | Ok (Ok (KillOutcome.ProcessStopped (Signal.SIGSTOP, system))) -> system
+                | Ok (Ok (ProcessFate.Continues (KillOutcome.ProcessStopped Signal.SIGSTOP, system))) -> system
                 | other -> failwith $"SIGSTOP: %A{other}"
             )
 

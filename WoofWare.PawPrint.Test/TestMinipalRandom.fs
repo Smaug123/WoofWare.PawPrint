@@ -406,7 +406,7 @@ module TestMinipalRandom =
 
         let system =
             match UnixSignal.pthreadKill thread 10 caught with
-            | Ok (KillOutcome.ProcessContinues system) -> system
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
             | other -> failwith $"pthread_kill: %A{other}"
 
         let kernel = EmulatedKernel.withUnix system kernel

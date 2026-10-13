@@ -372,6 +372,35 @@ type internal ConnectAddress =
         ZeroFilledAddress : Ipv4Address
     }
 
+/// A `connect(2)` stopped where the kernel copies the caller's
+/// `struct sockaddr` in: `UnixConnection.connect` answers it,
+/// `PausedConnect.copyRange` says which bytes of the address buffer to copy,
+/// and `UnixConnection.connectWithAddress` takes them and finishes the call.
+[<NoEquality ; NoComparison>]
+type PausedConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            Fd : int
+            Address : UserBuffer
+            DeclaredLength : uint32
+            Range : CopyRange
+            /// The system the call was made in: everything a `connect` does
+            /// before the copy is a question.
+            System : UnixSystem<'Task, 'Handler>
+        }
+
+[<RequireQualifiedAccess>]
+module PausedConnect =
+    /// The bytes of the address buffer the kernel copies: what
+    /// `UnixConnection.connectWithAddress` takes. Always from the start of the
+    /// buffer, and the whole of the length the caller declared, as far as the
+    /// kernel reads one.
+    let copyRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (paused : PausedConnect<'Task, 'Handler>)
+        : CopyRange
+        =
+        paused.Range
+
 [<RequireQualifiedAccess>]
 module UnixConnection =
 
@@ -1544,7 +1573,7 @@ module UnixConnection =
     /// reaches a socket only through a descriptor, which `connect` looks up.
     ///
     /// `copied` is the bytes a copy-in of `declaredLength` takes from real
-    /// storage: exactly as many as `admitSockaddrCopy` answers `Transfer` with
+    /// storage: exactly as many as `UnixSocket.tryAdmitSockaddrCopy` answers `Transfer` with
     /// for a mapped buffer, and none where it rejects the length before the
     /// copy. Passing any other number is refused, as a bug in the caller.
     ///
@@ -1590,8 +1619,11 @@ module UnixConnection =
 
         connectDecoded socketId nonBlocking declaredLength (connectAddress platform socket declaredLength copied) system
 
-    /// `connect`, with a refusal answered as the `Error` rather than raised.
-    let internal tryConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A `connect` through `fd`, given the bytes `UnixSocket.tryAdmitSockaddrCopy`
+    /// said the kernel copies: the step `connectWithAddress` takes. It runs the
+    /// admission again itself, and fails loudly unless `copied` is exactly what
+    /// that copies.
+    let internal tryConnectBytes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
@@ -1608,7 +1640,7 @@ module UnixConnection =
 
         UnixSocket.requireCopied "UnixConnection.connect" length copied
 
-        // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
+        // `tryAdmitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.
         let socketId =
             match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
@@ -1638,24 +1670,88 @@ module UnixConnection =
                 copied)
             system
 
-    /// `connect(2)`: point `fd` at the address in its sockaddr, or ask what
+    /// `connect`, with a refusal answered as the `Error` rather than raised.
+    let internal tryConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (address : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<
+              CallProgress<PausedConnect<'Task, 'Handler>, ConnectOutcome * UnixSystem<'Task, 'Handler>>,
+              ConnectRefusal
+           >
+        =
+        match UnixSocket.tryAdmitSockaddrCopy SockaddrCopySyscall.Connect fd address declaredLength system with
+        | Error refusal -> Error (ConnectRefusal.Copy refusal)
+        | Ok (SockaddrCopyAdmission.Answered _) ->
+            tryConnectBytes fd address declaredLength ImmutableArray.Empty system
+            |> Result.map CallProgress.Answered
+        // A copy of nothing reads nothing, so there is nothing to stop for.
+        | Ok (SockaddrCopyAdmission.Transfer 0) ->
+            tryConnectBytes fd address declaredLength ImmutableArray.Empty system
+            |> Result.map CallProgress.Answered
+        | Ok (SockaddrCopyAdmission.Transfer length) ->
+            {
+                Fd = fd
+                Address = address
+                DeclaredLength = declaredLength
+                Range =
+                    {
+                        FirstByte = 0
+                        ByteCount = length
+                    }
+                System = system
+            }
+            |> CallProgress.NeedsCopyIn
+            |> Ok
+
+    /// <summary>
+    /// `connect(2)`: point `fd` at the address in the `struct sockaddr` the
+    /// caller declared `declaredLength` bytes long at `address`, or ask what
     /// pointing it there would answer.
-    ///
-    /// `copied` is the bytes the kernel copies in: exactly as many as
-    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
-    /// caller's buffer, or none where it answered `Answered`. Passing any other
-    /// number is refused, as a bug in the caller. The kernel reads the family,
-    /// port and address out of them itself.
+    /// </summary>
+    /// <remarks>
+    /// Every answer the call gives before the kernel copies the sockaddr in
+    /// comes first, as `CallProgress.Answered`, with the system unchanged.
+    /// Otherwise the call stops at the copy, and `connectWithAddress`, given
+    /// the bytes `PausedConnect.copyRange` names, reads the family, port and
+    /// address out of them itself. The copy is judged as `UnixSocket.bind`'s
+    /// is, with one difference of order, measured: Linux's `connect` copies
+    /// the sockaddr in before it asks whether the descriptor is a socket,
+    /// where its `bind` and both of Darwin's ask first.
+    /// </remarks>
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
-        (destination : UserBuffer)
+        (address : UserBuffer)
         (declaredLength : uint32)
-        (copied : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
+        : CallProgress<PausedConnect<'Task, 'Handler>, ConnectOutcome * UnixSystem<'Task, 'Handler>>
+        =
+        tryConnect fd address declaredLength system
+        |> Refusal.orRaise "UnixConnection.connect" ConnectRefusal.kind ConnectRefusal.describe
+
+    /// `connectWithAddress`, with a refusal answered as the `Error` rather than raised.
+    let internal tryConnectWithAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (copied : ImmutableArray<byte>)
+        (paused : PausedConnect<'Task, 'Handler>)
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        =
+        CopyRange.require "UnixConnection.connectWithAddress" paused.Range copied
+        tryConnectBytes paused.Fd paused.Address paused.DeclaredLength copied paused.System
+
+    /// <summary>
+    /// The rest of the `connect` `paused` stopped: `copied`, exactly the bytes
+    /// `PausedConnect.copyRange` names, is the sockaddr the kernel reads the
+    /// family, port and address out of. See `connect`.
+    /// </summary>
+    /// <exception cref="T:System.InvalidOperationException">`copied` is not exactly `PausedConnect.copyRange`'s `ByteCount` long.</exception>
+    let connectWithAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (copied : ImmutableArray<byte>)
+        (paused : PausedConnect<'Task, 'Handler>)
         : ConnectOutcome * UnixSystem<'Task, 'Handler>
         =
-        tryConnect fd destination declaredLength copied system
-        |> Refusal.orRaise "UnixConnection.connect" ConnectRefusal.kind ConnectRefusal.describe
+        tryConnectWithAddress copied paused
+        |> Refusal.orRaise "UnixConnection.connectWithAddress" ConnectRefusal.kind ConnectRefusal.describe
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at

@@ -385,7 +385,7 @@ module TestUnixScheduling =
                             match
                                 WriteOutcomes.admitThenWrite 0 4 UserBuffer.Mapped (ImmutableArray.Create 1uy) view
                             with
-                            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, view)) -> view
+                            | Ok (WriteStep.Returns (WriteAnswer.Completed 1L, view)) -> view
                             | other -> failwith $"write: %A{other}"
                         )
 
@@ -464,13 +464,13 @@ module TestUnixScheduling =
             | None -> world
             | Some task ->
                 match UnixTaskLifecycle.tryExitThread task.Name 0 (viewOf task.Pid world) with
-                | Ok (TaskOutcome.Continues view) ->
+                | Ok (ProcessFate.Continues ((), view)) ->
                     { world with
                         Machine = SimulatedMachine.unfocus view world.Machine
                         Live = world.Live |> List.filter (fun live -> live.Serial <> task.Serial)
                         Events = Event.Exited task.Serial :: world.Events
                     }
-                | Ok (TaskOutcome.ProcessEnded e) ->
+                | Ok (ProcessFate.ProcessEnded e) ->
                     { world with
                         Machine = endOn e world.Machine
                     }
@@ -748,7 +748,7 @@ module TestUnixScheduling =
                     first
                     (fun view ->
                         match UnixTaskLifecycle.tryExitThread 1 0 view with
-                        | Ok (TaskOutcome.Continues view) -> view
+                        | Ok (ProcessFate.Continues ((), view)) -> view
                         | other -> failwith $"exitThread: %A{other}"
                     )
                     machine

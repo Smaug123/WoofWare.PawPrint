@@ -6,8 +6,8 @@ open WoofWare.PosixKernel
 
 /// A caller of `bind(2)` and `connect(2)`, for a test that wants to say which
 /// address it means rather than lay one out: the blob a caller holds, and the
-/// two calls a client makes with it, admitting the copy and then passing the
-/// bytes the admission named.
+/// calls a client makes with it, stopping at the copy and then passing the
+/// bytes the call names.
 [<RequireQualifiedAccess>]
 module internal CopyIn =
 
@@ -93,7 +93,7 @@ module internal CopyIn =
         prefix blob (UnixSocket.mappedCopyLength platform declaredLength)
 
     /// The bytes `syscall`'s copy-in takes from `blob`: as many as
-    /// `admitSockaddrCopy` answers `Transfer` with, and none otherwise.
+    /// `tryAdmitSockaddrCopy` answers `Transfer` with, and none otherwise.
     let admitted<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : SockaddrCopySyscall)
         (fd : int)
@@ -108,8 +108,30 @@ module internal CopyIn =
         | Ok (SockaddrCopyAdmission.Answered _)
         | Error _ -> ImmutableArray.Empty
 
-    /// `bind(2)` as a client makes it: admit the copy, then pass the bytes it
-    /// takes from `blob`.
+    /// `actual`, having failed unless it is what the oracle `expected` says.
+    let private agreeing<'Answer, 'Refusal when 'Answer : equality and 'Refusal : equality>
+        (call : string)
+        (expected : Result<'Answer, 'Refusal>)
+        (actual : Result<'Answer, 'Refusal>)
+        : Result<'Answer, 'Refusal>
+        =
+        if actual <> expected then
+            failwith $"%s{call} through the paused call answered %A{actual}, and made a step at a time, %A{expected}"
+
+        actual
+
+    /// The bytes of `blob` a paused call's `range` names, failing unless the
+    /// range lies in the blob, from its start.
+    let private copied (call : string) (range : CopyRange) (blob : byte[]) : ImmutableArray<byte> =
+        if range.FirstByte <> 0 || range.ByteCount <= 0 || range.ByteCount > blob.Length then
+            failwith $"%s{call} asked for %A{range} of a sockaddr buffer of %d{blob.Length} bytes"
+
+        prefix blob range.ByteCount
+
+    /// `bind(2)` as a client makes it, through the library's public protocol:
+    /// `UnixSocket.bind`, and if it stops at the copy, `bindWithAddress` of the
+    /// bytes of `blob` its `copyRange` names. Held to the internal steps it is
+    /// made of: admitting the copy, then `tryBindBytes` of what it takes.
     let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -118,15 +140,25 @@ module internal CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        UnixSocket.tryBind
-            fd
-            destination
-            declaredLength
-            (admitted SockaddrCopySyscall.Bind fd destination declaredLength blob system)
-            system
+        let expected =
+            UnixSocket.tryBindBytes
+                fd
+                destination
+                declaredLength
+                (admitted SockaddrCopySyscall.Bind fd destination declaredLength blob system)
+                system
 
-    /// `connect(2)` as a client makes it: admit the copy, then pass the bytes
-    /// it takes from `blob`.
+        let actual =
+            match UnixSocket.tryBind fd destination declaredLength system with
+            | Error refusal -> Error refusal
+            | Ok (CallProgress.Answered answer) -> Ok answer
+            | Ok (CallProgress.NeedsCopyIn paused) ->
+                UnixSocket.tryBindWithAddress (copied "bind" (PausedBind.copyRange paused) blob) paused
+
+        agreeing "bind" expected actual
+
+    /// `connect(2)` as a client makes it, through the library's public
+    /// protocol, held to the internal steps it is made of, as `bind` is.
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -135,12 +167,22 @@ module internal CopyIn =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
-        UnixConnection.tryConnect
-            fd
-            destination
-            declaredLength
-            (admitted SockaddrCopySyscall.Connect fd destination declaredLength blob system)
-            system
+        let expected =
+            UnixConnection.tryConnectBytes
+                fd
+                destination
+                declaredLength
+                (admitted SockaddrCopySyscall.Connect fd destination declaredLength blob system)
+                system
+
+        let actual =
+            match UnixConnection.tryConnect fd destination declaredLength system with
+            | Error refusal -> Error refusal
+            | Ok (CallProgress.Answered answer) -> Ok answer
+            | Ok (CallProgress.NeedsCopyIn paused) ->
+                UnixConnection.tryConnectWithAddress (copied "connect" (PausedConnect.copyRange paused) blob) paused
+
+        agreeing "connect" expected actual
 
 /// What `getsockname(2)` and `accept(2)` copy out, read back and predicted
 /// without the library's own encoder.

@@ -351,7 +351,7 @@ module TestSocketErrorAgainstHost =
             | Buffer.Null
             | Buffer.Faulting -> None
 
-        match UnixSocket.tryGetsockopt fd level optionName (userBuffer value) lengthBuffer read system with
+        match UnixSocket.tryGetsockoptLength fd level optionName (userBuffer value) lengthBuffer read system with
         | Error refusal -> failwith $"the model refused SO_ERROR: %s{SocketOptionRefusal.describe refusal}"
         | Ok (GetSockOptAnswer.Failed (error, overwritten), system) ->
             {

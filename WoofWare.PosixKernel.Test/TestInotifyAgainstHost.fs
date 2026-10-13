@@ -293,7 +293,11 @@ module TestInotifyAgainstHost =
 
                                 let model =
                                     match
-                                        UnixInotify.tryInotifyAddWatch modelFd (PathArg.ofText relative) mask system
+                                        UnixInotify.tryInotifyAddWatchEager
+                                            modelFd
+                                            (PathArg.ofText relative)
+                                            mask
+                                            system
                                     with
                                     | Ok (answer, after) ->
                                         system <- after

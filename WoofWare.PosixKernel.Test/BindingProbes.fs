@@ -163,6 +163,6 @@ module BindingProbes =
             let argument (path : byte list) =
                 PathArg.ofBytes (UnixPathText.separatorByte :: path)
 
-            match UnixNamespace.tryRename (argument source) (argument destination) system with
+            match UnixNamespace.tryRenameEager (argument source) (argument destination) system with
             | Ok (answer, _) -> ofAnswer answer
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"

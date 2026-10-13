@@ -492,9 +492,9 @@ module NativeSystemNative =
             let system = restored.Kernel.System
 
             match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
-            | Ok (KillOutcome.ProcessContinues after) ->
+            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after)) ->
                 NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
-            | Ok (KillOutcome.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded ended) ->
                 match EndedProcess.termination ended with
                 | ProcessTermination.Signaled _ -> NonCanceledPosixSignal.Terminated (restored, ended)
                 | ProcessTermination.Exited _ ->
@@ -991,7 +991,8 @@ module NativeSystemNative =
             state
 
     /// The `length` bytes `bind(2)` or `connect(2)` copies in from
-    /// `socketAddress`, as `UnixSocket.admitSockaddrCopy` admitted them.
+    /// `socketAddress`, as `PausedBind.copyRange` or `PausedConnect.copyRange`
+    /// names them.
     ///
     /// Every one of them is read, not only the fields the kernel goes on to
     /// decode, because the kernel copies them all: a fault anywhere in them is
@@ -1384,9 +1385,9 @@ module NativeSystemNative =
 
         let outcome =
             try
-                match UnixNamespace.renameatSourcePhase atFdCwd source atFdCwd system with
-                | RenameProgress.Answered (syscallAnswer, system) -> syscallAnswer, system
-                | RenameProgress.NeedsDestination paused ->
+                match UnixNamespace.renameat atFdCwd source atFdCwd system with
+                | CallProgress.Answered outcome -> outcome
+                | CallProgress.NeedsCopyIn paused ->
                     pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
                     |> fun destination -> UnixNamespace.renameWithDestination destination paused
             with :? UnmodelledException as e ->
@@ -1417,9 +1418,9 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.linkSourcePhase source state.Kernel.System with
-        | LinkProgress.Answered syscallAnswer -> answer (syscallAnswer, state.Kernel.System)
-        | LinkProgress.NeedsDestination paused ->
+        match UnixNamespace.link source state.Kernel.System with
+        | CallProgress.Answered outcome -> answer outcome
+        | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.linkWithDestination destination paused
             |> answer
@@ -1447,9 +1448,9 @@ module NativeSystemNative =
         let target =
             pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.symlinkTargetPhase target state.Kernel.System with
-        | SymlinkProgress.Answered syscallAnswer -> answer (syscallAnswer, state.Kernel.System)
-        | SymlinkProgress.NeedsPath paused ->
+        match UnixNamespace.symlink target state.Kernel.System with
+        | CallProgress.Answered outcome -> answer outcome
+        | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state
             |> fun path -> UnixNamespace.symlinkWithPath path paused
             |> answer
@@ -1651,21 +1652,36 @@ module NativeSystemNative =
             // The destination was opened by path, and only a pipe raises a
             // signal on write, so the raising outcomes mean the filesystem
             // handed back something CoreLib's open never makes.
-            match UnixReadWrite.write ctx.Thread destination bytes (system state) with
-            | WriteOutcome.ReturnsRaising (answer, signal, _) ->
+            // The shim's own buffer, which is always mapped: the kernel copies
+            // what it takes of it from the bytes the read produced.
+            let fate =
+                match
+                    UnixReadWrite.write ctx.Thread destination UserBuffer.Mapped (uint64 bytes.Length) (system state)
+                with
+                | CallProgress.Answered fate -> fate
+                | CallProgress.NeedsCopyIn paused ->
+                    let range = PausedWrite.copyRange paused
+
+                    UnixReadWrite.writeWithBytes
+                        (ImmutableArray.Create (bytes, range.FirstByte, range.ByteCount))
+                        paused
+
+            match fate with
+            | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, signal), _) ->
                 failwith
                     $"%s{operation}: writing the destination answered %A{answer} and raised %A{signal}, but a destination opened by path is never a pipe"
-            | WriteOutcome.ProcessEnded ended ->
+            | ProcessFate.ProcessEnded ended ->
                 failwith
                     $"%s{operation}: writing the destination ended the process (%A{EndedProcess.termination ended}), but a destination opened by path is never a pipe"
-            | WriteOutcome.WouldBlock (condition, _) ->
+            | ProcessFate.Continues (WriteOutcome.WouldBlock condition, _) ->
                 failwith
                     $"%s{operation}: writing the destination would sleep until %A{condition}, but a destination opened by path is never a pipe"
-            | WriteOutcome.Restarts _ ->
+            | ProcessFate.Continues (WriteOutcome.Restarts, _) ->
                 failwith
                     $"%s{operation}: writing the destination restarted after a signal, but only a sleeping write restarts, and a destination opened by path is never a pipe"
-            | WriteOutcome.Returns (WriteAnswer.Failed error, system) -> Error (withErrno ctx error system state)
-            | WriteOutcome.Returns (WriteAnswer.Completed written, system) ->
+            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed error), system) ->
+                Error (withErrno ctx error system state)
+            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed written), system) ->
                 writeAll
                     (ImmutableArray.Create (bytes, int written, bytes.Length - int written))
                     (withAnswered system state)
@@ -3460,9 +3476,9 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    match UnixPathResolution.accessScreenPhase mode state.Kernel.System with
-                    | AccessProgress.Answered answer -> answer
-                    | AccessProgress.NeedsPath paused ->
+                    match UnixPathResolution.access mode state.Kernel.System with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
                         // Read only now: a pointer this interpreter cannot
                         // dereference would refuse at transfer, where Linux
                         // answers a bad mode without looking at it.
@@ -4306,9 +4322,9 @@ module NativeSystemNative =
                         ])
                     e
 
-            let admission =
+            let progress =
                 try
-                    UnixReadWrite.admitPWrite
+                    UnixReadWrite.pwrite
                         ctx.Thread
                         fd
                         (BufferPointer.toUserBuffer buffer)
@@ -4318,25 +4334,28 @@ module NativeSystemNative =
                 with :? UnmodelledException as e ->
                     refusing e
 
-            match admission with
-            | PWriteAdmission.Answered (WriteAnswer.Failed error) ->
+            match progress with
+            // Everything a `pwrite` answers before the copy changes nothing, so
+            // there is no system to write back.
+            | CallProgress.Answered (WriteAnswer.Failed error, _) ->
                 withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | PWriteAdmission.Answered (WriteAnswer.Completed written) ->
-                // The zero-length no-op, which changes nothing at all — so there
-                // is no system to write back, and the buffer was never resolved.
+            | CallProgress.Answered (WriteAnswer.Completed written, _) ->
+                // The zero-length no-op, and the buffer was never resolved.
                 let written = shimTransferCount operation bufferSize written
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | PWriteAdmission.Transfer count ->
+            | CallProgress.NeedsCopyIn paused ->
 
-            // Only now are the guest's bytes extracted: the admission answered
-            // every question a `pwrite` settles without reading the buffer, so
+            let range = PausedPWrite.copyRange paused
+
+            // Only now are the guest's bytes extracted: the call answered every
+            // question a `pwrite` settles without reading the buffer, so
             // resolving the pointer here is what a real kernel's `copy_from_user`
             // would do.
             let source =
@@ -4344,13 +4363,19 @@ module NativeSystemNative =
                 | Some source -> source
                 | None ->
                     failwith
-                        $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused by the admission (this is an interpreter bug)."
+                        $"%s{operation}: fd %d{fd}: the kernel asked for %d{range.ByteCount} bytes from a buffer that names no storage. Every such buffer is answered or refused before the copy (this is an interpreter bug)."
 
-            let bytes = readBytesThrough ctx operation source count state
+            let bytes =
+                readBytesThrough
+                    ctx
+                    operation
+                    (bufferFieldAt ctx operation source range.FirstByte state)
+                    range.ByteCount
+                    state
 
             let written =
                 try
-                    UnixReadWrite.pwrite ctx.Thread fd bytes fileOffset state.Kernel.System
+                    UnixReadWrite.pwriteWithBytes bytes paused
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -4414,9 +4439,9 @@ module NativeSystemNative =
 
                 let answer =
                     try
-                        match UnixInotify.inotifyAddWatchScreenPhase fd mask state.Kernel.System with
-                        | InotifyAddWatchProgress.Answered answer -> Choice1Of2 answer
-                        | InotifyAddWatchProgress.NeedsPath paused ->
+                        match UnixInotify.inotifyAddWatch fd mask state.Kernel.System with
+                        | CallProgress.Answered outcome -> outcome
+                        | CallProgress.NeedsCopyIn paused ->
                             // Read only now: Linux answers a bad mask and every
                             // descriptor error without copying the path in, so
                             // the pointer may name memory this interpreter
@@ -4424,7 +4449,7 @@ module NativeSystemNative =
                             let path =
                                 pathArgumentBytes ctx operation "pathName" instruction.Arguments.[1] state
 
-                            Choice2Of2 (UnixInotify.inotifyAddWatchWithPath path paused)
+                            UnixInotify.inotifyAddWatchWithPath path paused
                     with :? UnmodelledException as e ->
                         // A fact about CoreLib, from `TranslateFilters`: the
                         // only refused bit FileSystemWatcher ever asks for.
@@ -4437,11 +4462,8 @@ module NativeSystemNative =
                         KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}, mask 0x%08x{mask}" advice e
 
                 match answer with
-                // Answered by the screen, which changes nothing.
-                | Choice1Of2 (SyscallAnswer.Failed error) -> -1, withErrnoOnly ctx error state
-                | Choice1Of2 (SyscallAnswer.Completed watch) -> int watch, state
-                | Choice2Of2 (SyscallAnswer.Completed watch, system) -> int watch, withAnswered system state
-                | Choice2Of2 (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
+                | SyscallAnswer.Completed watch, system -> int watch, withAnswered system state
+                | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread
@@ -5291,19 +5313,17 @@ module NativeSystemNative =
                 let sizeOfInt = 4u
                 let unix = state.Kernel.System
 
-                let setsockopt (supplied : ImmutableArray<byte> option) =
-                    UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt supplied unix
-
                 // Linux refuses the option on a connected socket in TIME_WAIT,
                 // which a PT_TCP bind of one reaches; the bind itself then
                 // answers EINVAL.
                 let answer =
                     try
-                        match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
-                        | SetSockOptAdmission.Transfer _ ->
-                            setsockopt (Some (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1)))
-                        | SetSockOptAdmission.NoCopy
-                        | SetSockOptAdmission.Answered _ -> setsockopt None
+                        match UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt unix with
+                        | CallProgress.Answered answer -> answer
+                        | CallProgress.NeedsCopyIn paused ->
+                            UnixSocket.setsockoptWithValue
+                                (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1))
+                                paused
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail
                             $"%s{operation}: fd %d{fd}: the shim sets SO_REUSEADDR through its own stack buffer before bind(2), and that was refused"
@@ -5323,35 +5343,27 @@ module NativeSystemNative =
             // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
             // itself, so an address naming no storage faults in the *kernel* and
             // comes back as EFAULT rather than killing the process, which is what
-            // the admission answers. The opposite of
+            // the kernel answers before the copy. The opposite of
             // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
             // wrapper itself dereferences and `requireStorage` refuses for.
-            let admission =
-                try
-                    UnixSocket.admitSockaddrCopy
-                        SockaddrCopySyscall.Bind
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        state.Kernel.System
-                with :? UnmodelledException as e ->
-                    refusing e
-
-            let copied =
-                match admission with
-                // `UnixSocket.bind` re-derives this answer. The kernel never
-                // touches the buffer on this path, so nothing is read.
-                | SockaddrCopyAdmission.Answered _ -> ImmutableArray.Empty
-                | SockaddrCopyAdmission.Transfer length -> copiedSockaddr ctx operation addressArgument length state
-
             let answer, unix =
                 try
-                    UnixSocket.bind
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        copied
-                        state.Kernel.System
+                    match
+                        UnixSocket.bind
+                            fd
+                            (BufferPointer.toUserBuffer addressArgument)
+                            (uint32 declaredLength)
+                            state.Kernel.System
+                    with
+                    // The kernel never touches the buffer on this path, so
+                    // nothing is read.
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedBind.copyRange paused
+
+                        UnixSocket.bindWithAddress
+                            (copiedSockaddr ctx operation addressArgument range.ByteCount state)
+                            paused
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -5776,40 +5788,26 @@ module NativeSystemNative =
                 | ConnectOutcome.Completed -> complete UnixErrorPal.palSuccess state
                 | ConnectOutcome.Failed error -> failFromSyscall error state
 
-            // How many bytes of the caller's sockaddr the kernel's copy takes,
-            // asked before the pointer is resolved: a call whose copy
-            // takes no bytes never touches it, so a pointer PawPrint cannot
-            // dereference is only a problem when bytes actually move.
-            let admission =
-                try
-                    UnixSocket.admitSockaddrCopy
-                        SockaddrCopySyscall.Connect
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        state.Kernel.System
-                with :? UnmodelledException as e ->
-                    refusing e
-
-            match admission with
-            | SockaddrCopyAdmission.Answered error ->
-                // Every admission answer precedes the ladder, so none of them
-                // changed anything: the system is the one we passed in. They are
-                // all failures, which is why the shared admission carries an
-                // errno rather than an outcome.
-                failFromSyscall error state
-            | SockaddrCopyAdmission.Transfer length ->
-
-            let copied = copiedSockaddr ctx operation addressArgument length state
-
+            // The call stops before the kernel copies the caller's sockaddr,
+            // so the pointer is resolved only then: a call whose copy takes no
+            // bytes never touches it, so a pointer PawPrint cannot dereference
+            // is only a problem when bytes actually move.
             let outcome, unix =
                 try
-                    UnixConnection.connect
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        copied
-                        state.Kernel.System
+                    match
+                        UnixConnection.connect
+                            fd
+                            (BufferPointer.toUserBuffer addressArgument)
+                            (uint32 declaredLength)
+                            state.Kernel.System
+                    with
+                    | CallProgress.Answered answered -> answered
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedConnect.copyRange paused
+
+                        UnixConnection.connectWithAddress
+                            (copiedSockaddr ctx operation addressArgument range.ByteCount state)
+                            paused
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -5963,15 +5961,11 @@ module NativeSystemNative =
 
             // Both of `getsockopt`'s buffers are the shim's own locals, and the
             // length cell holds `sizeof(int)`.
-            let declaredLength =
-                match UnixSocket.admitGetSockOpt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some 4u
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped declaredLength unix
+                    match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 4u paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's getsockopt(SO_ERROR) through its own stack buffers was refused"
@@ -6295,9 +6289,9 @@ module NativeSystemNative =
                         [ transferAdvice "Send" fd buffer (Some palFlags) state.Kernel.System ; slept ])
                     e
 
-            /// What `outcome` leaves the guest with, as `SystemNative_Write`'s
+            /// What `fate` leaves the guest with, as `SystemNative_Write`'s
             /// `finish` does, storing through `sent`.
-            let finish (fd : int) (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>) =
+            let finish (fd : int) (fate : ProcessFate<WriteOutcome<ThreadId>, ThreadId, NativeSignalHandler>) =
                 let answered (answer : WriteAnswer) (system : UnixSystem<ThreadId, NativeSignalHandler>) =
                     match answer with
                     | WriteAnswer.Failed error ->
@@ -6309,18 +6303,18 @@ module NativeSystemNative =
                         |> storeSent (shimTransferCount operation bufferLen written)
                         |> complete UnixErrorPal.palSuccess
 
-                match outcome with
-                | WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR, system) ->
+                match fate with
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR), system) ->
                     callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | WriteOutcome.Restarts system ->
+                | ProcessFate.Continues (WriteOutcome.Restarts, system) ->
                     callAgainAfterSignal ctx operation Interrupted.Restarted None system state
-                | WriteOutcome.WouldBlock (_, system) ->
+                | ProcessFate.Continues (WriteOutcome.WouldBlock _, system) ->
                     state.MapKernel (EmulatedKernel.withUnix system)
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-                | WriteOutcome.Returns (answer, system) -> answered answer system
-                | WriteOutcome.ReturnsRaising (answer, raised, system) ->
+                | ProcessFate.Continues (WriteOutcome.Returns answer, system) -> answered answer system
+                | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, raised), system) ->
                     // Delivered as `kill`'s are, through `SignalDispatch`,
                     // which delivers only to the main thread.
                     match
@@ -6337,7 +6331,7 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: fd %d{fd}: the send raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
                     | None -> answered answer system
-                | WriteOutcome.ProcessEnded ended ->
+                | ProcessFate.ProcessEnded ended ->
                     match EndedProcess.termination ended with
                     | ProcessTermination.Signaled _ ->
                         ExecutionResult.SignalTerminated (state, ended)
@@ -6365,33 +6359,24 @@ module NativeSystemNative =
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
-                let resumption =
+                let progress =
                     try
-                        UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishWrite ctx.Thread state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing fd true e
 
-                match resumption with
-                | WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted) ->
-                    let bytes = extract fd offset count
+                match progress with
+                | CallProgress.Answered fate -> finish fd fate
+                | CallProgress.NeedsCopyIn paused ->
+                    let range = PausedWrite.copyRange paused
 
-                    let outcome =
+                    let fate =
                         try
-                            UnixReadWrite.finishWrite ctx.Thread bytes admitted
+                            UnixReadWrite.writeWithBytes (extract fd range.FirstByte range.ByteCount) paused
                         with :? UnmodelledException as e ->
                             refusing fd true e
 
-                    finish fd outcome
-                | WriteOutcome.Returns (WriteResumption.Answered answer, after) ->
-                    finish fd (WriteOutcome.Returns (answer, after))
-                | WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after) ->
-                    finish fd (WriteOutcome.ReturnsRaising (answer, raised, after))
-                | WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _) ->
-                    failwith
-                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a send that raises a signal takes none (this is a bug in the kernel library)."
-                | WriteOutcome.ProcessEnded ended -> finish fd (WriteOutcome.ProcessEnded ended)
-                | WriteOutcome.WouldBlock (condition, after) -> finish fd (WriteOutcome.WouldBlock (condition, after))
-                | WriteOutcome.Restarts after -> finish fd (WriteOutcome.Restarts after)
+                    finish fd fate
             | Some other ->
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a send while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -6409,9 +6394,9 @@ module NativeSystemNative =
 
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            let admission =
+            let progress =
                 try
-                    UnixReadWrite.admitSend
+                    UnixReadWrite.send
                         ctx.Thread
                         fd
                         (BufferPointer.toUserBuffer buffer)
@@ -6421,35 +6406,24 @@ module NativeSystemNative =
                 with :? UnmodelledException as e ->
                     refusing fd false e
 
-            match admission with
-            | WriteOutcome.Returns (WriteAdmission.Answered answer, admitted) ->
-                finish fd (WriteOutcome.Returns (answer, admitted))
-            | WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted) ->
-                finish fd (WriteOutcome.ReturnsRaising (answer, raised, admitted))
-            | WriteOutcome.ProcessEnded ended -> finish fd (WriteOutcome.ProcessEnded ended)
-            | WriteOutcome.WouldBlock (condition, after) -> finish fd (WriteOutcome.WouldBlock (condition, after))
-            | WriteOutcome.Restarts _ as outcome ->
+            match progress with
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Restarts, _) as fate) ->
                 failwith
-                    $"%s{operation}: fd %d{fd}: a send that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
-            | WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)
-            | WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _) ->
-                failwith
-                    $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a send that raises a signal takes none (this is a bug in the kernel library)."
-            // A blocking send with room for part of it: the part is read now,
-            // and the rest only as the connection takes it.
-            | WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted) ->
-                UnixReadWrite.sendThenSleep ctx.Thread fd total (extract fd 0 count) flags admitted
-                |> finish fd
-            | WriteOutcome.Returns (WriteAdmission.Transfer count, admitted) ->
-                let bytes = extract fd 0 count
+                    $"%s{operation}: fd %d{fd}: a send that never slept answered %A{fate}; only a finishing call restarts (this is a bug in the kernel library)."
+            | CallProgress.Answered fate -> finish fd fate
+            // The bytes the connection takes now are read now; a blocking send
+            // with room for only part of them sleeps, and the rest is read only
+            // as the connection takes it.
+            | CallProgress.NeedsCopyIn paused ->
+                let range = PausedSend.copyRange paused
 
-                let outcome =
+                let fate =
                     try
-                        UnixReadWrite.send ctx.Thread fd bytes flags admitted
+                        UnixReadWrite.sendWithBytes (extract fd range.FirstByte range.ByteCount) paused
                     with :? UnmodelledException as e ->
                         refusing fd false e
 
-                finish fd outcome
+                finish fd fate
         // `int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t*
         // available)` (pal_networking.c): `ioctl(FIONREAD)` into the shim's own
         // `int`, with an EINTR retry, stored through `available`, or 0 there
@@ -6567,23 +6541,28 @@ module NativeSystemNative =
             let unix = state.Kernel.System
             let value = BufferPointer.toUserBuffer valueArgument
 
-            let supplied =
-                match UnixSocket.admitSetSockOpt fd level name value (uint32 optionLength) unix with
-                | SetSockOptAdmission.Transfer count ->
-                    let storage =
-                        match BufferPointer.dereferenceable valueArgument with
-                        | Some storage -> storage
-                        | None ->
-                            failwith
-                                $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
-
-                    Some (readBytesThrough ctx operation storage count state)
-                | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix
+                    match UnixSocket.setsockopt fd level name value (uint32 optionLength) unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let storage =
+                            match BufferPointer.dereferenceable valueArgument with
+                            | Some storage -> storage
+                            | None ->
+                                failwith
+                                    $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
+
+                        let range = PausedSetSockOpt.copyRange paused
+
+                        UnixSocket.setsockoptWithValue
+                            (readBytesThrough
+                                ctx
+                                operation
+                                (bufferFieldAt ctx operation storage range.FirstByte state)
+                                range.ByteCount
+                                state)
+                            paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
@@ -6680,15 +6659,11 @@ module NativeSystemNative =
 
             // The length cell is the shim's own `socklen_t`, so it is real
             // storage holding what the caller's held.
-            let read =
-                match UnixSocket.admitGetSockOpt fd level name value UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some (uint32 declared)
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level name value UserBuffer.Mapped read unix
+                    match UnixSocket.getsockopt fd level name value UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength (uint32 declared) paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
@@ -6772,15 +6747,16 @@ module NativeSystemNative =
                     (SimulatedUnixPlatform.encodeCInt platform option.Seconds)
 
             // The `struct linger` is the shim's own local, and it passes its size.
-            let supplied =
-                match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 8u unix with
-                | SetSockOptAdmission.Transfer count -> Some (ImmutableArray.Create (lingerValue, 0, count))
-                | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u supplied unix
+                    match UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedSetSockOpt.copyRange paused
+
+                        UnixSocket.setsockoptWithValue
+                            (ImmutableArray.Create (lingerValue, range.FirstByte, range.ByteCount))
+                            paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's setsockopt of its own struct linger was refused"
@@ -6832,15 +6808,11 @@ module NativeSystemNative =
             let level, name = SocketOptionPal.lingerOptionNumbered platform
             let unix = state.Kernel.System
 
-            let read =
-                match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some 8u
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read unix
+                    match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 8u paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's getsockopt into its own struct linger was refused"
@@ -8185,24 +8157,24 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completedWith effect
                 |> Some
 
-            /// What `outcome` leaves the guest with: the call's result and its
+            /// What `fate` leaves the guest with: the call's result and its
             /// effect; the thread asleep, or making the call again after a
             /// signal; or the process killed by the signal the write raised,
             /// from which the call never returns.
             let finish
-                (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>)
+                (fate : ProcessFate<WriteOutcome<ThreadId>, ThreadId, NativeSignalHandler>)
                 (effectOf : UnixSystem<ThreadId, NativeSignalHandler> -> StepEffect)
                 : NativeHandlerResult option
                 =
-                match outcome with
+                match fate with
                 // A signal ended the sleep with nothing written. `Common_Write`
                 // calls `write` again after EINTR, and a restart calls again
                 // with no EINTR.
-                | WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR, system) ->
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR), system) ->
                     callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | WriteOutcome.Restarts system ->
+                | ProcessFate.Continues (WriteOutcome.Restarts, system) ->
                     callAgainAfterSignal ctx operation Interrupted.Restarted None system state
-                | WriteOutcome.WouldBlock (_, system) ->
+                | ProcessFate.Continues (WriteOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Read` does: a wake
                     // re-enters this handler, which finishes the write from the
                     // task's park, reading the rest of the caller's buffer as the
@@ -8211,14 +8183,14 @@ module NativeSystemNative =
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-                | WriteOutcome.Returns (answer, system) ->
+                | ProcessFate.Continues (WriteOutcome.Returns answer, system) ->
                     let result, state = answered answer system state
                     returning result (effectOf system) state
-                | WriteOutcome.ReturnsRaising (answer, raised, system) ->
+                | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, raised), system) ->
                     screenRaised raised system
                     let result, state = answered answer system state
                     returning result (effectOf system) state
-                | WriteOutcome.ProcessEnded ended ->
+                | ProcessFate.ProcessEnded ended ->
                     match EndedProcess.termination ended with
                     | ProcessTermination.Signaled _ ->
                         ExecutionResult.SignalTerminated (state, ended)
@@ -8252,34 +8224,24 @@ module NativeSystemNative =
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-                let resumption =
+                let progress =
                     try
-                        UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishWrite ctx.Thread state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing buffer e
 
-                match resumption with
-                | WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted) ->
-                    let bytes = extract buffer offset count
+                match progress with
+                | CallProgress.Answered fate -> finish fate noEffect
+                | CallProgress.NeedsCopyIn paused ->
+                    let range = PausedWrite.copyRange paused
 
-                    let outcome =
+                    let fate =
                         try
-                            UnixReadWrite.finishWrite ctx.Thread bytes admitted
+                            UnixReadWrite.writeWithBytes (extract buffer range.FirstByte range.ByteCount) paused
                         with :? UnmodelledException as e ->
                             refusing buffer e
 
-                    finish outcome noEffect
-                | WriteOutcome.Returns (WriteResumption.Answered answer, after) ->
-                    finish (WriteOutcome.Returns (answer, after)) noEffect
-                | WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after) ->
-                    finish (WriteOutcome.ReturnsRaising (answer, raised, after)) noEffect
-                | WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _) ->
-                    failwith
-                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
-                | WriteOutcome.ProcessEnded ended -> finish (WriteOutcome.ProcessEnded ended) noEffect
-                | WriteOutcome.WouldBlock (condition, after) ->
-                    finish (WriteOutcome.WouldBlock (condition, after)) noEffect
-                | WriteOutcome.Restarts after -> finish (WriteOutcome.Restarts after) noEffect
+                    finish fate noEffect
             | Some other ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
@@ -8310,61 +8272,13 @@ module NativeSystemNative =
             // itself is total, so it is the *extraction* below that waits.
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            let admission =
-                try
-                    UnixReadWrite.admitWrite
-                        ctx.Thread
-                        fd
-                        (BufferPointer.toUserBuffer buffer)
-                        (uint64 bufferSize)
-                        state.Kernel.System
-                with :? UnmodelledException as e ->
-                    refusing buffer e
-
-            match admission with
-            | WriteOutcome.Returns (WriteAdmission.Answered answer, admitted) ->
-                finish (WriteOutcome.Returns (answer, admitted)) noEffect
-            | WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted) ->
-                finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
-            | WriteOutcome.ProcessEnded ended -> finish (WriteOutcome.ProcessEnded ended) noEffect
-            | WriteOutcome.WouldBlock (condition, after) -> finish (WriteOutcome.WouldBlock (condition, after)) noEffect
-            | WriteOutcome.Restarts _ as outcome ->
-                failwith
-                    $"%s{operation}: fd %d{fd}: a write that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
-            | WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)
-            | WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _) ->
-                failwith
-                    $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
-            // A blocking write into a pipe with room for part of it: the part is
-            // read now, and the rest only as the pipe takes it.
-            | WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted) ->
-                let bytes = extract buffer 0 count
-
-                let outcome =
-                    try
-                        UnixReadWrite.writeThenSleep ctx.Thread fd total bytes admitted
-                    with :? UnmodelledException as e ->
-                        refusing buffer e
-
-                finish outcome noEffect
-            | WriteOutcome.Returns (WriteAdmission.Transfer count, admitted) ->
-
-            let bytes = extract buffer 0 count
-
-            let outcome =
-                try
-                    UnixReadWrite.write ctx.Thread fd bytes admitted
-                with :? UnmodelledException as e ->
-                    refusing buffer e
-
-
             // The host's own view of what the guest printed, which is
             // PawPrint's business rather than the kernel's: the kernel
             // records what reached the pipes PawPrint drains, and this is
             // what makes it appear on a console. One write delivers at most
             // once, and exactly the bytes it moved.
             let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                let before = DeliveryLog.count (UnixSystem.delivered admitted)
+                let before = DeliveryLog.count (UnixSystem.delivered state.Kernel.System)
 
                 match DeliveryLog.since before (UnixSystem.delivered system) with
                 | [] -> StepEffect.NoEffect
@@ -8377,7 +8291,37 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
 
-            finish outcome effectOf
+            let progress =
+                try
+                    UnixReadWrite.write
+                        ctx.Thread
+                        fd
+                        (BufferPointer.toUserBuffer buffer)
+                        (uint64 bufferSize)
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    refusing buffer e
+
+            match progress with
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Restarts, _) as fate) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: a write that never slept answered %A{fate}; only a finishing call restarts (this is a bug in the kernel library)."
+            | CallProgress.Answered fate -> finish fate noEffect
+            // The bytes the object takes now are read now; a blocking write into
+            // a pipe with room for only part of them sleeps, and the rest is
+            // read only as the pipe takes it.
+            | CallProgress.NeedsCopyIn paused ->
+
+            let range = PausedWrite.copyRange paused
+            let bytes = extract buffer range.FirstByte range.ByteCount
+
+            let fate =
+                try
+                    UnixReadWrite.writeWithBytes bytes paused
+                with :? UnmodelledException as e ->
+                    refusing buffer e
+
+            finish fate effectOf
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],

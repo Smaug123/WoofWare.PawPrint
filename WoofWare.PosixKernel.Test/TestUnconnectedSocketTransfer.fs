@@ -337,7 +337,7 @@ module TestUnconnectedSocketTransfer =
         |> shouldEqual (Some (loopbackAt 0us))
 
         match UnixReadWrite.tryAdmitWrite system.Leader fd UserBuffer.Mapped 1UL system with
-        | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EDESTADDRREQ), after)) ->
+        | Ok (WriteStep.Returns (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EDESTADDRREQ), after)) ->
             let low, high = system.Machine.EphemeralPortRange
 
             match after.Machine.Sockets.[socketId].Ipv4Binding with
@@ -490,20 +490,24 @@ module TestUnconnectedSocketTransfer =
             let written =
                 if count <= uint64 (1 <<< 20) then
                     Some (
-                        UnixReadWrite.tryWrite 1 fd (ImmutableArray.Create<byte> (Array.zeroCreate (int count))) system
+                        UnixReadWrite.tryWriteBytes
+                            1
+                            fd
+                            (ImmutableArray.Create<byte> (Array.zeroCreate (int count)))
+                            system
                     )
                 else
                     None
 
             let admissionAgrees =
                 match admitted, row.Seen with
-                | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed error), after)),
-                  Seen.Failed seen -> error = seen && boundAsTheRulesSay row fd system after
+                | Ok (WriteStep.Returns (WriteAdmission.Answered (WriteAnswer.Failed error), after)), Seen.Failed seen ->
+                    error = seen && boundAsTheRulesSay row fd system after
                 | Error (WriteRefusal.Inet6Binding _), Seen.Failed _ ->
                     row.Domain = SocketDomain.Inet6
                     && row.Phase = Phase.Idle
                     && UnconnectedSocketRules.writeBindsFirst row.Flavour row.Domain row.Kind
-                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, after)),
+                | Ok (WriteStep.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, after)),
                   Seen.FailedRaisingSigPipe seen ->
                     error = seen
                     && signal = sigPipeAtWorker
@@ -520,13 +524,13 @@ module TestUnconnectedSocketTransfer =
                 | None, _ -> true
                 | Some written, admitted ->
                     match written, admitted with
-                    | Ok (WriteOutcome.Returns (answer, after)),
-                      Ok (WriteOutcome.Returns (WriteAdmission.Answered admittedAnswer, admittedAfter)) ->
+                    | Ok (WriteStep.Returns (answer, after)),
+                      Ok (WriteStep.Returns (WriteAdmission.Answered admittedAnswer, admittedAfter)) ->
                         answer = admittedAnswer && after = admittedAfter
-                    | Ok (WriteOutcome.ReturnsRaising (answer, signal, after)),
-                      Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered admittedAnswer,
-                                                       admittedSignal,
-                                                       admittedAfter)) ->
+                    | Ok (WriteStep.ReturnsRaising (answer, signal, after)),
+                      Ok (WriteStep.ReturnsRaising (WriteAdmission.Answered admittedAnswer,
+                                                    admittedSignal,
+                                                    admittedAfter)) ->
                         answer = admittedAnswer && signal = admittedSignal && after = admittedAfter
                     | Error refusal, Error admittedRefusal -> refusal = admittedRefusal
                     | _ -> false

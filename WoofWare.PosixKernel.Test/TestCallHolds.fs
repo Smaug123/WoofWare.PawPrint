@@ -506,7 +506,7 @@ module TestCallHolds =
                     else
 
                     match UnixTaskLifecycle.tryExitThread task 0 system with
-                    | Ok (TaskOutcome.Continues after) ->
+                    | Ok (ProcessFate.Continues ((), after)) ->
                         cover Reached.Exit
 
                         after,
