@@ -15,6 +15,6 @@ module KernelTasks =
         if Map.containsKey thread kernel.Tasks then
             kernel
         else
-            match UnixTaskLifecycle.spawn kernel.Leader thread (CpuId 0) kernel.System with
+            match UnixThreadLifecycle.spawn kernel.Leader thread (CpuId 0) kernel.System with
             | SpawnAnswer.Spawned _, system -> EmulatedKernel.withUnix system kernel
             | SpawnAnswer.Failed error, _ -> failwith $"spawning %O{thread} failed with %O{error}"

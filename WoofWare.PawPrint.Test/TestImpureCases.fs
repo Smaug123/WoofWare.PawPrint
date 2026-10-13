@@ -1332,7 +1332,7 @@ module TestImpureCases =
                     state.Kernel.Tasks
                     |> Map.toList
                     |> List.choose (fun (thread, task) ->
-                        match UnixTaskState.park task |> Option.map (fun park -> park.Syscall) with
+                        match UnixThreadState.park task |> Option.map (fun park -> park.Syscall) with
                         | Some (ParkedSyscall.ConnectionRead _ as parked)
                         | Some (ParkedSyscall.ConnectionWrite _ as parked) -> Some (thread, parked)
                         | Some _
@@ -1434,7 +1434,7 @@ module TestImpureCases =
 
                     state.Kernel.Tasks
                     |> Map.forall (fun thread _ ->
-                        (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                        (UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
                     )
                     |> shouldEqual true
                 )
@@ -1466,7 +1466,7 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun _ task -> (UnixTaskState.park task).IsNone)
+                    |> Map.forall (fun _ task -> (UnixThreadState.park task).IsNone)
                     |> shouldEqual true
                 )
         }
@@ -2875,7 +2875,7 @@ module TestImpureCases =
                     Some (fun state ->
                         state.Kernel.Tasks
                         |> Map.forall (fun thread _ ->
-                            (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                            (UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
                         )
                         |> shouldEqual true
                     )
@@ -4955,7 +4955,7 @@ module TestImpureCases =
                     Some (fun state ->
                         SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        SignalState.threadsWithMasksToRestore state.Kernel.Signals
                         |> shouldEqual Set.empty
 
                         SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
@@ -4979,7 +4979,7 @@ module TestImpureCases =
                     Some (fun state ->
                         SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        SignalState.threadsWithMasksToRestore state.Kernel.Signals
                         |> shouldEqual Set.empty
 
                         SignalState.maskOf state.Kernel.Leader state.Kernel.Signals

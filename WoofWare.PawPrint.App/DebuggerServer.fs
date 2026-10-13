@@ -86,7 +86,7 @@ module DebuggerServer =
     let private writeThreadStatus
         (writer : Utf8JsonWriter)
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
-        (task : UnixTaskState option)
+        (task : UnixThreadState option)
         (status : ThreadStatus)
         : unit
         =
@@ -192,7 +192,11 @@ module DebuggerServer =
             // what a park holds: an epoll instance is a description, so a `dup`'d
             // port waits on the same one, and the descriptor number the guest
             // called through may since have been closed or reused.
-            match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
+            match
+                task
+                |> Option.bind UnixThreadState.park
+                |> Option.map (fun park -> park.Syscall)
+            with
             | Some (ParkedSyscall.EpollWait wait) ->
                 writer.WriteString ("kind", "blockedOnSocketEvents")
                 let (OpenFileDescriptionId port) = wait.Epoll
@@ -1815,7 +1819,7 @@ module DebuggerServer =
             Thread : ThreadState
             /// The kernel's record for the thread, which a `BlockedInSyscall` status is rendered
             /// from and which can change while the thread's own state does not.
-            Task : UnixTaskState option
+            Task : UnixThreadState option
             /// The kqueue of the thread's sleeping Darwin poll, if it is asleep in
             /// one, which its status is rendered from too: another task's call
             /// activates it without changing this thread's task.
@@ -1828,7 +1832,7 @@ module DebuggerServer =
             Values : TracedValues option
         }
 
-    let private sameTask (a : UnixTaskState option) (b : UnixTaskState option) : bool =
+    let private sameTask (a : UnixThreadState option) (b : UnixThreadState option) : bool =
         match a, b with
         | None, None -> true
         | Some a, Some b -> Object.ReferenceEquals (a, b)
@@ -1928,7 +1932,7 @@ module DebuggerServer =
         let task = state.Kernel.Tasks |> Map.tryFind threadId
 
         let pollQueue =
-            match task |> Option.bind UnixTaskState.park with
+            match task |> Option.bind UnixThreadState.park with
             | Some {
                        Syscall = ParkedSyscall.KqueuePoll parked
                    } -> UnixSystem.pollQueue parked.Queue state.Kernel.System
