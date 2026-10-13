@@ -358,6 +358,13 @@ module DebuggerServer =
                 writer.WriteNumber ("description", instance)
                 writer.WriteNumber ("count", parked.Count)
             | Some (ParkedSyscall.Select _) -> writer.WriteString ("kind", "blockedInSelect")
+            | Some (ParkedSyscall.SignalWait parked) ->
+                writer.WriteString ("kind", "blockedInSignalWait")
+                writer.WriteString ("awaited", parked.Awaited.Display)
+
+                match parked.Deadline with
+                | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
+                | None -> ()
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

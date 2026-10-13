@@ -543,6 +543,34 @@ type ParkedSelect =
             Deadline : int64 option
         }
 
+/// One task's in-flight `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`:
+/// Linux's `rt_sigtimedwait(2)` or Darwin's `__sigwait`, asleep until a signal
+/// in a set is pending. The state the call fixed when it was entered.
+///
+/// Reserved: nothing parks a task in a signal wait yet
+/// (`ParkedSyscall.SignalWait`).
+type ParkedSignalWait =
+    {
+        /// The signals the call takes, from the set its caller passed. They
+        /// need not be blocked: on both flavours the call takes an awaited
+        /// signal that arrives unblocked with a handler, and the handler does
+        /// not run.
+        Awaited : SignalMask
+        /// The instant, in nanoseconds since boot on the machine's virtual
+        /// clock, at which a Linux call with a timeout gives up and answers
+        /// `EAGAIN`. Fixed at the call: Linux never writes the remaining time
+        /// back. `None` for a call with no timeout, which is every Darwin call,
+        /// since Darwin has `sigwait(3)` alone.
+        Deadline : int64 option
+        /// Where the kernel reports the signal the call takes, as the caller
+        /// classified it when the call was entered: Linux writes a `siginfo_t`
+        /// to `info`, and Darwin an `int` to `sig`. `None` when that pointer
+        /// is null, which both kernels test for, and then write nothing. On
+        /// both flavours a destination the kernel cannot write fails the call
+        /// with `EFAULT`, and the signal is taken all the same.
+        Destination : UserBuffer option
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -598,6 +626,15 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
     /// defect.
     | Select of ParkedSelect
+    /// `sigwait(3)`, `sigwaitinfo(2)` or `sigtimedwait(2)`: waiting for a
+    /// signal in its set to be pending, for its deadline if it has one, or,
+    /// under Linux, for a signal with a handler outside its set. Holds no open
+    /// file description.
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as a
+    /// defect.
+    | SignalWait of ParkedSignalWait
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -644,6 +681,7 @@ module ParkedSyscall =
         // Reserved, and holding nothing yet: Linux's will hold the description
         // behind each selected descriptor, as its `poll` does.
         | ParkedSyscall.Select _ -> []
+        | ParkedSyscall.SignalWait _ -> []
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -869,6 +907,7 @@ module UnixTaskTable =
             | ParkedSyscall.FifoOpen _ -> 12
             | ParkedSyscall.InotifyRead _ -> 13
             | ParkedSyscall.Select _ -> 14
+            | ParkedSyscall.SignalWait _ -> 15
 
         let sameSyscall =
             match existing.Parked with

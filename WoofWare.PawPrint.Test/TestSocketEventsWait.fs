@@ -489,6 +489,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.PipeRead _)
                 | Some ParkedSyscall.SigSuspend
                 | Some (ParkedSyscall.Sleep _)
+                | Some (ParkedSyscall.SignalWait _)
                 | Some (ParkedSyscall.FifoOpen _)
                 | Some (ParkedSyscall.InotifyRead _)
                 | Some (ParkedSyscall.Select _)
