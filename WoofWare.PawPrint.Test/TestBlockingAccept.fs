@@ -197,7 +197,7 @@ class NeverConnected
                 | [ one ] -> one
                 | other -> failwith $"expected exactly one thread parked in a syscall, got %d{List.length other}"
 
-        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> shouldEqual (
             Some (
                 ParkedSyscall.Accept

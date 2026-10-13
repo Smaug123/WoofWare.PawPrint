@@ -133,7 +133,7 @@ class WaitsOnADuplicatedPort
 
         threadState.Status |> shouldEqual ThreadStatus.BlockedInSyscall
 
-        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> shouldEqual (
             Some (
                 ParkedSyscall.EpollWait
@@ -479,7 +479,7 @@ class TwoPortsOneEdge
         |> List.choose (fun (tid, ts) ->
             match ts.Status with
             | ThreadStatus.BlockedInSyscall ->
-                match UnixTaskState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
+                match UnixThreadState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
                 | Some (ParkedSyscall.EpollWait wait) -> Some (tid, wait.Epoll)
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Flock _)
@@ -676,10 +676,10 @@ class ClosesAParkedPort
             let unix = state.Kernel.System
 
             let ports =
-                UnixSystem.tasks unix
+                UnixSystem.threads unix
                 |> Map.toList
                 |> List.choose (fun (_, task) ->
-                    match UnixTaskState.park task with
+                    match UnixThreadState.park task with
                     | Some {
                                Syscall = ParkedSyscall.EpollWait wait
                            } -> Some wait.Epoll

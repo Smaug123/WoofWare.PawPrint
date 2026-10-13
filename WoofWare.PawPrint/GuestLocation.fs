@@ -324,7 +324,11 @@ module GuestLocation =
                         // second reason — the identity renders as a bare number,
                         // and a reader would otherwise take it for the descriptor
                         // the guest passed, which is the one thing it is not.
-                        match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
+                        match
+                            task
+                            |> Option.bind UnixThreadState.park
+                            |> Option.map (fun park -> park.Syscall)
+                        with
                         | Some (ParkedSyscall.EpollWait wait) ->
                             Some $"for events on open file description %O{wait.Epoll}"
                         | Some (ParkedSyscall.Kevent wait) ->
