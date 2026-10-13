@@ -1567,6 +1567,39 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `InotifyRaw.cs` under `platform`, over a directory `d` and a file `f`:
+    /// 0 for Linux, where the shim passes each call to the kernel, and 100 for
+    /// Darwin, where the shim is built without inotify and answers ENOTSUP
+    /// itself. Compared against the real runtime on a host of the same flavour:
+    /// every row is an errno, a count or a record, and the guest names only
+    /// relative paths.
+    let private inotifyRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        {
+            FileName = "InotifyRaw.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    FileSystem =
+                        Map.ofList
+                            [
+                                name "d", SeedEntry.directory Map.empty
+                                name "f",
+                                SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                            ]
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1717,6 +1750,8 @@ module TestImpureCases =
             stdioNonBlockingCase SimulatedUnixPlatform.macOsArm64
             pipeRawCase SimulatedUnixPlatform.linuxX64
             pipeRawCase SimulatedUnixPlatform.macOsArm64
+            inotifyRawCase SimulatedUnixPlatform.linuxX64
+            inotifyRawCase SimulatedUnixPlatform.macOsArm64
             pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
             socketUnconnectedTransferCase SimulatedUnixPlatform.linuxX64
