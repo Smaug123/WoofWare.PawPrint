@@ -726,6 +726,10 @@ type UnixSystemDefect<'Task> =
         description : OpenFileDescriptionId *
         inode : InodeNumber *
         oldParent : InodeNumber
+    /// A socket is in a phase that nothing in this version puts a socket in,
+    /// such as `SocketPhase.Connecting`: a case reserved for behaviour not yet
+    /// modelled.
+    | ReservedSocketPhase of socket : SocketId * phase : SocketPhase
 
 [<RequireQualifiedAccess>]
 module UnixSystemDefect =
@@ -1636,7 +1640,9 @@ module UnixSystem =
                     |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> []
+                | SocketPhase.DatagramPeer _
+                // A connect in flight has no connection yet.
+                | SocketPhase.Connecting _ -> []
             )
 
         let danglingConnections =
@@ -2054,7 +2060,19 @@ module UnixSystem =
                     | SocketPhase.Listening _
                     | SocketPhase.EstablishedPendingReport _
                     | SocketPhase.Established _
-                    | SocketPhase.Refused _ -> []
+                    | SocketPhase.Refused _
+                    | SocketPhase.Connecting _ -> []
+
+                // Nothing in this version puts a socket in it.
+                let reservedPhase =
+                    match socket.Phase with
+                    | SocketPhase.Connecting _ -> [ UnixSystemDefect.ReservedSocketPhase (socketId, socket.Phase) ]
+                    | SocketPhase.Idle
+                    | SocketPhase.Listening _
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _
+                    | SocketPhase.Refused _
+                    | SocketPhase.DatagramPeer _ -> []
 
                 let portZero =
                     match socket.Ipv4Binding with
@@ -2078,7 +2096,12 @@ module UnixSystem =
                             [ UnixSystemDefect.BoundToPortZero socketId ]
                     | _ -> []
 
-                unboundListener @ unaddressable @ unmodelledBinding @ peerFamily @ portZero
+                unboundListener
+                @ unaddressable
+                @ unmodelledBinding
+                @ peerFamily
+                @ reservedPhase
+                @ portZero
             )
 
         let fileSystemType =
