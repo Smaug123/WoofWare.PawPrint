@@ -376,9 +376,8 @@ module GuestLocation =
                             let watched =
                                 match UnixSystem.pollQueue parked.Queue state.Kernel.System with
                                 | Some queue ->
-                                    queue.Registrations
-                                    |> Map.toList
-                                    |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
+                                    PollQueue.registered queue
+                                    |> List.map (fun (fd, filter) -> $"fd %d{fd} (%O{filter})")
                                     |> String.concat ", "
                                 | None -> $"nothing: its kqueue, %O{parked.Queue}, is not on the machine"
 

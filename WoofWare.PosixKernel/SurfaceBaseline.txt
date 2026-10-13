@@ -2140,45 +2140,28 @@ WoofWare.PosixKernel.KillOutcome`2.NewProcessContinues [static method]: WoofWare
 WoofWare.PosixKernel.KillOutcome`2.NewProcessEnded [static method]: WoofWare.PosixKernel.EndedProcess<'Task, 'Handler> -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.KillOutcome`2.NewProcessStopped [static method]: (WoofWare.PosixKernel.Signal, WoofWare.PosixKernel.UnixSystem<'Task, 'Handler>) -> WoofWare.PosixKernel.KillOutcome<'Task, 'Handler>
 WoofWare.PosixKernel.KillOutcome`2.Tag [property]: [read-only] int
-WoofWare.PosixKernel.KqueueFilter inherit obj, implements WoofWare.PosixKernel.KqueueFilter System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueFilter System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
+WoofWare.PosixKernel.KqueueFilter inherit obj, implements WoofWare.PosixKernel.KqueueFilter System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueFilter System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.KqueueFilter+Tags inherit obj
 WoofWare.PosixKernel.KqueueFilter+Tags.Read [static field]: int = 0
+WoofWare.PosixKernel.KqueueFilter+Tags.Timer [static field]: int = 2
 WoofWare.PosixKernel.KqueueFilter+Tags.Write [static field]: int = 1
 WoofWare.PosixKernel.KqueueFilter.Equals [method]: (WoofWare.PosixKernel.KqueueFilter, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.KqueueFilter.get_IsRead [method]: unit -> bool
+WoofWare.PosixKernel.KqueueFilter.get_IsTimer [method]: unit -> bool
 WoofWare.PosixKernel.KqueueFilter.get_IsWrite [method]: unit -> bool
 WoofWare.PosixKernel.KqueueFilter.get_Read [static method]: unit -> WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.get_Tag [method]: unit -> int
+WoofWare.PosixKernel.KqueueFilter.get_Timer [static method]: unit -> WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.get_Write [static method]: unit -> WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.IsRead [property]: [read-only] bool
+WoofWare.PosixKernel.KqueueFilter.IsTimer [property]: [read-only] bool
 WoofWare.PosixKernel.KqueueFilter.IsWrite [property]: [read-only] bool
 WoofWare.PosixKernel.KqueueFilter.Read [static property]: [read-only] WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.Tag [property]: [read-only] int
+WoofWare.PosixKernel.KqueueFilter.Timer [static property]: [read-only] WoofWare.PosixKernel.KqueueFilter
 WoofWare.PosixKernel.KqueueFilter.Write [static property]: [read-only] WoofWare.PosixKernel.KqueueFilter
-WoofWare.PosixKernel.KqueueRegistration inherit obj, implements WoofWare.PosixKernel.KqueueRegistration System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueRegistration System.IComparable, System.IComparable, System.Collections.IStructuralComparable
-WoofWare.PosixKernel.KqueueRegistration..ctor [constructor]: (bool, bool, System.UInt64, System.Int64, WoofWare.PosixKernel.SocketId)
-WoofWare.PosixKernel.KqueueRegistration.Clear [property]: [read-only] bool
-WoofWare.PosixKernel.KqueueRegistration.Equals [method]: (WoofWare.PosixKernel.KqueueRegistration, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KqueueRegistration.get_Clear [method]: unit -> bool
-WoofWare.PosixKernel.KqueueRegistration.get_Receipt [method]: unit -> bool
-WoofWare.PosixKernel.KqueueRegistration.get_RegisteredAt [method]: unit -> System.Int64
-WoofWare.PosixKernel.KqueueRegistration.get_Socket [method]: unit -> WoofWare.PosixKernel.SocketId
-WoofWare.PosixKernel.KqueueRegistration.get_UserData [method]: unit -> System.UInt64
-WoofWare.PosixKernel.KqueueRegistration.Receipt [property]: [read-only] bool
-WoofWare.PosixKernel.KqueueRegistration.RegisteredAt [property]: [read-only] System.Int64
-WoofWare.PosixKernel.KqueueRegistration.Socket [property]: [read-only] WoofWare.PosixKernel.SocketId
-WoofWare.PosixKernel.KqueueRegistration.UserData [property]: [read-only] System.UInt64
 WoofWare.PosixKernel.KqueueState inherit obj, implements WoofWare.PosixKernel.KqueueState System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.KqueueState System.IComparable, System.IComparable, System.Collections.IStructuralComparable
-WoofWare.PosixKernel.KqueueState..ctor [constructor]: (WoofWare.PosixKernel.ProcessId, bool, Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.KqueueRegistration>, (int * WoofWare.PosixKernel.KqueueFilter) list)
-WoofWare.PosixKernel.KqueueState.Active [property]: [read-only] (int * WoofWare.PosixKernel.KqueueFilter) list
-WoofWare.PosixKernel.KqueueState.Drained [property]: [read-only] bool
 WoofWare.PosixKernel.KqueueState.Equals [method]: (WoofWare.PosixKernel.KqueueState, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.KqueueState.get_Active [method]: unit -> (int * WoofWare.PosixKernel.KqueueFilter) list
-WoofWare.PosixKernel.KqueueState.get_Drained [method]: unit -> bool
-WoofWare.PosixKernel.KqueueState.get_Owner [method]: unit -> WoofWare.PosixKernel.ProcessId
-WoofWare.PosixKernel.KqueueState.get_Registrations [method]: unit -> Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.KqueueRegistration>
-WoofWare.PosixKernel.KqueueState.Owner [property]: [read-only] WoofWare.PosixKernel.ProcessId
-WoofWare.PosixKernel.KqueueState.Registrations [property]: [read-only] Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.KqueueRegistration>
 WoofWare.PosixKernel.LaunchDescriptor inherit obj, implements WoofWare.PosixKernel.LaunchDescriptor System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.LaunchDescriptor System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 3 cases
 WoofWare.PosixKernel.LaunchDescriptor+Supplied inherit WoofWare.PosixKernel.LaunchDescriptor
 WoofWare.PosixKernel.LaunchDescriptor+Supplied.bytes [property]: [read-only] System.Byte System.Collections.Immutable.ImmutableArray
@@ -3305,14 +3288,7 @@ WoofWare.PosixKernel.PollOutcome.NewFailed [static method]: WoofWare.PosixKernel
 WoofWare.PosixKernel.PollOutcome.NewWouldBlock [static method]: WoofWare.PosixKernel.WakeCondition -> WoofWare.PosixKernel.PollOutcome
 WoofWare.PosixKernel.PollOutcome.Tag [property]: [read-only] int
 WoofWare.PosixKernel.PollQueue inherit obj, implements WoofWare.PosixKernel.PollQueue System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollQueue System.IComparable, System.IComparable, System.Collections.IStructuralComparable
-WoofWare.PosixKernel.PollQueue..ctor [constructor]: (WoofWare.PosixKernel.ProcessId, Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.PollRegistration>, (int * WoofWare.PosixKernel.KqueueFilter) list)
-WoofWare.PosixKernel.PollQueue.Active [property]: [read-only] (int * WoofWare.PosixKernel.KqueueFilter) list
 WoofWare.PosixKernel.PollQueue.Equals [method]: (WoofWare.PosixKernel.PollQueue, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.PollQueue.get_Active [method]: unit -> (int * WoofWare.PosixKernel.KqueueFilter) list
-WoofWare.PosixKernel.PollQueue.get_Owner [method]: unit -> WoofWare.PosixKernel.ProcessId
-WoofWare.PosixKernel.PollQueue.get_Registrations [method]: unit -> Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.PollRegistration>
-WoofWare.PosixKernel.PollQueue.Owner [property]: [read-only] WoofWare.PosixKernel.ProcessId
-WoofWare.PosixKernel.PollQueue.Registrations [property]: [read-only] Map<(int * WoofWare.PosixKernel.KqueueFilter), WoofWare.PosixKernel.PollRegistration>
 WoofWare.PosixKernel.PollQueueId inherit obj, implements WoofWare.PosixKernel.PollQueueId System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollQueueId System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 1 cases
 WoofWare.PosixKernel.PollQueueId.Equals [method]: (WoofWare.PosixKernel.PollQueueId, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.PollQueueId.get_Item [method]: unit -> System.Int64
@@ -3320,17 +3296,10 @@ WoofWare.PosixKernel.PollQueueId.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.PollQueueId.Item [property]: [read-only] System.Int64
 WoofWare.PosixKernel.PollQueueId.NewPollQueueId [static method]: System.Int64 -> WoofWare.PosixKernel.PollQueueId
 WoofWare.PosixKernel.PollQueueId.Tag [property]: [read-only] int
-WoofWare.PosixKernel.PollRegistration inherit obj, implements WoofWare.PosixKernel.PollRegistration System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PollRegistration System.IComparable, System.IComparable, System.Collections.IStructuralComparable
-WoofWare.PosixKernel.PollRegistration..ctor [constructor]: (int, bool, int, WoofWare.PosixKernel.SocketId option)
-WoofWare.PosixKernel.PollRegistration.Entry [property]: [read-only] int
-WoofWare.PosixKernel.PollRegistration.Equals [method]: (WoofWare.PosixKernel.PollRegistration, System.Collections.IEqualityComparer) -> bool
-WoofWare.PosixKernel.PollRegistration.get_Entry [method]: unit -> int
-WoofWare.PosixKernel.PollRegistration.get_OutOfBand [method]: unit -> bool
-WoofWare.PosixKernel.PollRegistration.get_RegisteredAt [method]: unit -> int
-WoofWare.PosixKernel.PollRegistration.get_Socket [method]: unit -> WoofWare.PosixKernel.SocketId option
-WoofWare.PosixKernel.PollRegistration.OutOfBand [property]: [read-only] bool
-WoofWare.PosixKernel.PollRegistration.RegisteredAt [property]: [read-only] int
-WoofWare.PosixKernel.PollRegistration.Socket [property]: [read-only] WoofWare.PosixKernel.SocketId option
+WoofWare.PosixKernel.PollQueueModule inherit obj
+WoofWare.PosixKernel.PollQueueModule.activated [static method]: WoofWare.PosixKernel.PollQueue -> (int * WoofWare.PosixKernel.KqueueFilter) list
+WoofWare.PosixKernel.PollQueueModule.entry [static method]: int -> WoofWare.PosixKernel.KqueueFilter -> WoofWare.PosixKernel.PollQueue -> int option
+WoofWare.PosixKernel.PollQueueModule.registered [static method]: WoofWare.PosixKernel.PollQueue -> (int * WoofWare.PosixKernel.KqueueFilter) list
 WoofWare.PosixKernel.PrivilegedExecution inherit obj, implements WoofWare.PosixKernel.PrivilegedExecution System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.PrivilegedExecution System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.PrivilegedExecution+Tags inherit obj
 WoofWare.PosixKernel.PrivilegedExecution+Tags.NeedsAnExecuteBit [static field]: int = 0

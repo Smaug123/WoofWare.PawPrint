@@ -255,14 +255,24 @@ module DebuggerServer =
 
                 writer.WriteEndArray ()
 
-                let registrations, active =
+                let registrations =
                     match UnixSystem.pollQueue parked.Queue system with
-                    | Some queue -> queue.Registrations, queue.Active
-                    | None -> Map.empty, []
+                    | Some queue ->
+                        let active = PollQueue.activated queue
+
+                        PollQueue.registered queue
+                        |> List.map (fun (fd, filter) ->
+                            match PollQueue.entry fd filter queue with
+                            | Some entry -> fd, filter, entry, List.contains (fd, filter) active
+                            | None ->
+                                failwith
+                                    $"DebuggerServer: the poll queue %O{parked.Queue} lists fd %d{fd} (%O{filter}) as registered, and names no entry for it"
+                        )
+                    | None -> []
 
                 writer.WriteStartArray "registrations"
 
-                for (fd, filter), registration in Map.toList registrations do
+                for fd, filter, entry, active in registrations do
                     writer.WriteStartObject ()
                     writer.WriteNumber ("fd", fd)
 
@@ -271,10 +281,11 @@ module DebuggerServer =
                         match filter with
                         | KqueueFilter.Read -> "read"
                         | KqueueFilter.Write -> "write"
+                        | KqueueFilter.Timer -> "timer"
                     )
 
-                    writer.WriteNumber ("entry", registration.Entry)
-                    writer.WriteBoolean ("active", List.contains (fd, filter) active)
+                    writer.WriteNumber ("entry", entry)
+                    writer.WriteBoolean ("active", active)
                     writer.WriteEndObject ()
 
                 writer.WriteEndArray ()
