@@ -1223,6 +1223,7 @@ module UnixSocket =
 
             let connectionFailed =
                 match socket.Phase with
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getsockname" socketId
                 | SocketPhase.Refused _ -> true
                 | SocketPhase.Established (connection, connectionEnd) -> resetReached connection connectionEnd
                 | SocketPhase.EstablishedPendingReport connection -> resetReached connection ConnectionEnd.Client
@@ -2000,6 +2001,7 @@ module UnixSocket =
 
         // Measured in `docs/probes/getpeername/getpeername.c` on both flavours.
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getpeername" socketId
         | SocketPhase.Idle
         | SocketPhase.Listening _ -> notConnected
         | SocketPhase.Refused _ ->
@@ -2301,6 +2303,8 @@ module UnixSocket =
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
+               // No Darwin connect is left in flight.
+               | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.setsockopt" socketId
                | SocketPhase.Refused _ -> true
                | SocketPhase.Established (connectionId, connectionEnd) ->
                    let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
@@ -2439,7 +2443,9 @@ module UnixSocket =
                            | SocketPhase.EstablishedPendingReport _
                            | SocketPhase.Established _
                            | SocketPhase.Refused _
-                           | SocketPhase.DatagramPeer _ -> true
+                           | SocketPhase.DatagramPeer _
+                           // A connect binds its source before it sends.
+                           | SocketPhase.Connecting _ -> true
 
                     match socket.Addressing with
                     | SocketAddressing.Inet6DualMode _
@@ -2726,6 +2732,7 @@ module UnixSocket =
                 | ModelledOption.LingerSeconds -> ints [ enabled ; int (linger.Hundredths / 100L) ], system
                 | ModelledOption.Error ->
                     match socket.Phase with
+                    | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixSocket.getsockopt" socketId
                     | SocketPhase.Refused RefusalError.Pending ->
                         // Both kernels take the error before the copy-out, so a
                         // read that then faults has still taken it: measured

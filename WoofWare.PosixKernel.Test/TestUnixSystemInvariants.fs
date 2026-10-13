@@ -729,7 +729,8 @@ module TestUnixSystemInvariants =
     /// wherever a fuzzer checks invariants.
     [<Test>]
     let ``a connecting socket is a ReservedSocketPhase defect`` () : unit =
-        let destination = SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us)
+        let destination =
+            SocketAddress.Inet (Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us)
 
         let phase =
             SocketPhase.Connecting

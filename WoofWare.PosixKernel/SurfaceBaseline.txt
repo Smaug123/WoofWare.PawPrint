@@ -361,6 +361,8 @@ WoofWare.PosixKernel.ClientEnd.NewSupplying [static method]: WoofWare.PosixKerne
 WoofWare.PosixKernel.ClientEnd.ReadEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
 WoofWare.PosixKernel.ClientEnd.Tag [property]: [read-only] int
 WoofWare.PosixKernel.ClientEnd.WriteEndClosed [static property]: [read-only] WoofWare.PosixKernel.ClientEnd
+WoofWare.PosixKernel.ConnectAttempt inherit obj, implements WoofWare.PosixKernel.ConnectAttempt System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ConnectAttempt System.IComparable, System.IComparable, System.Collections.IStructuralComparable
+WoofWare.PosixKernel.ConnectAttempt.Equals [method]: (WoofWare.PosixKernel.ConnectAttempt, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.ConnectionEnd inherit obj, implements WoofWare.PosixKernel.ConnectionEnd System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.ConnectionEnd System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 2 cases
 WoofWare.PosixKernel.ConnectionEnd+Tags inherit obj
 WoofWare.PosixKernel.ConnectionEnd+Tags.Client [static field]: int = 0
@@ -4436,7 +4438,10 @@ WoofWare.PosixKernel.SocketOptions.get_Linger [method]: unit -> WoofWare.PosixKe
 WoofWare.PosixKernel.SocketOptions.get_NoDelay [method]: unit -> bool
 WoofWare.PosixKernel.SocketOptions.Linger [property]: [read-only] WoofWare.PosixKernel.SocketLinger
 WoofWare.PosixKernel.SocketOptions.NoDelay [property]: [read-only] bool
-WoofWare.PosixKernel.SocketPhase inherit obj, implements WoofWare.PosixKernel.SocketPhase System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SocketPhase System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 6 cases
+WoofWare.PosixKernel.SocketPhase inherit obj, implements WoofWare.PosixKernel.SocketPhase System.IEquatable, System.Collections.IStructuralEquatable, WoofWare.PosixKernel.SocketPhase System.IComparable, System.IComparable, System.Collections.IStructuralComparable - union type with 7 cases
+WoofWare.PosixKernel.SocketPhase+Connecting inherit WoofWare.PosixKernel.SocketPhase
+WoofWare.PosixKernel.SocketPhase+Connecting.attempt [property]: [read-only] WoofWare.PosixKernel.ConnectAttempt
+WoofWare.PosixKernel.SocketPhase+Connecting.get_attempt [method]: unit -> WoofWare.PosixKernel.ConnectAttempt
 WoofWare.PosixKernel.SocketPhase+DatagramPeer inherit WoofWare.PosixKernel.SocketPhase
 WoofWare.PosixKernel.SocketPhase+DatagramPeer.get_peer [method]: unit -> WoofWare.PosixKernel.SocketAddress
 WoofWare.PosixKernel.SocketPhase+DatagramPeer.peer [property]: [read-only] WoofWare.PosixKernel.SocketAddress
@@ -4455,6 +4460,7 @@ WoofWare.PosixKernel.SocketPhase+Refused inherit WoofWare.PosixKernel.SocketPhas
 WoofWare.PosixKernel.SocketPhase+Refused.error [property]: [read-only] WoofWare.PosixKernel.RefusalError
 WoofWare.PosixKernel.SocketPhase+Refused.get_error [method]: unit -> WoofWare.PosixKernel.RefusalError
 WoofWare.PosixKernel.SocketPhase+Tags inherit obj
+WoofWare.PosixKernel.SocketPhase+Tags.Connecting [static field]: int = 6
 WoofWare.PosixKernel.SocketPhase+Tags.DatagramPeer [static field]: int = 5
 WoofWare.PosixKernel.SocketPhase+Tags.Established [static field]: int = 3
 WoofWare.PosixKernel.SocketPhase+Tags.EstablishedPendingReport [static field]: int = 2
@@ -4463,6 +4469,7 @@ WoofWare.PosixKernel.SocketPhase+Tags.Listening [static field]: int = 1
 WoofWare.PosixKernel.SocketPhase+Tags.Refused [static field]: int = 4
 WoofWare.PosixKernel.SocketPhase.Equals [method]: (WoofWare.PosixKernel.SocketPhase, System.Collections.IEqualityComparer) -> bool
 WoofWare.PosixKernel.SocketPhase.get_Idle [static method]: unit -> WoofWare.PosixKernel.SocketPhase
+WoofWare.PosixKernel.SocketPhase.get_IsConnecting [method]: unit -> bool
 WoofWare.PosixKernel.SocketPhase.get_IsDatagramPeer [method]: unit -> bool
 WoofWare.PosixKernel.SocketPhase.get_IsEstablished [method]: unit -> bool
 WoofWare.PosixKernel.SocketPhase.get_IsEstablishedPendingReport [method]: unit -> bool
@@ -4471,12 +4478,14 @@ WoofWare.PosixKernel.SocketPhase.get_IsListening [method]: unit -> bool
 WoofWare.PosixKernel.SocketPhase.get_IsRefused [method]: unit -> bool
 WoofWare.PosixKernel.SocketPhase.get_Tag [method]: unit -> int
 WoofWare.PosixKernel.SocketPhase.Idle [static property]: [read-only] WoofWare.PosixKernel.SocketPhase
+WoofWare.PosixKernel.SocketPhase.IsConnecting [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsDatagramPeer [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsEstablished [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsEstablishedPendingReport [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsIdle [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsListening [property]: [read-only] bool
 WoofWare.PosixKernel.SocketPhase.IsRefused [property]: [read-only] bool
+WoofWare.PosixKernel.SocketPhase.NewConnecting [static method]: WoofWare.PosixKernel.ConnectAttempt -> WoofWare.PosixKernel.SocketPhase
 WoofWare.PosixKernel.SocketPhase.NewDatagramPeer [static method]: WoofWare.PosixKernel.SocketAddress -> WoofWare.PosixKernel.SocketPhase
 WoofWare.PosixKernel.SocketPhase.NewEstablished [static method]: (WoofWare.PosixKernel.ConnectionId, WoofWare.PosixKernel.ConnectionEnd) -> WoofWare.PosixKernel.SocketPhase
 WoofWare.PosixKernel.SocketPhase.NewEstablishedPendingReport [static method]: WoofWare.PosixKernel.ConnectionId -> WoofWare.PosixKernel.SocketPhase

@@ -371,7 +371,9 @@ module ObjectLifetime =
             | SocketPhase.Listening listenState -> ListenState.connections listenState
             | SocketPhase.Idle
             | SocketPhase.Refused _
-            | SocketPhase.DatagramPeer _ -> []
+            | SocketPhase.DatagramPeer _
+            // A connect in flight has no connection yet.
+            | SocketPhase.Connecting _ -> []
 
         let stillReferenced (connection : ConnectionId) : bool =
             sockets
@@ -382,7 +384,8 @@ module ObjectLifetime =
                 | SocketPhase.Listening listenState -> List.contains connection (ListenState.connections listenState)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
+                | SocketPhase.DatagramPeer _
+                | SocketPhase.Connecting _ -> false
             )
 
         // What the release does to the dying socket's connections splits by
@@ -401,6 +404,7 @@ module ObjectLifetime =
         // level a wake filters against is the survivor's new one.
         let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) list, DescriptionReleaseRefusal> =
             match dying.Phase with
+            | SocketPhase.Connecting _ -> ReservedConnecting.fail "ObjectLifetime.releaseDestroyed" socketId
             | SocketPhase.Listening listenState ->
                 listenState.Queue
                 |> List.map (fun queued ->

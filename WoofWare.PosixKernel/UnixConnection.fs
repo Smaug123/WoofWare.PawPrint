@@ -1002,6 +1002,9 @@ module UnixConnection =
                 else
 
                 match sock.Phase with
+                // Linux answers a connect in flight EALREADY when non-blocking,
+                // and a blocking one sleeps on (measured, `connect-park.c` T3).
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.connect" socketId
                 | SocketPhase.EstablishedPendingReport connectionId when
                     (match
                         (TcpTransfer.towards
@@ -1102,6 +1105,9 @@ module UnixConnection =
                 // oversized sockaddr, and a connected socket's beats
                 // AF_UNSPEC.
                 match sock.Phase with
+                // No Darwin connect is left in flight: one to a full listener
+                // completes or is reset at once (measured, `connect-park.c`).
+                | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.connect" socketId
                 | SocketPhase.EstablishedPendingReport _ ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is a bug in this library, or in a caller that assembled the state by hand."
@@ -2174,6 +2180,7 @@ module UnixConnection =
         | SocketKind.Stream ->
 
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.accept" socketId
         | SocketPhase.DatagramPeer _ ->
             failwith
                 $"UnixConnection.accept: socket %O{socketId} is a stream socket holding SocketPhase.DatagramPeer, a pairing this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
@@ -2456,6 +2463,7 @@ module UnixConnection =
             | SimulatedUnixFlavour.Linux -> Error (ShutdownRefusal.LinuxUnconnected socketId)
 
         match socket.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixConnection.shutdown" socketId
         | SocketPhase.Listening _ -> Error (ShutdownRefusal.Listener socketId)
         | SocketPhase.DatagramPeer _ -> Error (ShutdownRefusal.ConnectedDatagram socketId)
         | SocketPhase.Idle

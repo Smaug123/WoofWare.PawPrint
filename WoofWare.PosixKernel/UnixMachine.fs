@@ -694,6 +694,7 @@ module UnixMachineState =
         let target = socket socketId machine
 
         match target.Phase with
+        | SocketPhase.Connecting _ -> ReservedConnecting.fail "UnixMachineState.socketReadinessLevel" socketId
         | SocketPhase.Listening listenState ->
             { ReadinessLevel.none with
                 In = not (List.isEmpty listenState.Queue)
