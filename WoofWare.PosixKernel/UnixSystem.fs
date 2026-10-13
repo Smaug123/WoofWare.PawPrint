@@ -1469,7 +1469,7 @@ module UnixSystem =
                     | Some (InodeContent.Socket _)
                     | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
-                | OpenFileTarget.CharacterDevice (inode, device) ->
+                | OpenFileTarget.CharacterDevice (inode, device, _) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None

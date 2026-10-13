@@ -1398,7 +1398,7 @@ module UnixNamespace =
                     match description.Target with
                     | OpenFileTarget.File (inode, _)
                     | OpenFileTarget.Directory (inode, _)
-                    | OpenFileTarget.CharacterDevice (inode, _)
+                    | OpenFileTarget.CharacterDevice (inode, _, _)
                     | OpenFileTarget.Fifo (inode, _) -> Ok inode
                     | OpenFileTarget.Pipe _
                     | OpenFileTarget.Socket _

@@ -163,6 +163,12 @@ type CharacterDevice =
     /// for it, so `/dev` holds no `random`, and `mknod` makes no character
     /// device node at all: it fails or is refused.
     | Random
+    /// `/dev/tty`: the calling process's controlling terminal.
+    ///
+    /// Nothing in this version makes a node for it. This kernel has no driver
+    /// for it, so `/dev` holds no `tty`, and `mknod` makes no character device
+    /// node at all: it fails or is refused.
+    | Tty
 
 /// <summary>
 /// What lives at an inode.

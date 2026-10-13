@@ -1673,7 +1673,7 @@ module UnixDescriptor =
                                 (UnixMachineState.connection connectionId system.Machine).Transfer
                         )
                     )
-            | Some (OpenFileTarget.CharacterDevice (_, device)) ->
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) ->
                 // The driver's own answer, without the destination: Linux asks the
                 // inode whether it is a regular file before it would write one.
                 Ok (Error (CharacterDevice.unrecognisedIoctl device))
@@ -1720,9 +1720,9 @@ module UnixDescriptor =
     /// write end reports 0. A connected socket reports what waits in its
     /// receive buffer. EBADF for a descriptor that is not open, whatever the
     /// destination; EFAULT for an unmapped destination, whatever is held. A
-    /// device answers its driver's errno whatever the destination
-    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
-    /// descriptor.
+    /// device answers its driver's errno whatever the destination: under
+    /// Linux, `ENOTTY` for `/dev/null` and `EINVAL` for `/dev/urandom`.
+    /// Refused for every other descriptor.
     ///
     /// Changes nothing.
     let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1768,7 +1768,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _, _)
             // A FIFO's inode is on the filesystem its path is on, and the
             // later screen answers EINVAL for it there:
             // `generic_remap_file_range_prep` refuses any inode that is not
@@ -1880,7 +1880,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
-            | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
+            | Some (OpenFileTarget.CharacterDevice (_, device, _)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
             | Some (OpenFileTarget.Inotify _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
