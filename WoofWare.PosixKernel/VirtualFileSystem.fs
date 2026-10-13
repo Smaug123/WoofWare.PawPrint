@@ -2695,6 +2695,7 @@ module VirtualFileSystem =
                     Some (VirtualFileSystemDefect.ReservedContent inode)
                 | InodeContent.CharacterDevice (CharacterDevice.Null, _)
                 | InodeContent.CharacterDevice (CharacterDevice.URandom, _)
+                | InodeContent.CharacterDevice (CharacterDevice.Tty, _)
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.Symlink _ -> None

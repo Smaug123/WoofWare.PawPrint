@@ -81,6 +81,7 @@ module TestDeviceDescriptors =
         | CharacterDevice.URandom -> "/dev/urandom"
         | CharacterDevice.Zero -> "/dev/zero"
         | CharacterDevice.Random -> "/dev/random"
+        | CharacterDevice.Tty -> "/dev/tty"
 
     let private openWith
         (flags : OpenFlags)
@@ -314,7 +315,7 @@ module TestDeviceDescriptors =
             | Ok (FileStatusAnswer.Reported status) -> status.Inode
             | other -> failwith $"stat /dev/urandom: %A{other}"
 
-        for device in [ CharacterDevice.Zero ; CharacterDevice.Random ] do
+        for device in [ CharacterDevice.Zero ; CharacterDevice.Random ; CharacterDevice.Tty ] do
             let fd, registry =
                 FileDescriptorRegistry.openCharacterDevice
                     (ForgedName.ofInode booted urandom)
@@ -662,7 +663,8 @@ module TestDeviceDescriptors =
             | CharacterDevice.URandom, Ok bytes ->
                 Seq.toList bytes |> shouldEqual (Seq.toList (fst (getRandomOf count system)))
             | CharacterDevice.Zero, _
-            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
+            | CharacterDevice.Random, _
+            | CharacterDevice.Tty, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | _, Error error -> failwith $"pread %d{count}@%d{offset}: %O{error}"
 
         let offsetGen =
@@ -809,7 +811,8 @@ module TestDeviceDescriptors =
 
             match device, admission with
             | CharacterDevice.Zero, _
-            | CharacterDevice.Random, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
+            | CharacterDevice.Random, _
+            | CharacterDevice.Tty, _ -> failwith $"%O{device} has no node, so it cannot have been opened"
             | CharacterDevice.Null, _ ->
                 admission
                 |> shouldEqual (PWriteAdmission.Answered (WriteAnswer.Completed (int64 count)))

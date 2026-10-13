@@ -82,6 +82,7 @@ module CharacterDevice =
         | CharacterDevice.URandom -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "urandom"
         | CharacterDevice.Zero -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "zero"
         | CharacterDevice.Random -> DirectoryEntryName.parseOrFail "CharacterDevice.name" "random"
+        | CharacterDevice.Tty -> failwith "CharacterDevice.name: Tty is not yet decided"
 
     /// The permission bits of the device's node.
     let permissions (device : CharacterDevice) : PermissionBits =
@@ -93,6 +94,7 @@ module CharacterDevice =
         | CharacterDevice.URandom
         | CharacterDevice.Zero
         | CharacterDevice.Random -> PermissionBits 0o666
+        | CharacterDevice.Tty -> failwith "CharacterDevice.permissions: Tty is not yet decided"
 
     /// What an `ioctl(2)` the device's Linux driver does not recognise answers:
     /// `FIONREAD` and `TCGETS` (`tcgetattr`) among them, neither device being a
@@ -109,7 +111,8 @@ module CharacterDevice =
         | CharacterDevice.Null -> UnixError.ENOTTY
         | CharacterDevice.URandom -> UnixError.EINVAL
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"CharacterDevice.unrecognisedIoctl: asked about %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in the caller)."
 
@@ -133,6 +136,7 @@ module CharacterDevice =
             | CharacterDevice.Zero -> 1L, 5L
             | CharacterDevice.Random -> 1L, 8L
             | CharacterDevice.URandom -> 1L, 9L
+            | CharacterDevice.Tty -> failwith "CharacterDevice.specialFileDevice: Tty is not yet decided"
 
         // glibc's `makedev`, which is how a 64-bit Linux `stat` encodes the pair:
         // measured, 1,3 is reported as 259 and 1,9 as 265.

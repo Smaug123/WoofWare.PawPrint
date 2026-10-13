@@ -1527,7 +1527,8 @@ module UnixReadWrite =
             // for every count (`devices.c`, WRITE rows).
             Ok (Some (WriteAnswer.Completed (int64 count)))
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"UnixReadWrite.deviceWriteWithoutBytes: a write to %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
@@ -1569,7 +1570,8 @@ module UnixReadWrite =
             // memory alike (`devices.c`, READ rows).
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
         | CharacterDevice.Zero
-        | CharacterDevice.Random ->
+        | CharacterDevice.Random
+        | CharacterDevice.Tty ->
             failwith
                 $"UnixReadWrite.readDevice: a read of %O{device}, which this kernel has no driver for yet, so nothing in this version makes its node (this is a bug in this library)."
         | CharacterDevice.URandom ->
