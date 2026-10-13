@@ -10,7 +10,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `FileStatusPal` transcribes the one bit of `st_flags` the shim keeps, so
 /// nothing in the type system keeps its numbers right. Its oracles are the

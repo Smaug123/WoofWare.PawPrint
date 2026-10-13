@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// Regression coverage for issue #903: unbounded recursion in <c>TypeResolution</c> when the

@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Tests for the stack-shape analysis: the evaluation stack's shape at the entry of every
 /// instruction, joined over every path that reaches it, and the offsets at which a float32 must

@@ -7,7 +7,6 @@ open System.Collections.Immutable
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]

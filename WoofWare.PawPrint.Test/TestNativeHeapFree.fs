@@ -5,7 +5,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `NativeCall.tryResolveNativeHeapFreeTarget` decides which pointers a
 /// `free`-shaped entry point may release. It is shared by `SystemNative_Free`

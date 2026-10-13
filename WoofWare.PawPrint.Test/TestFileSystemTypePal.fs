@@ -8,7 +8,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `FileSystemTypePal` transcribes part of `MapFileSystemNameToEnum`, so
 /// nothing in the type system keeps its numbers right. Its oracles are the

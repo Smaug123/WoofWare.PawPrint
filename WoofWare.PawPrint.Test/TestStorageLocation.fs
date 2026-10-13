@@ -5,7 +5,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Laws of `StorageLocation.overlapVerdict`.
 ///

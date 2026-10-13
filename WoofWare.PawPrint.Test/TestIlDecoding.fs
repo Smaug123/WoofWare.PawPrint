@@ -15,7 +15,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// Tests for <see cref="IlDecoding.decodeInstructions"/>, which turns a method body's IL

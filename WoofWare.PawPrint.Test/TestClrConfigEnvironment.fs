@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// How CLRConfig reads a knob out of the environment, which differs from a plain
 /// lookup once the environment holds an empty entry: `CLRConfig::Initialize`'s

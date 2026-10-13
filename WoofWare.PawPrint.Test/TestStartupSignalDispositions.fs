@@ -6,7 +6,6 @@ open System.Threading.Tasks
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `StartupSignalDispositions` against the real runtime this test host runs:
 /// a program that sends itself each signal in turn must end as the kernel's

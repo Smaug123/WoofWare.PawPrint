@@ -13,7 +13,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `StrErrorR` transcribes what System.Native's `SystemNative_StrErrorR` does
 /// against each C library, and `CLibrary` the text that library's `strerror_r`

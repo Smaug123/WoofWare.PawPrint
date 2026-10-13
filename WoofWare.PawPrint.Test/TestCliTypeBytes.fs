@@ -9,7 +9,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Property-based oracle for `CliType.ToBytes` / `CliType.OfBytesLike`:
 /// for every primitive CliType, serialising to bytes and back must be the

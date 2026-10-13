@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `TypeConcretization.signaturesEquivalent` mirrors `MetaSig::CompareMethodSigs`, and most of its
 /// rules cannot be reached by a guest: a C# program cannot declare two methods whose signatures

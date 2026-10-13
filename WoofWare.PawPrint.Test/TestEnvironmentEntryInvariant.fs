@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// A real process's environment is a list of byte strings, the `envp` it was
 /// started with, and not a map: the map every environment API presents is a
