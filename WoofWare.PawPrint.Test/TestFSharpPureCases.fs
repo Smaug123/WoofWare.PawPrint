@@ -1,10 +1,10 @@
 namespace WoofWare.Pawprint.Test
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
-open System.Runtime.InteropServices
 open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
@@ -21,8 +21,6 @@ open WoofWare.PawPrint.Test
 module TestFSharpPureCases =
 
     type private TestAssemblyMarker = class end
-
-    let private rid = RuntimeInformation.RuntimeIdentifier
 
     // We cannot use __SOURCE_DIRECTORY__: when ContinuousIntegrationBuild is set
     // (Directory.Build.props turns it on whenever GITHUB_ACTION is non-empty), the
@@ -53,35 +51,53 @@ module TestFSharpPureCases =
 
     // Output goes to a path we control so the test isn't coupled to the project's TargetFramework.
     let private publishDir =
-        Path.Combine (projectDir, "bin", "Release", "pawprint-test-publish", rid)
+        Path.Combine (projectDir, "bin", "Release", "pawprint-test-publish")
 
     let private dllPath =
         Path.Combine (publishDir, "WoofWare.PawPrint.Test.FSharpPureCases.dll")
 
-    // The real-runtime oracle runs the app out of process, so it needs the apphost rather than the
-    // managed image: this is a self-contained publish, whose dependencies (FSharp.Core among them)
-    // live beside the dll and are only resolvable from that directory.
-    let private exePath =
-        Path.Combine (
-            publishDir,
-            if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                "WoofWare.PawPrint.Test.FSharpPureCases.exe"
-            else
-                "WoofWare.PawPrint.Test.FSharpPureCases"
-        )
+    /// The files in `publishDir` whose names are also those of files in `frameworkDir`, compared
+    /// ignoring case as `AssemblyProbe` binds. PawPrint searches `publishDir` ahead of the
+    /// framework, so each such file is one it would bind in place of the framework's own.
+    let private frameworkFilesIn (publishDir : string) (frameworkDir : string) : string list =
+        let frameworkFiles =
+            HashSet<string> (
+                Directory.EnumerateFiles frameworkDir |> Seq.map Path.GetFileName,
+                StringComparer.OrdinalIgnoreCase
+            )
 
+        // Guards against the comparison passing vacuously on a listing that found nothing.
+        if not (frameworkFiles.Contains "System.Private.CoreLib.dll") then
+            failwith $"logic error: the framework directory %s{frameworkDir} holds no System.Private.CoreLib.dll"
+
+        Directory.EnumerateFiles publishDir
+        |> Seq.map Path.GetFileName
+        |> Seq.filter frameworkFiles.Contains
+        |> Seq.sort
+        |> List.ofSeq
+
+    /// Publishes the cases framework-dependent, so that both PawPrint and the real-runtime oracle run
+    /// them on the framework under test. A self-contained publish would carry a framework of its
+    /// own, which is the host SDK's runtime pack whatever framework is under test, and PawPrint
+    /// would bind it ahead of `FrameworkUnderTest.runtimeDirs ()`.
     let private publishOnce : Lazy<unit> =
         lazy
             if not (File.Exists projectFile) then
                 failwith $"Cannot publish F# test cases: project file %s{projectFile} does not exist."
 
+            // `dotnet publish` adds to an existing output directory rather than replacing it, so a
+            // file left by an earlier publish of another shape would survive this one.
+            if Directory.Exists publishDir then
+                Directory.Delete (publishDir, true)
+
             let psi = ProcessStartInfo "dotnet"
             psi.ArgumentList.Add "publish"
             psi.ArgumentList.Add "--configuration"
             psi.ArgumentList.Add "Release"
-            psi.ArgumentList.Add "--self-contained"
-            psi.ArgumentList.Add "--runtime"
-            psi.ArgumentList.Add rid
+            psi.ArgumentList.Add "--no-self-contained"
+            // The oracle runs the dll through the muxer of the framework under test; an apphost
+            // would find a framework by its own lookup instead.
+            psi.ArgumentList.Add "-p:UseAppHost=false"
             psi.ArgumentList.Add "--output"
             psi.ArgumentList.Add publishDir
             psi.ArgumentList.Add projectFile
@@ -109,6 +125,19 @@ module TestFSharpPureCases =
             if not (File.Exists dllPath) then
                 failwith
                     $"dotnet publish completed but %s{dllPath} does not exist.\nSTDOUT:\n%s{stdout}\nSTDERR:\n%s{stderr}"
+
+            // Only the shared framework, not the whole of `FrameworkUnderTest.runtimeDirs ()`: that
+            // list also holds the test assembly's own directory, whose FSharp.Core the publish's is
+            // meant to shadow.
+            let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
+
+            match frameworkFilesIn publishDir frameworkDir with
+            | [] -> ()
+            | files ->
+                let files = String.concat ", " files
+
+                failwith
+                    $"The F# cases' publish in %s{publishDir} holds files named as in the framework under test's %s{frameworkDir}, which PawPrint would bind ahead of that framework's own: %s{files}. Publish framework-dependent."
 
     let private loadImage () : byte array =
         publishOnce.Force ()
@@ -179,7 +208,7 @@ module TestFSharpPureCases =
             // `DifferentialOracle.alongsideInterpreted`.
             let realResult, pawPrintResult =
                 DifferentialOracle.alongsideInterpreted
-                    (fun () -> RealRuntime.executePublishedApp [| testCaseName |] exePath)
+                    (fun () -> RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath)
                     (fun () ->
                         Program.run
                             loggerFactory
@@ -193,7 +222,7 @@ module TestFSharpPureCases =
                             }
                     )
 
-            // The publish is self-contained, so the guest runs on the publish's own CoreLib.
+            // The publish holds no framework, so the guest runs on the framework under test's CoreLib.
             FrameworkUnderTest.assertOutcomeServes pawPrintResult
 
             match realResult, ExpectRun.ended pawPrintResult with
@@ -422,7 +451,7 @@ module TestFSharpPureCases =
         let expectedExitCode =
             customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
 
-        match RealRuntime.executePublishedApp [| testCaseName |] exePath with
+        match RealRuntime.executeAssemblyInPlace [| testCaseName |] dllPath with
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
         | RealRuntimeResult.UnhandledException report ->
             failwith $"Real runtime terminated with an unhandled exception for %s{testCaseName}:\n%s{report}"

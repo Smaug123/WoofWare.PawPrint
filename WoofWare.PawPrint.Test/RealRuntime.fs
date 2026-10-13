@@ -883,7 +883,7 @@ module RealRuntime =
     /// how it terminated. The image must be self-contained in the sense of
     /// referencing nothing but the shared framework, which is what
     /// `Roslyn.compile` produces; an assembly with its own dependencies needs
-    /// them laid out beside it, so use `executePublishedApp` instead.
+    /// them laid out beside it, so use `executeAssemblyInPlace` instead.
     ///
     /// The guest's working directory is the scratch directory this owns, so a
     /// guest should probe **relative** paths: PawPrint's side of the comparison
@@ -972,10 +972,12 @@ module RealRuntime =
     /// guest that references anything but the shared framework. This instead runs the assembly
     /// where it lies, which is what makes its siblings resolve: an app with no `deps.json` gets
     /// every `.dll` in its own directory placed on the trusted platform assemblies list, so a
-    /// directory of co-compiled assemblies binds by simple name with no probing logic of ours.
+    /// directory of co-compiled assemblies binds by simple name with no probing logic of ours. A
+    /// framework-dependent publish's `deps.json` names its dependencies in that same directory.
     ///
-    /// This writes `<name>.runtimeconfig.json` beside the assembly, overwriting any existing one.
-    /// An app that ships its own configuration is a published app; use `executePublishedApp`.
+    /// This replaces any `<name>.runtimeconfig.json` beside the assembly with one naming the
+    /// framework under test, so a published app runs on that framework rather than on the one it
+    /// was published for. Callers may run the same assembly concurrently.
     let executeAssemblyInPlace (args : string[]) (dllPath : string) : RealRuntimeResult =
         if not (File.Exists dllPath) then
             failwith $"Cannot run %s{dllPath} under the real runtime: the assembly does not exist."
@@ -984,7 +986,14 @@ module RealRuntime =
         // The host derives the config's name from the assembly's *file* name, not from its
         // assembly name, and the file is already on disk under a name the caller chose.
         let name = Path.GetFileNameWithoutExtension dllPath
-        File.WriteAllText (Path.Combine (directory, name + ".runtimeconfig.json"), runtimeConfig)
+        let configPath = Path.Combine (directory, name + ".runtimeconfig.json")
+
+        // Written aside and renamed into place, so that a concurrent run of the same assembly reads
+        // either the old file or this one whole, never one this call has truncated. Every file
+        // renamed into place has the same contents.
+        let staging = configPath + "." + Path.GetRandomFileName () + ".tmp"
+        File.WriteAllText (staging, runtimeConfig)
+        File.Move (staging, configPath, true)
 
         runToCompletion
             guestTimeout
@@ -994,27 +1003,6 @@ module RealRuntime =
             Map.empty
             StandardStreamsConfig.piped
             name
-
-    /// Run an already-published application in place, by executing its apphost.
-    ///
-    /// A published app carries its own dependencies, `runtimeconfig.json` and `deps.json` in its
-    /// output directory, so it must run from there rather than being copied to a scratch directory
-    /// as a bare image. Executing the apphost rather than passing the managed dll to the muxer is
-    /// how such an app is actually launched, and is the only supported launch path for a
-    /// self-contained publish.
-    let executePublishedApp (args : string[]) (executablePath : string) : RealRuntimeResult =
-        if not (File.Exists executablePath) then
-            failwith
-                $"Cannot run published app %s{executablePath} under the real runtime: the apphost does not exist. Has the project been published?"
-
-        runToCompletion
-            guestTimeout
-            executablePath
-            (List.ofArray args)
-            (Path.GetDirectoryName executablePath)
-            Map.empty
-            StandardStreamsConfig.piped
-            (Path.GetFileName executablePath)
 
     /// Run `guests` on the real runtime at the same time, each as its own process, and report how
     /// each terminated and what it wrote, in the order of `guests`. This is the oracle for
