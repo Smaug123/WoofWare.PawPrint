@@ -44,9 +44,11 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 ///   `Microsoft.NETCore.App`. On a macOS CoreLib, `HttpClient` asks CFNetwork for the system
 ///   proxy settings, which PawPrint does not implement. The real run uses the host's own
 ///   CoreLib, so on macOS the comparison is between flavours, of facts that hold on both.
-/// - **The polling file watcher.** Both sides run with `DOTNET_USE_POLLING_FILE_WATCHER=1`,
-///   because PawPrint does not implement inotify, which the configuration's reload-on-change
-///   watcher uses otherwise.
+/// - **The same file watcher on both sides.** The server's configuration reloads on change, so
+///   it watches its content root, which is its working directory. Under PawPrint that is a
+///   `FileSystemWatcher` over the kernel's inotify. Both sides set
+///   `DOTNET_USE_POLLING_FILE_WATCHER` empty, which overrides the Nix devshell's `1`, so the
+///   real server watches with the host's own mechanism: inotify on Linux, FSEvents on macOS.
 /// - **A proxy.** Both sides run with every proxy variable `HttpClient` reads set empty, so
 ///   that the real client cannot inherit one from the host.
 /// - **One interleaving.** The two programs take turns round robin. The idle-close pair forces
@@ -75,18 +77,20 @@ module TestAspNetTwoProcess =
 
     /// Both processes' working directory under PawPrint, which the machine's filesystem holds
     /// empty. It is the server's content root, which its configuration's reload-on-change watcher
-    /// watches with every directory below it, so it must not be `/`: the watcher would list `/dev`,
-    /// whose listing the kernel refuses.
+    /// watches with every directory below it, so it must not be `/`: the watcher would `lstat`
+    /// `/dev`, which the kernel refuses.
     let private workingDirectory : string = "/app"
 
     /// The environment of both processes, on both sides. The real processes otherwise inherit
     /// the test host's environment, so every variable from which `HttpClient` reads a proxy is
     /// set here, empty, which it reads as no proxy: a proxy the host configures must not carry
     /// the real client's loopback requests away from the server.
+    /// `DOTNET_USE_POLLING_FILE_WATCHER` is set empty for the same reason, which the
+    /// configuration's file provider reads as "do not poll": the Nix devshell sets it to `1`.
     let private environment : string list =
         [
             EnvironmentPal.nameValueEntry "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" "1"
-            EnvironmentPal.nameValueEntry "DOTNET_USE_POLLING_FILE_WATCHER" "1"
+            EnvironmentPal.nameValueEntry "DOTNET_USE_POLLING_FILE_WATCHER" ""
             for name in
                 [
                     "http_proxy"
