@@ -78,12 +78,12 @@ module TestDatagramDissolve =
                         (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 9000us))
                         system
                 with
-                | Ok (ConnectOutcome.Completed, system) -> system
+                | Ok (SyscallAnswer.Completed 0L, system) -> system
                 | other -> failwith $"connect: %A{other}"
 
         fd, system
 
-    let private dissolve (fd : int) (system : UnixSystem<int, string>) : ConnectOutcome * UnixSystem<int, string> =
+    let private dissolve (fd : int) (system : UnixSystem<int, string>) : SyscallAnswer * UnixSystem<int, string> =
         match
             UnixConnection.connectSocket
                 (socketOf fd system)
@@ -124,7 +124,7 @@ module TestDatagramDissolve =
             let fd, system = datagram SimulatedUnixPlatform.linuxX64 bindTo connected
             let outcome, after = dissolve fd system
 
-            outcome |> shouldEqual ConnectOutcome.Completed
+            outcome |> shouldEqual (SyscallAnswer.Completed 0L)
             phase fd after |> shouldEqual SocketPhase.Idle
             UnixSystem.checkInvariants after |> shouldEqual []
 
@@ -152,7 +152,7 @@ module TestDatagramDissolve =
             let fd, system = datagram SimulatedUnixPlatform.macOsArm64 bindTo connected
             let outcome, after = dissolve fd system
 
-            outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EAFNOSUPPORT)
+            outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EAFNOSUPPORT)
             phase fd after |> shouldEqual SocketPhase.Idle
             UnixSystem.checkInvariants after |> shouldEqual []
 
@@ -196,7 +196,7 @@ module TestDatagramDissolve =
                 (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 9001us))
                 system
         with
-        | Ok (ConnectOutcome.Completed, after) ->
+        | Ok (SyscallAnswer.Completed 0L, after) ->
             let binding = (bound fd after).Value
             binding.Endpoint.Address |> shouldEqual loopback
             binding.Endpoint.Port |> shouldNotEqual 0us

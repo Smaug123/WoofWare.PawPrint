@@ -101,7 +101,7 @@ module TestPeerName =
         let listener, system = listening (loopback listenerPort) (fresh platform)
         let client, system = stream system
         let outcome, system = connect client (loopback listenerPort) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         listener, client, system
 
     let private ask (fd : int) (declared : uint32) (system : UnixSystem<int, string>) =
@@ -161,7 +161,7 @@ module TestPeerName =
         let fd, system = stream (fresh platform)
         let system = nonBlocking fd system
         let outcome, system = connect fd nobody system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
         ask fd 16u system |> shouldEqual expected
 
         let level = SimulatedUnixPlatform.socketOptionLevel platform
@@ -180,7 +180,7 @@ module TestPeerName =
         // Blocking: Linux's socket is idle again, Darwin's stays refused.
         let fd, system = stream (fresh platform)
         let outcome, system = connect fd nobody system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
         ask fd 16u system |> shouldEqual expected
 
     [<TestCaseSource(nameof platforms)>]
@@ -277,7 +277,7 @@ module TestPeerName =
         let fd, system = stream system
         let system = nonBlocking fd system
         let outcome, system = connect fd (loopback listenerPort) system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
         ask fd 16u system |> shouldEqual (reported platform (loopback listenerPort))
 
     [<TestCaseSource(nameof platforms)>]
@@ -285,7 +285,7 @@ module TestPeerName =
         let _, system = listening (wildcard listenerPort) (fresh platform)
         let fd, system = stream system
         let outcome, system = connect fd (wildcard listenerPort) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         ask fd 16u system |> shouldEqual (reported platform (loopback listenerPort))
 
     [<TestCaseSource(nameof platforms)>]
@@ -344,13 +344,13 @@ module TestPeerName =
         let fd, system = datagram system
 
         let outcome, system = connect fd (loopback receiverPort) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         ask fd 16u system |> shouldEqual (reported platform (loopback receiverPort))
 
         // The wildcard is resolved at the connect: measured 127.0.0.1 on both
         // for a socket with no concrete address of its own.
         let outcome, system = connect fd (wildcard receiverPort) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         ask fd 16u system |> shouldEqual (reported platform (loopback receiverPort))
 
     [<Test>]
@@ -360,14 +360,14 @@ module TestPeerName =
         let fd, system = datagram system
 
         let outcome, system = connect fd (loopback 0us) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         ask fd 16u system |> shouldEqual (failed UnixError.ENOTCONN)
 
         let _, system = connect fd (loopback receiverPort) system
         ask fd 16u system |> shouldEqual (reported linux (loopback receiverPort))
 
         let outcome, system = connectBlob fd (CopyIn.blob linux 0 (wildcard 0us)) system
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         ask fd 16u system |> shouldEqual (failed UnixError.ENOTCONN)
 
     [<Test>]
@@ -378,5 +378,5 @@ module TestPeerName =
 
         let _, system = connect fd (loopback receiverPort) system
         let outcome, system = connect fd (loopback 0us) system
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EADDRNOTAVAIL)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EADDRNOTAVAIL)
         ask fd 16u system |> shouldEqual (failed UnixError.ENOTCONN)

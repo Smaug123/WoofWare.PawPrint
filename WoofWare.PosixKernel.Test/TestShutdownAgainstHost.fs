@@ -1567,7 +1567,7 @@ module TestShutdownAgainstHost =
 
             let s =
                 match CopyIn.connect client UserBuffer.Mapped 16u (loopback platform port) s with
-                | Ok (ConnectOutcome.Completed, s) -> s
+                | Ok (SyscallAnswer.Completed 0L, s) -> s
                 | other -> failwith $"connect: %A{other}"
 
             let server, s =
@@ -1978,10 +1978,10 @@ module TestShutdownAgainstHost =
 
         let connectAnswer (fd : int) (port : int) : string =
             match CopyIn.connect fd UserBuffer.Mapped 16u (loopback platform port) system with
-            | Ok (ConnectOutcome.Completed, after) ->
+            | Ok (SyscallAnswer.Completed _, after) ->
                 system <- after
                 "0"
-            | Ok (ConnectOutcome.Failed error, after) ->
+            | Ok (SyscallAnswer.Failed error, after) ->
                 system <- after
                 $"-1 %A{error}"
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"

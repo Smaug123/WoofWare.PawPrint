@@ -260,6 +260,10 @@ module UnixWait =
             // process, to whichever task the receiver rule picks. No wait queue
             // is shared.
             | WakePrimitive.AwaitedSignalPending _ -> None
+            // Reserved, and in no condition yet. Linux's `unix_wait_for_peer`
+            // waits exclusively on the listener's `peer_wait`, which the
+            // connect that sleeps will model.
+            | WakePrimitive.AcceptQueueHasRoom _ -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             views
@@ -338,6 +342,9 @@ module UnixWait =
                        }
                 | Some {
                            Syscall = ParkedSyscall.DatagramSend _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.Connect _
                        }
                 | None -> None
             )

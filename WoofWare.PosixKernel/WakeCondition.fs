@@ -180,6 +180,19 @@ type WakePrimitive =
     /// Reserved: nothing parks a task in a signal wait yet, so no condition
     /// this library hands out contains it.
     | AwaitedSignalPending of awaited : SignalMask
+    /// The listening socket `listener` has room in its accept queue for one
+    /// more connection, or can no longer take one: it has been closed or shut
+    /// down, so that a connect asleep on it wakes to be refused.
+    ///
+    /// What a blocking Linux Unix-domain stream `connect(2)` to a full listener
+    /// waits for. Names the listener by the machine's identity for the socket,
+    /// since the sleeping call holds the socket and no description of it. A
+    /// TCP connect to a full listener waits for its SYN retransmit instead
+    /// (`DeadlinePassed`), and looks for room only then.
+    ///
+    /// Reserved: nothing parks a task in a connect yet, so no condition this
+    /// library hands out contains it.
+    | AcceptQueueHasRoom of listener : SocketId
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -305,6 +318,7 @@ module WakeCondition =
         | Some (ParkedSyscall.Select _)
         | Some (ParkedSyscall.DatagramReceive _)
         | Some (ParkedSyscall.DatagramSend _)
+        | Some (ParkedSyscall.Connect _)
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -411,6 +425,9 @@ module WakeCondition =
         | WakePrimitive.FifoPartnerOpened _ ->
             failwith
                 $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but this library keeps no count of a FIFO's opens to evaluate it against: nothing parks a task in a FIFO open yet (`ParkedSyscall.FifoOpen` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
+        | WakePrimitive.AcceptQueueHasRoom _ ->
+            failwith
+                $"WakeCondition.satisfied: task %O{task} waits for %A{primitive}, but nothing parks a task in a connect yet (`ParkedSyscall.Connect` is reserved), so the park was recorded by hand (this is a bug in the caller that recorded it)."
         | WakePrimitive.InotifyRecordQueued reader ->
             not (
                 InotifyQueue.isEmpty
@@ -509,7 +526,8 @@ module WakeCondition =
         | WakeCondition.Primitive WakePrimitive.EndedByClose
         | WakeCondition.Primitive (WakePrimitive.FifoPartnerOpened _)
         | WakeCondition.Primitive (WakePrimitive.InotifyRecordQueued _)
-        | WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending _) -> []
+        | WakeCondition.Primitive (WakePrimitive.AwaitedSignalPending _)
+        | WakeCondition.Primitive (WakePrimitive.AcceptQueueHasRoom _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -668,6 +686,10 @@ module WakeCondition =
             // waits for joins this when something parks a task in one.
             | ParkedSyscall.DatagramReceive _
             | ParkedSyscall.DatagramSend _ -> []
+            // A signal alone, while it is reserved: a retransmit deadline, or
+            // room in the listener's queue, joins this when something parks a
+            // task in it.
+            | ParkedSyscall.Connect _ -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

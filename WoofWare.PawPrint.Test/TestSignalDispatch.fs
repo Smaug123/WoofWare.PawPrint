@@ -957,10 +957,10 @@ module TestSignalDispatch =
         let client, system = socket system
 
         let system =
-            match UnixConnection.connect client UserBuffer.Mapped length system with
+            match UnixConnection.connect state.Kernel.Leader client UserBuffer.Mapped length system with
             | CallProgress.NeedsCopyIn paused ->
                 match UnixConnection.connectWithAddress address paused with
-                | ConnectOutcome.Completed, system -> system
+                | SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system -> system
                 | other -> failwith $"connect answered %A{other}"
             | other -> failwith $"connect answered %A{other} before the copy"
 

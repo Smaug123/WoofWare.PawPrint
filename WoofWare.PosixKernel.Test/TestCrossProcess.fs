@@ -1010,7 +1010,7 @@ module TestCrossProcess =
                         let fd, view = KeventWorld.stream false view
 
                         match KeventWorld.connect fd 8080us view with
-                        | ConnectOutcome.Completed, view -> fd, view
+                        | SyscallAnswer.Completed 0L, view -> fd, view
                         | other, _ -> failwith $"connect: %A{other}"
                     )
                     machine
@@ -1189,7 +1189,7 @@ module TestCrossProcess =
 
                             let view =
                                 match KeventWorld.connect connected 8081us view with
-                                | ConnectOutcome.Completed, view -> view
+                                | SyscallAnswer.Completed 0L, view -> view
                                 | other, _ -> failwith $"connect: %A{other}"
 
                             let listenerAt, connectedAt = if listenerFirst then 10, 11 else 11, 10

@@ -771,7 +771,7 @@ module TestSocketTable =
         (nonBlocking : bool)
         (dest : Ipv4Endpoint)
         (kernel : UnixSystem<int, string>)
-        : ConnectOutcome * UnixSystem<int, string>
+        : SyscallAnswer * UnixSystem<int, string>
         =
         match
             UnixConnection.connectSocket
@@ -811,7 +811,7 @@ module TestSocketTable =
     let ``a blocking connect establishes: queue content, addresses, binding, invariants`` () : unit =
         let kernel = listenerAndClients 8 5000us 1
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let client = UnixMachineState.socket (SocketId 1L) kernel.Machine
 
@@ -867,7 +867,7 @@ module TestSocketTable =
         let kernel = listenerAndClients 8 5000us 1
         let outcome, kernel = connect (SocketId 1L) true (loopback 5000us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
@@ -875,14 +875,14 @@ module TestSocketTable =
             | other -> failwith $"expected EstablishedPendingReport, got %A{other}"
 
         let outcome, kernel = connect (SocketId 1L) true (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
         | SocketPhase.Established (reported, ConnectionEnd.Client) -> reported |> shouldEqual connectionId
         | other -> failwith $"expected Established, got %A{other}"
 
         let outcome, _ = connect (SocketId 1L) true (loopback 5000us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
 
     [<Test>]
     let ``a non-blocking Darwin establishment is Established at once`` () : unit =
@@ -902,14 +902,14 @@ module TestSocketTable =
 
         let outcome, kernel = connect (SocketId 1L) true (loopback 5000us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
         | SocketPhase.Established _ -> ()
         | other -> failwith $"expected Established, got %A{other}"
 
         let outcome, _ = connect (SocketId 1L) true (loopback 5000us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
 
     [<Test>]
     let ``a refusal delivery resets a Linux socket, and a Darwin socket never has one delivered`` () : unit =
@@ -920,21 +920,21 @@ module TestSocketTable =
         // Linux: EINPROGRESS, delivery, then a fresh attempt.
         let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) (fresh ())
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
 
         let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.Idle
 
         let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
         // Darwin: every retry answers EISCONN and the error stays pending.
         let darwin =
@@ -955,26 +955,26 @@ module TestSocketTable =
 
         let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) darwinPending
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
         kernel |> shouldEqual darwinPending
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
 
         let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
 
         // A blocking refusal delivers inline and leaves nothing pending, and
         // the socket then answers EISCONN just the same.
         let outcome, kernel = connect (SocketId 0L) false (loopback 9999us) darwin
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.Refused RefusalError.Reported)
 
         let outcome, afterRetry = connect (SocketId 0L) true (loopback 9999us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EISCONN)
         afterRetry |> shouldEqual kernel
 
     [<Test>]
@@ -1120,7 +1120,7 @@ module TestSocketTable =
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel |> shouldEqual true
 
@@ -1280,7 +1280,7 @@ module TestSocketTable =
                 1L
 
         let outcome, kernel = connect (SocketId 0L) false (loopback 9999us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 9999us)))
@@ -1308,14 +1308,14 @@ module TestSocketTable =
             | Ok answer -> answer
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
         socket.Phase |> shouldEqual SocketPhase.Idle
         socket.Ipv4Binding |> shouldEqual None
 
         // A re-connect binds afresh.
         let outcome, kernel = connect (SocketId 0L) false (loopback 1234us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Ipv4Binding with
         | Some binding -> (binding.Endpoint.Port > 0us) |> shouldEqual true
@@ -1349,7 +1349,7 @@ module TestSocketTable =
             | Ok answer -> answer
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EAFNOSUPPORT)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EAFNOSUPPORT)
 
     // --- the connection-table invariants ---
 
@@ -1684,7 +1684,7 @@ module TestSocketTable =
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
@@ -1720,7 +1720,7 @@ module TestSocketTable =
                 (kernel, [ 1L .. 4L ])
                 ||> List.fold (fun kernel client ->
                     let outcome, kernel = connect (SocketId client) false (loopback 5000us) kernel
-                    outcome |> shouldEqual ConnectOutcome.Completed
+                    outcome |> shouldEqual (SyscallAnswer.Completed 0L)
                     kernel
                 )
 
@@ -1751,7 +1751,7 @@ module TestSocketTable =
                 (kernel, [ 1L .. 3L ])
                 ||> List.fold (fun kernel client ->
                     let outcome, kernel = connect (SocketId client) false (loopback 5000us) kernel
-                    outcome |> shouldEqual ConnectOutcome.Completed
+                    outcome |> shouldEqual (SyscallAnswer.Completed 0L)
                     kernel
                 )
 
@@ -1789,7 +1789,7 @@ module TestSocketTable =
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let client = UnixMachineState.socket (SocketId 1L) kernel.Machine
 
@@ -1826,7 +1826,7 @@ module TestSocketTable =
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
         UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// The refusal's effect on the local binding, across all three bind
@@ -1886,7 +1886,7 @@ module TestSocketTable =
 
                 let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
 
-                outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
+                outcome |> shouldEqual (SyscallAnswer.Failed UnixError.EINPROGRESS)
 
                 // While the refusal pends, the source reads as resolved
                 // loopback with a nonzero port on both flavours.
@@ -1902,7 +1902,7 @@ module TestSocketTable =
 
                 // Darwin's connect never delivers the pending refusal.
                 outcome
-                |> shouldEqual (ConnectOutcome.Failed (if darwin then UnixError.EISCONN else UnixError.ECONNREFUSED))
+                |> shouldEqual (SyscallAnswer.Failed (if darwin then UnixError.EISCONN else UnixError.ECONNREFUSED))
 
                 let delivered =
                     match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Ipv4Binding with
@@ -1916,7 +1916,7 @@ module TestSocketTable =
 
                 if darwin then
                     let outcome, blocked = connect (SocketId 0L) false (loopback 9999us) start
-                    outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+                    outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
                     match (UnixMachineState.socket (SocketId 0L) blocked.Machine).Ipv4Binding with
                     | Some binding -> binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
@@ -1988,7 +1988,7 @@ module TestSocketTable =
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) established
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.Refused RefusalError.Reported)
@@ -2001,7 +2001,7 @@ module TestSocketTable =
                 (loopback 5000us)
                 (kernelWith (SocketPhase.Refused RefusalError.Pending) Map.empty)
 
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (SyscallAnswer.Failed UnixError.ECONNREFUSED)
 
     /// The two four-tuple corners a REUSEADDR-bound client can engineer are
     /// refused by name: a resolved source equal to the destination even with
@@ -2082,7 +2082,7 @@ module TestSocketTable =
 
         let kernel = kernel |> boundAt 1L |> boundAt 2L
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         let e =
             Assert.Throws<System.Exception> (fun () -> connect (SocketId 2L) false (loopback 5000us) kernel |> ignore)
@@ -2133,7 +2133,7 @@ module TestSocketTable =
 
         // The next client must take the other port rather than colliding.
         let outcome, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
-        outcome |> shouldEqual ConnectOutcome.Completed
+        outcome |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match (UnixMachineState.socket (SocketId 2L) kernel.Machine).Ipv4Binding with
         | Some binding -> binding.Endpoint.Port |> shouldEqual 40001us

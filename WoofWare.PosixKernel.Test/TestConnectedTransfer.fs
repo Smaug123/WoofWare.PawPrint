@@ -69,7 +69,7 @@ module TestConnectedTransfer =
 
         let system =
             match KeventWorld.connect client port system with
-            | ConnectOutcome.Completed, system -> system
+            | SyscallAnswer.Completed 0L, system -> system
             | other, _ -> failwith $"connect: %A{other}"
 
         let server, system = KeventWorld.accept listener system
@@ -186,7 +186,7 @@ module TestConnectedTransfer =
 
         KeventWorld.connect client port system
         |> fst
-        |> shouldEqual ConnectOutcome.Completed
+        |> shouldEqual (SyscallAnswer.Completed 0L)
 
         assertClean system
 
@@ -984,7 +984,7 @@ module TestConnectedTransfer =
 
                 let system =
                     match KeventWorld.connect client port system with
-                    | ConnectOutcome.Completed, system -> system
+                    | SyscallAnswer.Completed 0L, system -> system
                     | other, _ -> failwith $"connect: %A{other}"
 
                 let accepted, system = KeventWorld.accept listener system
@@ -1094,7 +1094,7 @@ module TestConnectedTransfer =
 
                     let system =
                         match KeventWorld.connect client port system with
-                        | ConnectOutcome.Completed, system -> system
+                        | SyscallAnswer.Completed 0L, system -> system
                         | other, _ -> failwith $"connect: %A{other}"
 
                     let accepted, system = KeventWorld.accept listener system
@@ -1122,7 +1122,7 @@ module TestConnectedTransfer =
                             (CopyIn.inet platform (KeventWorld.loopback port))
                             system
                     with
-                    | Ok (ConnectOutcome.Completed, system) when reset -> assertClean system
+                    | Ok (SyscallAnswer.Completed 0L, system) when reset -> assertClean system
                     | Error (ConnectRefusal.DuplicateFourTuple _) when not reset -> ()
                     | other -> failwith $"%O{platform} reset %b{reset}: %A{other}"
 
@@ -1148,7 +1148,7 @@ module TestConnectedTransfer =
             match
                 CopyIn.connect second UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback port)) system
             with
-            | Ok (ConnectOutcome.Completed, system) ->
+            | Ok (SyscallAnswer.Completed 0L, system) ->
                 (UnixMachineState.socket (socketOf second system) system.Machine).Ipv4Binding
                 |> Option.map (fun binding -> binding.Endpoint.Port)
                 |> shouldEqual (Some 40000us)
