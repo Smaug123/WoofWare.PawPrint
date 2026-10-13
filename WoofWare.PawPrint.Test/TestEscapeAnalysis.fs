@@ -5159,6 +5159,104 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    /// An image whose branches test a value type that `newobj` made, which no C# spells, so that
+    /// the branch tests the value rather than whether an object is null:
+    ///   - `Runners.ZeroPointer`: `ldc.i4.0; newobj IntPtr(int); brtrue L; a / b`;
+    ///   - `Runners.PassesZeroPointer`: passes that `IntPtr` to `Runners.Divides`, which branches
+    ///     on it the same way.
+    let private fabricateValueBranches () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Branches", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Branches"
+
+        let runners =
+            modul.DefineType (
+                "Branches.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let staticAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+        let pointer = typeof<nativeint>.GetConstructor [| typeof<int> |]
+
+        // `brtrue` over the `IntPtr` on the stack, then `a / b` from arguments `a` and `b`.
+        let divideUnless (il : Emit.ILGenerator) (a : Emit.OpCode) (b : Emit.OpCode) =
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit a
+            il.Emit b
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+        let zeroPointer =
+            runners.DefineMethod ("ZeroPointer", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = zeroPointer.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit (Emit.OpCodes.Newobj, pointer)
+        divideUnless il Emit.OpCodes.Ldarg_0 Emit.OpCodes.Ldarg_1
+
+        let divides =
+            runners.DefineMethod (
+                "Divides",
+                staticAttributes,
+                typeof<int>,
+                [| typeof<nativeint> ; typeof<int> ; typeof<int> |]
+            )
+
+        let il = divides.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        divideUnless il Emit.OpCodes.Ldarg_1 Emit.OpCodes.Ldarg_2
+
+        let passesZeroPointer =
+            runners.DefineMethod ("PassesZeroPointer", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = passesZeroPointer.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit (Emit.OpCodes.Newobj, pointer)
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit (Emit.OpCodes.Call, divides)
+        il.Emit Emit.OpCodes.Ret
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a branch on a value type that newobj made is not a test of whether it is null`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateValueBranches ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Branches.dll") (new MemoryStream (image))
+
+        let cases =
+            [
+                "ZeroPointer", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                "PassesZeroPointer", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Branches" image
+
+        let _, failures =
+            dispatchFailures fixture "Branches" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// The receivers of the static dispatch fixture, and which of `DivideByZeroException` and
     /// `OverflowException` the `Probe` each supplies raises. A static method has no receiver object,
     /// so the type a `constrained.` prefix names decides what runs, even a class others derive from.

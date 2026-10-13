@@ -1968,6 +1968,52 @@ module EscapeAnalysis =
         | [ known ] -> known
         | _ -> None
 
+    /// Whether `spelling` is of a reference type, whatever the instantiation: `string`, `object`,
+    /// an array, or a class. A type variable may be a value type.
+    let private isReference (state : EscapeAnalysisState) (spelling : SpelledType) : EscapeAnalysisState * bool =
+        match TypeDefn.stripCustomModifiers spelling.Type with
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.PrimitiveType PrimitiveType.Object
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> state, true
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.GenericInstantiation _ ->
+            match nominalIdentity state (assemblyOf state spelling.SpelledIn) spelling.Type with
+            | state, Some identity ->
+                let valueType = state.BaseTypes.ValueType.Identity
+                let state, derivesFromValueType = derivesFrom state identity valueType
+
+                state,
+                not derivesFromValueType
+                || identity = valueType
+                || identity = state.BaseTypes.Enum.Identity
+            | state, None -> state, false
+        | _ -> state, false
+
+    /// Whether every object among `objects` is spelled, in `spellings`, as of a reference type, so
+    /// that whether it is null is what a `brtrue` tests of it. An object a call returns that names
+    /// no declared type is not.
+    let private allReferences
+        (state : EscapeAnalysisState)
+        (spellings : SpelledType[])
+        (objects : SpelledObject list)
+        : EscapeAnalysisState * bool
+        =
+        ((state, true), objects)
+        ||> List.fold (fun (state, soFar) object ->
+            if not soFar then
+                state, false
+            else
+                match object with
+                | SpelledObject.Null -> state, true
+                | SpelledObject.Exactly index
+                | SpelledObject.Within index
+                | SpelledObject.Argument (_, index)
+                | SpelledObject.Returned (_, Some index) -> isReference state spellings.[index]
+                | SpelledObject.Returned (_, None) -> state, false
+        )
+
     /// What the `ret`s among `sites` that a run executes return, over all of them.
     let private returnedOver (sites : Map<int, StackValue>) (executed : Set<int>) : StackValue =
         ((Some Set.empty), sites)
@@ -2680,21 +2726,27 @@ module EscapeAnalysis =
             |> Map.ofSeq
 
         // The objects each `brtrue` or `brfalse` tests, by the offset of the instruction before it,
-        // which pushes them. Where that does not fall through, something else lands on the branch.
-        let tested =
-            ops
-            |> Seq.pairwise
-            |> Seq.choose (fun ((before, beforeOffset), (op, offset)) ->
+        // which pushes them, where each is spelled as a reference: a branch on a value type, such as
+        // an `IntPtr` that `newobj` made, tests the value, not whether it is null. Where the
+        // instruction before does not fall through, something else lands on the branch.
+        let state, tested =
+            ((state, Map.empty), Seq.pairwise ops)
+            ||> Seq.fold (fun (state, tested) ((before, beforeOffset), (op, offset)) ->
                 match op with
                 | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _ | UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _) when
                     not (capabilities.ContainsKey beforeOffset)
                     ->
                     match ControlFlow.successorsOf beforeOffset before, objectsAt offset 0 with
-                    | Successors.FallThrough, Some objects -> Some (beforeOffset, Set.ofList objects)
-                    | _ -> None
-                | _ -> None
+                    | Successors.FallThrough, Some objects ->
+                        let state, references = allReferences state spellings objects
+
+                        if references then
+                            state, Map.add beforeOffset (Set.ofList objects) tested
+                        else
+                            state, tested
+                    | _ -> state, tested
+                | _ -> state, tested
             )
-            |> Map.ofSeq
 
         // A test the body decides by itself, whatever its callers pass, is a constant like a
         // capability query's; the rest only an instance decides.
