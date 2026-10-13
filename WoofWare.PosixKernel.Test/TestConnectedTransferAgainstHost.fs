@@ -808,7 +808,9 @@ module TestConnectedTransferAgainstHost =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
-            match UnixSocket.tryGetsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
+            match
+                UnixSocket.tryGetsockoptLength s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+            with
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int 0), system) -> [ Seen.PendingError None ], system
             | Ok (GetSockOptAnswer.Reported (OptionValue.Int raw), system) ->
                 [

@@ -87,8 +87,8 @@ module TestSockOpt =
     let private reuseFlag (system : UnixSystem<int, string>) : bool =
         (UnixMachineState.socket (SocketId 0L) system.Machine).ReuseAddress
 
-    /// The whole `setsockopt(2)` a client makes: ask the admission, read the
-    /// value only if the kernel would, then make the call.
+    /// The whole `setsockopt(2)` a client makes, stopping at the copy and
+    /// reading the value only if the kernel does.
     let private setWith
         (fd : int)
         (level : int)
@@ -99,19 +99,14 @@ module TestSockOpt =
         (system : UnixSystem<int, string>)
         : Result<SetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
         =
-        let read =
-            match UnixSocket.tryAdmitSetSockOpt fd level optionName value optionLength system with
-            | Ok (SetSockOptAdmission.Transfer length) ->
-                length |> shouldEqual 4
-                Some (OptionValue.ofInt supplied)
-            | Ok SetSockOptAdmission.NoCopy
-            | Ok (SetSockOptAdmission.Answered _)
-            | Error _ -> None
+        let contents (count : int) =
+            count |> shouldEqual 4
+            OptionValue.ofInt supplied
 
-        UnixSocket.trySetsockopt fd level optionName value optionLength read system
+        SockOptCalls.set fd level optionName value optionLength contents system
 
-    /// The whole `getsockopt(2)` a client makes: ask the admission, read the
-    /// length cell only if the kernel would, then make the call.
+    /// The whole `getsockopt(2)` a client makes, stopping at the read of the
+    /// length cell and reading it only if the kernel does.
     let private getWithSystem
         (fd : int)
         (level : int)
@@ -122,14 +117,7 @@ module TestSockOpt =
         (system : UnixSystem<int, string>)
         : Result<GetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
         =
-        let read =
-            match UnixSocket.tryAdmitGetSockOpt fd level optionName value length system with
-            | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
-            | Ok GetSockOptAdmission.SkipLength
-            | Ok (GetSockOptAdmission.Answered _)
-            | Error _ -> None
-
-        UnixSocket.tryGetsockopt fd level optionName value length read system
+        SockOptCalls.get fd level optionName value length declaredLength system
 
     /// `getWithSystem`'s answer alone.
     let private getWith
@@ -386,7 +374,14 @@ module TestSockOpt =
                 |> shouldEqual (Ok (GetSockOptAdmission.Answered UnixError.EBADF))
 
             let get value declaredLength =
-                UnixSocket.tryGetsockopt socketFd level optionName value UserBuffer.Mapped (Some declaredLength) system
+                UnixSocket.tryGetsockoptLength
+                    socketFd
+                    level
+                    optionName
+                    value
+                    UserBuffer.Mapped
+                    (Some declaredLength)
+                    system
                 |> Result.map fst
 
             get UserBuffer.Opaque 4u
@@ -699,7 +694,7 @@ module TestSockOpt =
 
             let tooMuch =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.trySetsockopt
+                    UnixSocket.trySetsockoptBytes
                         socketFd
                         level
                         optionName
@@ -714,7 +709,7 @@ module TestSockOpt =
 
             let tooLittle =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.trySetsockopt socketFd level optionName UserBuffer.Mapped 4u None system
+                    UnixSocket.trySetsockoptBytes socketFd level optionName UserBuffer.Mapped 4u None system
                     |> ignore<_>
                 )
 
@@ -722,7 +717,7 @@ module TestSockOpt =
 
             let lengthNotRead =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.tryGetsockopt socketFd level optionName UserBuffer.Mapped null' (Some 4u) system
+                    UnixSocket.tryGetsockoptLength socketFd level optionName UserBuffer.Mapped null' (Some 4u) system
                     |> ignore<_>
                 )
 
@@ -730,7 +725,14 @@ module TestSockOpt =
 
             let lengthRead =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.tryGetsockopt socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped None system
+                    UnixSocket.tryGetsockoptLength
+                        socketFd
+                        level
+                        optionName
+                        UserBuffer.Mapped
+                        UserBuffer.Mapped
+                        None
+                        system
                     |> ignore<_>
                 )
 

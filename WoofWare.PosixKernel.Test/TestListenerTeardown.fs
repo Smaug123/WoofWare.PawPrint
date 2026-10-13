@@ -89,7 +89,7 @@ module TestListenerTeardown =
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        UnixSocket.trySetsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+        UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
 
     let private lingerZero (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match setLinger fd 1 0 system with

@@ -37,7 +37,7 @@ module TestDualMode =
         let name = SimulatedUnixPlatform.ipv6OnlyOption platform
 
         match
-            UnixSocket.trySetsockopt
+            UnixSocket.trySetsockoptBytes
                 fd
                 level
                 name

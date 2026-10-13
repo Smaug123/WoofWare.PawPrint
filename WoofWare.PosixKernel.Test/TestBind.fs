@@ -483,7 +483,7 @@ module TestBind =
 
         let e =
             Assert.Throws<exn> (fun () ->
-                UnixSocket.tryBind fd UserBuffer.Mapped exactLength ImmutableArray.Empty system
+                UnixSocket.tryBindBytes fd UserBuffer.Mapped exactLength ImmutableArray.Empty system
                 |> ignore<_>
             )
 

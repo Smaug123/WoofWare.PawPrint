@@ -253,20 +253,29 @@ let fd, socketSystem =
     | Error error -> failwith $"socket failed with %O{error}"
 
 // Linux's struct sockaddr_in: the family in host order, then the port and the address in network order.
-let sockaddr (address : byte[]) : ImmutableArray<byte> =
-    ImmutableArray.CreateRange (Array.concat [ [| 2uy ; 0uy ; 0x13uy ; 0x88uy |] ; address ; Array.zeroCreate 8 ])
+let sockaddr (address : byte[]) : byte[] =
+    Array.concat [ [| 2uy ; 0uy ; 0x13uy ; 0x88uy |] ; address ; Array.zeroCreate 8 ]
+
+// bind(fd, &sockaddr, 16): the call stops where the kernel copies the sockaddr in, and
+// bindWithAddress takes the bytes copyRange names.
+let bind (address : byte[]) (system : UnixSystem<int, unit>) : BindAnswer * UnixSystem<int, unit> =
+    match UnixSocket.bind fd UserBuffer.Mapped 16u system with
+    | CallProgress.Answered answered -> answered
+    | CallProgress.NeedsCopyIn paused ->
+        let range = PausedBind.copyRange paused
+        UnixSocket.bindWithAddress (ImmutableArray.Create (sockaddr address, range.FirstByte, range.ByteCount)) paused
 
 // A bind to the multicast group 224.0.0.1 is not modelled: this library models no group membership.
 let multicast =
     try
-        Some (UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 224uy ; 0uy ; 0uy ; 1uy |]) socketSystem)
+        Some (bind [| 224uy ; 0uy ; 0uy ; 1uy |] socketSystem)
     with :? UnmodelledException ->
         None
 
 printfn "multicast bind answered: %b" multicast.IsSome
 
 // The throw left socketSystem as it was, so the client carries on from it: bind 127.0.0.1:5000.
-match UnixSocket.bind fd UserBuffer.Mapped 16u (sockaddr [| 127uy ; 0uy ; 0uy ; 1uy |]) socketSystem with
+match bind [| 127uy ; 0uy ; 0uy ; 1uy |] socketSystem with
 | BindAnswer.Bound (SocketAddress.Inet endpoint), _ ->
     printfn "bound %s:%d" (Ipv4Address.toString endpoint.Address) endpoint.Port
 | answer, _ -> failwith $"unexpected bind: %A{answer}"
@@ -411,18 +420,19 @@ The cases exist so that a client's matches already handle them when pathname soc
 | Call | Function | Answers |
 | --- | --- | --- |
 | `socket(2)` | `UnixSocket.socket (domain : int) (socketType : int) (protocol : int)` | `Result<int * UnixSystem, UnixError>` |
-| `bind(2)` and `connect(2)`, before the copy | `UnixSocket.admitSockaddrCopy (syscall : SockaddrCopySyscall) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `SockaddrCopyAdmission` |
-| `bind(2)`, given the bytes | `UnixSocket.bind (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `BindAnswer * UnixSystem` |
-| `connect(2)`, given the bytes | `UnixConnection.connect (fd : int) (destination : UserBuffer) (declaredLength : uint32) (copied : ImmutableArray<byte>)` | `ConnectOutcome * UnixSystem` |
+| `bind(2)` | `UnixSocket.bind (fd : int) (address : UserBuffer) (declaredLength : uint32)` | `CallProgress<PausedBind, BindAnswer * UnixSystem>` |
+| `bind(2)`, given the bytes | `UnixSocket.bindWithAddress (copied : ImmutableArray<byte>) (paused : PausedBind)` | `BindAnswer * UnixSystem` |
+| `connect(2)` | `UnixConnection.connect (fd : int) (address : UserBuffer) (declaredLength : uint32)` | `CallProgress<PausedConnect, ConnectOutcome * UnixSystem>` |
+| `connect(2)`, given the bytes | `UnixConnection.connectWithAddress (copied : ImmutableArray<byte>) (paused : PausedConnect)` | `ConnectOutcome * UnixSystem` |
 | `listen(2)` | `UnixSocket.listen (fd : int) (backlog : int)` | `ListenAnswer * UnixSystem` |
 | `accept(2)` | `UnixConnection.accept (task : 'Task) (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `AcceptOutcome * UnixSystem` |
 | `shutdown(2)` | `UnixConnection.shutdown (fd : int) (how : int)` | `ShutdownAnswer * UnixSystem` |
 | `getsockname(2)` | `UnixSocket.getsockname (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
 | `getpeername(2)` | `UnixSocket.getpeername (fd : int) (destination : UserBuffer) (declaredLength : uint32)` | `GetSockNameAnswer` |
-| `setsockopt(2)`, before the copy | `UnixSocket.admitSetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `SetSockOptAdmission` |
-| `setsockopt(2)`, given the bytes | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32) (supplied : ImmutableArray<byte> option)` | `SetSockOptAnswer * UnixSystem` |
-| `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `GetSockOptAdmission` |
-| `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `GetSockOptAnswer * UnixSystem` |
+| `setsockopt(2)` | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32)` | `CallProgress<PausedSetSockOpt, SetSockOptAnswer * UnixSystem>` |
+| `setsockopt(2)`, given the bytes | `UnixSocket.setsockoptWithValue (copied : ImmutableArray<byte>) (paused : PausedSetSockOpt)` | `SetSockOptAnswer * UnixSystem` |
+| `getsockopt(2)` | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `CallProgress<PausedGetSockOpt, GetSockOptAnswer * UnixSystem>` |
+| `getsockopt(2)`, given the length | `UnixSocket.getsockoptWithLength (declaredLength : uint32) (paused : PausedGetSockOpt)` | `GetSockOptAnswer * UnixSystem` |
 
 An address crosses the syscall boundary as bytes, laid out as the platform's `struct sockaddr`: `bind` and `connect` take them, and `getsockname`, `getpeername` and `accept` answer them.
 Where the kernel hands out an address already decoded, in an answer or a socket's `SocketPhase.DatagramPeer`, it is a `SocketAddress`: an `Ipv4Endpoint`, an `Ipv6Endpoint`, or a `UnixSocketName`, whose representation is hidden and which `UnixSocketName.view` reads as a path or a Linux abstract name (`UnixSocketNameView`).
@@ -538,10 +548,10 @@ These calls have no function, and a client should refuse them rather than guess:
 
 A real kernel copies an argument in from the caller's memory at a point in the call, and what happens before that point is observable: a bad descriptor is `EBADF` whatever the buffer holds.
 So a call that copies bytes in stops there.
-`UnixReadWrite.write`, `UnixReadWrite.send`, `UnixReadWrite.finishWrite` and `UnixReadWrite.pwrite` answer a `CallProgress`: the call's answer, reached before the copy (`CallProgress.Answered`), or the call stopped at the copy (`CallProgress.NeedsCopyIn`), holding the system and everything the call has decided.
-The paused call's `copyRange` says which bytes of the caller's buffer to copy, and its resume function (`UnixReadWrite.writeWithBytes`, `sendWithBytes`, `pwriteWithBytes`) takes exactly those and finishes the call, answering the same type `CallProgress.Answered` carries.
+`UnixReadWrite.write`, `UnixReadWrite.send`, `UnixReadWrite.finishWrite`, `UnixReadWrite.pwrite`, `UnixSocket.bind`, `UnixConnection.connect`, `UnixSocket.setsockopt` and `UnixSocket.getsockopt` answer a `CallProgress`: the call's answer, reached before the copy (`CallProgress.Answered`), or the call stopped at the copy (`CallProgress.NeedsCopyIn`), holding the system and everything the call has decided.
+The paused call's `copyRange` says which bytes of the caller's buffer to copy, and its resume function (`UnixReadWrite.writeWithBytes`, `sendWithBytes`, `pwriteWithBytes`, `UnixSocket.bindWithAddress`, `UnixConnection.connectWithAddress`, `UnixSocket.setsockoptWithValue`) takes exactly those and finishes the call, answering the same type `CallProgress.Answered` carries.
+A `getsockopt` stops where the kernel reads the caller's length cell instead, and `UnixSocket.getsockoptWithLength` takes the `socklen_t` it holds.
 Nothing else can be done to the system in between, since the paused call holds it.
-`UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt` and `UnixSocket.admitGetSockOpt` are admissions instead, which change nothing, and answer either the call's answer or how many bytes to copy; the call itself takes exactly those bytes.
 
 Calls that copy in two pathnames come as phases too, for a client that reads its arguments out of a live process, where reading the second pathname too early is itself observable: `UnixNamespace.renameatSourcePhase` or `UnixNamespace.renameSourcePhase` then `UnixNamespace.renameWithDestination`; `UnixNamespace.linkatSourcePhase` or `UnixNamespace.linkSourcePhase` then `UnixNamespace.linkWithDestination`; `UnixNamespace.symlinkatTargetPhase` or `UnixNamespace.symlinkTargetPhase` then `UnixNamespace.symlinkWithPath`; `UnixNamespace.cloneFileFlagsPhase`, `UnixNamespace.cloneFileSourcePhase` then `UnixNamespace.cloneFileWithDestination`; `UnixPathResolution.faccessatScreenPhase` or `UnixPathResolution.accessScreenPhase` then `UnixPathResolution.accessWithPath`; and `UnixInotify.inotifyAddWatchScreenPhase` then `UnixInotify.inotifyAddWatchWithPath`, since Linux answers a bad mask or descriptor without reading the path.
 A client that holds every argument already, such as a replayer, uses the one-shot functions in the tables.

@@ -114,7 +114,7 @@ module TestSocketAddressing =
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
-        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped 4u supplied system with
+        match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped 4u supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> Answer.Succeeded, system
         | Ok (SetSockOptAnswer.Failed error, system) -> Answer.Failed error, system
         | Error _ -> Answer.Refused, system
@@ -127,7 +127,7 @@ module TestSocketAddressing =
             | Ok GetSockOptAdmission.ReadLength -> Some 4u
             | _ -> None
 
-        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
+        match UnixSocket.tryGetsockoptLength fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
         | Ok (GetSockOptAnswer.Reported bytes, _) when bytes.Length = 4 ->
             Answer.Read (SimulatedUnixPlatform.decodeCInt system.Machine.UnixPlatform bytes 0)
         | Ok (GetSockOptAnswer.Reported bytes, _) -> failwith $"getsockopt reported %d{bytes.Length} bytes"

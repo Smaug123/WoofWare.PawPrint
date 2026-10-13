@@ -1623,7 +1623,7 @@ module TestShutdownAgainstHost =
                 let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
                 match
-                    UnixSocket.tryGetsockopt
+                    UnixSocket.tryGetsockoptLength
                         (this.Fd e)
                         level
                         optionName
@@ -1920,7 +1920,14 @@ module TestShutdownAgainstHost =
                 let name = SimulatedUnixPlatform.reuseAddressOption platform
 
                 match
-                    UnixSocket.tryGetsockopt (this.Fd e) level name UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+                    UnixSocket.tryGetsockoptLength
+                        (this.Fd e)
+                        level
+                        name
+                        UserBuffer.Mapped
+                        UserBuffer.Mapped
+                        (Some 4u)
+                        system
                 with
                 | Ok (answer, after) ->
                     system <- after

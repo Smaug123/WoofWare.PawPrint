@@ -942,9 +942,12 @@ module TestSignalDispatch =
         let listener, system = socket system
 
         let system =
-            match UnixSocket.bind listener UserBuffer.Mapped length address system with
-            | BindAnswer.Bound _, system -> system
-            | other -> failwith $"bind answered %A{other}"
+            match UnixSocket.bind listener UserBuffer.Mapped length system with
+            | CallProgress.NeedsCopyIn paused ->
+                match UnixSocket.bindWithAddress address paused with
+                | BindAnswer.Bound _, system -> system
+                | other -> failwith $"bind answered %A{other}"
+            | other -> failwith $"bind answered %A{other} before the copy"
 
         let system =
             match UnixSocket.listen listener 1 system with
@@ -954,9 +957,12 @@ module TestSignalDispatch =
         let client, system = socket system
 
         let system =
-            match UnixConnection.connect client UserBuffer.Mapped length address system with
-            | ConnectOutcome.Completed, system -> system
-            | other -> failwith $"connect answered %A{other}"
+            match UnixConnection.connect client UserBuffer.Mapped length system with
+            | CallProgress.NeedsCopyIn paused ->
+                match UnixConnection.connectWithAddress address paused with
+                | ConnectOutcome.Completed, system -> system
+                | other -> failwith $"connect answered %A{other}"
+            | other -> failwith $"connect answered %A{other} before the copy"
 
         let system =
             match UnixConnection.accept state.Kernel.Leader listener UserBuffer.Mapped 16u system with

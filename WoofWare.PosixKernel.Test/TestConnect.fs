@@ -407,7 +407,7 @@ module TestConnect =
         for passed in [ 0 ; 2 ; 8 ; 15 ; 17 ] do
             let e =
                 Assert.Throws<exn> (fun () ->
-                    UnixConnection.tryConnect fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
+                    UnixConnection.tryConnectBytes fd UserBuffer.Mapped 16u (CopyIn.prefix blob passed) system
                     |> ignore<_>
                 )
 
@@ -417,7 +417,7 @@ module TestConnect =
     /// so a caller that never asked is not punished for it.
     [<TestCaseSource(nameof platforms)>]
     let ``connect repeats the admission's answers`` (platform : SimulatedUnixPlatform) : unit =
-        UnixConnection.tryConnect 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
+        UnixConnection.tryConnectBytes 99 UserBuffer.Mapped 16u ImmutableArray.Empty (systemOn platform)
         |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EBADF, systemOn platform))
 
     // ------------------------------------------------------------------
@@ -555,7 +555,7 @@ module TestConnect =
     let ``a copy refusal is carried as a connect refusal`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = client platform
 
-        match UnixConnection.tryConnect fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
+        match UnixConnection.tryConnectBytes fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
         | Error (ConnectRefusal.Copy _) -> ()
         | other -> failwith $"expected a copy refusal, got %A{other}"
 
@@ -621,7 +621,9 @@ module TestConnect =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let option = SimulatedUnixPlatform.reuseAddressOption platform
 
-            match UnixSocket.trySetsockopt fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system with
+            match
+                UnixSocket.trySetsockoptBytes fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system
+            with
             | Ok (SetSockOptAnswer.Set, system) -> fd, system
             | other -> failwith $"setsockopt answered %A{other}"
 

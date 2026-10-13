@@ -1018,7 +1018,7 @@ module TestBlockingConnection =
         | Ok (SetSockOptAdmission.Transfer count) ->
             let supplied = Some (ImmutableArray.Create (value, 0, count))
 
-            match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied system with
+            match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped length supplied system with
             | Ok (SetSockOptAnswer.Set, system) -> Some system
             | Ok (SetSockOptAnswer.Failed _, _) -> None
             | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"

@@ -667,7 +667,7 @@ module TestConnectedTransfer =
             | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
             | other -> failwith $"admitting SO_LINGER on fd %d{fd}: %A{other}"
 
-        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied system with
+        match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped length supplied system with
         | Ok (SetSockOptAnswer.Set, system) -> system
         | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"
 
@@ -1017,7 +1017,7 @@ module TestConnectedTransfer =
                     | Ok (SetSockOptAdmission.Answered error) -> Some error, system
                     | Ok (SetSockOptAdmission.Transfer _) ->
                         match
-                            UnixSocket.trySetsockopt
+                            UnixSocket.trySetsockoptBytes
                                 keep
                                 level
                                 reuse
@@ -1412,7 +1412,7 @@ module TestConnectedTransfer =
                     match UnixSocket.tryAdmitSetSockOpt client level name UserBuffer.Mapped 4u system with
                     | Ok (SetSockOptAdmission.Answered _) -> Ok ("-1", system)
                     | Ok (SetSockOptAdmission.Transfer _) ->
-                        match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u value system with
+                        match UnixSocket.trySetsockoptBytes client level name UserBuffer.Mapped 4u value system with
                         | Ok (SetSockOptAnswer.Set, system) -> Ok ("0", system)
                         | Ok (SetSockOptAnswer.Failed _, system) -> Ok ("-1", system)
                         | Error refusal -> Error refusal
@@ -1425,7 +1425,7 @@ module TestConnectedTransfer =
                     // Setting the value it has changes no copy, and is served.
                     let unchanged = Some (OptionValue.ofInt (if before then 1 else 0))
 
-                    match UnixSocket.trySetsockopt client level name UserBuffer.Mapped 4u unchanged system with
+                    match UnixSocket.trySetsockoptBytes client level name UserBuffer.Mapped 4u unchanged system with
                     | Ok (SetSockOptAnswer.Set, _) -> ()
                     | other -> failwith $"Linux %s{row}: setting the value it has answered %A{other}"
                 | Error refusal -> failwith $"%A{flavour} %s{row}: refused %A{refusal}"

@@ -512,6 +512,7 @@ type internal PausedWriteCall =
 /// `UnixReadWrite.finishWrite` answer it, `PausedWrite.copyRange` says which
 /// bytes to copy, and `UnixReadWrite.writeWithBytes` takes them and finishes
 /// the call.
+[<NoEquality ; NoComparison>]
 type PausedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
@@ -549,6 +550,7 @@ type internal PausedSendCall =
 /// copy, and `UnixReadWrite.sendWithBytes` takes them and finishes the call.
 /// A `send` that sleeps is woken as a `write` is, through
 /// `UnixReadWrite.finishWrite`.
+[<NoEquality ; NoComparison>]
 type PausedSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
@@ -574,6 +576,7 @@ module PausedSend =
 /// `UnixReadWrite.pwrite` answers it, `PausedPWrite.copyRange` says which bytes
 /// to copy, and `UnixReadWrite.pwriteWithBytes` takes them and finishes the
 /// call.
+[<NoEquality ; NoComparison>]
 type PausedPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
@@ -4568,16 +4571,6 @@ module UnixReadWrite =
             CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock condition, system))
         | WriteStep.Restarts system -> CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Restarts, system))
 
-    /// Fails loudly unless `bytes` is exactly the `range` a paused call copies.
-    let private requireRange (caller : string) (range : CopyRange) (bytes : ImmutableArray<byte>) : unit =
-        if bytes.IsDefault then
-            invalidOp
-                $"%s{caller}: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty copy; pass ImmutableArray<byte>.Empty."
-
-        if bytes.Length <> range.ByteCount then
-            invalidOp
-                $"%s{caller}: the call copies %d{range.ByteCount} bytes, starting %d{range.FirstByte} bytes into the caller's buffer, but %d{bytes.Length} were supplied. Supply exactly the bytes the paused call's copyRange names (this is a bug in the caller)."
-
     /// `write`, with a refusal answered as the `Error` rather than raised.
     let internal tryWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -4784,7 +4777,7 @@ module UnixReadWrite =
         (paused : PausedWrite<'Task, 'Handler>)
         : Result<ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>, WriteRefusal>
         =
-        requireRange "UnixReadWrite.writeWithBytes" paused.Range bytes
+        CopyRange.require "UnixReadWrite.writeWithBytes" paused.Range bytes
 
         match paused.Call with
         | PausedWriteCall.Write fd -> tryWriteBytes paused.Task fd bytes paused.System
@@ -4914,7 +4907,7 @@ module UnixReadWrite =
         (paused : PausedSend<'Task, 'Handler>)
         : Result<ProcessFate<WriteOutcome<'Task>, 'Task, 'Handler>, SendRefusal>
         =
-        requireRange "UnixReadWrite.sendWithBytes" paused.Range bytes
+        CopyRange.require "UnixReadWrite.sendWithBytes" paused.Range bytes
 
         match paused.Call with
         | PausedSendCall.Send (fd, flags) -> trySendBytes paused.Task fd bytes flags paused.System |> Result.map fateOf
@@ -5016,7 +5009,7 @@ module UnixReadWrite =
         (paused : PausedPWrite<'Task, 'Handler>)
         : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, PWriteRefusal>
         =
-        requireRange "UnixReadWrite.pwriteWithBytes" paused.Range bytes
+        CopyRange.require "UnixReadWrite.pwriteWithBytes" paused.Range bytes
         tryPwriteBytes paused.Task paused.Fd bytes paused.FileOffset paused.System
 
     /// <summary>

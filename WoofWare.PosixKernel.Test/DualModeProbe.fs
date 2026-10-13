@@ -69,7 +69,7 @@ module DualModeProbe =
             | Result.Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create<byte> (bytes, 0, count))
             | _ -> None
 
-        match UnixSocket.trySetsockopt fd level name UserBuffer.Mapped length supplied libc.System with
+        match UnixSocket.trySetsockoptBytes fd level name UserBuffer.Mapped length supplied libc.System with
         | Result.Ok (SetSockOptAnswer.Set, system) ->
             libc.System <- system
             Answer.Ok
@@ -87,7 +87,7 @@ module DualModeProbe =
             | Result.Ok GetSockOptAdmission.ReadLength -> Some 4u
             | _ -> None
 
-        match UnixSocket.tryGetsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
+        match UnixSocket.tryGetsockoptLength fd level name UserBuffer.Mapped UserBuffer.Mapped read libc.System with
         | Result.Ok (GetSockOptAnswer.Reported bytes, system) ->
             libc.System <- system
             Answer.Ok, SimulatedUnixPlatform.decodeCInt libc.Platform bytes 0

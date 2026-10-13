@@ -991,7 +991,8 @@ module NativeSystemNative =
             state
 
     /// The `length` bytes `bind(2)` or `connect(2)` copies in from
-    /// `socketAddress`, as `UnixSocket.admitSockaddrCopy` admitted them.
+    /// `socketAddress`, as `PausedBind.copyRange` or `PausedConnect.copyRange`
+    /// names them.
     ///
     /// Every one of them is read, not only the fields the kernel goes on to
     /// decode, because the kernel copies them all: a fault anywhere in them is
@@ -5315,19 +5316,17 @@ module NativeSystemNative =
                 let sizeOfInt = 4u
                 let unix = state.Kernel.System
 
-                let setsockopt (supplied : ImmutableArray<byte> option) =
-                    UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt supplied unix
-
                 // Linux refuses the option on a connected socket in TIME_WAIT,
                 // which a PT_TCP bind of one reaches; the bind itself then
                 // answers EINVAL.
                 let answer =
                     try
-                        match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
-                        | SetSockOptAdmission.Transfer _ ->
-                            setsockopt (Some (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1)))
-                        | SetSockOptAdmission.NoCopy
-                        | SetSockOptAdmission.Answered _ -> setsockopt None
+                        match UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt unix with
+                        | CallProgress.Answered answer -> answer
+                        | CallProgress.NeedsCopyIn paused ->
+                            UnixSocket.setsockoptWithValue
+                                (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1))
+                                paused
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail
                             $"%s{operation}: fd %d{fd}: the shim sets SO_REUSEADDR through its own stack buffer before bind(2), and that was refused"
@@ -5347,35 +5346,27 @@ module NativeSystemNative =
             // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
             // itself, so an address naming no storage faults in the *kernel* and
             // comes back as EFAULT rather than killing the process, which is what
-            // the admission answers. The opposite of
+            // the kernel answers before the copy. The opposite of
             // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
             // wrapper itself dereferences and `requireStorage` refuses for.
-            let admission =
-                try
-                    UnixSocket.admitSockaddrCopy
-                        SockaddrCopySyscall.Bind
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        state.Kernel.System
-                with :? UnmodelledException as e ->
-                    refusing e
-
-            let copied =
-                match admission with
-                // `UnixSocket.bind` re-derives this answer. The kernel never
-                // touches the buffer on this path, so nothing is read.
-                | SockaddrCopyAdmission.Answered _ -> ImmutableArray.Empty
-                | SockaddrCopyAdmission.Transfer length -> copiedSockaddr ctx operation addressArgument length state
-
             let answer, unix =
                 try
-                    UnixSocket.bind
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        copied
-                        state.Kernel.System
+                    match
+                        UnixSocket.bind
+                            fd
+                            (BufferPointer.toUserBuffer addressArgument)
+                            (uint32 declaredLength)
+                            state.Kernel.System
+                    with
+                    // The kernel never touches the buffer on this path, so
+                    // nothing is read.
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedBind.copyRange paused
+
+                        UnixSocket.bindWithAddress
+                            (copiedSockaddr ctx operation addressArgument range.ByteCount state)
+                            paused
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -5800,40 +5791,26 @@ module NativeSystemNative =
                 | ConnectOutcome.Completed -> complete UnixErrorPal.palSuccess state
                 | ConnectOutcome.Failed error -> failFromSyscall error state
 
-            // How many bytes of the caller's sockaddr the kernel's copy takes,
-            // asked before the pointer is resolved: a call whose copy
-            // takes no bytes never touches it, so a pointer PawPrint cannot
-            // dereference is only a problem when bytes actually move.
-            let admission =
-                try
-                    UnixSocket.admitSockaddrCopy
-                        SockaddrCopySyscall.Connect
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        state.Kernel.System
-                with :? UnmodelledException as e ->
-                    refusing e
-
-            match admission with
-            | SockaddrCopyAdmission.Answered error ->
-                // Every admission answer precedes the ladder, so none of them
-                // changed anything: the system is the one we passed in. They are
-                // all failures, which is why the shared admission carries an
-                // errno rather than an outcome.
-                failFromSyscall error state
-            | SockaddrCopyAdmission.Transfer length ->
-
-            let copied = copiedSockaddr ctx operation addressArgument length state
-
+            // The call stops before the kernel copies the caller's sockaddr,
+            // so the pointer is resolved only then: a call whose copy takes no
+            // bytes never touches it, so a pointer PawPrint cannot dereference
+            // is only a problem when bytes actually move.
             let outcome, unix =
                 try
-                    UnixConnection.connect
-                        fd
-                        (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
-                        copied
-                        state.Kernel.System
+                    match
+                        UnixConnection.connect
+                            fd
+                            (BufferPointer.toUserBuffer addressArgument)
+                            (uint32 declaredLength)
+                            state.Kernel.System
+                    with
+                    | CallProgress.Answered answered -> answered
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedConnect.copyRange paused
+
+                        UnixConnection.connectWithAddress
+                            (copiedSockaddr ctx operation addressArgument range.ByteCount state)
+                            paused
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -5987,15 +5964,11 @@ module NativeSystemNative =
 
             // Both of `getsockopt`'s buffers are the shim's own locals, and the
             // length cell holds `sizeof(int)`.
-            let declaredLength =
-                match UnixSocket.admitGetSockOpt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some 4u
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped declaredLength unix
+                    match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 4u paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's getsockopt(SO_ERROR) through its own stack buffers was refused"
@@ -6571,23 +6544,28 @@ module NativeSystemNative =
             let unix = state.Kernel.System
             let value = BufferPointer.toUserBuffer valueArgument
 
-            let supplied =
-                match UnixSocket.admitSetSockOpt fd level name value (uint32 optionLength) unix with
-                | SetSockOptAdmission.Transfer count ->
-                    let storage =
-                        match BufferPointer.dereferenceable valueArgument with
-                        | Some storage -> storage
-                        | None ->
-                            failwith
-                                $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
-
-                    Some (readBytesThrough ctx operation storage count state)
-                | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix
+                    match UnixSocket.setsockopt fd level name value (uint32 optionLength) unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let storage =
+                            match BufferPointer.dereferenceable valueArgument with
+                            | Some storage -> storage
+                            | None ->
+                                failwith
+                                    $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
+
+                        let range = PausedSetSockOpt.copyRange paused
+
+                        UnixSocket.setsockoptWithValue
+                            (readBytesThrough
+                                ctx
+                                operation
+                                (bufferFieldAt ctx operation storage range.FirstByte state)
+                                range.ByteCount
+                                state)
+                            paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
@@ -6684,15 +6662,11 @@ module NativeSystemNative =
 
             // The length cell is the shim's own `socklen_t`, so it is real
             // storage holding what the caller's held.
-            let read =
-                match UnixSocket.admitGetSockOpt fd level name value UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some (uint32 declared)
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level name value UserBuffer.Mapped read unix
+                    match UnixSocket.getsockopt fd level name value UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength (uint32 declared) paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
@@ -6776,15 +6750,16 @@ module NativeSystemNative =
                     (SimulatedUnixPlatform.encodeCInt platform option.Seconds)
 
             // The `struct linger` is the shim's own local, and it passes its size.
-            let supplied =
-                match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 8u unix with
-                | SetSockOptAdmission.Transfer count -> Some (ImmutableArray.Create (lingerValue, 0, count))
-                | SetSockOptAdmission.NoCopy
-                | SetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u supplied unix
+                    match UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused ->
+                        let range = PausedSetSockOpt.copyRange paused
+
+                        UnixSocket.setsockoptWithValue
+                            (ImmutableArray.Create (lingerValue, range.FirstByte, range.ByteCount))
+                            paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's setsockopt of its own struct linger was refused"
@@ -6836,15 +6811,11 @@ module NativeSystemNative =
             let level, name = SocketOptionPal.lingerOptionNumbered platform
             let unix = state.Kernel.System
 
-            let read =
-                match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
-                | GetSockOptAdmission.ReadLength -> Some 8u
-                | GetSockOptAdmission.SkipLength
-                | GetSockOptAdmission.Answered _ -> None
-
             let answer =
                 try
-                    UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read unix
+                    match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
+                    | CallProgress.Answered answer -> answer
+                    | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 8u paused
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: fd %d{fd}: the shim's getsockopt into its own struct linger was refused"
