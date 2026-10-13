@@ -103,16 +103,15 @@ interpreter is a change of its own, which unparks it.
 Stage 1 comes first (`TestOpcodeFaultsOnPawPrint`). On its first run, 46 of the
 60 instructions raised exactly what the host raised on every input. The other
 14 were parked, and every disagreement was a refusal rather than a wrong
-exception. `add.ovf.un` and `sub.ovf.un` were unimplemented, and are now done.
-The other 12 are still parked:
-
-- `CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer,
-  which is what a C# array initialiser leaves in an element it does not store.
-  `add`, `sub` and `mul` compute with it as 0, but `div`, `div.un`, `rem`,
-  `rem.un`, `and`, `or`, `xor`, `shl`, `shr`, `shr.un` and `mul.ovf.un` refuse
-  it. CoreCLR raises `DivideByZeroException` for the divisions and computes
-  the rest.
-- `conv.r.un` refuses a float operand, which CoreCLR converts without raising.
+exception. `add.ovf.un` and `sub.ovf.un` were unimplemented, and `conv.r.un`
+refused a float operand, which CoreCLR converts without raising; all three are
+now done. The other 11 are still parked, for one reason:
+`CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer,
+which is what a C# array initialiser leaves in an element it does not store.
+`add`, `sub` and `mul` compute with it as 0, but `div`, `div.un`, `rem`,
+`rem.un`, `and`, `or`, `xor`, `shl`, `shr`, `shr.un` and `mul.ovf.un` refuse
+it. CoreCLR raises `DivideByZeroException` for the divisions and computes the
+rest.
 
 Stages 2 and 3 do not yet run under PawPrint.
 
