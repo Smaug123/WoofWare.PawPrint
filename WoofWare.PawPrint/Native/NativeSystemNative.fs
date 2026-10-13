@@ -4864,6 +4864,43 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_AlignedAlloc",
+          [ ConcreteUIntPtr state.TypeSystem.ConcreteTypes ; ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePointer _) ->
+            // `void* SystemNative_AlignedAlloc(uintptr_t alignment, uintptr_t size)`
+            // (pal_memory.c) is `aligned_alloc`, or `posix_memalign` where that is
+            // missing: an uninitialised block, or null when the size cannot be
+            // satisfied, as `SystemNative_Malloc` above. CoreLib's
+            // `NativeMemory.AlignedAlloc` and `AlignedRealloc` only ever pass a power
+            // of two no smaller than `sizeof(void*)`, and round the size up to a
+            // multiple of it; an alignment outside that is refused rather than given
+            // the C library's EINVAL, which no caller has needed.
+            //
+            // The block is a native block like any other, so the address model
+            // claims for it only the 8-byte alignment `malloc` guarantees
+            // (`ManagedPointerSource.tryContainerBase`): never wrong, and a mask
+            // asking about the bits of a larger alignment is refused, not answered.
+            let operation = "SystemNative_AlignedAlloc"
+
+            match allocationSizeArgument $"%s{operation} (alignment)" instruction.Arguments.[0] with
+            | ValueSome alignment when alignment >= 8 && System.Numerics.BitOperations.IsPow2 alignment -> ()
+            | ValueSome alignment ->
+                failwith
+                    $"%s{operation}: alignment %d{alignment} is not a power of two of at least sizeof(void*); CoreLib never passes one, and the C library's EINVAL answer is not modelled"
+            | ValueNone ->
+                failwith
+                    $"%s{operation}: alignment %O{instruction.Arguments.[0]} does not fit the interpreter's Int32 byte-count model; CoreLib passes one only with a size no smaller, which no caller has needed"
+
+            let ptrSrc, state =
+                match allocationSizeArgument $"%s{operation} (size)" instruction.Arguments.[1] with
+                | ValueNone -> ManagedPointerSource.Null, state
+                | ValueSome size ->
+                    IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_Dup",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
@@ -8409,9 +8446,13 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
-        | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
+        | Some ("SystemNative_Free" | "SystemNative_AlignedFree" as operation),
+          [ ConcretePointer _ ],
+          MethodReturnType.Void ->
+            // Both are `free(ptr)` (pal_memory.c): an aligned block is freed like
+            // any other.
             let ptr =
-                NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
+                NativeCall.managedPointerOfPointerArgument operation "ptr" instruction.Arguments.[0]
 
             // `free(NULL)` is a documented no-op. CoreLib's NativeMemory.Free
             // already filters null before reaching the P/Invoke, but
@@ -8420,7 +8461,7 @@ module NativeSystemNative =
                 match NativeCall.tryResolveNativeHeapFreeTarget ptr with
                 | Ok None -> state
                 | Ok (Some block) -> IlMachineState.freeNativeMemory block state
-                | Error reason -> failwith $"SystemNative_Free: %s{reason}"
+                | Error reason -> failwith $"%s{operation}: %s{reason}"
 
             NativeHandlerResult.completed state |> Some
         | Some "SystemNative_InitializeTerminalAndSignalHandling",
