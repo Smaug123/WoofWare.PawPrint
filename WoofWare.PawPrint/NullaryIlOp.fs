@@ -1143,9 +1143,7 @@ module NullaryIlOp =
         let popped, state = IlMachineState.popEvalStack currentThread state
 
         match popped with
-        | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+        | popped when EvalStackValue.isNullAddress popped ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
             |> ExecutionResult.stepped
         | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr handle) ->
@@ -1290,9 +1288,7 @@ module NullaryIlOp =
         let addr, state = IlMachineState.popEvalStack currentThread state
 
         match addr with
-        | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+        | addr when EvalStackValue.isNullAddress addr ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
             |> ExecutionResult.stepped
         | _ ->
@@ -2932,9 +2928,7 @@ module NullaryIlOp =
             let addr, state = IlMachineState.popEvalStack currentThread state
 
             match addr with
-            | EvalStackValue.NullObjectRef
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+            | addr when EvalStackValue.isNullAddress addr ->
                 IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
@@ -3005,9 +2999,7 @@ module NullaryIlOp =
             let addr, state = IlMachineState.popEvalStack currentThread state
 
             match addr with
-            | EvalStackValue.NullObjectRef
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+            | addr when EvalStackValue.isNullAddress addr ->
                 IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib

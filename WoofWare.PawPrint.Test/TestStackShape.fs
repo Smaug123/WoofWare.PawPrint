@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Tests for the stack-shape analysis: the evaluation stack's shape at the entry of every
 /// instruction, joined over every path that reaches it, and the offsets at which a float32 must
@@ -79,7 +78,7 @@ module TestStackShape =
 
     /// Read CoreLib, whose metadata every token-reader test judges types against.
     let private corelib () : DumpedAssembly =
-        Assembly.readFile (LoggerFactory.makeTest () |> snd) typeof<obj>.Assembly.Location
+        Assembly.readFile (LoggerFactory.makeTest () |> snd) HostImage.coreLibPath
 
     /// Analyse, and fail if any reachable instruction could not be typed.
     let private analyseOrFail (inputs : StackShapeInputs) (body : MethodInstructions<TypeDefn>) : StackShape =

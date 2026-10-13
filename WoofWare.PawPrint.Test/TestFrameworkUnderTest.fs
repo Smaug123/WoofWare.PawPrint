@@ -93,7 +93,7 @@ module TestFrameworkUnderTest =
             Assert.Ignore "this run selected a runtime other than the test host's"
 
         FrameworkUnderTest.sharedFrameworkDirectory ()
-        |> shouldEqual (Path.GetDirectoryName typeof<obj>.Assembly.Location)
+        |> shouldEqual HostImage.frameworkDirectory
 
     let private withTempDir (body : string -> unit) : unit =
         let dir =

@@ -224,7 +224,7 @@ class WaitsOnADuplicatedPort
                         match
                             UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
                         with
-                        | Ok (KillOutcome.ProcessContinues system) -> system
+                        | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
                         | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
                     match UnixPoll.finishEpollWait thread interrupted with
@@ -493,6 +493,9 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.FifoOpen _)
                 | Some (ParkedSyscall.InotifyRead _)
                 | Some (ParkedSyscall.Select _)
+                | Some (ParkedSyscall.DatagramReceive _)
+                | Some (ParkedSyscall.DatagramSend _)
+                | Some (ParkedSyscall.Connect _)
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)

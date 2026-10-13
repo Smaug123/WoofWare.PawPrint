@@ -6,7 +6,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Tests for `ControlFlow.mayExecute`: the offsets a run of a body can execute, with the
 /// conditional branches a known Boolean decides followed one way only.

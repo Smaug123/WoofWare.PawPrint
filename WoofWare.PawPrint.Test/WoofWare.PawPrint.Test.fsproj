@@ -7,8 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\WoofWare.PosixKernel.Test\CoverageSample.fs"
-             Link="CoverageSample.fs" />
+    <Compile Include="CoverageSample.fs" />
     <Compile Include="LoggerFactory.fs" />
     <Compile Include="Launched.fs" />
     <Compile Include="ExpectRun.fs" />
@@ -20,6 +19,8 @@
     <Compile Include="TestPublishedXmlDocumentation.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="FrameworkUnderTest.fs" />
+    <Compile Include="HostImage.fs" />
+    <Compile Include="ParkedOn.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
@@ -45,18 +46,15 @@
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="TestFatalErrorCode.fs" />
-    <!-- One definition of "which kernel is this test host", shared with
-         WoofWare.PosixKernel.Test the way the socket matrix below is: the two
-         suites must not disagree about what they are measuring against. -->
-    <Compile Include="..\WoofWare.PosixKernel.Test\HostPlatform.fs"
-             Link="HostPlatform.fs" />
-    <Compile Include="..\WoofWare.PosixKernel.Test\HostStat.fs"
-             Link="HostStat.fs" />
+    <Compile Include="HostPlatform.fs" />
+    <Compile Include="HostStat.fs" />
     <Compile Include="HostCLibrary.fs" />
     <Compile Include="RealRuntime.fs" />
+    <Compile Include="GuestEnding.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestFrameworkUnderTest.fs" />
+    <Compile Include="TestParkedOn.fs" />
     <Compile Include="DifferentialOracle.fs" />
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
@@ -407,6 +405,7 @@
     <Compile Include="TestEmulatedKernelAbort.fs" />
     <Compile Include="TestInheritedSignalIgnores.fs" />
     <Compile Include="TestOraclePolicy.fs" />
+    <Compile Include="TestGuestParking.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />
     <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
@@ -429,6 +428,7 @@
     <Compile Include="TestMultiProgram.fs" />
     <Compile Include="TestProgramChoice.fs" />
     <Compile Include="TestSeveralPrograms.fs" />
+    <Compile Include="TestMultiProgramWakes.fs" />
     <Compile Include="TestAspNetTwoProcess.fs" />
     <Compile Include="TestFinallyChain.fs" />
   </ItemGroup>
@@ -449,7 +449,7 @@
       at half of a 128 GiB machine two runaway test hosts took the whole machine down. 8 GiB is what
       the suite is known to pass under, and it makes every machine run the suite under the ceiling
       CI runs it under. It lives in the project rather than in CI so `dotnet test`, `nix build`, and
-      local runs all share it. WoofWare.PosixKernel.Test carries the same cap.
+      local runs all share it.
 
       Note the value is decimal: runtimeconfig properties are parsed with base 0
       (coreclr/utilcode/configuration.cpp), unlike the DOTNET_GCHeapHardLimit environment
@@ -462,7 +462,7 @@
     <!-- What `SystemNative_Socket` answered for every PAL triple, measured per
          flavour: the shim's screens and then `socket(2)`. `TestSocketCreation`
          holds the composition to it; the kernel's own sweep, in raw numbers,
-         is WoofWare.PosixKernel.Test/socketSyscall. -->
+         is the `socketSyscall` sweep in WoofWare.PosixKernel's own suite. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
     <!-- What System.Native's `SystemNative_StrErrorR` answered for every number
          and buffer size its probe sweeps, against glibc and Darwin's libc.

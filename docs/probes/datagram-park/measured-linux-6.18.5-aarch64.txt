@@ -1,0 +1,23 @@
+Linux 6.18.5 aarch64
+ldd (Debian GLIBC 2.41-12+deb13u4) 2.41
+uid=0
+max_dgram_qlen=10
+R1 UDP read, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=100
+R1 UDP recv, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R1 UDP recvfrom, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R1 UDP recvmsg, a datagram at 100ms: ret=5 errno=- handled=0 took_ms=105
+R2 UDP recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=105
+R2 UDP recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=1: ret=5 errno=- handled=1 took_ms=300
+R2 Unix-domain socketpair recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=100
+R2 Unix-domain socketpair recv, caught signal at 100ms, datagram at 300ms, SA_RESTART=1: ret=5 errno=- handled=1 took_ms=304
+R3 UDP recv, close of its descriptor at 100ms, datagram at 300ms: ret=5 errno=- handled=1 took_ms=301
+R4 UDP recv, shutdown(SHUT_RD) at 100ms (signal at 600ms): ret=0 errno=- handled=0 took_ms=101
+R5 Unix-domain socketpair recv, peer closes at 100ms (signal at 600ms): ret=-1 errno=Interrupted system call handled=1 took_ms=600
+R6 UDP recv, SO_RCVTIMEO 200ms (setsockopt=0): ret=-1 errno=Resource temporarily unavailable handled=1 took_ms=205
+S1 UDP sendto a bound socket nobody reads: sent=200000 last_ret=100 errno=- blocked_until_watchdog=0 took_ms=115
+S2 Unix-domain socketpair send, peer reads nothing: sent=278 last_ret=-1 errno=Interrupted system call blocked_until_watchdog=1 took_ms=1002
+S3 Unix-domain sendto a bound socket nobody reads: sent=11 last_ret=-1 errno=Interrupted system call blocked_until_watchdog=1 took_ms=1001
+S4 Unix-domain socketpair, filled with 278 (then Resource temporarily unavailable), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=105
+S4 Unix-domain socketpair, filled with 278 (then Resource temporarily unavailable), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=1: ret=100 errno=- handled=1 took_ms=304
+S4 Unix-domain sendto a bound socket, filled with 11 (then Resource temporarily unavailable), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=0: ret=-1 errno=Interrupted system call handled=1 took_ms=103
+S4 Unix-domain sendto a bound socket, filled with 11 (then Resource temporarily unavailable), blocking send, signal at 100ms, the queue drained at 300ms, SA_RESTART=1: ret=100 errno=- handled=1 took_ms=302

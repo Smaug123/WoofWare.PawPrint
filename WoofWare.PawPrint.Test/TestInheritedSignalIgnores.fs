@@ -5,7 +5,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `KernelConfig.InheritedSignalIgnores` against the real runtime started the
 /// same way: a guest whose launcher left SIGHUP and SIGUSR2 ignored survives

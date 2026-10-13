@@ -9,14 +9,13 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnaryConstIlOp =
 
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

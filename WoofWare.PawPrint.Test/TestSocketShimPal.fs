@@ -5,7 +5,6 @@ open System.Net
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `SocketShimPal.socketAddressSizes` against the sizes this machine's own
 /// runtime builds its socket addresses with.

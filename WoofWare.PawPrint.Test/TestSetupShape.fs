@@ -131,15 +131,19 @@ namespace System
         e.Message
 
     [<Test>]
-    let ``the host's CoreLib declares the three-argument Setup`` () =
-        let corelibPath = typeof<obj>.Assembly.Location
+    let ``the framework under test's CoreLib declares that runtime's Setup`` () =
+        let corelibPath = FrameworkUnderTest.coreLibPath ()
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         let corelib = Assembly.read loggerFactory (Some corelibPath) stream
 
+        let expected =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> SetupShape.ThreeArg
+
         let setup, shape = AppContextSeed.locateSetup corelib
-        shape |> shouldEqual SetupShape.ThreeArg
+        shape |> shouldEqual expected
         setup.Name |> shouldEqual "Setup"
 
     [<Test>]

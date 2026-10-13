@@ -11,7 +11,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// A <c>TypeDefn</c> is a DAG, not a tree: nothing stops the same subterm appearing in several
@@ -38,7 +37,7 @@ open WoofWare.PosixKernel.Test
 [<Parallelizable(ParallelScope.All)>]
 module TestSharedTypeGraphResolution =
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 
     let private cyclicMarker = "generic environment is cyclic"

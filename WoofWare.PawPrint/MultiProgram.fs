@@ -56,6 +56,10 @@ type MultiProgram =
             /// What the last sweep for syscall wakes remembers, so that a tick at which nothing a
             /// wake condition reads has changed sweeps nothing (`SimulatedMachine.wakesRemembering`).
             WakeMemo : WakeSweepMemo<ThreadId, NativeSignalHandler>
+            /// The threads the last sweep for syscall wakes asked the machine about, by process,
+            /// so that a sweep at a tick at which none of them has parked or woken asks about the
+            /// same map, which `WakeMemo` recognises by identity.
+            SweptAsleep : Map<ProcessId, Set<ThreadId>>
             /// The programs other than the checked-out one, and how the driver chooses among
             /// them all.
             Roster : ProgramRoster
@@ -306,6 +310,7 @@ module MultiProgram =
                 { driver with
                     Machine = remaining
                     Current = focusIdle stepCounter remaining (Map.find next driver.Idle)
+                    SweptAsleep = Map.remove pid driver.SweptAsleep
                     Roster =
                         { driver.Roster with
                             Idle = Map.remove next driver.Idle
@@ -314,6 +319,50 @@ module MultiProgram =
                 }
 
             MultiStepOutcome.Stepped (driver, pid, ProgramEvent.Ended runEnd)
+
+    /// Fails loudly unless every program's kept syscall sleepers are those its thread states and
+    /// parks show (`Scheduler.checkSyscallSleepers`).
+    let private checkSleepers (driver : MultiProgram) : unit =
+        Scheduler.checkSyscallSleepers driver.Current.State
+
+        if not driver.Idle.IsEmpty then
+            driver.Idle
+            |> Map.iter (fun _ program -> Scheduler.checkSyscallSleepers program.State)
+
+    /// The threads a sweep for syscall wakes asks the machine about, by process: each program's
+    /// threads asleep in the kernel (`SyscallSleepers.Asleep`), for every program with a thread
+    /// parked in `BlockedInSyscall`. A program with none has nothing for the sweep to flip,
+    /// whatever its signal dispatcher is doing: `SignalDispatch.poll` finishes the dispatcher's
+    /// read itself.
+    ///
+    /// `driver.SweptAsleep` itself, allocating nothing, while no program's threads asleep in the
+    /// kernel have changed since the last sweep.
+    let private sweptAsleep (driver : MultiProgram) : Map<ProcessId, Set<ThreadId>> =
+        let reconcile
+            (asleep : Map<ProcessId, Set<ThreadId>>)
+            (pid : ProcessId)
+            (program : RunningProgram)
+            : Map<ProcessId, Set<ThreadId>>
+            =
+            let sleepers = program.State._SyscallSleepers
+
+            if sleepers.Waiters.IsEmpty then
+                if asleep.ContainsKey pid then
+                    Map.remove pid asleep
+                else
+                    asleep
+            else
+                match asleep.TryGetValue pid with
+                | true, swept when obj.ReferenceEquals (swept, sleepers.Asleep) -> asleep
+                | _ -> Map.add pid sleepers.Asleep asleep
+
+        let asleep =
+            reconcile driver.SweptAsleep (processIdOf driver.Current) driver.Current
+
+        if driver.Idle.IsEmpty then
+            asleep
+        else
+            Map.fold reconcile asleep driver.Idle
 
     /// Wake every thread whose syscall could get further now, in every program.
     ///
@@ -338,40 +387,34 @@ module MultiProgram =
     /// event port, the kernel wakes one per event.
     ///
     /// The machine asked is the checked-out program's view written back into the driver's
-    /// machine, which is then thrown away. The driver keeps what the sweep remembers, so that at
-    /// a tick which changed nothing a wake condition reads but the clock, short of every
-    /// deadline, the kernel answers without asking any condition. A woken thread of an idle
-    /// program is only flipped to Runnable: its call is finished when it next runs, in its
-    /// program's view.
+    /// machine, which is then thrown away. The driver keeps what the sweep remembers, and the
+    /// threads it asked about, so that at a tick which changed nothing a wake condition reads but
+    /// the clock, short of every deadline, the kernel answers without asking any condition, and
+    /// the driver is unchanged. A woken thread of an idle program is only flipped to Runnable: its
+    /// call is finished when it next runs, in its program's view.
+    ///
+    /// A Debug build checks every program's kept syscall sleepers (`checkSleepers`) at every
+    /// tick.
     let private wakeSyscalls (driver : MultiProgram) : MultiProgram =
-        let current = driver.Current
+#if DEBUG
+        checkSleepers driver
+#endif
 
-        // Before projecting any kernel, which allocates: this runs on every tick of every
-        // workload, and almost none of them ever park. With no thread in `BlockedInSyscall`
-        // there is nothing to flip, whatever the dispatcher is doing.
-        let currentAsleep =
-            match Scheduler.syscallWaiters current.State with
-            | [] -> None
-            | _ -> Some (Scheduler.asleepInSyscall current.State)
+        let asleep = sweptAsleep driver
 
-        let idleAsleep =
-            if driver.Idle.IsEmpty then
-                Map.empty
+        let driver =
+            if obj.ReferenceEquals (asleep, driver.SweptAsleep) then
+                driver
             else
-                driver.Idle
-                |> Map.filter (fun _ program -> not (List.isEmpty (Scheduler.syscallWaiters program.State)))
-                |> Map.map (fun _ program -> Scheduler.asleepInSyscall program.State)
+                { driver with
+                    SweptAsleep = asleep
+                }
 
-        match currentAsleep with
-        | None when idleAsleep.IsEmpty -> driver
-        | _ ->
+        if asleep.IsEmpty then
+            driver
+        else
 
-        let currentPid = processIdOf current
-
-        let asleep =
-            match currentAsleep with
-            | None -> idleAsleep
-            | Some asleep -> Map.add currentPid asleep idleAsleep
+        let current = driver.Current
 
         let woken, memo =
             SimulatedMachine.wakesRemembering
@@ -387,6 +430,10 @@ module MultiProgram =
                     WakeMemo = memo
                 }
 
+        match woken with
+        | [] -> driver
+        | woken ->
+
         let woken = woken |> List.map fst
 
         let wokenIn (pid : ProcessId) : ThreadId list =
@@ -398,7 +445,7 @@ module MultiProgram =
             | threads -> withState (RunningProgram.wakeFromSyscalls threads program.State) program
 
         { driver with
-            Current = wake currentPid current
+            Current = wake (processIdOf current) current
         }
         |> withIdle (mapIdle (fun program -> wake (processIdOf program) program) driver.Idle)
 
@@ -460,6 +507,12 @@ module MultiProgram =
         if anyRunnable driver then
             struct (driver, true)
         else
+#if DEBUG
+            // A thread asleep in the kernel that its program does not keep is never swept, and
+            // shows up as no program being able to run.
+            checkSleepers driver
+#endif
+
             match pendingDeadlines driver driver.Current.State with
             | [] -> struct (driver, false)
             | deadlines ->
@@ -849,6 +902,7 @@ module MultiProgram =
             Current = first
             Clock = clock
             WakeMemo = WakeSweepMemo.empty
+            SweptAsleep = Map.empty
             Roster =
                 {
                     Idle =

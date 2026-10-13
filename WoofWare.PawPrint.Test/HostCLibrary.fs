@@ -3,7 +3,6 @@ namespace WoofWare.PawPrint.Test
 open System.Runtime.InteropServices
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// The C library *this test process's* System.Native shim runs against, in
 /// `CLibrary`'s terms: what a guest compared against this host's real runtime

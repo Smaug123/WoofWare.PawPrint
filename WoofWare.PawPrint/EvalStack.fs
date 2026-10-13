@@ -638,20 +638,23 @@ module EvalStackValue =
             float32<float> (float<uint64> kept * float<uint64> (1UL <<< shift))
 
     /// What `conv.r.un` reads its source as: a 32-bit slot as a `uint32`, a 64-bit or native-int
-    /// slot as a `uint64`.
+    /// slot as a `uint64`, and a float as itself. CoreCLR's importer clears the unsigned flag on a
+    /// conversion from a float (`_CONV` in importer.cpp), so on a float `conv.r.un` is the plain
+    /// conversion to the width the next opcode decides.
     [<RequireQualifiedAccess>]
-    type private UnsignedSource =
+    type private ConvRUnSource =
         | Bits32 of uint32
         | Bits64 of uint64
+        | Float of EvalStackFloat
 
-    /// The unsigned integer `conv.r.un` converts, refusing a value that is not a plain integer.
-    let private unsignedSourceOfConvRUn (value : EvalStackValue) : UnsignedSource =
+    /// What `conv.r.un` converts, refusing a value that is neither a plain integer nor a float.
+    let private convRUnSource (value : EvalStackValue) : ConvRUnSource =
         match value with
         | EvalStackValue.Int32 int32Source ->
             Int32Source.value "Conv_R_Un" int32Source
             |> uint32<int32>
-            |> UnsignedSource.Bits32
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> UnsignedSource.Bits64 (uint64<int64> i)
+            |> ConvRUnSource.Bits32
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> ConvRUnSource.Bits64 (uint64<int64> i)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -663,29 +666,46 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             nativeIntBitsForFloatConversion "Conv_R_Un" src
             |> uint64<int64>
-            |> UnsignedSource.Bits64
-        | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
+            |> ConvRUnSource.Bits64
+        | EvalStackValue.Float f -> ConvRUnSource.Float f
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R_Un" value
 
     /// `conv.r.un` immediately followed by `conv.r4`: an unsigned source converted to float32
-    /// with a single rounding. CoreCLR's importer (`CEE_CONV_R_UN` in importer.cpp) types the
+    /// with a single rounding, or a float rounded to float32. CoreCLR's importer (`CEE_CONV_R_UN` in importer.cpp) types the
     /// `conv.r.un` result as float32 when the next opcode is `conv.r4`, because there is no
     /// `conv.r4.un` and compilers emit that pair for an unsigned-to-float32 cast; the `conv.r4`
     /// then finds a float32 and changes nothing.
     let convUnsignedToFloat32 (value : EvalStackValue) : float32 =
-        match unsignedSourceOfConvRUn value with
+        match convRUnSource value with
         // Every uint32 is exact as a double, so the conversion to float32 is the only rounding.
-        | UnsignedSource.Bits32 u -> float32<float> (float<uint32> u)
-        | UnsignedSource.Bits64 u -> float32OfUInt64 u
+        | ConvRUnSource.Bits32 u -> float32<float> (float<uint32> u)
+        | ConvRUnSource.Bits64 u -> float32OfUInt64 u
+        | ConvRUnSource.Float f -> EvalStackFloat.toSingle f
 
-    /// `conv.r.un` not followed by `conv.r4`: an unsigned source converted to double.
+    /// `conv.r.un` not followed by `conv.r4`: an unsigned source, or a float, converted to double.
     let convUnsignedToFloat (value : EvalStackValue) : float =
-        match unsignedSourceOfConvRUn value with
-        | UnsignedSource.Bits32 u -> convRUnFromInt32 (int32<uint32> u)
-        | UnsignedSource.Bits64 u -> convRUnFromInt64 (int64<uint64> u)
+        match convRUnSource value with
+        | ConvRUnSource.Bits32 u -> convRUnFromInt32 (int32<uint32> u)
+        | ConvRUnSource.Bits64 u -> convRUnFromInt64 (int64<uint64> u)
+        | ConvRUnSource.Float f -> EvalStackFloat.toDouble f
+
+    /// Whether `value`, used as the address of an indirection (`ldind`, `stind`, `ldobj`, `stobj`,
+    /// `initobj` and the like), is null, so that the access raises `NullReferenceException`.
+    ///
+    /// A null address has four spellings on the stack: a null object reference, which IL can
+    /// push where an address belongs; a null managed pointer; a native int holding one, which is
+    /// what a default `IntPtr` holds; and the native int 0, which is what an unmanaged null
+    /// (`ldc.i4.0; conv.u`, as in `*(int*)0`) and any `conv` round-trip of a null pointer give.
+    let isNullAddress (value : EvalStackValue) : bool =
+        match value with
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) -> true
+        | _ -> false
 
     /// The integer bits of a stack value, but only when PawPrint already knows them —
     /// never by synthesising an address for a pointer it does not model.

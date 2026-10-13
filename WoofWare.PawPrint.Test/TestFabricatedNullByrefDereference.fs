@@ -13,7 +13,8 @@ open NUnit.Framework
 /// `NullReferenceException` the guest can catch. Each fabricated method here is a single access
 /// through its byref argument, which the driver supplies as `ref Unsafe.NullRef<T>()`, and the
 /// driver catches `NullReferenceException` around the call. The `Ldnull` cases instead push a null
-/// object reference where the address belongs, which hand-written IL can do and C# cannot.
+/// object reference where the address belongs, which hand-written IL can do and C# cannot, and the
+/// `Zero` cases push an unmanaged null, `ldc.i4.0; conv.u`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFabricatedNullByrefDereference =
@@ -254,6 +255,73 @@ module TestFabricatedNullByrefDereference =
                 il.Emit (OpCodes.Initobj, sType)
             )
 
+        // An unmanaged null, `ldc.i4.0; conv.u`, where the address belongs: what `*(int*)0` compiles to.
+        let zeroAddress (il : ILGenerator) : unit =
+            il.Emit OpCodes.Ldc_I4_0
+            il.Emit OpCodes.Conv_U
+
+        define
+            "ZeroLdindI4"
+            typeof<int>
+            [||]
+            (fun il ->
+                zeroAddress il
+                il.Emit OpCodes.Ldind_I4
+            )
+
+        define
+            "ZeroStindI4"
+            typeof<Void>
+            [||]
+            (fun il ->
+                zeroAddress il
+                il.Emit OpCodes.Ldc_I4_1
+                il.Emit OpCodes.Stind_I4
+            )
+
+        define
+            "ZeroLdindRef"
+            typeof<obj>
+            [||]
+            (fun il ->
+                zeroAddress il
+                il.Emit OpCodes.Ldind_Ref
+            )
+
+        define
+            "ZeroStindRef"
+            typeof<Void>
+            [||]
+            (fun il ->
+                zeroAddress il
+                il.Emit OpCodes.Ldnull
+                il.Emit OpCodes.Stind_Ref
+            )
+
+        define
+            "ZeroLdobj"
+            typeof<int>
+            [||]
+            (fun il ->
+                il.DeclareLocal sType |> ignore<LocalBuilder>
+                zeroAddress il
+                il.Emit (OpCodes.Ldobj, sType)
+                il.Emit OpCodes.Stloc_0
+                il.Emit (OpCodes.Ldloca_S, 0uy)
+                il.Emit (OpCodes.Ldfld, y)
+            )
+
+        define
+            "ZeroStobj"
+            typeof<Void>
+            [||]
+            (fun il ->
+                il.DeclareLocal sType |> ignore<LocalBuilder>
+                zeroAddress il
+                il.Emit OpCodes.Ldloc_0
+                il.Emit (OpCodes.Stobj, sType)
+            )
+
         n.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
@@ -287,6 +355,12 @@ module TestFabricatedNullByrefDereference =
             "LdnullInitobj", ""
             "ConvUInitobj", nullS
             "ZeroInitobj", ""
+            "ZeroLdindI4", ""
+            "ZeroStindI4", ""
+            "ZeroLdindRef", ""
+            "ZeroStindRef", ""
+            "ZeroLdobj", ""
+            "ZeroStobj", ""
         ]
         |> Map.ofList
 

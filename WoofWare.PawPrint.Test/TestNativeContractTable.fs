@@ -38,7 +38,7 @@ module TestNativeContractTable =
         fcalls.Count + qcalls.Count |> shouldEqual rows.Length
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every exception a row raises is a CoreLib exception type`` (which : string) : unit =
+    let ``every exception a row raises is a CoreLib exception type`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
         for row in rows do
@@ -54,7 +54,7 @@ module TestNativeContractTable =
                     failwith $"%A{row.Native} raises %O{name}, which is not an exception type of the host's CoreLib"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every row names a native of the CoreLib, which is recognised as that row`` (which : string) : unit =
+    let ``every row names a native of the CoreLib, which is recognised as that row`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
         let natives =

@@ -25,7 +25,7 @@ module TestMarshalByValArrayLayout =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
     let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib

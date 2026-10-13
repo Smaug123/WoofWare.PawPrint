@@ -40,11 +40,7 @@ module internal UnaryMetadataMemoryOps =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         match popped with
-        | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
-            // The same four spellings of a null address that `executeStobj` and `executeLdobj` guard.
+        | popped when EvalStackValue.isNullAddress popped ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed) ->
             IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed zeroOfType
@@ -53,6 +49,8 @@ module internal UnaryMetadataMemoryOps =
         | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
             failwith
                 $"initobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NullObjectRef -> failwith "unreachable: a null Initobj target is handled above"
         | EvalStackValue.NativeInt nativeIntSource ->
             failwith $"TODO: Initobj through native pointer %O{nativeIntSource} is not implemented"
         | EvalStackValue.ObjectRef _ -> failwith "Initobj on an object reference is invalid; expected a managed pointer"
@@ -105,20 +103,14 @@ module internal UnaryMetadataMemoryOps =
                     $"Stobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
 
         match addr with
-        | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
-            // `Verbatim 0L` is the unmanaged spelling of null — `*(S*)null = v` is
-            // `ldc.i4.0; conv.u; ...; stobj S` — and is also what a null managed pointer
-            // normalises to on a `conv` round-trip. Without it a null store faults the
-            // interpreter instead of the guest. `executeLdobj` guards the same four spellings.
+        | addr when EvalStackValue.isNullAddress addr ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | EvalStackValue.ManagedPointer src
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
             writeAt src
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
+        | EvalStackValue.NullObjectRef -> failwith "unreachable: a null Stobj target is handled above"
         | EvalStackValue.NativeInt nativeIntSource ->
             failwith $"TODO: Stobj through native pointer %O{nativeIntSource} is not implemented"
         | EvalStackValue.ObjectRef _ -> failwith "Stobj on an object reference is invalid; expected a managed pointer"
@@ -152,20 +144,11 @@ module internal UnaryMetadataMemoryOps =
         let addr, state = state |> IlMachineState.popEvalStack thread
 
         match addr with
-        | EvalStackValue.NullObjectRef
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
+        | addr when EvalStackValue.isNullAddress addr ->
             // ECMA-335 III.4.13: `ldobj` through a null address throws
             // `NullReferenceException`, which the guest may catch. `readManagedByref` cannot
             // raise it — it returns a `CliType` and has a dozen callers — so the check belongs
-            // here, at the one site that can dispatch.
-            //
-            // All four spellings are reachable. `Verbatim 0L` is what an unmanaged null
-            // pointer becomes (`*(S*)null` is `ldc.i4.0; conv.u; ldobj S`), and it is also
-            // what a null managed pointer normalises to on any `conv` round-trip — see the
-            // "Conv.U8 of a null managed pointer normalises to verbatim zero" case in
-            // `TestBinaryArithmetic.fs`. A non-zero `Verbatim` is an unimplemented
+            // here, at the one site that can dispatch. A non-zero `Verbatim` is an unimplemented
             // path, not a null, and still fails below.
             //
             // No `advanceProgramCounter`: dispatch reads the faulting

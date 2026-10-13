@@ -153,8 +153,22 @@ module TestRuntimeFieldInfoStubLayout =
         | Error _ -> false
 
     [<Test>]
-    let ``the host's CoreLib stub has the wrapped-handle layout`` () =
-        let corelibPath = typeof<obj>.Assembly.Location
+    let ``the framework under test's CoreLib stub has that runtime's layout`` () =
+        let expected : string list =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 ->
+                [
+                    "m_keepalive"
+                    "m_c"
+                    "m_d"
+                    "m_b"
+                    "m_e"
+                    "m_f"
+                    "m_fieldHandle"
+                    "m_handle"
+                ]
+
+        let corelibPath = FrameworkUnderTest.coreLibPath ()
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
@@ -179,17 +193,7 @@ module TestRuntimeFieldInfoStubLayout =
                 fields.HandleInternalHandle
             ]
             |> List.map (fun field -> field.Name)
-            |> shouldEqual
-                [
-                    "m_keepalive"
-                    "m_c"
-                    "m_d"
-                    "m_b"
-                    "m_e"
-                    "m_f"
-                    "m_fieldHandle"
-                    "m_handle"
-                ]
+            |> shouldEqual expected
         | Error refusal -> failwith refusal
 
     [<Test>]

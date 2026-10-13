@@ -21,7 +21,7 @@ module TestTypeResolution =
 
     let private baseClassTypes () : BaseClassTypes<DumpedAssembly> =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib = AssemblyApi.readFile loggerFactory corelibPath
 
@@ -836,8 +836,7 @@ public class Placeholder { }
             // The host's shared framework has to be on the search path as well as the temp dir
             // holding the forwarding target: resolving `N.Outer.Inner` means loading every
             // assembly on its base-type chain, and that chain runs to System.Object.
-            let runtimeDirs =
-                ImmutableArray.Create (tempDir, Path.GetDirectoryName typeof<obj>.Assembly.Location)
+            let runtimeDirs = ImmutableArray.Create (tempDir, HostImage.frameworkDirectory)
 
             let state = IlMachineState.initial lf runtimeDirs forwarder
 

@@ -19,7 +19,7 @@ module PatchedCoreLib =
     /// Assembly binding is by simple name and ignores the referenced version, so a directory
     /// holding this at the head of `DotnetRuntimeDirs` is where the guest's CoreLib comes from.
     let write (major : uint16) (dir : string) : string =
-        let bytes = File.ReadAllBytes typeof<obj>.Assembly.Location
+        let bytes = File.ReadAllBytes HostImage.coreLibPath
 
         let offset =
             use peReader = new PEReader (ImmutableArray.Create<byte> bytes)

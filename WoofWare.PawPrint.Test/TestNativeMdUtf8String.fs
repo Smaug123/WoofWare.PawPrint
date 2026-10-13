@@ -7,15 +7,12 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Tests for the comparison behind the `MdUtf8String_EqualsCaseInsensitive` QCall.
 ///
-/// The end-to-end coverage lives in `sourcesPure/MdUtf8StringEqualsCaseInsensitive.cs` (ASCII,
-/// passing) and `sourcesPure/MdUtf8StringEqualsCaseInsensitiveUnicode.cs` (non-ASCII, currently
-/// in `TestPureCases.unimplemented` because `Encoding.UTF8.GetByteCount` on a non-ASCII name
-/// hits the unimplemented `BitOperations.TrailingZeroCount(uint32)` intrinsic). These tests
-/// exercise the comparison directly so the Unicode semantics are pinned regardless.
+/// The end-to-end coverage lives in `sourcesPure/MdUtf8StringEqualsCaseInsensitive.cs` (ASCII)
+/// and `sourcesPure/MdUtf8StringEqualsCaseInsensitiveUnicode.cs` (non-ASCII). These tests exercise
+/// the comparison directly, so that the Unicode semantics are pinned without running a guest.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeMdUtf8String =

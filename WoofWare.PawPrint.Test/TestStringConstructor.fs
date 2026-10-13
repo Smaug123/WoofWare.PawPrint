@@ -18,7 +18,7 @@ module TestStringConstructor =
     let coreLibs : TestCaseData list = TestIntrinsicBody.coreLibs
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every String constructor is an FCall run as its own String.Ctor`` (which : string) : unit =
+    let ``every String constructor is an FCall run as its own String.Ctor`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
         let stringType = (BaseClassTypes.ofCorelib corelib).String
 

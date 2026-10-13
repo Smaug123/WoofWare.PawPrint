@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `TypeConcretization.signaturesEquivalent` mirrors `MetaSig::CompareMethodSigs`, and most of its
 /// rules cannot be reached by a guest: a C# program cannot declare two methods whose signatures
@@ -37,7 +36,7 @@ module TestMethodSignatureComparison =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory HostImage.coreLibPath
 
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 

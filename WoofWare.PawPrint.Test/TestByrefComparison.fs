@@ -6,7 +6,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `ceqNormalised` is the single place three boundaries — `ceq` on byrefs,
 /// `Unsafe.AreSame`, and pointer comparison in `NativeIntSource` — decide whether two
@@ -30,7 +29,7 @@ module TestByrefComparison =
     /// ParallelScope.All is safe. Only needed to name a real type for `ReinterpretAs`.
     let private corelib =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll

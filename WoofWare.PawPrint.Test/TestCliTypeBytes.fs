@@ -9,7 +9,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Property-based oracle for `CliType.ToBytes` / `CliType.OfBytesLike`:
 /// for every primitive CliType, serialising to bytes and back must be the
@@ -22,7 +21,7 @@ module TestCliTypeBytes =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

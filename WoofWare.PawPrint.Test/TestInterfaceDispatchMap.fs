@@ -31,7 +31,7 @@ module TestInterfaceDispatchMap =
     // Undisposed on purpose: the DumpedAssembly's logger closes over its sinks.
     let private corelib : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 

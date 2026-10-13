@@ -15,7 +15,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// Tests for <see cref="IlDecoding.decodeInstructions"/>, which turns a method body's IL
@@ -639,4 +638,4 @@ module TestIlDecoding =
 
     [<Test>]
     let ``every method body in CoreLib decodes to instructions that tile it exactly`` () =
-        assertDecodesCleanly typeof<obj>.Assembly.Location
+        assertDecodesCleanly HostImage.coreLibPath

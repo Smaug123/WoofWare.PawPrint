@@ -87,7 +87,7 @@ module TestBclIntrinsicStaticFields =
 
     [<Test>]
     let ``[Intrinsic] static fields in System.Private.CoreLib match the audited set`` () : unit =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         use fs = File.OpenRead corelibPath
         use peReader = new PEReader (fs)

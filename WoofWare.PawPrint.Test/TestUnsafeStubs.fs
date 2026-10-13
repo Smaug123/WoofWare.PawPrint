@@ -25,7 +25,7 @@ module TestUnsafeStubs =
     let private corelib : Lazy<DumpedAssembly> =
         lazy
             (let _, loggerFactory = LoggerFactory.makeTest ()
-             Assembly.readFile loggerFactory typeof<obj>.Assembly.Location)
+             Assembly.readFile loggerFactory HostImage.coreLibPath)
 
     let private voidType : Type = typeof<obj>.Assembly.GetType ("System.Void", true)
 

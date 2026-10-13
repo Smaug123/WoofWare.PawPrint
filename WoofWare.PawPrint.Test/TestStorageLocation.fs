@@ -5,7 +5,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// Laws of `StorageLocation.overlapVerdict`.
 ///
@@ -251,7 +250,7 @@ module TestStorageLocationResolve =
     /// Parsed once for all tests; DumpedAssembly is immutable, so sharing it
     /// under ParallelScope.All is safe.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

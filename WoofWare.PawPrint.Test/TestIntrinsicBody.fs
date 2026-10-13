@@ -9,6 +9,15 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
+/// A CoreLib image whose contents a fixture audits.
+[<RequireQualifiedAccess>]
+type AuditedCoreLib =
+    /// The framework under test's CoreLib.
+    | UnderTest
+    /// The pinned linux-x64 CoreLib (`DOTNET_LINUX_FRAMEWORK_DIR`), which is what CI and production
+    /// run.
+    | PinnedLinuxX64
+
 /// `IntrinsicBody` says what CoreCLR runs for an `[Intrinsic]` method: its own IL, a JIT
 /// expansion (the IL calls itself), a VM-substituted body (CoreLib's IL cannot return), or no IL
 /// at all. The interpreter runs `OwnIl` as it stands and refuses the two placeholders unless
@@ -26,25 +35,32 @@ module TestIntrinsicBody =
 
         readCache.GetOrAdd(path, (fun _ -> lazy (read ()))).Value
 
-    /// The CoreLib the suite runs on (whose flavour is the host's), and the pinned linux-x64 one,
-    /// which is what CI and production run.
+    /// The framework under test's CoreLib (whose flavour is the host's), and the pinned linux-x64
+    /// one, which is what CI and production run.
     let coreLibs : TestCaseData list =
         [
-            TestCaseData("host").SetArgDisplayNames "host CoreLib"
-            TestCaseData("linux-x64").SetArgDisplayNames "pinned linux-x64 CoreLib"
+            TestCaseData(AuditedCoreLib.UnderTest).SetArgDisplayNames "CoreLib under test"
+            TestCaseData(AuditedCoreLib.PinnedLinuxX64).SetArgDisplayNames "pinned linux-x64 CoreLib"
         ]
 
-    let coreLib (which : string) : DumpedAssembly =
+    let coreLib (which : AuditedCoreLib) : DumpedAssembly =
         match which with
-        | "host" -> readCoreLib typeof<obj>.Assembly.Location
-        | "linux-x64" ->
+        | AuditedCoreLib.UnderTest -> readCoreLib (FrameworkUnderTest.coreLibPath ())
+        | AuditedCoreLib.PinnedLinuxX64 ->
             match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
             | null
             | "" ->
                 Assert.Ignore "DOTNET_LINUX_FRAMEWORK_DIR is unset; run inside the Nix devshell"
                 failwith "unreachable"
-            | dir -> readCoreLib (Path.Combine (dir, "System.Private.CoreLib.dll"))
-        | other -> failwith $"unknown CoreLib %s{other}"
+            | dir ->
+                let corelib = readCoreLib (Path.Combine (dir, "System.Private.CoreLib.dll"))
+
+                // A leg audits only its own runtime's images.
+                FrameworkUnderTest.checkServes (FrameworkUnderTest.runtime ()) corelib
+                |> Result.mapError FrameworkUnderTest.describe
+                |> shouldEqual (Ok ())
+
+                corelib
 
     /// A parameter type as the transcription below spells it, after corelib.h's signature names.
     let rec private shape (ty : TypeDefn) : string =
@@ -229,7 +245,7 @@ module TestIntrinsicBody =
         | found -> failwith $"expected one %s{ns}.%s{cls}::%s{name}(%A{ps}), found %d{found.Length}"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``named intrinsics classify as CoreCLR treats them`` (which : string) : unit =
+    let ``named intrinsics classify as CoreCLR treats them`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
 
         let expect (ns : string) (cls : string) (name : string) (ps : string list) (expected : IntrinsicBody) =
@@ -262,7 +278,7 @@ module TestIntrinsicBody =
         expect "System" "Math" "Acos" [ "float64" ] IntrinsicBody.NoIl
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``exactly one architecture's base ISA query is a JIT expansion`` (which : string) : unit =
+    let ``exactly one architecture's base ISA query is a JIT expansion`` (which : AuditedCoreLib) : unit =
         // A CoreLib is compiled for one architecture: that architecture's hardware-intrinsic
         // classes carry placeholder IL, and every other's is a stub returning `false`.
         let corelib = coreLib which
@@ -290,7 +306,7 @@ module TestIntrinsicBody =
             failwith $"expected one IsSupported query and one OwnIl, got X86Base %A{x86} and ArmBase %A{arm}"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``VmSubstitution is exactly the VM's substitutions whose IL is a placeholder`` (which : string) : unit =
+    let ``VmSubstitution is exactly the VM's substitutions whose IL is a placeholder`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
         let methods = methodsOf corelib
 
@@ -321,7 +337,7 @@ module TestIntrinsicBody =
             failwith (String.concat "\n" failures)
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``VmSubstitution has a stub for exactly the Unsafe methods corelib.h binds`` (which : string) : unit =
+    let ``VmSubstitution has a stub for exactly the Unsafe methods corelib.h binds`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
         let methods = methodsOf corelib
 
@@ -350,7 +366,7 @@ module TestIntrinsicBody =
         stubbed |> shouldEqual bound
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every Unsafe placeholder runs the VM's stub`` (which : string) : unit =
+    let ``every Unsafe placeholder runs the VM's stub`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
 
         let placeholders =
@@ -372,7 +388,7 @@ module TestIntrinsicBody =
     let ``the pinned linux-x64 CoreLib has thousands of JIT expansions`` () : unit =
         // A floor, not a snapshot: if resolving a self-call through a MemberRef or MethodSpec
         // regressed, this is where the count would collapse. The census measured 3,737 at 10.0.7.
-        let corelib = coreLib "linux-x64"
+        let corelib = coreLib AuditedCoreLib.PinnedLinuxX64
 
         let expansions =
             methodsOf corelib
@@ -422,7 +438,7 @@ module TestIntrinsicBody =
 
     [<Test>]
     let ``hardware-intrinsic placeholders classify by the question they ask the JIT`` () : unit =
-        let corelib = coreLib "linux-x64"
+        let corelib = coreLib AuditedCoreLib.PinnedLinuxX64
 
         let expansionOf (ns : string) (cls : string) (name : string) =
             IntrinsicBody.classify corelib (find corelib ns cls name [])
@@ -472,7 +488,7 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every hardware-intrinsic placeholder's self-call is answered on the scalar-only profile``
-        (which : string)
+        (which : AuditedCoreLib)
         : unit
         =
         let corelib = coreLib which
@@ -512,7 +528,7 @@ module TestIntrinsicBody =
             failwith (String.concat "\n" failures)
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``a placeholder's self-call follows the profile`` (which : string) : unit =
+    let ``a placeholder's self-call follows the profile`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
 
         let supporting (c : IntrinsicClass) =
@@ -628,7 +644,7 @@ module TestIntrinsicBody =
 
     [<Test>]
     let ``the linux-x64 CoreLib's primitive JIT expansions are the JIT's own operations`` () : unit =
-        let corelib = coreLib "linux-x64"
+        let corelib = coreLib AuditedCoreLib.PinnedLinuxX64
 
         let found =
             expansionsOf corelib
@@ -650,7 +666,7 @@ module TestIntrinsicBody =
             failwith $"primitives not on the list:\n%s{show unexpected}\nlisted but not found:\n%s{show missing}"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every JIT expansion in CoreLib is recognised`` (which : string) : unit =
+    let ``every JIT expansion in CoreLib is recognised`` (which : AuditedCoreLib) : unit =
         let corelib = coreLib which
 
         let unrecognised =
@@ -674,7 +690,10 @@ module TestIntrinsicBody =
         | _ -> false
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every primitive's contract fits the signature of each method that performs it`` (which : string) : unit =
+    let ``every primitive's contract fits the signature of each method that performs it``
+        (which : AuditedCoreLib)
+        : unit
+        =
         let corelib = coreLib which
 
         let primitives =
@@ -1199,7 +1218,7 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every capability query returns the constant its profile gives, and nothing else does``
-        (which : string)
+        (which : AuditedCoreLib)
         : unit
         =
         let corelib = coreLib which

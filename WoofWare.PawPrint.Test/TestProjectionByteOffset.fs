@@ -7,7 +7,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `IlMachineManagedByref.walkProjectionByteOffset` folds a `ByrefProjection` chain to a byte
 /// offset. `Field` consults the current type cursor; `ReinterpretAs` re-anchors it; `ByteOffset`
@@ -29,7 +28,7 @@ module TestProjectionByteOffset =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

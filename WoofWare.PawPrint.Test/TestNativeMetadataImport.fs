@@ -401,7 +401,7 @@ public class MarshalShapes
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath

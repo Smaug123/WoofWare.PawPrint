@@ -138,6 +138,9 @@ class LockAndPortWaiters
         | ParkedSyscall.FifoOpen _
         | ParkedSyscall.InotifyRead _
         | ParkedSyscall.Select _
+        | ParkedSyscall.DatagramReceive _
+        | ParkedSyscall.DatagramSend _
+        | ParkedSyscall.Connect _
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _ -> false
 

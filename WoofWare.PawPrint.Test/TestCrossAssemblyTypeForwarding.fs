@@ -684,9 +684,12 @@ public sealed class Bystander
     // marks that buffer `Uninitialized` and refuses the read outright, which is the whole point of
     // modelling initialisation — but it stops every nested lookup, forwarded or not, before the
     // QCall is even entered. Un-park once such a read is allowed to yield a value.
-    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
     [<Test>]
     let ``a nested type under a forwarded type is looked up in the defining assembly`` () : unit =
+        ParkedOn.check
+            WoofWare.PawPrint.EmulatedRuntime.supported
+            "blocked on reading an uninitialised localloc buffer in the span-marshalling stub"
+
         {
             Assemblies =
                 assemblies
@@ -730,9 +733,12 @@ class Program
     // Parked on the same stub as the case above: `AssemblyNative_GetTypeCoreIgnoreCase` is handed
     // its nested names through the same `ReadOnlySpan<string>` marshalling, UTF-16 rather than
     // UTF-8, so no nested lookup reaches it either.
-    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
     [<Test>]
     let ``a nested name folds too, under a forwarded type`` () : unit =
+        ParkedOn.check
+            WoofWare.PawPrint.EmulatedRuntime.supported
+            "blocked on reading an uninitialised localloc buffer in the span-marshalling stub"
+
         {
             Assemblies =
                 assemblies

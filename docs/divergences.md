@@ -5,7 +5,7 @@
 PawPrint aims to be behaviourally equivalent to CoreCLR for managed programs. This document catalogues the cases where it is *deliberately* not, and explains why. Each item here is something that:
 
 * a managed program can observe at runtime,
-* is not simply unimplemented (those live in the `unimplemented` set in [`WoofWare.PawPrint.Test/TestPureCases.fs`](../WoofWare.PawPrint.Test/TestPureCases.fs) and crash with a TODO `failwith`),
+* is not simply unimplemented (those are parked in [`WoofWare.PawPrint.Test/TestPureCases.fs`](../WoofWare.PawPrint.Test/TestPureCases.fs)'s `parkedEverywhere` and `onRuntime`, and crash with a TODO `failwith`),
 * and is either spec-compliant or marked here as deferred work with a tracking note.
 
 If a program of yours hits one of these, the workaround is usually to rewrite the affected code to not depend on the timing or exception type that CoreCLR's specific implementation chose. If you can't, file an issue.
@@ -1340,7 +1340,7 @@ foreach (string entry in Directory.EnumerateFileSystemEntries("d"))
 ```
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry` and the `DirectoryCursor` type
-beside it. `WoofWare.PosixKernel.Test/TestDirectoryEnumeration.fs` pins every case above, including
+beside it. [`TestDirectoryEnumeration.fs`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/main/WoofWare.PosixKernel.Test/TestDirectoryEnumeration.fs), in the kernel's repository, pins every case above, including
 the property that deleting each name as it is returned always empties the directory.
 
 ## Directory enumeration order is the model's own, not any kernel's
@@ -1551,7 +1551,7 @@ partial measurements were wrong in different ways, one of them writing past the 
 success, so no BCL caller can see this. It takes a hand-rolled P/Invoke that ignores a NULL return
 and reads its buffer anyway.
 
-**Where this lives in code**: `UnixPathResolution.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
+**Where this lives in code**: `UnixPathResolution.getcwd` in the kernel's [`UnixPathResolution.fs`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/main/WoofWare.PosixKernel/UnixPathResolution.fs) returns
 `GetCwdAnswer.Failed` carrying an errno and nothing else; the measurements are recorded on
 `GetCwdOrphanAnswer.ShortestPathFirst` in `SimulatedUnixPlatform.fs`.
 ## A faulting `getsockname` copies out no partial address
@@ -1588,7 +1588,7 @@ blob only on success, so no BCL caller reads either. The length store is unreach
 hand-rolled P/Invoke: the shim passes `getsockname(2)` a local `socklen_t` and copies it back to the
 caller only when the call succeeded.
 
-**Where this lives in code**: `UnixSocket.getsockname` in `WoofWare.PosixKernel/UnixSocket.fs`; the
+**Where this lives in code**: `UnixSocket.getsockname` in the kernel's [`UnixSocket.fs`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/main/WoofWare.PosixKernel/UnixSocket.fs); the
 length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`, and is
 Linux's only from 6.18: before that Linux, like Darwin, leaves the cell as the caller declared it.
 
@@ -1608,6 +1608,6 @@ makes, since its counts are span lengths. A hand-rolled P/Invoke that passes a c
 of its buffer, on a file with too little in it to reach the end, gets an answer where a real Linux
 kernel might say EFAULT. Darwin checks no range up front, so it is unaffected.
 
-**Where this lives in code**: `UserBufferCheck.faultsBeforeOperationFor` in
-`WoofWare.PosixKernel/UserBuffer.fs`; the probe is
+**Where this lives in code**: `UserBufferCheck.faultsBeforeOperationFor` in the kernel's
+[`UserBuffer.fs`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/main/WoofWare.PosixKernel/UserBuffer.fs); the probe is
 `docs/plans/2026-08-23-posix-kernel-extraction/transfer-counts.c`.

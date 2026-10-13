@@ -8,7 +8,6 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel.Test
 
 /// `Sha256` against the host's `SHA256.HashData`, which is the oracle throughout: the
 /// implementation is never compared with itself.
