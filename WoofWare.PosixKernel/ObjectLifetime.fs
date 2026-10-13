@@ -39,6 +39,18 @@ type internal DescriptionReleaseRefusal =
     /// peer, which reads what it holds and then EAGAIN, still 2 s later: only
     /// a TCP timer ends that, and this kernel keeps none.
     | DarwinCloseBehindQueuedFin of socket : SocketId * connection : ConnectionId
+    /// The description is the last reference to the connected stream socket
+    /// `socket`, under Darwin, whose `SO_LINGER` is on with a time of zero:
+    /// the socket shut its send side while bytes it wrote to `connection`
+    /// were still unsent, so its FIN waits behind them, and the peer's FIN
+    /// has arrived since.
+    ///
+    /// Measured (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
+    /// section L, `cqueued-pfin`), the close then sends no reset: the peer
+    /// reads what it holds, and then ECONNRESET, once its reads open the
+    /// window towards a socket that has gone. This kernel has no reset owed
+    /// to whoever next reads (`TcpTransfer.abortRefused`).
+    | DarwinAbortBehindQueuedFin of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module internal DescriptionReleaseRefusal =
@@ -50,6 +62,8 @@ module internal DescriptionReleaseRefusal =
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless bytes were left unread."
         | DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (socket, connection) ->
             $"releasing the last reference destroys socket %O{socket}, which shut its send side while bytes it wrote to connection %O{connection} were unsent, so its FIN still waits behind them; the peer's FIN has arrived, and bytes are left unread. Measured on Darwin, the close then sends no reset, and neither the remaining bytes nor the FIN reach the peer, which reads what it holds and then EAGAIN for at least 2 s: only a TCP timer ends that, and this kernel keeps none."
+        | DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin (socket, connection) ->
+            $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, and which shut its send side while bytes it wrote to connection %O{connection} were unsent, so its FIN still waits behind them; the peer's FIN has arrived since. Measured on Darwin, the close then sends no reset: the peer reads what it holds and then ECONNRESET, once its reads open the window towards a socket that has gone, and this kernel has no reset owed to whoever next reads."
         | DescriptionReleaseRefusal.LingeringClose (socket, connection, unsent) ->
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time greater than zero, while %d{unsent} bytes it wrote to connection %O{connection} are still in its send buffer. Measured with the peer open and nothing unread, a real kernel's close then waits, for up to the linger time, for them to reach the peer -- on Linux whatever the description's O_NONBLOCK, on Darwin when the description is blocking -- and this kernel does not model that wait."
 
@@ -59,6 +73,7 @@ module internal DescriptionReleaseRefusal =
         | DescriptionReleaseRefusal.AbortiveClose _ -> RefusalKind.Unmodelled
         | DescriptionReleaseRefusal.LingeringClose _ -> RefusalKind.Unmodelled
         | DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _ -> RefusalKind.Unmodelled
+        | DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin _ -> RefusalKind.Unmodelled
 
 /// When this kernel frees what nothing references any more: an open file
 /// description once no descriptor names it and no syscall in flight holds it,

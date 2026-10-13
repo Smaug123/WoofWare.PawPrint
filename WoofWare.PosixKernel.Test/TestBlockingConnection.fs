@@ -160,7 +160,8 @@ module TestBlockingConnection =
 
         Set.union named held
 
-    /// Close the socket of every end nothing references any more.
+    /// Close the socket of every end nothing references any more: abortively
+    /// under `SO_LINGER` {1, 0}.
     let private releaseUnreferenced (r : Reference) : Reference =
         let live = live r
 
@@ -169,7 +170,8 @@ module TestBlockingConnection =
             if Set.contains connectionEnd live || Set.contains connectionEnd r.Gone then
                 r
             else
-                let _, model = TcpTransferReference.close false connectionEnd r.Model
+                let abortive = Map.tryFind connectionEnd r.Linger = Some 0
+                let _, model = TcpTransferReference.close abortive connectionEnd r.Model
 
                 { r with
                     Model = model
@@ -1296,7 +1298,8 @@ module TestBlockingConnection =
                     // Under `SO_LINGER`, the last descriptor's close: refused
                     // while a call the close does not end holds the socket,
                     // and otherwise refused where the socket's own close would
-                    // reset the connection or wait.
+                    // wait, or, on Darwin under {1, 0}, leave a reset owed to
+                    // the peer's reads.
                     let closing = reference.Fds.[fd]
                     let socket = socketOf fd system
 
@@ -1315,10 +1318,17 @@ module TestBlockingConnection =
 
                             match holder with
                             | Some task -> Some (CloseRefusal.LingeringCloseDeferredToCall (socket, task))
-                            | None when seconds = 0 && not (Set.contains (other closing) reference.Gone) ->
+                            | None when
+                                seconds = 0
+                                && not (Set.contains (other closing) reference.Gone)
+                                && TcpTransferReference.abortRefused closing reference.Model
+                                ->
                                 Some (
                                     CloseRefusal.Release (
-                                        DescriptionReleaseRefusal.AbortiveClose (socket, connectionOf fd system)
+                                        DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin (
+                                            socket,
+                                            connectionOf fd system
+                                        )
                                     )
                                 )
                             | None when seconds > 0 && unsent > 0 && (linux || not reference.NonBlocking.[closing]) ->
@@ -1335,13 +1345,15 @@ module TestBlockingConnection =
                         | Some _
                         | None -> None
 
-                    // Darwin's close of the socket behind its own queued FIN,
-                    // once the peer's has arrived, over bytes left unread.
+                    // Darwin's ordinary close of the socket behind its own
+                    // queued FIN, once the peer's has arrived, over bytes left
+                    // unread.
                     let lingerRefusal =
                         match lingerRefusal with
                         | Some _ -> lingerRefusal
                         | None when
                             refusedFor.IsNone
+                            && Map.tryFind closing reference.Linger <> Some 0
                             && not (
                                 Set.contains
                                     closing
@@ -1375,8 +1387,8 @@ module TestBlockingConnection =
                         match refusal with
                         | CloseRefusal.LingeringCloseDeferredToCall _ ->
                             cover $"%s{flavourName} close: refused, deferred to a call under SO_LINGER"
-                        | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
-                            cover $"%s{flavourName} close: refused, abortive"
+                        | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinAbortBehindQueuedFin _) ->
+                            cover $"%s{flavourName} close: refused, abortive behind its queued FIN"
                         | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
                             cover $"%s{flavourName} close: refused, lingering"
                         | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _) ->
@@ -1412,6 +1424,12 @@ module TestBlockingConnection =
                             )
                         then
                             cover $"%s{flavourName} close: closes the socket"
+
+                            if
+                                Map.tryFind closing reference.Linger = Some 0
+                                && not (Set.contains (other closing) reference.Gone)
+                            then
+                                cover $"%s{flavourName} close: abortive"
 
                         system <- after
 
@@ -2705,22 +2723,27 @@ module TestBlockingConnection =
         |> shouldEqual (Error (CloseRefusal.LingeringCloseDeferredToCall (socketOf copy system, 1)))
 
     /// Darwin's close ends the call made through the descriptor, so nothing
-    /// holds the socket past it, and the close is refused, if at all, as the
-    /// ordinary close of the socket is.
+    /// holds the socket past it, and the close is the socket's own close:
+    /// abortive, or refused where the ordinary close of the socket is.
     [<Test>]
     let ``Darwin: the last close of a socket a call sleeps on under SO_LINGER is the socket's own close`` () : unit =
         let platform = SimulatedUnixPlatform.macOsArm64
 
-        // {1, 0}: the abortive close, refused while the peer is open.
-        let client, _, system = pair (systemOn platform false)
+        // {1, 0}: the abortive close, which resets the open peer.
+        let client, server, system = pair (systemOn platform false)
         let system = lingerFor client 1 0 system
         let system = asleepReading 1 client 4096 system
-        let socket = socketOf client system
 
-        match UnixDescriptor.tryClose client system with
-        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose (refused, _))) ->
-            refused |> shouldEqual socket
-        | other -> failwith $"{{1, 0}}: %A{other}"
+        let system =
+            match UnixDescriptor.tryClose client system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"{{1, 0}}: %A{other}"
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        readNow server 4096 system
+        |> fst
+        |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
 
         // {1, 1 s} with bytes unsent, through a blocking description: the
         // close that waits.
