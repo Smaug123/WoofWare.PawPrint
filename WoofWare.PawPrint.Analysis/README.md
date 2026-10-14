@@ -104,10 +104,14 @@ method) may add more:
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
   assembly. A module initializer is a type initializer, and the answer has what it raises and
   what throwing that again raises, as for any other (below);
-* a synchronized method takes a monitor around its body, whose wait may throw
-  `ThreadInterruptedException`, whose release throws `SynchronizationLockException` if the body
-  has already released it, and which, for an instance method `call`ed on null, throws
-  `ArgumentNullException`.
+* a synchronized method takes a monitor around its body as the JIT has it, by running
+  `Monitor.Enter(lock, ref acquired)`, with `acquired` false, before the body and
+  `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, and the answer has what those raise:
+  taking the monitor may allocate its sync block or wait and be interrupted, releasing it throws
+  `SynchronizationLockException` if the body has already released it, and either throws
+  `ArgumentNullException` for an instance method `call`ed on null. The lock is the receiver, of
+  the classes and nullness the caller passes, or for a static method its type's `RuntimeType`,
+  which the JIT may look up with `RuntimeTypeHandle.GetRuntimeTypeFromHandle`.
 
   All these happen outside the body, so the body's own handlers do not catch them.
 
