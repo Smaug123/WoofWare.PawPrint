@@ -21,9 +21,13 @@ method) may add more:
   computed for each combination of objects its callers pass as the arguments its body uses as a
   receiver, returns, passes on or tests, so a helper called with a `new Dog()` runs `Dog`'s
   overrides there, and `ArgumentNullException.ThrowIfNull` called with a `new object()` throws
-  nothing. An object a call returns is null or not as the callee's `ret`s return it. Asked about by
-  itself, a method may be passed null or any object its parameter types admit, and so may one
-  whose body stores to the argument or takes its address;
+  nothing. An argument of an integer type (`bool`, `char`, or an integer of up to 64 bits) is the
+  constants the caller passes it, where the caller decides them, each converted to the parameter's
+  type as the runtime converts it (a `bool` holds the low byte of an `int` passed for it), so
+  `ObjectDisposedException.ThrowIf` called with `false` throws nothing. An object a call returns is
+  null or not as the callee's `ret`s return it. Asked about by itself, a method may be passed any
+  value its parameter types admit, null among them, and so may one whose body stores to the
+  argument or takes its address;
 * `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
 * a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
   no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught
@@ -48,12 +52,13 @@ method) may add more:
   `System.String`, which is native, calls the `String.Ctor` CoreCLR runs in its place
   (`StringConstructor`);
 * code that a capability query rules out on that CPU, or that a test of whether an object is null
-  rules out, is left out. Where a call to an `IsSupported` or `IsHardwareAccelerated` that answers
+  or an integer is zero rules out, is left out. Where a call to an `IsSupported` or `IsHardwareAccelerated` that answers
   a constant (`IntrinsicBody.constantResult`) is branched on straight away (`brtrue` or `brfalse`,
   which nothing else reaches), only the way the answer goes is followed (`ControlFlow.mayExecute`),
   and so it is where the value branched on straight away is an object known to be null or not: one
   `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
-  null. Every other branch is followed both ways. A handler counts only if something in its
+  null; or an integer known to be zero or not: a constant an `ldc` pushed, or an argument whose
+  callers all pass zero or all pass something else. Every other branch is followed both ways. A handler counts only if something in its
   protected block does. Tokens in code left out are still bound, below, which for a capability
   query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
   binds what only the other way reaches;
