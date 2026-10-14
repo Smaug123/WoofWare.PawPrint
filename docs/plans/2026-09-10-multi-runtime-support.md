@@ -684,6 +684,11 @@ mutation-testing skill applies to each table/classifier they introduce.
      does. RC1 keeps the three-argument `Environment.InitializeCommandLineArgs` that PawPrint
      calls, beside the five-argument `[UnmanagedCallersOnly]` wrapper the VM calls; if a later
      CoreLib drops it, that call takes the same `ExceptionSlot`.
+
+     P6c's `RuntimeFieldInfoStubLayout.BareHandle` writes the registry id into the bare
+     `m_fieldHandle` and zeroes `m_b`; its reader wraps that pointer in a
+     `RuntimeFieldHandleInternal`, as RC1's `IRuntimeFieldInfo.Value` does, so every reader of
+     `IRuntimeFieldInfo.Value` sees the same shape on both runtimes.
    * **P6e, the switch-on.** The `Net11` case and pin; the `NativeDispatch` composition decided
      against the real image, with the `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
      `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) and the

@@ -60,7 +60,8 @@ public class GenericHolder<T>
             State : IlMachineState
         }
 
-    let private makeFieldHandleFixture () : FieldHandleFixture =
+    /// A fixture whose CoreLib is the one at `corelibPath`.
+    let private makeFieldHandleFixtureOn (corelibPath : string) : FieldHandleFixture =
         let image =
             Roslyn.compileAssembly
                 "FieldHandleTestAssembly"
@@ -69,8 +70,6 @@ public class GenericHolder<T>
                 [ fieldHandleSource ]
 
         let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
@@ -133,6 +132,9 @@ public class GenericHolder<T>
             OtherField = otherField
             State = state
         }
+
+    let private makeFieldHandleFixture () : FieldHandleFixture =
+        makeFieldHandleFixtureOn HostImage.coreLibPath
 
     let private getOrAllocateField
         (fixture : FieldHandleFixture)
@@ -297,6 +299,61 @@ public class GenericHolder<T>
 
             e.Message
             |> shouldContainText "RuntimeFieldInfoStub.m_fieldHandle is declared a RuntimeFieldHandleInternal, but held"
+
+    [<Test>]
+    let ``on .NET 11's CoreLib, a stub is written and read through the bare-handle layout`` () : unit =
+        let fixture =
+            makeFieldHandleFixtureOn (FrameworkUnderTest.requireNet11CoreLibPath ())
+
+        let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
+        let stubAddr = runtimeFieldInfoStubAddress fieldHandle
+        let stub = ManagedHeap.get stubAddr state.ManagedHeap
+
+        let id =
+            FieldHandleRegistry.resolveFieldIdFromAddress stubAddr state.FieldHandles
+            |> Option.defaultWith (fun () -> failwith $"the registry does not know the stub at %O{stubAddr}")
+
+        // What the writer put in the stub: the id as a bare `IntPtr`, and zeroed padding.
+        CliValueType.DereferenceField "m_fieldHandle" stub.Contents
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id))
+
+        CliValueType.DereferenceField "m_b" stub.Contents
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+        // What the reader makes of it: the `RuntimeFieldHandleInternal` naming that id, as
+        // `IRuntimeFieldInfo.Value` constructs it.
+        let value =
+            IlMachineState.runtimeFieldInfoValue fixture.BaseClassTypes stubAddr state
+
+        match value with
+        | CliType.ValueType handle ->
+            handle.Declared
+            |> shouldEqual (
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.TypeSystem.ConcreteTypes
+                    fixture.BaseClassTypes.RuntimeFieldHandleInternal
+            )
+        | other -> failwith $"expected a RuntimeFieldHandleInternal, got %O{other}"
+
+        value
+        |> NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal "test"
+        |> shouldEqual (Some id)
+
+        // The layout declares `m_fieldHandle` an `IntPtr`, so a stub holding a value of another
+        // value type there is refused rather than wrapped.
+        let contradicted =
+            IlMachineState.setOwnInstanceField stubAddr "m_fieldHandle" fieldHandle state
+
+        let e =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.runtimeFieldInfoValue fixture.BaseClassTypes stubAddr contradicted
+                |> ignore<CliType>
+            )
+
+        e.Message
+        |> shouldContainText "RuntimeFieldInfoStub.m_fieldHandle is declared an IntPtr, but held"
 
     [<Test>]
     let ``a CoreLib whose RuntimeFieldInfoStub has another layout is refused by writer and reader`` () : unit =
