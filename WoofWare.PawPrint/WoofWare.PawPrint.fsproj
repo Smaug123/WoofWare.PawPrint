@@ -123,6 +123,7 @@
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="StructMarshalStub.fs" />
+    <Compile Include="DelegateInvocations.fs" />
     <Compile Include="MulticastDelegateStub.fs" />
     <Compile Include="DelegateRepresentation.fs" />
     <Compile Include="ArrayElementOperands.fs" />
