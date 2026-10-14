@@ -37,7 +37,8 @@ module TestOpcodeFaultsOnPawPrint =
     /// The instructions parked on `runtime`, each with its disagreement.
     let private parkedOn (runtime : EmulatedRuntime) : Map<NullaryIlOp, string> =
         match runtime with
-        | EmulatedRuntime.Net10 -> parkedEverywhere
+        | EmulatedRuntime.Net10
+        | EmulatedRuntime.Net11 -> parkedEverywhere
 
     let private csType (operand : NumericOpcodeGrid.Operand) : string =
         match operand with

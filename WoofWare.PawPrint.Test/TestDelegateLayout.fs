@@ -196,10 +196,12 @@ module TestDelegateLayout =
     let private known : string =
         "(it knows System.Delegate { obj _target; obj _methodBase; intptr _methodPtr; intptr _methodPtrAux } with System.MulticastDelegate { obj _invocationList; intptr _invocationCount }, or System.Delegate { obj _helperObject; obj _target; intptr _methodPtr; intptr _methodPtrAux; intptr _extraData } with System.MulticastDelegate { } and System.Delegate.Wrapper { System.Delegate Value })"
 
-    [<Test>]
-    let ``the framework under test's CoreLib has that runtime's layout`` () =
+    let runtimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof runtimes)>]
+    let ``each runtime's CoreLib has that runtime's layout`` (runtime : EmulatedRuntime) =
         let expected : (string * string) list =
-            match FrameworkUnderTest.runtime () with
+            match runtime with
             | EmulatedRuntime.Net10 ->
                 [
                     "Delegate", "_target"
@@ -208,48 +210,7 @@ module TestDelegateLayout =
                     "MulticastDelegate", "_invocationList"
                     "MulticastDelegate", "_invocationCount"
                 ]
-
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
-        let corelib = AssemblyApi.readFile loggerFactory (FrameworkUnderTest.coreLibPath ())
-        let baseClassTypes = BaseClassTypes.ofCorelib corelib
-
-        match DelegateLayout.classify corelib baseClassTypes.DelegateType baseClassTypes.MulticastDelegateType with
-        | Ok (DelegateLayout.InvocationListAndCount (binding, invocations)) ->
-            [
-                binding.Target
-                binding.MethodPtr
-                binding.MethodPtrAux
-                invocations.InvocationList
-                invocations.InvocationCount
-            ]
-            |> List.map (fun field -> field.DeclaringType.Name, field.Name)
-            |> shouldEqual expected
-        | Ok other -> failwith $"expected the invocation-list-and-count layout, got %A{other}"
-        | Error refusal -> failwith refusal
-
-    [<Test>]
-    let ``.NET 11's CoreLib has the helper-object layout`` () =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
-
-        let corelib =
-            AssemblyApi.readFile loggerFactory (FrameworkUnderTest.requireNet11CoreLibPath ())
-
-        let baseClassTypes = BaseClassTypes.ofCorelib corelib
-
-        match DelegateLayout.classify corelib baseClassTypes.DelegateType baseClassTypes.MulticastDelegateType with
-        | Ok (DelegateLayout.HelperObjectAndExtraData (binding, helper)) ->
-            [
-                binding.Target
-                binding.MethodPtr
-                binding.MethodPtrAux
-                helper.HelperObject
-                helper.ExtraData
-                helper.WrapperValue
-            ]
-            |> List.map (fun field -> field.DeclaringType.Name, field.Name)
-            |> shouldEqual
+            | EmulatedRuntime.Net11 ->
                 [
                     "Delegate", "_target"
                     "Delegate", "_methodPtr"
@@ -258,8 +219,43 @@ module TestDelegateLayout =
                     "Delegate", "_extraData"
                     "Wrapper", "Value"
                 ]
-        | Ok other -> failwith $"expected the helper-object layout, got %A{other}"
-        | Error refusal -> failwith refusal
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let corelib =
+            AssemblyApi.readFile loggerFactory (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        let fields =
+            match
+                runtime,
+                DelegateLayout.classify corelib baseClassTypes.DelegateType baseClassTypes.MulticastDelegateType
+            with
+            | EmulatedRuntime.Net10, Ok (DelegateLayout.InvocationListAndCount (binding, invocations)) ->
+                [
+                    binding.Target
+                    binding.MethodPtr
+                    binding.MethodPtrAux
+                    invocations.InvocationList
+                    invocations.InvocationCount
+                ]
+            | EmulatedRuntime.Net11, Ok (DelegateLayout.HelperObjectAndExtraData (binding, helper)) ->
+                [
+                    binding.Target
+                    binding.MethodPtr
+                    binding.MethodPtrAux
+                    helper.HelperObject
+                    helper.ExtraData
+                    helper.WrapperValue
+                ]
+            | runtime, Ok other -> failwith $"%O{runtime}'s CoreLib has an unexpected delegate layout: %A{other}"
+            | _, Error refusal -> failwith refusal
+
+        fields
+        |> List.map (fun field -> field.DeclaringType.Name, field.Name)
+        |> shouldEqual expected
 
     [<Test>]
     let ``classify recognises exactly net10's and net11's field lists`` () =
@@ -359,14 +355,6 @@ module TestDelegateLayout =
             /// `Action.Invoke`, as a method to bind the delegate to.
             Invoke : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         }
-
-    /// The CoreLib a behavioural test runs over: the host's, whose delegates have net10's layout,
-    /// or .NET 11's, whose delegates have net11's.
-    let private corelibOf (runtime : string) : string =
-        match runtime with
-        | "net10" -> HostImage.coreLibPath
-        | "net11" -> FrameworkUnderTest.requireNet11CoreLibPath ()
-        | other -> failwith $"no CoreLib for %s{other}"
 
     let private makeDelegateFixtureOn (corelibPath : string) : DelegateFixture =
         let image =
@@ -537,10 +525,10 @@ module TestDelegateLayout =
             (DelegateBinding.Closed (None, FunctionPointerTarget.Managed fixture.Invoke))
             fixture.State
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``a delegate reads back through the layout as it was written`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``a delegate reads back through the layout as it was written`` (runtime : EmulatedRuntime) : unit =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
 
         // A count left over from before is overwritten: the binding decides every field it names.
         let fixture =
@@ -672,10 +660,11 @@ module TestDelegateLayout =
 
         stubRead.Message |> shouldContainText swappedRefusal
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``a delegate whose fields contradict its layout is refused`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``a delegate whose fields contradict its layout is refused`` (runtime : EmulatedRuntime) : unit =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
         let state = closedOverInvoke fixture
         let count = countField (DelegateLayout.require fixture.BaseClassTypes)
 
@@ -698,10 +687,11 @@ module TestDelegateLayout =
         e.Message
         |> shouldContainText $"test: expected %s{count.Name} to be a native int, got"
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``the multicast invoke stub reads its elements through the layout`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``the multicast invoke stub reads its elements through the layout`` (runtime : EmulatedRuntime) : unit =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         // Two elements, neither of them naming a delegate: the stub must reach element 0 through
@@ -725,10 +715,11 @@ module TestDelegateLayout =
         |> shouldEqual
             "multicast delegate invoke stub: expected element 0 of the invocation list to name a delegate, got ObjectRef None"
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``a multicast delegate's list and count are read through the layout`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``a multicast delegate's list and count are read through the layout`` (runtime : EmulatedRuntime) : unit =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
         let list, state = invocationList fixture (Some fixture.Delegate) 3 fixture.State
 
@@ -760,10 +751,11 @@ module TestDelegateLayout =
                 |> shouldEqual fixture.Delegate
         | other -> failwith $"expected a multicast delegate, got %O{other}"
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``a MethodDesc in the count is read through the layout`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``a MethodDesc in the count is read through the layout`` (runtime : EmulatedRuntime) : unit =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         let state =
@@ -784,10 +776,13 @@ module TestDelegateLayout =
             fixture.Delegate
         |> shouldEqual expected
 
-    [<TestCase "net10">]
-    [<TestCase "net11">]
-    let ``an open virtual delegate reads back through the layout as it was written`` (runtime : string) : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf runtime)
+    [<TestCaseSource(nameof runtimes)>]
+    let ``an open virtual delegate reads back through the layout as it was written``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
 
         let state =
             DelegateRepresentation.write
@@ -823,7 +818,9 @@ module TestDelegateLayout =
 
     [<Test>]
     let ``net11's recorded MethodDesc is the delegate's method, whatever the binding fields say`` () : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf "net11")
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf EmulatedRuntime.Net11)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         // A closed delegate, whose `_methodPtrAux` is zero, with a cached `MethodDesc*`.
@@ -837,7 +834,9 @@ module TestDelegateLayout =
 
     [<Test>]
     let ``net11's unmanaged function pointer delegate is one PawPrint does not build`` () : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf "net11")
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf EmulatedRuntime.Net11)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         let state =
@@ -857,7 +856,9 @@ module TestDelegateLayout =
 
     [<Test>]
     let ``net11's _helperObject is an invocation list only when it is a Delegate.Wrapper[]`` () : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf "net11")
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf EmulatedRuntime.Net11)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         let read (state : IlMachineState) : DelegateInvocations =
@@ -902,7 +903,9 @@ module TestDelegateLayout =
 
     [<Test>]
     let ``net10's _invocationList beside a MethodDesc is not a delegate PawPrint builds`` () : unit =
-        let fixture = makeDelegateFixtureOn (corelibOf "net10")
+        let fixture =
+            makeDelegateFixtureOn (FrameworkUnderTest.requireCoreLibPathOf EmulatedRuntime.Net10)
+
         let layout = DelegateLayout.require fixture.BaseClassTypes
 
         let state =

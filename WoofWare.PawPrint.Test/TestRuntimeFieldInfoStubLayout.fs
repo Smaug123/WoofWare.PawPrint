@@ -212,10 +212,12 @@ module TestRuntimeFieldInfoStubLayout =
             ]
         |> List.map (fun field -> field.Name)
 
-    [<Test>]
-    let ``the framework under test's CoreLib stub has that runtime's layout`` () =
+    let runtimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof runtimes)>]
+    let ``each runtime's CoreLib stub has that runtime's layout`` (runtime : EmulatedRuntime) =
         let expected : string list =
-            match FrameworkUnderTest.runtime () with
+            match runtime with
             | EmulatedRuntime.Net10 ->
                 [
                     "m_keepalive"
@@ -227,34 +229,7 @@ module TestRuntimeFieldInfoStubLayout =
                     "m_fieldHandle"
                     "m_handle"
                 ]
-
-        let corelib = readCorelib (FrameworkUnderTest.coreLibPath ())
-        let baseClassTypes = BaseClassTypes.ofCorelib corelib
-
-        match
-            RuntimeFieldInfoStubLayout.classify
-                corelib
-                baseClassTypes.RuntimeFieldInfoStub
-                baseClassTypes.RuntimeFieldHandleInternal
-        with
-        | Ok (RuntimeFieldInfoStubLayout.WrappedHandle _ as layout) -> fieldNames layout |> shouldEqual expected
-        | Ok other -> failwith $"expected the wrapped-handle layout, got %A{other}"
-        | Error refusal -> failwith refusal
-
-    [<Test>]
-    let ``.NET 11's CoreLib stub has the bare-handle layout`` () =
-        let corelib = readCorelib (FrameworkUnderTest.requireNet11CoreLibPath ())
-        let baseClassTypes = BaseClassTypes.ofCorelib corelib
-
-        match
-            RuntimeFieldInfoStubLayout.classify
-                corelib
-                baseClassTypes.RuntimeFieldInfoStub
-                baseClassTypes.RuntimeFieldHandleInternal
-        with
-        | Ok (RuntimeFieldInfoStubLayout.BareHandle _ as layout) ->
-            fieldNames layout
-            |> shouldEqual
+            | EmulatedRuntime.Net11 ->
                 [
                     "m_keepalive"
                     "m_b"
@@ -265,8 +240,22 @@ module TestRuntimeFieldInfoStubLayout =
                     "m_fieldHandle"
                     "m_handle"
                 ]
-        | Ok other -> failwith $"expected the bare-handle layout, got %A{other}"
-        | Error refusal -> failwith refusal
+
+        let corelib = readCorelib (FrameworkUnderTest.requireCoreLibPathOf runtime)
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        match
+            runtime,
+            RuntimeFieldInfoStubLayout.classify
+                corelib
+                baseClassTypes.RuntimeFieldInfoStub
+                baseClassTypes.RuntimeFieldHandleInternal
+        with
+        | EmulatedRuntime.Net10, Ok (RuntimeFieldInfoStubLayout.WrappedHandle _ as layout)
+        | EmulatedRuntime.Net11, Ok (RuntimeFieldInfoStubLayout.BareHandle _ as layout) ->
+            fieldNames layout |> shouldEqual expected
+        | runtime, Ok other -> failwith $"%O{runtime}'s CoreLib has an unexpected stub layout: %A{other}"
+        | _, Error refusal -> failwith refusal
 
     [<Test>]
     let ``classify recognises exactly net10's and net11's stub field lists`` () =

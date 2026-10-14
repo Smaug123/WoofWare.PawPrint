@@ -6,13 +6,18 @@ open System.Reflection
 module NativeDispatch =
     // The native/extern boundary is the only runtime-specific surface PawPrint supplies (the managed
     // BCL is loaded from the guest's own assemblies), so a handler list IS "the native code for a
-    // runtime". This is the `EmulatedRuntime.Net10` set.
-    let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
+    // runtime". These are the handlers both runtimes share; `handlersFor` composes each runtime's
+    // set from them.
+    //
+    // A handler for a QCall or an InternalCall that the loaded CoreLib does not declare is never
+    // reached, since only CoreLib can declare one; so a name only one runtime's CoreLib declares is
+    // an arm of a shared handler, not a reason for a handler list of its own. A handler belongs to
+    // one runtime's list only where the other runtime's CoreLib declares none of its names.
+    let private sharedNativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeGc.tryExecute
             NativeGcFrameRegistration.tryExecute
             NativeEnvironment.tryExecute
-            NativeMonitor.tryExecute
             NativeMarshal.tryExecute
             NativeBuffer.tryExecute
             NativeQCall.tryExecute
@@ -45,7 +50,10 @@ module NativeDispatch =
     /// The native handlers implementing `runtime`'s host contract, tried in order.
     let private handlersFor (runtime : EmulatedRuntime) : (NativeCallContext -> NativeHandlerResult option) list =
         match runtime with
-        | EmulatedRuntime.Net10 -> net10NativeHandlers
+        // .NET 10's `Monitor` enters and leaves through InternalCall fast paths, which .NET 11
+        // replaced with the managed thin lock in `ObjectHeader`.
+        | EmulatedRuntime.Net10 -> NativeMonitor.tryExecute :: sharedNativeHandlers
+        | EmulatedRuntime.Net11 -> sharedNativeHandlers
 
     /// Run the native method `ctx` is executing, using the handlers of the runtime whose CoreLib
     /// the run loaded (`ctx.BaseClassTypes.Corelib`). `None` if no handler implements it.
