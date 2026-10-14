@@ -5448,7 +5448,7 @@ module TestImpureCases =
         // File.Copy first asks clonefile and is told ENOTSUP; this runs the
         // CoreLib CI and production run, which goes straight to
         // SystemNative_CopyFile.
-        let frameworkDir = LinuxCoreLibFlavour.requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             Assembly.getEmbeddedResourceAsString "CopyFileWiringLinuxSeeded.cs" assy
@@ -5494,7 +5494,7 @@ module TestImpureCases =
     let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
         // On a macOS host the framework under test is a Darwin CoreLib, whose
         // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.
-        let frameworkDir = LinuxCoreLibFlavour.requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         runTestOn
             (LinuxCoreLibFlavour.runtimeDirsPreferringLinux frameworkDir)

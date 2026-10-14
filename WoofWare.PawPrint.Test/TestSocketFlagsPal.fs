@@ -22,21 +22,14 @@ module TestSocketFlagsPal =
     /// The pinned runtime source only exists inside the Nix devshell, so a plain
     /// `dotnet test` in a non-Nix checkout skips rather than fails.
     let private palSource (leaf : string) : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
+        let dir = FrameworkUnderTest.requireRuntimeSource ()
+        let path = Path.Combine (dir, "src", "native", "libs", "System.Native", leaf)
 
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir ->
-            let path = Path.Combine (dir, "src", "native", "libs", "System.Native", leaf)
+        if not (File.Exists path) then
+            failwith
+                $"TestSocketFlagsPal: expected the pinned PAL networking source at %s{path}. If the sparse checkout in flake.nix no longer includes src/native/libs/System.Native, this transcription has lost its oracle."
 
-            if not (File.Exists path) then
-                failwith
-                    $"TestSocketFlagsPal: expected the pinned PAL networking source at %s{path}. If the sparse checkout in flake.nix no longer includes src/native/libs/System.Native, this transcription has lost its oracle."
-
-            File.ReadAllText path
+        File.ReadAllText path
 
     /// The `MSG_` name of `flag`, which upstream's PAL names `SocketFlags_MSG_*`
     /// after.

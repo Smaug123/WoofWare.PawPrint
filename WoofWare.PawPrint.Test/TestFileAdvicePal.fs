@@ -17,26 +17,9 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestFileAdvicePal =
 
-    let private runtimeSrc : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
-    /// The pinned runtime source only exists inside the Nix devshell, so a plain
-    /// `dotnet test` in a non-Nix checkout skips rather than fails.
-    let private requireRuntimeSrc () : string =
-        match runtimeSrc with
-        | Some dir -> dir
-        | None ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-
     let private palPath (leaf : string) : string =
         let path =
-            Path.Combine (requireRuntimeSrc (), "src", "native", "libs", "System.Native", leaf)
+            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "native", "libs", "System.Native", leaf)
 
         if not (File.Exists path) then
             failwith
@@ -149,7 +132,7 @@ module TestFileAdvicePal =
     let ``CoreLib's managed enum agrees with the header`` () : unit =
         let path =
             Path.Combine (
-                requireRuntimeSrc (),
+                FrameworkUnderTest.requireRuntimeSource (),
                 "src",
                 "libraries",
                 "Common",

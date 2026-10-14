@@ -6,28 +6,10 @@ open System.IO
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Running a guest against the pinned linux-x64 framework (`$DOTNET_LINUX_FRAMEWORK_DIR`), for
+/// Running a guest against the pinned linux-x64 framework (`FrameworkUnderTest.requireLinuxFrameworkDirectory`), for
 /// the fixtures that need the Linux CoreLib flavour rather than the host's. See
 /// `TestLinuxCoreLibFlavour` for why the two differ.
 module LinuxCoreLibFlavour =
-
-    let linuxFrameworkDir : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
-    /// The pinned framework only exists inside the Nix devshell, so a plain `dotnet test` in a
-    /// non-Nix checkout skips rather than fails. Everything these tests assert is about a
-    /// foreign CoreLib flavour, so there is nothing meaningful to fall back to.
-    let requireLinuxFramework () : string =
-        match linuxFrameworkDir with
-        | Some dir -> dir
-        | None ->
-            Assert.Ignore
-                "DOTNET_LINUX_FRAMEWORK_DIR is unset; run under `nix develop` to exercise the linux-x64 CoreLib."
-            // Assert.Ignore throws, so this is unreachable; it exists to satisfy the type checker.
-            failwith "unreachable: Assert.Ignore did not throw"
 
     let corelibPath (frameworkDir : string) : string =
         Path.Combine (frameworkDir, "System.Private.CoreLib.dll")

@@ -2687,7 +2687,7 @@ module NativeSystemNative =
             // in `pal_time.c` -- *not* `pal_process.c`, where you might
             // reasonably look first. That tree is outside our sparse
             // dotnet/runtime checkout, so fetch the file at the pinned commit
-            // rather than looking in `$DOTNET_RUNTIME_SRC`.)
+            // rather than looking in `$DOTNET_RUNTIME_SRC_NET10`.)
             // It is a stateful sampler: it reads the process's cumulative user/kernel CPU
             // time, diffs it against whatever `*previous` held from the
             // caller's last call, overwrites `*previous` with the fresh

@@ -668,7 +668,7 @@ public static class Program
 
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
-        listenerAndConnector (runtimeDirsPreferringLinux (requireLinuxFramework ()))
+        listenerAndConnector (runtimeDirsPreferringLinux (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 
     /// Reads its processor from the shim five times, writing each answer.
     let private processorSource : string =

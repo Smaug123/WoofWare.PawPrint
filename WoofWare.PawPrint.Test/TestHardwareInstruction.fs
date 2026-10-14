@@ -18,23 +18,6 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestHardwareInstruction =
 
-    let private runtimeSrc : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
-    /// The pinned runtime source only exists inside the Nix devshell, so a plain `dotnet test` in a
-    /// non-Nix checkout skips rather than fails.
-    let private requireRuntimeSrc () : string =
-        match runtimeSrc with
-        | Some dir -> dir
-        | None ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-
     /// The JIT's tables, and the architecture each is compiled for.
     let private headers : (JitTarget * string) list =
         [
@@ -76,7 +59,8 @@ module TestHardwareInstruction =
     /// and the failure says where to copy it from.
     [<Test>]
     let ``the checked-in table is the JIT's, as the pinned runtime source states it`` () : unit =
-        let jit = Path.Combine (requireRuntimeSrc (), "src", "coreclr", "jit")
+        let jit =
+            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr", "jit")
 
         let expected =
             headers
@@ -236,7 +220,7 @@ module TestHardwareInstruction =
     [<Test>]
     let ``every x64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
         let corelib =
-            readCoreLib (LinuxCoreLibFlavour.corelibPath (LinuxCoreLibFlavour.requireLinuxFramework ()))
+            readCoreLib (LinuxCoreLibFlavour.corelibPath (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 
         // Measured on the .NET 10 linux-x64 CoreLib: 139 of the 3,646 placeholders are the JIT's helper or
         // special intrinsics.

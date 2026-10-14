@@ -38,21 +38,8 @@ module TestFileSystemTypePal =
     [<DllImport("libc")>]
     extern int private close(int fd)
 
-    let private runtimeSrc : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
     let private pinnedSource () : string =
-        match runtimeSrc with
-        | None ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | Some dir ->
-
+        let dir = FrameworkUnderTest.requireRuntimeSource ()
         let path = Path.Combine (dir, "src", "native", "libs", "System.Native", "pal_io.c")
 
         if not (File.Exists path) then

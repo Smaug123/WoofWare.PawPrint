@@ -14,16 +14,6 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestStackEffect =
 
-    let private requireRuntimeSrc () : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir -> dir
-
     /// One `OPDEF` row of `opcode.def`.
     type private Row =
         {
@@ -37,7 +27,7 @@ module TestStackEffect =
 
     let private rows () : Row list =
         let path =
-            Path.Combine (requireRuntimeSrc (), "src", "coreclr", "inc", "opcode.def")
+            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr", "inc", "opcode.def")
 
         let pattern =
             Regex

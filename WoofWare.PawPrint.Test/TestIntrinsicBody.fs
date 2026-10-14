@@ -14,7 +14,7 @@ open WoofWare.PawPrint
 type AuditedCoreLib =
     /// The framework under test's CoreLib.
     | UnderTest
-    /// The pinned linux-x64 CoreLib (`DOTNET_LINUX_FRAMEWORK_DIR`), which is what CI and production
+    /// The pinned linux-x64 CoreLib (`FrameworkUnderTest.requireLinuxFrameworkDirectory`), which is what CI and production
     /// run.
     | PinnedLinuxX64
 
@@ -47,20 +47,15 @@ module TestIntrinsicBody =
         match which with
         | AuditedCoreLib.UnderTest -> readCoreLib (FrameworkUnderTest.coreLibPath ())
         | AuditedCoreLib.PinnedLinuxX64 ->
-            match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
-            | null
-            | "" ->
-                Assert.Ignore "DOTNET_LINUX_FRAMEWORK_DIR is unset; run inside the Nix devshell"
-                failwith "unreachable"
-            | dir ->
-                let corelib = readCoreLib (Path.Combine (dir, "System.Private.CoreLib.dll"))
+            let dir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
+            let corelib = readCoreLib (Path.Combine (dir, "System.Private.CoreLib.dll"))
 
-                // A leg audits only its own runtime's images.
-                FrameworkUnderTest.checkServes (FrameworkUnderTest.runtime ()) corelib
-                |> Result.mapError FrameworkUnderTest.describe
-                |> shouldEqual (Ok ())
+            // A leg audits only its own runtime's images.
+            FrameworkUnderTest.checkServes (FrameworkUnderTest.runtime ()) corelib
+            |> Result.mapError FrameworkUnderTest.describe
+            |> shouldEqual (Ok ())
 
-                corelib
+            corelib
 
     /// A parameter type as the transcription below spells it, after corelib.h's signature names.
     let rec private shape (ty : TypeDefn) : string =

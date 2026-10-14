@@ -92,8 +92,8 @@ module TestFrameworkUnderTest =
         if FrameworkUnderTest.runtime () <> EmulatedRuntime.Net10 then
             Assert.Ignore "this run selected a runtime other than the test host's"
 
-        FrameworkUnderTest.sharedFrameworkDirectory ()
-        |> shouldEqual HostImage.frameworkDirectory
+        FrameworkUnderTest.resolveLinks (FrameworkUnderTest.sharedFrameworkDirectory ())
+        |> shouldEqual (FrameworkUnderTest.resolveLinks HostImage.frameworkDirectory)
 
     let private withTempDir (body : string -> unit) : unit =
         let dir =
@@ -121,6 +121,29 @@ module TestFrameworkUnderTest =
             match FrameworkUnderTest.check (FrameworkUnderTest.runtime ()) dirs with
             | Error (FrameworkUnderTestError.MissingDirectory (_, found)) -> found |> shouldEqual missing
             | other -> failwith $"expected MissingDirectory, got %O{other}"
+        )
+
+    [<Test>]
+    let ``resolveLinks spells a directory reached through symbolic links as the directory itself`` () : unit =
+        // The host's CoreLib has its links resolved already.
+        FrameworkUnderTest.resolveLinks HostImage.frameworkDirectory
+        |> shouldEqual HostImage.frameworkDirectory
+
+        withTempDir (fun parent ->
+            // `outer` names `inner` relatively, and `inner` the framework absolutely.
+            let inner = Path.Combine (parent, "inner")
+            let outer = Path.Combine (parent, "outer")
+
+            Directory.CreateSymbolicLink (inner, HostImage.frameworkDirectory)
+            |> ignore<FileSystemInfo>
+
+            Directory.CreateSymbolicLink (outer, "inner") |> ignore<FileSystemInfo>
+
+            FrameworkUnderTest.resolveLinks outer
+            |> shouldEqual HostImage.frameworkDirectory
+
+            FrameworkUnderTest.resolveLinks (Path.Combine (outer, "System.Private.CoreLib.dll"))
+            |> shouldEqual HostImage.coreLibPath
         )
 
     [<Test>]

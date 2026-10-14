@@ -141,8 +141,8 @@ module TestMethodReferenceResolution =
         let reflected = Assembly.Load (AssemblyName assemblyName)
 
         // The oracle is only an oracle if it read the same bytes.
-        Path.GetDirectoryName reflected.Location
-        |> shouldEqual (Path.GetFullPath frameworkDir)
+        FrameworkUnderTest.resolveLinks (Path.GetDirectoryName reflected.Location)
+        |> shouldEqual (FrameworkUnderTest.resolveLinks frameworkDir)
 
         let corelib =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))

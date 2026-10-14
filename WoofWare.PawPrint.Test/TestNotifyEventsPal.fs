@@ -21,15 +21,7 @@ module TestNotifyEventsPal =
     /// The pinned runtime source only exists inside the Nix devshell, so a plain
     /// `dotnet test` in a non-Nix checkout skips rather than fails.
     let private palSource (leaf : string) : string =
-        let root =
-            match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-            | null
-            | "" ->
-                Assert.Ignore
-                    "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-                failwith "unreachable: Assert.Ignore did not throw"
-            | dir -> dir
+        let root = FrameworkUnderTest.requireRuntimeSource ()
 
         let path = Path.Combine (root, "src", "native", "libs", "System.Native", leaf)
 
