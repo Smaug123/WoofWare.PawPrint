@@ -156,32 +156,23 @@ namespace System
 
         e.Message
 
-    [<Test>]
-    let ``the framework under test's CoreLib declares that runtime's Setup`` () =
-        let corelibPath = FrameworkUnderTest.coreLibPath ()
+    let runtimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof runtimes)>]
+    let ``each runtime's CoreLib declares that runtime's Setup`` (runtime : EmulatedRuntime) =
+        let corelibPath = FrameworkUnderTest.requireCoreLibPathOf runtime
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         let corelib = Assembly.read loggerFactory (Some corelibPath) stream
 
         let expected =
-            match FrameworkUnderTest.runtime () with
+            match runtime with
             | EmulatedRuntime.Net10 -> SetupShape.ThreeArg
+            | EmulatedRuntime.Net11 -> SetupShape.FourArg
 
         let setup, shape = AppContextSeed.locateSetup corelib
         shape |> shouldEqual expected
-        setup.Name |> shouldEqual "Setup"
-
-    [<Test>]
-    let ``.NET 11's CoreLib declares the four-argument Setup`` () =
-        let corelibPath = FrameworkUnderTest.requireNet11CoreLibPath ()
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
-        use stream = File.OpenRead corelibPath
-        let corelib = Assembly.read loggerFactory (Some corelibPath) stream
-
-        let setup, shape = AppContextSeed.locateSetup corelib
-        shape |> shouldEqual SetupShape.FourArg
         setup.Name |> shouldEqual "Setup"
 
     [<Test>]

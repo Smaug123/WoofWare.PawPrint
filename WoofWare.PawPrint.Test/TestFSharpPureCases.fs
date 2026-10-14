@@ -190,7 +190,8 @@ module TestFSharpPureCases =
     /// Which F# cases are parked on `runtime`, and how each case is expected to end there.
     let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =
         match runtime with
-        | EmulatedRuntime.Net10 ->
+        | EmulatedRuntime.Net10
+        | EmulatedRuntime.Net11 ->
             {
                 Parked = parkedEverywhere
                 Endings = endingsEverywhere

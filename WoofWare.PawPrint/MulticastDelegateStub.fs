@@ -5,12 +5,12 @@ open Microsoft.Extensions.Logging
 
 /// The runtime-synthesised stub a multicast delegate's `_methodPtr` names.
 ///
-/// `MulticastDelegate.NewMulticastDelegate` builds a multicast delegate with `_target` pointing
-/// at the delegate itself and `_methodPtr` holding `Delegate.GetMulticastInvoke()`, so invoking it
-/// is an ordinary closed-instance delegate call whose target is this stub. CoreCLR emits the stub
-/// as IL (`Delegate_GetMulticastInvokeSlow`, comdelegate.cpp:2177): a loop that calls `Invoke` on
-/// each of `_invocationList[0 .. _invocationCount - 1]` with the stub's own arguments, keeps the
-/// last result, and returns it. PawPrint has no IL synthesis, so the stub is a
+/// `NewMulticastDelegate` builds a multicast delegate with `_target` pointing at the delegate
+/// itself and `_methodPtr` holding `Delegate.GetMulticastInvoke()`, so invoking it is an ordinary
+/// closed-instance delegate call whose target is this stub. CoreCLR emits the stub as IL
+/// (`Delegate_GetMulticastInvokeSlow`, comdelegate.cpp:2177): a loop that calls `Invoke` on each of
+/// the first count elements of the invocation list (`DelegateInvocations.Multicast`) with the
+/// stub's own arguments, keeps the last result, and returns it. PawPrint has no IL synthesis, so the stub is a
 /// `MethodInfo.Synthesised` carrying `RuntimeBehaviour.MulticastDelegateInvoke`, held by an
 /// ordinary `FunctionPointerTarget.Managed`, and `execute` is its interpreter.
 ///
@@ -144,13 +144,6 @@ module MulticastDelegateStub =
                 failwith
                     $"%s{operation}: expected the multicast delegate as the receiver, got %O{other}; NewMulticastDelegate points _target at the delegate itself"
 
-        let multicast = ManagedHeap.get multicastAddr state.ManagedHeap
-
-        let read (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : CliType =
-            AllocatedNonArrayObject.DereferenceFieldById
-                (DelegateLayout.fieldId state.TypeSystem.ConcreteTypes field)
-                multicast
-
         // Read on every step, as CoreCLR's stub reloads both fields on every iteration. Neither
         // changes after `NewMulticastDelegate` publishes the delegate, but the backing array is
         // shared with the delegate it was combined from and may have been *extended* since, which
@@ -158,30 +151,30 @@ module MulticastDelegateStub =
         // array by doubling and appends into its spare slots in place (`TrySetSlot`). `elementAt`
         // is the delegate the list holds at an index, read from the list as the layout stores it.
         let invocationCount, elementAt =
-            match DelegateLayout.require baseClassTypes with
-            | DelegateLayout.InvocationListAndCount (_, invocations) ->
-                let invocationCount =
-                    match read invocations.InvocationCount |> CliType.unwrapPrimitiveLikeDeep with
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> count
-                    | other ->
-                        failwith $"%s{operation}: expected _invocationCount to be a verbatim native int, got %O{other}"
-
-                let invocationList =
-                    match read invocations.InvocationList with
-                    | CliType.ObjectRef (Some addr) -> addr
-                    | other ->
-                        failwith
-                            $"%s{operation}: expected _invocationList to reference the invocation-list array, got %O{other}"
-
-                // An `object[]` whose elements are the delegates themselves.
+            match
+                DelegateInvocations.read
+                    operation
+                    baseClassTypes
+                    state.TypeSystem.ConcreteTypes
+                    state.ManagedHeap
+                    multicastAddr
+            with
+            | DelegateInvocations.Multicast (list, count, elements) ->
                 let elementAt (index : int) (state : IlMachineState) : CliType =
-                    match ManagedHeap.getArrayValue invocationList index state.ManagedHeap with
-                    | CliType.ObjectRef (Some _) as element -> element
-                    | other ->
-                        failwith
-                            $"%s{operation}: expected element %d{index} of _invocationList to reference a delegate, got %O{other}"
+                    DelegateInvocations.element
+                        operation
+                        state.TypeSystem.ConcreteTypes
+                        elements
+                        list
+                        index
+                        state.ManagedHeap
+                    |> Some
+                    |> CliType.ObjectRef
 
-                invocationCount, elementAt
+                count, elementAt
+            | other ->
+                failwith
+                    $"%s{operation}: the receiver's fields say %O{other}, not a multicast delegate; only NewMulticastDelegate mints this stub"
 
         // CoreCLR's loop tests the bound only after its first call, so a count below one would
         // still invoke element 0. `NewMulticastDelegate`'s callers never build one: combining
@@ -189,7 +182,7 @@ module MulticastDelegateStub =
         // element itself.
         if invocationCount < 1L then
             failwith
-                $"%s{operation}: the multicast delegate's _invocationCount is %d{invocationCount}; every multicast delegate CoreLib builds has at least two elements"
+                $"%s{operation}: the multicast delegate's count is %d{invocationCount}; every multicast delegate CoreLib builds has at least two elements"
 
         let returnsValue =
             match instruction.ExecutingMethod.Signature.ReturnType with

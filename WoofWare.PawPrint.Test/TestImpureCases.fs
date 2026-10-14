@@ -5127,7 +5127,8 @@ module TestImpureCases =
     /// Which cases run on `runtime`, and which are parked there.
     let onRuntime (runtime : EmulatedRuntime) : ImpureCasesOnRuntime =
         match runtime with
-        | EmulatedRuntime.Net10 ->
+        | EmulatedRuntime.Net10
+        | EmulatedRuntime.Net11 ->
             {
                 Run = runEverywhere
                 Parked = parkedEverywhere

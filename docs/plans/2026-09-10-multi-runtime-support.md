@@ -673,8 +673,8 @@ mutation-testing skill applies to each table/classifier they introduce.
      `Wrapper` elements as well as read renamed fields.
 
      Until the `Net11` case exists, their tests reach RC1's CoreLib through
-     `FrameworkUnderTest.requireNet11CoreLibPath`, which P6e folds into the runtime-keyed
-     accessors. None of them can run RC1's startup end to end before P6e, which is where each
+     `FrameworkUnderTest.requireNet11CoreLibPath`, which P6e-1 folds into the runtime-keyed
+     `requireCoreLibPathOf`. None of them can run RC1's startup end to end before P6e, which is where each
      arm is first exercised on the real image rather than classified against it: RC1's `Setup`
      itself reaches `HashHelpers.Primes`, which needs P6c's stub arm.
 
@@ -689,11 +689,35 @@ mutation-testing skill applies to each table/classifier they introduce.
      `m_fieldHandle` and zeroes `m_b`; its reader wraps that pointer in a
      `RuntimeFieldHandleInternal`, as RC1's `IRuntimeFieldInfo.Value` does, so every reader of
      `IRuntimeFieldInfo.Value` sees the same shape on both runtimes.
-   * **P6e, the switch-on.** The `Net11` case and pin; the `NativeDispatch` composition decided
-     against the real image, with the `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
-     `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) and the
-     `EqualityComparer<T>.Create` row if a guest reaches it; the matrix leg; and every residual
-     net11 failure parked through P4.
+
+     P6d's `DelegateLayout.HelperObjectAndExtraData` does not map net11's fields onto net10's
+     roles, because `_helperObject` also caches `Delegate.Method` and holds a collectible
+     delegate's loader allocator. Instead `DelegateInvocations.read` parses either layout's
+     fields into one description (binding only, multicast with its list and how its elements
+     hold their delegates, net10's open virtual, net11's recorded `MethodDesc*`, or a kind
+     PawPrint never builds), deciding net11's multicast case by `HasSingleTarget`'s own test:
+     `_helperObject` is a `Delegate.Wrapper[]`. On net11 `_extraData` records every single-cast
+     delegate's `MethodDesc*` (`Delegate_Construct` writes it, and `GetMethodDesc` caches it), so
+     the writer records it too and `methodDescOf` answers it as CoreCLR does, without consulting
+     the binding fields. `methodDescOf` and the multicast stub match on that description.
+   * **P6e, the switch-on**, in two PRs, since the net11 leg measured about 930 failures on
+     2026-10-14 (about 800 of them the thin lock) and their parks would swamp the rest.
+     * **P6e-1, the case.** The `Net11` case and pin; the `NativeDispatch` composition decided
+       against the real image, which is net10's handlers less `NativeMonitor`, whose four
+       InternalCalls RC1's `Monitor` no longer declares; `FrameworkUnderTest` locating net11's
+       framework, with its ASP.NET Core, which the devshell now carries; and
+       `requireNet11CoreLibPath` folded into `requireCoreLibPathOf`, so each shape fixture checks
+       every supported runtime's image on every leg. CI keeps the net10 leg alone, and the
+       `Guest` tables give `Net11` net10's parks until P6e-2 measures its own.
+     * **P6e-2, the leg.** The CI matrix leg, and every residual net11 failure parked through P4,
+       one reason per cause.
+
+     The `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
+     `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) is not in either: RC1's
+     `GetData` takes `lock (s_dataStore)` before asking it, so no guest reaches it until the thin
+     lock lands, and its handler lands with the first PR that can run a guest to it. It answers
+     each of the four names not found, as PawPrint's host supplies none of them
+     (docs/divergences.md). The `EqualityComparer<T>.Create` row was not reached.
 
    **P6e is never opened without the startup arms.** Without them one cause blocks every test
    that starts a guest (454 default-suite tests on RC1 from the delegate layout alone), and
@@ -701,7 +725,8 @@ mutation-testing skill applies to each table/classifier they introduce.
    lock is past startup, and by the 2026-10-13 measurement P6e parks most of the net11 Guest cases
    on it; that is the first thing stage 7 walks.
 7. **Walk the net11 blockers one at a time**, in the measured frontier order where known:
-   * thin-lock addressing;
+   * thin-lock addressing, and the `AppContext_TryGetHostPropertyValue` handler the first guest
+     past it reaches;
    * the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`;
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      and `RuntimeModule_GetTypes`'s three-argument shape (`SystemNative_AlignedAlloc`, which

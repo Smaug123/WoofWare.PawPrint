@@ -157,7 +157,8 @@ module TestInlineArrayLayout =
     /// fails this fixture on that runtime rather than quietly keeping a stale carve-out.
     let unrunnableOn (runtime : EmulatedRuntime) : string list =
         match runtime with
-        | EmulatedRuntime.Net10 -> [ "byte/auto" ; "short/auto" ]
+        | EmulatedRuntime.Net10
+        | EmulatedRuntime.Net11 -> [ "byte/auto" ; "short/auto" ]
 
     /// Every combination of element shape and buffer attribute the sweep can build.
     let allCases : string list =
