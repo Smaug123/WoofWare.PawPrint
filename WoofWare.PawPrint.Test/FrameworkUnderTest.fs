@@ -257,6 +257,20 @@ module FrameworkUnderTest =
     let requireLinuxFrameworkDirectory () : string =
         requireDevshellDirectory (linuxFrameworkVariable (runtime ())) "exercise the linux-x64 CoreLib"
 
+    /// The CoreLib of the .NET 11 release candidate that the devshell carries as a framework, for
+    /// checking a shape PawPrint must handle there against the image itself while `EmulatedRuntime`
+    /// has no case for that runtime; outside the Nix devshell, the calling test is ignored.
+    let requireNet11CoreLibPath () : string =
+        let dir =
+            requireDevshellDirectory "DOTNET_FRAMEWORK_DIR_NET11" "check a shape against .NET 11's CoreLib"
+
+        let path = Path.Combine (dir, "System.Private.CoreLib.dll")
+
+        if not (File.Exists path) then
+            failwith $"DOTNET_FRAMEWORK_DIR_NET11 is %s{dir}, which has no System.Private.CoreLib.dll"
+
+        path
+
     /// The `DotnetRuntimeDirs` to run a guest along. A caller may put directories ahead of these
     /// (the guest's own siblings, say); if one of them holds a CoreLib, the guest runs on that
     /// CoreLib instead, and `assertServes` is what checks it is still the runtime under test's.
