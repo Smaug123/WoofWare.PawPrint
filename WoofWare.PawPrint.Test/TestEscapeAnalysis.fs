@@ -747,18 +747,18 @@ public static class SR
             { expect "Fixture.Cases" "PropagatesOneHop" with
                 Contains = [ ioe ]
             }
-            // Taking the monitor may allocate its sync block, or wait and be interrupted; and the
-            // `lockTaken` the JIT passes `Monitor.Enter` is false.
+            // The `lockTaken` the JIT passes `Monitor.Enter` is false. Taking a contended monitor
+            // waits, and a wait may run the thread's `SynchronizationContext.Wait`, which may throw
+            // anything.
             { expect "Fixture.Cases" "Synchronised" with
                 Contains =
                     [
-                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 // Its monitor is its type's, never null.
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
-                Unknown = Some false
+                Unknown = Some true
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -772,7 +772,7 @@ public static class SR
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentException" ]
-                Unknown = Some false
+                Unknown = Some true
             }
             { expect "Fixture.Locking" "OnNew" with
                 Contains =
@@ -781,7 +781,7 @@ public static class SR
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
-                Unknown = Some false
+                Unknown = Some true
             }
             { expect "Fixture.Cases" "Unsynchronised" with
                 Excludes =
