@@ -360,6 +360,7 @@
     <Compile Include="TestFabricatedUnsignedDivision.fs" />
     <Compile Include="TestFabricatedUnsignedOverflowPointer.fs" />
     <Compile Include="TestFabricatedEndfilter.fs" />
+    <Compile Include="TestFabricatedNonExceptionThrow.fs" />
     <Compile Include="TestFabricatedCastclassNullable.fs" />
     <Compile Include="TestFabricatedCkfinite.fs" />
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
