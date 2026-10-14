@@ -53,15 +53,6 @@ module TestIntrinsicValueArguments =
                 ArbMap.defaults
                 |> ArbMap.generate<int64>
                 |> Gen.map (fun bits -> EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits), bits)
-                ArbMap.defaults
-                |> ArbMap.generate<int64>
-                |> Gen.map (fun bits ->
-                    EvalStackValue.NativeInt (
-                        NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
-                    ),
-                    bits
-                )
-                Gen.constant (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null), 0L)
                 Gen.constant (EvalStackValue.ManagedPointer ManagedPointerSource.Null, 0L)
                 ArbMap.defaults
                 |> ArbMap.generate<int64>
@@ -88,7 +79,7 @@ module TestIntrinsicValueArguments =
                             RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete 1))
                         )
                     )
-                    Gen.constant (NativeIntSource.ManagedPointer byref)
+                    Gen.constant (NativeIntSource.ofManagedPointer byref)
                 ]
 
         Gen.oneof
@@ -265,7 +256,7 @@ module TestIntrinsicValueArguments =
         |> shouldEqual (Int64Source.Verbatim 0x20L)
 
         Intrinsics.int64ValueArgument "Interlocked.Or" (EvalStackValue.ManagedPointer byref)
-        |> shouldEqual (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer byref, true))
+        |> shouldEqual (Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer byref, true))
 
     [<Test>]
     let ``int64 value argument refuses non-integer shapes`` () : unit =

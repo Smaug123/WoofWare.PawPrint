@@ -216,8 +216,7 @@ type CliByteAddressability =
 module private ByteAddressabilityClassifier =
     let nativeIntSource (source : NativeIntSource) : CliByteAddressability =
         match source with
-        | NativeIntSource.Verbatim _
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> CliByteAddressability.ByteAddressable
+        | NativeIntSource.Verbatim _ -> CliByteAddressability.ByteAddressable
         | NativeIntSource.FunctionPointer _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.TypeDescPtr _

@@ -1722,7 +1722,7 @@ module TestNullaryIlOp =
 
         // Reaching `conv.i4` through the native-int slot (as it does after a
         // `conv.u`) must produce the same thing.
-        runUnary NullaryIlOp.Conv_I4 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (nativeBlockByref 6)))
+        runUnary NullaryIlOp.Conv_I4 (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer (nativeBlockByref 6)))
         |> shouldEqual (narrowed 6)
 
         runUnary NullaryIlOp.Conv_U4 (EvalStackValue.ManagedPointer (nativeBlockByref 6))
@@ -1794,12 +1794,12 @@ module TestNullaryIlOp =
                 (EvalStackValue.Int32 (Int32Source.Verbatim (int32<int64> mask)))
             runBinary
                 NullaryIlOp.And
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref charIndex)))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer (stringByref charIndex)))
                 (nativeConst mask)
             runBinary
                 NullaryIlOp.And
                 (EvalStackValue.Int64 (
-                    Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref charIndex), true)
+                    Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer (stringByref charIndex), true)
                 ))
                 (EvalStackValue.Int64 (Int64Source.Verbatim mask))
         ]
@@ -1863,13 +1863,13 @@ module TestNullaryIlOp =
                 fun () ->
                     runBinary
                         NullaryIlOp.And
-                        (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 0)))
+                        (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer (stringByref 0)))
                         (nativeConst 15L)
                 fun () ->
                     runBinary
                         NullaryIlOp.And
                         (EvalStackValue.Int64 (
-                            Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 0), true)
+                            Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer (stringByref 0), true)
                         ))
                         (EvalStackValue.Int64 (Int64Source.Verbatim 15L))
             ] do
@@ -1880,16 +1880,18 @@ module TestNullaryIlOp =
     let ``an all-ones mask leaves a string byref untouched at every width`` () : unit =
         runBinary
             NullaryIlOp.And
-            (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 3)))
+            (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer (stringByref 3)))
             (nativeConst -1L)
-        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 3)))
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer (stringByref 3)))
 
         runBinary
             NullaryIlOp.And
-            (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 3), true)))
+            (EvalStackValue.Int64 (
+                Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer (stringByref 3), true)
+            ))
             (EvalStackValue.Int64 (Int64Source.Verbatim -1L))
         |> shouldEqual (
-            EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 3), true))
+            EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer (stringByref 3), true))
         )
 
     [<Test>]

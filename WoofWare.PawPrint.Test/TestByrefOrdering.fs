@@ -326,10 +326,10 @@ module TestByrefOrdering =
         let resolve = StorageLocation.resolveOrder baseClassTypes state
 
         let asNativeInt (src : ManagedPointerSource) : EvalStackValue =
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src)
+            EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer src)
 
         let asInt64 (src : ManagedPointerSource) : EvalStackValue =
-            EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer src) false)
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer src) false)
 
         for wrap in [ asNativeInt ; asInt64 ] do
             let p1 = wrap (build state arr crossing)

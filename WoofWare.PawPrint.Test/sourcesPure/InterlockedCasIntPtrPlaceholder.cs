@@ -4,10 +4,9 @@ using System.Threading;
 
 // Regression for the `Interlocked.CompareExchange(ref IntPtr, ...)` intrinsic
 // when the comparand is produced via the `Unsafe.AsRef<T>((void*)bits)`
-// placeholder idiom. PawPrint represents such a value as
-// `ManagedPointer (NativeIntPlaceholder bits)`, while a slot initialised by
-// `new IntPtr(bits)` holds `Verbatim bits`. CEQ semantics must normalise the
-// placeholder to its bit pattern so the two compare equal.
+// placeholder idiom. PawPrint holds that byref as a
+// `NativeIntPlaceholder bits`, and the native int `Unsafe.AsPointer` makes of
+// it must compare equal to a slot initialised by `new IntPtr(bits)`.
 public unsafe class Program
 {
     private IntPtr m_slot;

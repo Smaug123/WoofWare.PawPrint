@@ -67,7 +67,7 @@ module Intrinsics =
         // TYP_I_IMPL(0)"), and `varTypeIsI(TYP_BYREF)` holds. `widenedNativeInt`
         // normalises the exactly-known bit patterns and keeps a real byref's
         // provenance, so any refusal is left to the arithmetic that consumes it.
-        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true
+        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer ptr) true
         | EvalStackValue.NullObjectRef -> Int64Source.Verbatim 0L
         | EvalStackValue.Float _
         | EvalStackValue.ObjectRef _
@@ -932,7 +932,8 @@ module Intrinsics =
 
                     match arg with
                     | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                        EvalStackValue.ManagedPointer (ManagedPointerSource.Byref ptr)
                     | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) ->
                         EvalStackValue.ManagedPointer (placeholderOf bits)
                     | EvalStackValue.Int32 (Int32Source.Verbatim bits) ->
@@ -1791,7 +1792,6 @@ module Intrinsics =
                 let value : unativeint =
                     match arg with
                     | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
                     | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
                     | EvalStackValue.Int32 (Int32Source.Verbatim i) -> unativeint<int> i
                     | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"
@@ -2466,15 +2466,13 @@ module Intrinsics =
                     with
                     | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
-                    // All four spellings of a zero `IntPtr`. `Verbatim 0L` is what a
+                    // All three spellings of a zero `IntPtr`. `Verbatim 0L` is what a
                     // zero-initialised `m_fieldHandle` holds (`CliType.zeroOfPrimitive`), so
                     // omitting it would send the very case this arm exists for into the
                     // host-failure arm below.
                     | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
                     | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-                        None
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
                     | other ->
                         failwith
                             $"InitializeArray: m_fieldHandle on %s{typeInfo.Namespace}.%s{typeInfo.Name} did not contain a field-registry handle, got %O{other}"
@@ -3071,19 +3069,10 @@ module Intrinsics =
                 match offset with
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ofInt64 i
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                // A `nuint`/`nint` byte offset that was seeded from `IntPtr.Zero` (or `(nint)0`)
-                // arrives as `ManagedPointer Null`, because zero is the canonical null byref;
-                // accumulating onto it with `add` then yields a `NativeIntPlaceholder`. Both are
-                // bit-pattern byrefs — pure native-int values with no storage behind them — so
-                // their bits *are* the offset. `Ordinal.EqualsIgnoreCase_Scalar` is written
-                // exactly this way (`IntPtr byteOffset = IntPtr.Zero; … byteOffset += 8`).
-                // A byref anchored to real storage is not a number, and still fails loudly.
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer offsetPtr) ->
-                    match ManagedPointerSource.tryBitPatternBits offsetPtr with
-                    | ValueSome bits -> ofInt64 bits
-                    | ValueNone ->
-                        failwith
-                            $"TODO: Unsafe.AddByteOffset: byte offset is an anchored byref, not a native-int value: %O{offset}"
+                // A byref anchored to real storage is not a number, and fails loudly.
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _) ->
+                    failwith
+                        $"TODO: Unsafe.AddByteOffset: byte offset is an anchored byref, not a native-int value: %O{offset}"
                 | _ ->
                     failwith
                         $"TODO: Unsafe.AddByteOffset: expected Verbatim NativeInt or Int32 byte offset, got %O{offset}"
@@ -3272,7 +3261,7 @@ module Intrinsics =
                 match v with
                 | EvalStackValue.ManagedPointer p -> StorageLocation.resolve baseClassTypes state p
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) ->
-                    StorageLocation.resolve baseClassTypes state p
+                    StorageLocation.resolve baseClassTypes state (ManagedPointerSource.Byref p)
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
             let originLocation = locate origin
@@ -3388,7 +3377,7 @@ module Intrinsics =
                 with
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                    EvalStackValue.ManagedPointer src
+                    EvalStackValue.ManagedPointer (ManagedPointerSource.Byref src)
                 | other ->
                     failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
 
@@ -3452,7 +3441,7 @@ module Intrinsics =
                 with
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                    EvalStackValue.ManagedPointer src
+                    EvalStackValue.ManagedPointer (ManagedPointerSource.Byref src)
                 | other -> failwith $"Span`1.Clear expected _reference to be a managed byref, got %O{other}"
 
             let zero, state =
