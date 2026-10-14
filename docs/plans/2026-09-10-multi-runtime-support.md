@@ -689,6 +689,17 @@ mutation-testing skill applies to each table/classifier they introduce.
      `m_fieldHandle` and zeroes `m_b`; its reader wraps that pointer in a
      `RuntimeFieldHandleInternal`, as RC1's `IRuntimeFieldInfo.Value` does, so every reader of
      `IRuntimeFieldInfo.Value` sees the same shape on both runtimes.
+
+     P6d's `DelegateLayout.HelperObjectAndExtraData` does not map net11's fields onto net10's
+     roles, because `_helperObject` also caches `Delegate.Method` and holds a collectible
+     delegate's loader allocator. Instead `DelegateInvocations.read` parses either layout's
+     fields into one description (binding only, multicast with its list and how its elements
+     hold their delegates, net10's open virtual, net11's recorded `MethodDesc*`, or a kind
+     PawPrint never builds), deciding net11's multicast case by `HasSingleTarget`'s own test:
+     `_helperObject` is a `Delegate.Wrapper[]`. On net11 `_extraData` records every single-cast
+     delegate's `MethodDesc*` (`Delegate_Construct` writes it, and `GetMethodDesc` caches it), so
+     the writer records it too and `methodDescOf` answers it as CoreCLR does, without consulting
+     the binding fields. `methodDescOf` and the multicast stub match on that description.
    * **P6e, the switch-on.** The `Net11` case and pin; the `NativeDispatch` composition decided
      against the real image, with the `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
      `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) and the
