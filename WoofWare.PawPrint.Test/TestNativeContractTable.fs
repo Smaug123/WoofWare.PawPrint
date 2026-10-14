@@ -76,6 +76,127 @@ module TestNativeContractTable =
                     | Some (NativeMethod.Tabulated recognised) when recognised = row -> ()
                     | other -> failwith $"A method that is %A{row.Native} is recognised as %A{other}"
 
+    /// The namespace and name a `ManagedCall` names its declaring type by.
+    let private namespaceAndName (declaringType : string) : string * string =
+        match declaringType.LastIndexOf '.' with
+        | -1 -> "", declaringType
+        | dot -> declaringType.Substring (0, dot), declaringType.Substring (dot + 1)
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every method a row runs is the CoreLib's one method of its name, taking an argument per spelling``
+        (which : AuditedCoreLib)
+        : unit
+        =
+        let corelib = TestIntrinsicBody.coreLib which
+
+        for row in rows do
+            for call in row.Contract.Runs do
+                let ns, name = namespaceAndName call.DeclaringType
+
+                let declaringType =
+                    match corelib.TryGetTopLevelTypeDef ns name with
+                    | Some declaringType -> declaringType
+                    | None ->
+                        failwith $"%A{row.Native} runs a method of %s{call.DeclaringType}, which this CoreLib lacks"
+
+                match declaringType.Methods |> List.filter (fun method -> method.Name = call.Method) with
+                | [ method ] ->
+                    declaringType.Generics |> shouldBeEmpty
+                    method.Signature.GenericParameterCount |> shouldEqual 0
+
+                    let arity =
+                        (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length
+
+                    if arity <> call.Arguments.Length then
+                        failwith
+                            $"%A{row.Native} passes %s{call.DeclaringType}::%s{call.Method} %d{call.Arguments.Length} arguments, and it takes %d{arity}"
+                | methods ->
+                    failwith
+                        $"%A{row.Native} runs %s{call.DeclaringType}::%s{call.Method}, of which this CoreLib has %d{methods.Length}"
+
+    /// What each `g_*NS` macro of `vm/namespace.h` expands to, by the name between `g_` and `NS`.
+    let private bindersNamespaces (namespaceHeader : string) : Map<string, string> =
+        let definitions =
+            Text.RegularExpressions.Regex.Matches (
+                namespaceHeader,
+                @"^#define\s+g_(\w+)NS\s+(.+?)\s*$",
+                Text.RegularExpressions.RegexOptions.Multiline
+            )
+            |> Seq.map (fun m -> m.Groups.[1].Value, m.Groups.[2].Value)
+            |> Map.ofSeq
+
+        let rec expand (name : string) : string =
+            Text.RegularExpressions.Regex.Matches (definitions.[name], @"g_(\w+)NS|""([^""]*)""")
+            |> Seq.map (fun token ->
+                if token.Groups.[1].Success then
+                    expand token.Groups.[1].Value
+                else
+                    token.Groups.[2].Value
+            )
+            |> String.concat ""
+
+        definitions |> Map.map (fun name _ -> expand name)
+
+    /// CoreCLR calls a CoreLib method from native code through its binder, which names the methods
+    /// it can call in `vm/corelib.h`, each by an ID `METHOD__<class>__<method>`.
+    [<Test>]
+    let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it`` () : unit =
+        let coreclr =
+            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
+
+        let read (path : string) : string =
+            File.ReadAllText (Path.Combine (coreclr, path))
+
+        let corelibHeader = read "vm/corelib.h"
+        let namespaces = bindersNamespaces (read "vm/namespace.h")
+
+        // Each class the binder names, by its full name, with its ID. A use of the macro starts a
+        // line; its definitions and the comments describing it do not.
+        let classes : (string * string) list =
+            Text.RegularExpressions.Regex.Matches (
+                corelibHeader,
+                @"^DEFINE_CLASS\(\s*(\w+)\s*,\s*(\w+)\s*,\s*([^\s,)]+)\s*\)",
+                Text.RegularExpressions.RegexOptions.Multiline
+            )
+            |> Seq.map (fun m -> namespaces.[m.Groups.[2].Value] + "." + m.Groups.[3].Value, m.Groups.[1].Value)
+            |> List.ofSeq
+
+        // Each method the binder names, by its class's ID and its own name, with its ID.
+        let methods : ((string * string) * string) list =
+            Text.RegularExpressions.Regex.Matches (
+                corelibHeader,
+                @"^DEFINE_METHOD\(\s*(\w+)\s*,\s*(\w+)\s*,\s*([^\s,]+)\s*,",
+                Text.RegularExpressions.RegexOptions.Multiline
+            )
+            |> Seq.map (fun m -> (m.Groups.[1].Value, m.Groups.[3].Value), m.Groups.[2].Value)
+            |> List.ofSeq
+
+        classes.Length |> shouldBeGreaterThan 0
+        methods.Length |> shouldBeGreaterThan 0
+
+        for row in rows do
+            for call in row.Contract.Runs do
+                let binderIds =
+                    [
+                        for fullName, classId in classes do
+                            if fullName = call.DeclaringType then
+                                for (ofClass, name), methodId in methods do
+                                    if ofClass = classId && name = call.Method then
+                                        yield $"METHOD__%s{classId}__%s{methodId}"
+                    ]
+
+                if binderIds.IsEmpty then
+                    failwith
+                        $"%A{row.Native} runs %s{call.DeclaringType}::%s{call.Method}, which vm/corelib.h does not name"
+
+                let cited =
+                    row.Sources
+                    |> List.exists (fun source -> binderIds |> List.exists (read source.Path).Contains)
+
+                if not cited then
+                    failwith
+                        $"%A{row.Native} cites no source that calls %s{call.DeclaringType}::%s{call.Method} by %A{binderIds}"
+
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
         let coreclr =
