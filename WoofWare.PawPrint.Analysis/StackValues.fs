@@ -106,12 +106,13 @@ module internal StackInteger =
 
     /// What `ldind` of the integer type `loaded` pushes from a location of the integer type
     /// `location` where the stack's `held` was stored, which a store truncates to the location's
-    /// width (ECMA-335 III.1.6): those bytes, read as `loaded`. `None` where the two types are of
-    /// different widths, so that the load reads other bytes than the location's, or where the IL
-    /// would need a conversion to store `held` there.
+    /// width (ECMA-335 III.1.6): the location's first bytes, as many as `loaded` takes, read as
+    /// `loaded`. CoreCLR runs only on little-endian CPUs, where those are its low bytes. `None`
+    /// where `loaded` is the wider, so that the load reads bytes past the location, or where the IL
+    /// would need a conversion to push `held` as `loaded`.
     let loadedAs (location : PrimitiveType) (loaded : PrimitiveType) (held : StackInteger) : StackInteger option =
         match width location, width loaded with
-        | Some locationWidth, Some loadedWidth when locationWidth = loadedWidth -> passedAs loaded held
+        | Some locationWidth, Some loadedWidth when loadedWidth <= locationWidth -> passedAs loaded held
         | _ -> None
 
 /// An integer a stack slot may hold.
