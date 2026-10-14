@@ -24,8 +24,7 @@ module NativeLowLevelMonitor =
     let private monitorOfArgument (operation : string) (arg : CliType) : LowLevelMonitorId =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.LowLevelMonitorPtr id)) -> id
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
             failwith
                 $"%s{operation}: monitor argument was IntPtr.Zero, but LowLevelMonitor invariants require a non-null handle (the wrapper would have thrown OOM at Initialize)."
         | other -> failwith $"%s{operation}: expected LowLevelMonitor handle, got %O{other}"

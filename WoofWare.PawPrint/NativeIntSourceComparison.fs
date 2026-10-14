@@ -29,34 +29,12 @@ module NativeIntSourceComparison =
 
     /// CEQ semantics on `NativeIntSource` pairs: matches the
     /// `native int × native int` arm of ECMA Table III.4. Distinct from the
-    /// type's structural `Equals` because (a) `Verbatim 0L` and
-    /// `ManagedPointer Null` are both the value zero so must compare equal
-    /// despite structural inequality, and (b) `MethodTablePtr` and
+    /// type's structural `Equals` because `MethodTablePtr` and
     /// `TypeHandlePtr` for the same handle alias (CoreCLR encodes them as the
     /// same address for non-TypeDesc types). Used by `ceq` on eval-stack
     /// native ints and by the `Interlocked.CompareExchange(ref IntPtr, …)`
     /// intrinsic, which compares the slot's contents under CEQ semantics.
     let equalsForCli (counters : PointerHashState) (a : NativeIntSource) (b : NativeIntSource) : bool =
-        // `Unsafe.AsRef<T>((void*)bits)` synthesises a placeholder byref
-        // carrying a literal bit pattern. C# casts between native-int and
-        // pointer shapes emit no `conv.i`/`conv.u`, so a slot containing the
-        // bits as a plain `Verbatim` and a value freshly produced by
-        // `Unsafe.AsPointer(ref Unsafe.AsRef<T>((void*)bits))` (which arrives
-        // as `ManagedPointer (NativeIntPlaceholder bits)`) must compare equal:
-        // they're the same numeric value, just routed through different
-        // shapes. Mirrors `unwrapPlaceholderForBitComparison` in
-        // `EvalStackValueComparisons`, but at the `NativeIntSource` layer so
-        // every caller (eval-stack `ceq`, Interlocked CAS, …) sees the same
-        // normalised view.
-        let unwrapPlaceholder (n : NativeIntSource) : NativeIntSource =
-            match n with
-            | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-                NativeIntSource.Verbatim bits
-            | _ -> n
-
-        let a = unwrapPlaceholder a
-        let b = unwrapPlaceholder b
-
         match a, b with
         | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> f1 = f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
@@ -239,18 +217,15 @@ module NativeIntSourceComparison =
             // reason as the direct byref-ceq arm.
             ManagedPointerSource.ceqNormalised
                 "native-int-wrapped byref"
-                (ManagedPointerSource.unsafeAssumeNormalisedForComparison f1)
-                (ManagedPointerSource.unsafeAssumeNormalisedForComparison f2)
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison (ManagedPointerSource.Byref f1))
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison (ManagedPointerSource.Byref f2))
         | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
         | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _
         | NativeIntSource.ManagedPointer _, NativeIntSource.SyntheticCrossArrayOffset _ ->
-            let z1 = NativeIntSource.isZero a
-            let z2 = NativeIntSource.isZero b
-
-            if z1 && z2 then
-                true
-            elif z1 <> z2 then
+            // A pointer into storage is never 0, but PawPrint does not name its address, so only
+            // a zero on the other side has an answer.
+            if NativeIntSource.isZero a || NativeIntSource.isZero b then
                 false
             else
                 failwith $"TODO (CEQ): mixed nativeint representations, {a} vs {b}"
@@ -298,19 +273,14 @@ module NativeIntSourceComparison =
         // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
         // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
         // SyntheticCrossArrayOffset, and vs the various handle kinds);
-        // this is the remaining case. Hash bits equal a byref iff both
-        // are null; non-zero hash bits vs a non-null byref is
+        // this is the remaining case. A pointer into storage is never
+        // 0, so zero hash bits differ from it; non-zero hash bits are
         // ambiguous (we don't know the byref's numeric address), so
         // fail loudly rather than silently returning a fixed answer.
         // Mirrors the Verbatim × ManagedPointer arm above.
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
         | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
-            let z1 = NativeIntSource.isZero a
-            let z2 = NativeIntSource.isZero b
-
-            if z1 && z2 then
-                true
-            elif z1 <> z2 then
+            if NativeIntSource.isZero a || NativeIntSource.isZero b then
                 false
             else
                 failwith $"TODO (CEQ): synthesised hash bits vs managed pointer, both non-null: {a} vs {b}"

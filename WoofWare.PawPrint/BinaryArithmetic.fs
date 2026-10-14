@@ -1549,8 +1549,6 @@ module BinaryArithmetic =
         let nativeIntOffsetForPointerArithmetic (src : NativeIntSource) : int64 =
             match src with
             | NativeIntSource.Verbatim n -> n
-            // A null byref used as an offset is the bit pattern 0.
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
             | v ->
                 failwith
                     $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
@@ -1562,7 +1560,7 @@ module BinaryArithmetic =
             =
             match result with
             | Choice1Of2 ptr ->
-                EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
+                EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer ptr) signed)
             | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim i)
 
         let materialise (src : NativeIntSource) (counters : PointerHashState) : int64 * PointerHashState =
@@ -1579,7 +1577,7 @@ module BinaryArithmetic =
             |> withState
         | EvalStackValue.Int32 (Int32Source.Verbatim val1),
           EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) val2
+            op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) (ManagedPointerSource.Byref val2)
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.Int32 (Int32Source.Verbatim val1), EvalStackValue.NativeInt val2 ->
@@ -1641,12 +1639,12 @@ module BinaryArithmetic =
             |> withState
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val1, signed)),
           EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
-            op.ManagedPtrInt64 baseClassTypes state val1 val2
+            op.ManagedPtrInt64 baseClassTypes state (ManagedPointerSource.Byref val1) val2
             |> widenedManagedPtrChoiceAsInt64 signed
             |> withState
         | EvalStackValue.Int64 (Int64Source.Verbatim val1),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val2, signed)) ->
-            op.Int64ManagedPtr baseClassTypes state val1 val2
+            op.Int64ManagedPtr baseClassTypes state val1 (ManagedPointerSource.Byref val2)
             |> widenedManagedPtrChoiceAsInt64 signed
             |> withState
         // Arithmetic on a widened non-managed-pointer source materialises the
@@ -1720,7 +1718,7 @@ module BinaryArithmetic =
                 op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1),
           EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
-            op.ManagedPtrInt64 baseClassTypes state val1 (int64<int32> val2)
+            op.ManagedPtrInt64 baseClassTypes state (ManagedPointerSource.Byref val1) (int64<int32> val2)
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
@@ -1736,19 +1734,23 @@ module BinaryArithmetic =
             |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1),
           EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            op.ManagedPtrManagedPtr baseClassTypes state val1 val2
+            op.ManagedPtrManagedPtr
+                baseClassTypes
+                state
+                (ManagedPointerSource.Byref val1)
+                (ManagedPointerSource.Byref val2)
             |> managedPtrManagedPtrAsNativeInt
             |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
 
-            op.ManagedPtrInt64 baseClassTypes state val1 val2
+            op.ManagedPtrInt64 baseClassTypes state (ManagedPointerSource.Byref val1) val2
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
 
-            op.Int64ManagedPtr baseClassTypes state val1 val2
+            op.Int64ManagedPtr baseClassTypes state val1 (ManagedPointerSource.Byref val2)
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
@@ -1770,7 +1772,7 @@ module BinaryArithmetic =
             | val1, val2 -> failwith $"refusing to operate %s{op.Name} on non-verbatim native ints %O{val1}, %O{val2}"
 
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.ManagedPointer val2 ->
-            op.ManagedPtrManagedPtr baseClassTypes state val1 val2
+            op.ManagedPtrManagedPtr baseClassTypes state (ManagedPointerSource.Byref val1) val2
             |> managedPtrManagedPtrAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
@@ -1794,7 +1796,7 @@ module BinaryArithmetic =
             |> EvalStackValue.Float
             |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
+            match op.ManagedPtrManagedPtr baseClassTypes state val1 (ManagedPointerSource.Byref val2) with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
             | Choice2Of2 result -> EvalStackValue.NativeInt result |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->

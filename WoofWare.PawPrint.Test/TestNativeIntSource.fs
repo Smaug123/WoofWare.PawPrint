@@ -484,29 +484,11 @@ module TestNativeIntSource =
 
     [<Test>]
     let ``ofManagedPointer keeps a pointer into storage`` () : unit =
-        let pointer =
-            ManagedPointerSource.Byref
-                {
-                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 7, 2)
-                    Projections = []
-                }
+        let pointer : AddressedByref =
+            {
+                Root = ByrefRoot.ArrayElement (ManagedHeapAddress 7, 2)
+                Projections = []
+            }
 
-        NativeIntSource.ofManagedPointer pointer
+        NativeIntSource.ofManagedPointer (ManagedPointerSource.Byref pointer)
         |> shouldEqual (NativeIntSource.ManagedPointer pointer)
-
-    [<Test>]
-    let ``Push' rejects a native int holding a pointer of known bits`` () : unit =
-        let property (bits : int64) : unit =
-            let pointer = ManagedPointerSource.ofBitPattern bits
-
-            for illegal in
-                [
-                    EvalStackValue.NativeInt (NativeIntSource.ManagedPointer pointer)
-                    EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer pointer, true))
-                ] do
-                let ex =
-                    Assert.Throws<System.Exception> (fun () -> EvalStack.Push' illegal EvalStack.Empty |> ignore)
-
-                ex.Message |> shouldContainText "eval-stack invariant violated"
-
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genBits) property)

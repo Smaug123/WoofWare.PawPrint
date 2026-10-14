@@ -611,7 +611,7 @@ module StructMarshalStub =
     let private managedPointerOf (operation : string) (what : string) (value : EvalStackValue) : ManagedPointerSource =
         match value with
         | EvalStackValue.ManagedPointer src -> src
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> src
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> ManagedPointerSource.Byref src
         | other -> failwith $"%s{operation}: expected %s{what} to be a managed pointer, got %O{other}"
 
     /// `System.Byte` as a concrete type, for forming byte-view byrefs into the native image. Same

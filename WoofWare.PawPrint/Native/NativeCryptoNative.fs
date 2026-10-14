@@ -66,7 +66,6 @@ module NativeCryptoNative =
             EvpPointerArgument.Md algorithm
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.EvpMdCtxPtr handle)) ->
             EvpPointerArgument.MdCtx handle
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> EvpPointerArgument.Null
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> EvpPointerArgument.Null

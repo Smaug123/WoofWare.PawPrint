@@ -25,14 +25,12 @@ module NativeEventPipe =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.EventPipeProviderPtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other -> failwith $"%s{operation}: expected %s{argName} to be EventPipe provider handle, got %O{other}"
 
     let private eventHandleOfArgument (operation : string) (argName : string) (arg : CliType) : int64 option =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.EventPipeEventPtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other -> failwith $"%s{operation}: expected %s{argName} to be EventPipe event handle, got %O{other}"
 
     let private uint32Argument (operation : string) (argName : string) (arg : CliType) : uint32 =

@@ -325,7 +325,7 @@ module TestEvalStackBoxedPrimitiveView =
         EvalStackValue.toCliTypeCoerced ldindISlot (EvalStackValue.UserDefinedValueType vt)
         |> function
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer actual)) ->
-                actual |> shouldEqual src
+                ManagedPointerSource.Byref actual |> shouldEqual src
             | other -> failwithf "expected the managed pointer's provenance to survive, got %A" other
 
     [<Test>]
@@ -450,7 +450,7 @@ module TestEvalStackBoxedPrimitiveView =
         EvalStackValue.toCliTypeCoerced ldindISlot (EvalStackValue.UserDefinedValueType written)
         |> function
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer actual)) ->
-                actual |> shouldEqual src
+                ManagedPointerSource.Byref actual |> shouldEqual src
             | other -> failwithf "expected the aliased pointer write's provenance to survive, got %A" other
 
     [<Test>]

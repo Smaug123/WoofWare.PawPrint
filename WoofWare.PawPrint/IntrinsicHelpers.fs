@@ -626,7 +626,7 @@ module internal IntrinsicHelpers =
     let managedPointerOfPointerArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
         match arg with
         | EvalStackValue.ManagedPointer ptr -> ptr
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> ptr
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> ManagedPointerSource.Byref ptr
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
@@ -932,7 +932,7 @@ module internal IntrinsicHelpers =
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                EvalStackValue.ManagedPointer src
+                EvalStackValue.ManagedPointer (ManagedPointerSource.Byref src)
             | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
 
         let lengthField =

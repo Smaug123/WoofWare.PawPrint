@@ -27,17 +27,15 @@ module NativeSignature =
         match CliType.unwrapPrimitiveLikeDeep sigArg with
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
         | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
                                                                                             Root = ByrefRoot.PeByteRange peByteRange
                                                                                             Projections = _
                                                                                         }))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref {
-                                                                                                                    Root = ByrefRoot.PeByteRange peByteRange
-                                                                                                                    Projections = _
-                                                                                                                }))) ->
-            Some peByteRange
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer {
+                                                                                        Root = ByrefRoot.PeByteRange peByteRange
+                                                                                        Projections = _
+                                                                                    })) -> Some peByteRange
         | other ->
             failwith
                 $"%s{operation}: expected a null COR signature pointer or a managed pointer over a PE byte range, got %O{other}"
@@ -140,8 +138,7 @@ module NativeSignature =
         | CliType.ObjectRef None
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> ()
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ()
         | other -> failwith $"TODO: %s{operation} method signature parsing is not implemented; got non-null %O{other}"
 
     /// Concretize a field's declared type under <paramref name="typeGenerics"/> and hand back the

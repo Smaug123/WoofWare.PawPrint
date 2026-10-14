@@ -39,10 +39,8 @@ public class Program
         if (prev4 != new IntPtr(200)) return 7;
         if (p.m_slot != new IntPtr(200)) return 8;
 
-        // A fresh Program has m_slot default-initialised to IntPtr.Zero (which PawPrint
-        // represents as ManagedPointer Null). Exercise zero-equivalence: a comparand of
-        // `new IntPtr(0)` (represented as Verbatim 0L) must match IntPtr.Zero for the
-        // CAS to succeed.
+        // A fresh Program has m_slot default-initialised to IntPtr.Zero. A comparand of
+        // `new IntPtr(0)` must match it for the CAS to succeed.
         var q = new Program();
         IntPtr prev5 = q.CasSlot(new IntPtr(500), new IntPtr(0));
         if (prev5 != IntPtr.Zero) return 9;

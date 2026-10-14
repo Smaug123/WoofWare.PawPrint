@@ -384,11 +384,10 @@ module TestSameWidthReadFromNamedCell =
             CliType.Numeric (
                 CliNumericType.NativeInt (
                     NativeIntSource.ManagedPointer (
-                        ManagedPointerSource.Byref
-                            {
-                                Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 9)
-                                Projections = []
-                            }
+                        {
+                            Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 9)
+                            Projections = []
+                        }
                     )
                 )
             )

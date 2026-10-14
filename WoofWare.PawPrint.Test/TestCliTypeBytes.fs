@@ -458,11 +458,10 @@ module TestCliTypeBytes =
     let private refusedNativeIntSources () : NativeIntSource list =
         [
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref
-                    {
-                        Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
-                        Projections = []
-                    }
+                {
+                    Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
+                    Projections = []
+                }
             )
             syntheticCrossStorageNativeIntSource ()
         ]
@@ -575,11 +574,6 @@ module TestCliTypeBytes =
         |> shouldEqual CliByteAddressability.ByteAddressable
 
         CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1L)))
-        |> shouldEqual CliByteAddressability.ByteAddressable
-
-        CliType.ByteAddressability (
-            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
-        )
         |> shouldEqual CliByteAddressability.ByteAddressable
 
         match

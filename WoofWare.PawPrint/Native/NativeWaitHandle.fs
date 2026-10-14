@@ -89,8 +89,7 @@ module NativeWaitHandle =
     let private waitHandleOfArgument (operation : string) (arg : CliType) : WaitHandleId =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.WaitHandlePtr id)) -> id
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
             failwith
                 $"%s{operation}: handle argument was IntPtr.Zero, but WaitHandle invariants require a non-null handle (the BCL wrapper would have thrown ObjectDisposedException or set SafeHandle.IsInvalid before reaching the runtime)."
         | other -> failwith $"%s{operation}: expected WaitHandle handle, got %O{other}"
@@ -143,7 +142,6 @@ module NativeWaitHandle =
     let private requireNullIntPtr (operation : string) (argName : string) (arg : CliType) : unit =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> ()
         | other ->
@@ -206,7 +204,6 @@ module NativeWaitHandle =
     let private requireNullName (operation : string) (arg : CliType) : unit =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> ()
         | other ->
@@ -232,7 +229,6 @@ module NativeWaitHandle =
         =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> ()
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) ->
@@ -242,7 +238,8 @@ module NativeWaitHandle =
                 failwith
                     $"%s{operation}: named mutexes are not yet supported; expected an unnamed handle (null or empty name) but got '%s{name}'"
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
-            let name = NativeCall.readNullTerminatedUtf16 operation baseClassTypes state ptr
+            let name =
+                NativeCall.readNullTerminatedUtf16 operation baseClassTypes state (ManagedPointerSource.Byref ptr)
 
             if name <> "" then
                 failwith
@@ -363,10 +360,10 @@ module NativeWaitHandle =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> Some ptr
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> Some ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+            Some (ManagedPointerSource.Byref ptr)
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed int pointer or null, got %O{other}"
 
     /// The integer a satisfied multi-handle wait reports to the guest.
@@ -455,12 +452,12 @@ module NativeWaitHandle =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
             failwith
                 $"%s{operation}: handle array pointer was null; WaitHandle.WaitMultiple rejects an empty array before the QCall, so reaching here means the wrapper was bypassed."
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+            ManagedPointerSource.Byref ptr
         | other -> failwith $"%s{operation}: expected a managed IntPtr* handle array, got %O{other}"
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =

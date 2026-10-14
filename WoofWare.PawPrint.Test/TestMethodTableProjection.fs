@@ -947,11 +947,10 @@ public unsafe struct PointerWrapper
     let private taggedNativeIntSources () : NativeIntSource list =
         [
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref
-                    {
-                        Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
-                        Projections = []
-                    }
+                {
+                    Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
+                    Projections = []
+                }
             )
             functionPointerSource ()
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
@@ -4140,7 +4139,7 @@ public unsafe struct PointerWrapper
         let addressCases =
             [
                 "managed pointer", fun ptr -> EvalStackValue.ManagedPointer ptr
-                "native-int managed pointer", fun ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+                "native-int managed pointer", fun ptr -> EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr)
             ]
 
         for caseName, addressValue in addressCases do
