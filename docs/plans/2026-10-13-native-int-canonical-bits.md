@@ -42,6 +42,12 @@ arrives from:
 
 Every native that takes `IntPtr.Zero` already accepts both spellings, and no
 consumer depends on the pointer spelling except the four indirections above.
+That was found by reading the arms that name `ManagedPointerSource.Null`, and
+it missed one: `ceq` answered the null pointer against a cross-storage offset
+through an arm for any pointer, but refused `Verbatim 0` there. A property in
+`TestBinaryArithmetic` now checks every comparison and binary arithmetic
+operation: wherever the null pointer has an answer, `Verbatim 0` must have the
+same one.
 
 ## Decision
 
@@ -53,11 +59,18 @@ every new consumer would have to remember the normalisation.
 
 ## Stages
 
-1. `ldind`, `stind`, `ldind.ref` and `stind.ref` raise
+1. Done (#1910). `ldind`, `stind`, `ldind.ref` and `stind.ref` raise
    `NullReferenceException` through `Verbatim 0`, which is `*(int*)0`. One
    classifier, `EvalStackValue.isNullAddress`, names the null addresses for
    these and for `ldobj`, `stobj` and `initobj`, which already accepted it.
-2. Every producer above yields `Verbatim`, and a Debug assertion at the
-   evaluation stack checks that no native int holds a pointer of known bits.
-   The eleven instructions are unparked, and `div` loses its wrong answers.
-3. The bridge arms for the pointer spelling are deleted.
+2. Every producer above builds its native int with
+   `NativeIntSource.ofManagedPointer`, which turns a pointer of known bits
+   into `Verbatim`, and `EvalStack.Push'` refuses a native int that holds one
+   as a pointer, in every build. The eleven instructions are unparked. `div`
+   on a byref of known bits divides the bits, which removes its two wrong
+   answers; a null byref is still legal, so those arms remain reachable.
+3. `NativeIntSource.ManagedPointer` carries an `AddressedByref` rather than a
+   `ManagedPointerSource`, so that a native int of known bits cannot be built
+   at all, and `Push'` no longer needs to check. Narrowing the type on the
+   main branch of 2026-10-13 broke 167 sites in the library, most of them the
+   bridge arms for the pointer spelling, which this deletes.

@@ -356,8 +356,8 @@ module EvalStackValue =
             i |> convIFromInt32 |> NativeIntSource.Verbatim
         | EvalStackValue.NativeInt src -> src
         | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> FloatToInteger.toInt64 |> NativeIntSource.Verbatim
-        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
-        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ofManagedPointer ptr
+        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I" value
 
@@ -867,7 +867,7 @@ module EvalStackValue =
                     let i = Int32Source.value "widening to a native int location" int32Source
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 i)))
                 | EvalStackValue.ManagedPointer ptrSrc ->
-                    CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
+                    CliNumericType.NativeInt (NativeIntSource.ofManagedPointer ptrSrc)
                     |> CliType.Numeric
                 | EvalStackValue.UserDefinedValueType vt ->
                     // Deliberately *not* `viewValueTypeAsPrimitive`, unlike every other primitive
@@ -917,7 +917,7 @@ module EvalStackValue =
                         | CliRuntimePointer.PerInstDictPtr handle ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstDictPtr handle))
                         | CliRuntimePointer.Managed src ->
-                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer src))
                         | CliRuntimePointer.GcHandlePtr (addr, tag) ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr (addr, tag)))
                     | _ -> failwith $"TODO: {popped}"
@@ -1276,6 +1276,12 @@ type EvalStack =
         | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
             failwith
                 $"eval-stack invariant violated: primitive-like struct %O{vt.Declared} pushed as UserDefinedValueType (kind = %O{vt.PrimitiveLikeKind})"
+        // Invariant: a native int whose bits are known holds them as `Verbatim`, never as a
+        // pointer (`NativeIntSource.ofManagedPointer`), so that every consumer sees one spelling.
+        | EvalStackValue.NativeInt n
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (n, _)) when NativeIntSource.holdsBitPatternPointer n ->
+            failwith
+                $"eval-stack invariant violated: native int %O{n} holds a pointer of known bits; build it with NativeIntSource.ofManagedPointer"
         | _ -> ()
 
         {

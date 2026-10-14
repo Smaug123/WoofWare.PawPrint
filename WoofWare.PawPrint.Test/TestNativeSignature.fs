@@ -557,10 +557,8 @@ public sealed class MethodSignatureHost
             MethodHandles = methodHandles
         }
 
-    /// Every spelling `default(RuntimeFieldHandleInternal)` can reach a QCall as. A real guest
-    /// calling `new Signature(IRuntimeMethodInfo, RuntimeType)` produces the last of these, so a
-    /// classifier that recognises only the verbatim zeros throws on the shape that actually
-    /// arrives.
+    /// Every spelling of a null `RuntimeFieldHandleInternal` that the QCall's classifier accepts. A
+    /// real guest calling `new Signature(IRuntimeMethodInfo, RuntimeType)` produces the third.
     let nullFieldHandleSpellings : CliType list =
         [
             CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
@@ -572,7 +570,7 @@ public sealed class MethodSignatureHost
     /// The `RuntimeFieldHandleInternal` null sentinel in the shape a real guest produces, so that
     /// `Signature_Init` dispatches on the method handle rather than refusing both-handles-non-null.
     let private nullFieldHandle : CliType =
-        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
 
     [<Test>]
     let ``Signature_Init stores field RuntimeType into _returnTypeORfieldType`` () : unit =

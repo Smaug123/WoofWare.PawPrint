@@ -47,7 +47,6 @@ module TestNullaryIlOp =
     type private NativeIntNegInput =
         | Verbatim of int64
         | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
-        | ManagedPointerNull
 
     [<RequireQualifiedAccess>]
     type private NegCase =
@@ -277,7 +276,6 @@ module TestNullaryIlOp =
                 2,
                 genSyntheticCrossArrayOffset
                 |> Gen.map (NativeIntNegInput.SyntheticCrossArrayOffset >> NegCase.NativeIntValue)
-                1, Gen.constant (NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull)
             ]
 
     let private genFloatNegCase : Gen<NegCase> =
@@ -355,9 +353,6 @@ module TestNullaryIlOp =
                 EvalStackValue.NativeInt (
                     NativeIntSource.SyntheticCrossArrayOffset (SyntheticCrossArrayOffset.negate value)
                 )
-            | NativeIntNegInput.ManagedPointerNull ->
-                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null),
-                EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
         | NegCase.Float32Value value ->
             EvalStackValue.Float (EvalStackFloat.Single value), EvalStackValue.Float (EvalStackFloat.Single (-value))
         | NegCase.Float64Value value ->
@@ -411,7 +406,6 @@ module TestNullaryIlOp =
                     SyntheticCrossArrayOffset.make syntheticStorageIdentities.[3] 0L syntheticStorageIdentities.[4] 0L
                 )
             )
-            NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull
             NegCase.Float64Value 0.0
             NegCase.Float64Value -0.0
             NegCase.Float64Value Double.Epsilon
@@ -810,7 +804,6 @@ module TestNullaryIlOp =
         /// `conv.i8` / `conv.u8` of a pointer-shaped native int, narrowed back again.
         | WidenedPointer of signed : bool
         | ManagedPointerNull
-        | NativeIntManagedPointerNull
         | NullObjectRef
 
     /// The host runs `conv.ovf.i` for us: F#'s `Checked.nativeint` compiles to that
@@ -852,8 +845,6 @@ module TestNullaryIlOp =
         | ConvOvfICase.WidenedPointer signed ->
             EvalStackValue.Int64 (Int64Source.widenedNativeInt widenedPointerSource signed)
         | ConvOvfICase.ManagedPointerNull -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | ConvOvfICase.NativeIntManagedPointerNull ->
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
         | ConvOvfICase.NullObjectRef -> EvalStackValue.NullObjectRef
 
     let private convOvfIExpected (case : ConvOvfICase) : Result<NativeIntSource, unit> =
@@ -870,9 +861,8 @@ module TestNullaryIlOp =
         | ConvOvfICase.Int64OpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits |> Ok
         | ConvOvfICase.NativeIntOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits |> Ok
         | ConvOvfICase.WidenedPointer _ -> Ok widenedPointerSource
-        | ConvOvfICase.ManagedPointerNull -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
-        | ConvOvfICase.NativeIntManagedPointerNull -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
-        | ConvOvfICase.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | ConvOvfICase.ManagedPointerNull
+        | ConvOvfICase.NullObjectRef -> NativeIntSource.Verbatim 0L |> Ok
 
     /// Doubles chosen to sit on and around every boundary `conv.ovf.i` cares about:
     /// `2^63` (the smallest double above Int64.MaxValue), `-2^63` (exactly
@@ -974,7 +964,6 @@ module TestNullaryIlOp =
                 1, genInt64 |> Gen.map ConvOvfICase.NativeIntOpaqueHashBits
                 1, ArbMap.defaults |> ArbMap.generate<bool> |> Gen.map ConvOvfICase.WidenedPointer
                 1, Gen.constant ConvOvfICase.ManagedPointerNull
-                1, Gen.constant ConvOvfICase.NativeIntManagedPointerNull
                 1, Gen.constant ConvOvfICase.NullObjectRef
             ]
 
@@ -992,7 +981,6 @@ module TestNullaryIlOp =
             ConvOvfICase.WidenedPointer true
             ConvOvfICase.WidenedPointer false
             ConvOvfICase.ManagedPointerNull
-            ConvOvfICase.NativeIntManagedPointerNull
             ConvOvfICase.NullObjectRef
             ConvOvfICase.Int64CrossArrayOffset (
                 SyntheticCrossArrayOffset.make syntheticStorageIdentities.[0] 0L syntheticStorageIdentities.[1] 0L
@@ -1111,9 +1099,7 @@ module TestNullaryIlOp =
         /// `conv.i8` / `conv.u8` of a pointer-shaped native int, narrowed back again.
         | WidenedPointer of signed : bool
         | ManagedPointerNull
-        | NativeIntManagedPointerNull
         | ManagedPointerPlaceholder of bits : int64
-        | NativeIntPlaceholder of bits : int64
         | NullObjectRef
 
     /// The host runs `conv.ovf.i.un` for us. Unlike `conv.ovf.i` there is no F#
@@ -1169,12 +1155,8 @@ module TestNullaryIlOp =
         | ConvOvfIUnCase.WidenedPointer signed ->
             EvalStackValue.Int64 (Int64Source.widenedNativeInt widenedPointerSource signed)
         | ConvOvfIUnCase.ManagedPointerNull -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | ConvOvfIUnCase.NativeIntManagedPointerNull ->
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
         | ConvOvfIUnCase.ManagedPointerPlaceholder bits ->
             EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
-        | ConvOvfIUnCase.NativeIntPlaceholder bits ->
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits))
         | ConvOvfIUnCase.NullObjectRef -> EvalStackValue.NullObjectRef
 
     let private convOvfIUnExpected (case : ConvOvfIUnCase) : Result<NativeIntSource, unit> =
@@ -1197,11 +1179,9 @@ module TestNullaryIlOp =
         | ConvOvfIUnCase.NativeIntOpaqueHashBits bits -> keepingTag (NativeIntSource.OpaqueHashBits bits) bits
         | ConvOvfIUnCase.WidenedPointer _ -> Ok widenedPointerSource
         | ConvOvfIUnCase.ManagedPointerNull
-        | ConvOvfIUnCase.NativeIntManagedPointerNull
-        | ConvOvfIUnCase.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
-        | ConvOvfIUnCase.ManagedPointerPlaceholder bits
-        | ConvOvfIUnCase.NativeIntPlaceholder bits ->
-            keepingTag (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)) bits
+        | ConvOvfIUnCase.NullObjectRef -> NativeIntSource.Verbatim 0L |> Ok
+        // A native int holds a placeholder's bits as a number.
+        | ConvOvfIUnCase.ManagedPointerPlaceholder bits -> hostConvOvfIUnFromInt64 bits |> ofVerbatim
 
     /// Full-width int64 draws. The default FsCheck int64 generator is size-bounded, so
     /// on its own it would never produce a source whose *top* bit is set — which is the
@@ -1243,13 +1223,11 @@ module TestNullaryIlOp =
                 1, genInt64 |> Gen.map ConvOvfIUnCase.Int64OpaqueHashBits
                 1, genInt64 |> Gen.map ConvOvfIUnCase.NativeIntOpaqueHashBits
                 1, genInt64 |> Gen.map ConvOvfIUnCase.ManagedPointerPlaceholder
-                1, genInt64 |> Gen.map ConvOvfIUnCase.NativeIntPlaceholder
                 1,
                 ArbMap.defaults
                 |> ArbMap.generate<bool>
                 |> Gen.map ConvOvfIUnCase.WidenedPointer
                 1, Gen.constant ConvOvfIUnCase.ManagedPointerNull
-                1, Gen.constant ConvOvfIUnCase.NativeIntManagedPointerNull
                 1, Gen.constant ConvOvfIUnCase.NullObjectRef
             ]
 
@@ -1263,13 +1241,11 @@ module TestNullaryIlOp =
                 ConvOvfIUnCase.Int64OpaqueHashBits value
                 ConvOvfIUnCase.NativeIntOpaqueHashBits value
                 ConvOvfIUnCase.ManagedPointerPlaceholder value
-                ConvOvfIUnCase.NativeIntPlaceholder value
             for value in convOvfIFloatEdges do
                 ConvOvfIUnCase.FloatValue value
             ConvOvfIUnCase.WidenedPointer true
             ConvOvfIUnCase.WidenedPointer false
             ConvOvfIUnCase.ManagedPointerNull
-            ConvOvfIUnCase.NativeIntManagedPointerNull
             ConvOvfIUnCase.NullObjectRef
             ConvOvfIUnCase.Int64CrossArrayOffset (
                 SyntheticCrossArrayOffset.make syntheticStorageIdentities.[0] 0L syntheticStorageIdentities.[1] 0L
@@ -1764,9 +1740,6 @@ module TestNullaryIlOp =
 
         for op in [ NullaryIlOp.Conv_I4 ; NullaryIlOp.Conv_U4 ] do
             runUnary op (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
-            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
-
-            runUnary op (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
             |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
             // The placeholder's high word is discarded.
@@ -3290,7 +3263,6 @@ module TestNullaryIlOp =
             EvalStackValue.NativeInt widenedPointerSource
             EvalStackValue.ManagedPointer ManagedPointerSource.Null
             EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 5L)
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 5L))
             EvalStackValue.NullObjectRef
         ]
 
@@ -3335,23 +3307,22 @@ module TestNullaryIlOp =
         |> shouldBeGreaterThan 5
 
     /// Where overflow is possible, the check needs the source's bits, and a tagged source has none
-    /// PawPrint can vouch for, so these refuse it. A native int that is a null byref is the
-    /// exception: the guest has already asked for that as the number zero.
-    [<TestCase("Conv_ovf_u8", "Int64")>]
-    [<TestCase("Conv_ovf_i8_un", "Int64")>]
-    [<TestCase("Conv_ovf_i1", "Int32")>]
-    [<TestCase("Conv_ovf_u1", "Int32")>]
-    [<TestCase("Conv_ovf_i2", "Int32")>]
-    [<TestCase("Conv_ovf_u2", "Int32")>]
-    [<TestCase("Conv_ovf_i4", "Int32")>]
-    [<TestCase("Conv_ovf_u4", "Int32")>]
-    [<TestCase("Conv_ovf_i1_un", "Int32")>]
-    [<TestCase("Conv_ovf_u1_un", "Int32")>]
-    [<TestCase("Conv_ovf_i2_un", "Int32")>]
-    [<TestCase("Conv_ovf_u2_un", "Int32")>]
-    [<TestCase("Conv_ovf_i4_un", "Int32")>]
-    [<TestCase("Conv_ovf_u4_un", "Int32")>]
-    let ``a checked conversion that can overflow refuses a tagged source`` (name : string) (pushes : string) : unit =
+    /// PawPrint can vouch for, so these refuse it.
+    [<TestCase("Conv_ovf_u8")>]
+    [<TestCase("Conv_ovf_i8_un")>]
+    [<TestCase("Conv_ovf_i1")>]
+    [<TestCase("Conv_ovf_u1")>]
+    [<TestCase("Conv_ovf_i2")>]
+    [<TestCase("Conv_ovf_u2")>]
+    [<TestCase("Conv_ovf_i4")>]
+    [<TestCase("Conv_ovf_u4")>]
+    [<TestCase("Conv_ovf_i1_un")>]
+    [<TestCase("Conv_ovf_u1_un")>]
+    [<TestCase("Conv_ovf_i2_un")>]
+    [<TestCase("Conv_ovf_u2_un")>]
+    [<TestCase("Conv_ovf_i4_un")>]
+    [<TestCase("Conv_ovf_u4_un")>]
+    let ``a checked conversion that can overflow refuses a tagged source`` (name : string) : unit =
         let op, _, _ = checkedConversion name
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
@@ -3360,13 +3331,3 @@ module TestNullaryIlOp =
             match nullaryOutcome loggerFactory op source with
             | NullaryOutcome.Refused -> ()
             | other -> failwith $"%s{name} of %O{source}: expected a refusal, got %O{other}"
-
-        let zero =
-            match pushes with
-            | "Int32" -> EvalStackValue.Int32 (Int32Source.Verbatim 0)
-            | "Int64" -> EvalStackValue.Int64 (Int64Source.Verbatim 0L)
-            | other -> failwith $"test bug: %s{other}"
-
-        EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-        |> nullaryOutcome loggerFactory op
-        |> shouldEqual (NullaryOutcome.Pushed zero)

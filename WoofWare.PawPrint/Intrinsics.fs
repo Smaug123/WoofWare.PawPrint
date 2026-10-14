@@ -1201,8 +1201,8 @@ module Intrinsics =
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                         | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
-                        | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
-                        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
+                        | EvalStackValue.ManagedPointer src -> NativeIntSource.ofManagedPointer src
+                        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L
                         | other ->
                             failwith
                                 $"Interlocked.CompareExchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
@@ -1385,8 +1385,8 @@ module Intrinsics =
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                         | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
-                        | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
-                        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
+                        | EvalStackValue.ManagedPointer src -> NativeIntSource.ofManagedPointer src
+                        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L
                         | other ->
                             failwith
                                 $"Interlocked.Exchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
@@ -2466,12 +2466,10 @@ module Intrinsics =
                     with
                     | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
-                    // All four spellings of a zero `IntPtr`. `ManagedPointerSource.Null` is the
-                    // canonical one — it is what `CliType.zeroOfPrimitive` plants for
-                    // `IntPtr.Zero`, and so what a zero-initialised `m_fieldHandle` actually holds
-                    // — so omitting it would send the very case this arm exists for into the
-                    // host-failure arm below. `Verbatim 0L` is the spelling that arrives from
-                    // integer arithmetic.
+                    // All four spellings of a zero `IntPtr`. `Verbatim 0L` is what a
+                    // zero-initialised `m_fieldHandle` holds (`CliType.zeroOfPrimitive`), so
+                    // omitting it would send the very case this arm exists for into the
+                    // host-failure arm below.
                     | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
                     | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
