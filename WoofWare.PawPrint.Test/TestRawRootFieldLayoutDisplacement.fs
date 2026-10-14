@@ -1169,7 +1169,7 @@ public unsafe struct Nest
                     Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 3us)
                     Projections = []
                 }
-            |> NativeIntSource.ManagedPointer
+            |> NativeIntSource.ofManagedPointer
             |> CliNumericType.NativeInt
             |> CliType.Numeric
 
@@ -1395,10 +1395,10 @@ public unsafe struct Nest
             let wrappings : (string * (ManagedPointerSource -> EvalStackValue)) list =
                 [
                     "byref", EvalStackValue.ManagedPointer
-                    "native int", (fun p -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p))
+                    "native int", (fun p -> EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer p))
                     "widened int64",
                     (fun p ->
-                        EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer p, false))
+                        EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer p, false))
                     )
                 ]
 
@@ -1409,7 +1409,7 @@ public unsafe struct Nest
 
             // `clt.un` of two C# pointers, and their difference.
             let asNativeInt (p : ManagedPointerSource) =
-                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p)
+                EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer p)
 
             EvalStackValueComparisons.cltUnDeferred (asNativeInt left) (asNativeInt right)
             |> StorageLocation.resolveOrder bct state

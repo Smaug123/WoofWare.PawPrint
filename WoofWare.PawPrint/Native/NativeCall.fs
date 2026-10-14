@@ -32,8 +32,7 @@ module NativeCall =
             with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName)) ->
                 assemblyFullName
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
                 // QCallAssembly is a value type; CoreLib represents a null
                 // assembly by storing IntPtr.Zero in this field.
                 failwith $"TODO: %s{operation} refuses to dereference null QCallAssembly._assembly IntPtr"
@@ -76,8 +75,6 @@ module NativeCall =
             match CliValueType.DereferenceFieldById handleField vt |> CliType.unwrapPrimitiveLike with
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> Some target
             | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-                None
             | other ->
                 failwith $"%s{operation}: expected TypeHandlePtr or null in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
@@ -221,7 +218,6 @@ module NativeCall =
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
@@ -230,7 +226,8 @@ module NativeCall =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> ManagedPointerSource.Null
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+            ManagedPointerSource.Byref ptr
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ManagedPointerSource.Null
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed pointer argument, got %O{other}"
 

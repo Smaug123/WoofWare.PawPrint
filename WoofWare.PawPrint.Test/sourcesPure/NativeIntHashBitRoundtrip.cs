@@ -75,7 +75,7 @@ class Program
 
         // Signed comparison against `IntPtr.Zero` exercises
         // `NativeIntSource.isLess` with OpaqueHashBits on one side and
-        // `ManagedPointer Null` on the other. The signed direction of the
+        // the number 0 on the other. The signed direction of the
         // answer depends on the sign of the rotated bit pattern, which can
         // legitimately be negative when interpreted as signed nint, so check
         // a property both signs satisfy: the value is consistently ordered

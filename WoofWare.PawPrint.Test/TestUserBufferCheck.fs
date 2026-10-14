@@ -308,13 +308,6 @@ module TestUserBufferCheck =
         classify (CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.NativeIntPlaceholder 8L)))
         |> shouldEqual expected
 
-        classify (
-            CliType.Numeric (
-                CliNumericType.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 8L))
-            )
-        )
-        |> shouldEqual expected
-
     /// The null pointer is address zero rather than a case of its own, which is
     /// what lets `SystemNative_GetCwd` tell it from an unmapped address while
     /// every other caller collapses the two.

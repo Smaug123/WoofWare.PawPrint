@@ -455,7 +455,8 @@ module internal DebuggerValueJson =
 
         match source with
         | NativeIntSource.Verbatim value -> writeNumberSource writer value
-        | NativeIntSource.ManagedPointer pointer -> writeManagedPointerSource writer context pointer
+        | NativeIntSource.ManagedPointer pointer ->
+            writeManagedPointerSource writer context (ManagedPointerSource.Byref pointer)
         | NativeIntSource.FunctionPointer target ->
             writer.WriteString ("kind", "functionPointer")
             writer.WriteString ("target", string target)

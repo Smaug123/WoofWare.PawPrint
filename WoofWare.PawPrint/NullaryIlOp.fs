@@ -160,17 +160,19 @@ module NullaryIlOp =
     /// masks 3, and the two must answer alike.
     let private andWidenedManagedPointerBits
         (state : IlMachineState)
-        (ptr : ManagedPointerSource)
+        (ptr : AddressedByref)
         (signed : bool)
         (mask : int64)
         : EvalStackValue
         =
-        match maskByref state ptr mask with
+        let byref = ManagedPointerSource.Byref ptr
+
+        match maskByref state byref mask with
         | ByrefMask.Bits bits -> Int64Source.Verbatim bits |> EvalStackValue.Int64
         | ByrefMask.Unchanged ->
             Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, signed)
             |> EvalStackValue.Int64
-        | ByrefMask.Unanswerable reason -> failwith (byrefMaskRefusal ptr mask reason)
+        | ByrefMask.Unanswerable reason -> failwith (byrefMaskRefusal byref mask reason)
 
     /// Mask a type-handle-shaped pointer, if the model can state the answer.
     /// PawPrint models no address for a `MethodTable*` or a `TypeDesc*`, so the
@@ -269,7 +271,7 @@ module NullaryIlOp =
         match source with
         | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | NativeIntSource.ManagedPointer ptr ->
-            andManagedPointerAddressBits state ptr (EvalStackValue.NativeInt source) mask
+            andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) (EvalStackValue.NativeInt source) mask
         | NativeIntSource.GcHandlePtr (handle, tag) ->
             gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
             |> EvalStackValue.NativeInt
@@ -352,11 +354,6 @@ module NullaryIlOp =
         =
         match source with
         | NativeIntSource.Verbatim i -> NativeIntSource.Verbatim ~~~i, counters
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> NativeIntSource.Verbatim ~~~0L, counters
-        // The result is an integer, not a pointer, so the placeholder-to-`Null`
-        // normalisation that applies when *constructing* byrefs is not needed here.
-        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            NativeIntSource.Verbatim ~~~bits, counters
         | _ ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Not" source counters
             NativeIntSource.OpaqueHashBits ~~~bits, counters
@@ -583,8 +580,6 @@ module NullaryIlOp =
                 |> NativeIntSource.SyntheticCrossArrayOffset
                 |> EvalStackValue.NativeInt,
                 counters
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
-                NativeIntSource.Verbatim 0L |> EvalStackValue.NativeInt, counters
             | NativeIntSource.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Neg: refusing to negate function pointer %O{methodInfo}"
@@ -920,8 +915,8 @@ module NullaryIlOp =
         // provenance is the same charity `Conv_I` / `Conv_ovf_i` extend. A
         // `NativeIntPlaceholder` is the exception: it *is* an exact bit pattern
         // the guest handed us via `(void*)bits`, so it gets the real range check
-        // (`Int64Source.widenedNativeInt` and `materialiseHashBits` treat
-        // placeholders as bit patterns for the same reason).
+        // (`NativeIntSource.ofManagedPointer` makes it `Verbatim` for the same
+        // reason).
         let fromManagedPointer (ptr : ManagedPointerSource) : Result<NativeIntSource, unit> =
             match ptr with
             | ManagedPointerSource.NativeIntPlaceholder bits when bits < 0L -> Error ()
@@ -969,7 +964,7 @@ module NullaryIlOp =
             match src with
             | NativeIntSource.Verbatim n -> fromUnsignedInt64 n
             | NativeIntSource.SyntheticCrossArrayOffset _ -> Ok src
-            | NativeIntSource.ManagedPointer ptr -> fromManagedPointer ptr
+            | NativeIntSource.ManagedPointer _ -> Ok src
             | NativeIntSource.OpaqueHashBits bits -> if bits < 0L then Error () else Ok src
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_ovf_i_un: refusing to convert function pointer %O{methodInfo} to signed native int"
@@ -1253,11 +1248,7 @@ module NullaryIlOp =
                 else
                     cell
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                IlMachineState.readManagedByrefBytesAs
-                    corelib
-                    state
-                    (ManagedPointerSource.requireAddressed src)
-                    targetCliType
+                IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -1304,7 +1295,7 @@ module NullaryIlOp =
                 IlMachineState.writeIndirectPrimitiveStore
                     corelib
                     state
-                    (ManagedPointerSource.requireAddressed src)
+                    src
                     (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
@@ -1996,7 +1987,7 @@ module NullaryIlOp =
                     v1 &&& v2 |> Int32Source.Verbatim |> EvalStackValue.Int32, state
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask),
                   EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    andManagedPointerAddressBits state ptr v2 (int64<int32> mask), state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v2 (int64<int32> mask), state
                 | EvalStackValue.Int32 (Int32Source.Verbatim v1), EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask), EvalStackValue.NativeInt src ->
@@ -2031,7 +2022,7 @@ module NullaryIlOp =
                     andManagedPointerAddressBits state ptr v2 mask, state
                 | EvalStackValue.Int64 (Int64Source.Verbatim mask),
                   EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    andManagedPointerAddressBits state ptr v2 mask, state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v2 mask, state
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 (Int32Source.Verbatim mask) ->
                     andManagedPointerAddressBits state ptr v1 (int64<int32> mask), state
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 (Int64Source.Verbatim mask) ->
@@ -2042,16 +2033,16 @@ module NullaryIlOp =
                     andManagedPointerAddressBits state ptr v2 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.Int32 (Int32Source.Verbatim mask) ->
-                    andManagedPointerAddressBits state ptr v1 (int64<int32> mask), state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v1 (int64<int32> mask), state
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.Int64 (Int64Source.Verbatim mask) ->
-                    andManagedPointerAddressBits state ptr v1 mask, state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v1 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
-                    andManagedPointerAddressBits state ptr v1 mask, state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v1 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
                   EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    andManagedPointerAddressBits state ptr v2 mask, state
+                    andManagedPointerAddressBits state (ManagedPointerSource.Byref ptr) v2 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 (Int32Source.Verbatim v2) ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.NativeInt src, EvalStackValue.Int32 (Int32Source.Verbatim mask) ->
@@ -2178,7 +2169,10 @@ module NullaryIlOp =
             let conv =
                 match converted with
                 | NativeIntSource.ManagedPointer ptr ->
-                    ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                    ManagedPointerByteView.anchorByteViewIfPlainArrayByref
+                        corelib
+                        state
+                        (ManagedPointerSource.Byref ptr)
                     |> NativeIntSource.ofManagedPointer
                 | other -> other
 
@@ -2723,7 +2717,10 @@ module NullaryIlOp =
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
-                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref
+                            corelib
+                            state
+                            (ManagedPointerSource.Byref ptr)
                         |> NativeIntSource.ofManagedPointer
                     | other -> other
 
@@ -2832,7 +2829,10 @@ module NullaryIlOp =
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
-                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref
+                            corelib
+                            state
+                            (ManagedPointerSource.Byref ptr)
                         |> NativeIntSource.ofManagedPointer
                     | other -> other
 
@@ -2860,7 +2860,10 @@ module NullaryIlOp =
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
-                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref
+                            corelib
+                            state
+                            (ManagedPointerSource.Byref ptr)
                         |> NativeIntSource.ofManagedPointer
                     | other -> other
 
@@ -2940,37 +2943,38 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                    // ECMA-335 III.3.44 allows `ldind.ref`'s address operand to
-                    // be `native int` as well as `&`: a byref widened by
-                    // `conv.i`/`conv.u` (e.g. real CoreLib's
-                    // `Task.FromResult<TResult>`, which reinterprets a cached
-                    // `Task<bool>`/`Task<int>` as `Task<TResult>` via
-                    // `ldloca.s; conv.u; ldind.ref`) is still logically the
-                    // same address, so it must dereference identically to the
-                    // `&`-typed spelling. `Stind_ref` immediately below
-                    // treats both spellings identically for the same reason.
-                    //
-                    // Both spellings route through `readManagedByref` rather
-                    // than the byte-view `readManagedByrefBytesAs` that the
-                    // generic `ldind` uses for primitives: `readManagedByref`
-                    // contains the correct byte-view-vs-structural dispatch
-                    // for object references (including the `ReinterpretAs`
-                    // zero-offset elision that the Task<T> pattern above
-                    // exercises when a projection chain is present), and
-                    // object references are not byte-addressable in
-                    // PawPrint's value model (`CliType.OfBytesLike` has no
-                    // case for `CliType.ObjectRef`). Pointers that are purely
-                    // byte-addressable storage (stack-allocated or native
-                    // memory with no typed cell at the target offset) have no
-                    // way to hold a real object reference in this model
-                    // either, and `readManagedByref` already fails loudly and
-                    // specifically for that shape (e.g. "has no typed cell
-                    // here; needs a byte-view byref shape") rather than
-                    // routing through a byte reconstruction that would
-                    // silently do the wrong thing.
+                // ECMA-335 III.3.44 allows `ldind.ref`'s address operand to
+                // be `native int` as well as `&`: a byref widened by
+                // `conv.i`/`conv.u` (e.g. real CoreLib's
+                // `Task.FromResult<TResult>`, which reinterprets a cached
+                // `Task<bool>`/`Task<int>` as `Task<TResult>` via
+                // `ldloca.s; conv.u; ldind.ref`) is still logically the
+                // same address, so it must dereference identically to the
+                // `&`-typed spelling. `Stind_ref` immediately below
+                // treats both spellings identically for the same reason.
+                //
+                // Both spellings route through `readManagedByref` rather
+                // than the byte-view `readManagedByrefBytesAs` that the
+                // generic `ldind` uses for primitives: `readManagedByref`
+                // contains the correct byte-view-vs-structural dispatch
+                // for object references (including the `ReinterpretAs`
+                // zero-offset elision that the Task<T> pattern above
+                // exercises when a projection chain is present), and
+                // object references are not byte-addressable in
+                // PawPrint's value model (`CliType.OfBytesLike` has no
+                // case for `CliType.ObjectRef`). Pointers that are purely
+                // byte-addressable storage (stack-allocated or native
+                // memory with no typed cell at the target offset) have no
+                // way to hold a real object reference in this model
+                // either, and `readManagedByref` already fails loudly and
+                // specifically for that shape (e.g. "has no typed cell
+                // here; needs a byte-view byref shape") rather than
+                // routing through a byte reconstruction that would
+                // silently do the wrong thing.
+                | EvalStackValue.ManagedPointer src ->
                     IlMachineState.readManagedByref corelib state (ManagedPointerSource.requireAddressed src)
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                    IlMachineState.readManagedByref corelib state src
                 // Release CoreLib's `GCHandle.InternalGet` is literally
                 // `*(object*)handle` (GCHandle.CoreCLR.cs), so this is the
                 // dereference of the handle table slot.
@@ -3011,12 +3015,17 @@ module NullaryIlOp =
 
             let state =
                 match addr with
-                | EvalStackValue.ManagedPointer src
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                | EvalStackValue.ManagedPointer src ->
                     IlMachineState.writeManagedByrefWithBase
                         corelib
                         state
                         (ManagedPointerSource.requireAddressed src)
+                        (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                    IlMachineState.writeManagedByrefWithBase
+                        corelib
+                        state
+                        src
                         (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | addr -> failwith $"TODO: {addr}"

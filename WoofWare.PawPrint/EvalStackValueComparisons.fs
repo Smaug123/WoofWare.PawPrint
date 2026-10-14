@@ -31,15 +31,13 @@ module EvalStackValueComparisons =
     // same stack type, so C# emits no `conv.i`/`conv.u` for casts like
     // `(nint)(byte*)p` — the placeholder ManagedPointer arrives at
     // numeric-shape operations (clt/cgt/clt_un/cgt_un/ceq) verbatim. For
-    // those operations the placeholder *is* its bits, so normalise both
-    // possible shapes (`ManagedPointer placeholder` and the
-    // post-`conv.u` form `NativeInt (ManagedPointer placeholder)`) to
-    // `NativeInt (Verbatim bits)` before dispatching. The byref-shape
-    // arms downstream stay honest: they only see real byrefs.
+    // those operations the placeholder *is* its bits, so normalise it to
+    // `NativeInt (Verbatim bits)` before dispatching, which is the form
+    // `conv.u` gives it. The byref-shape arms downstream stay honest: they
+    // only see real byrefs.
     let private unwrapPlaceholderForBitComparison (v : EvalStackValue) : EvalStackValue =
         match v with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)) ->
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
             EvalStackValue.NativeInt (NativeIntSource.Verbatim bits)
         | _ -> v
 
@@ -253,24 +251,17 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
             | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
-            // `ManagedPointer Null` is the value 0 (cf. the Verbatim-vs-Null
-            // arms below), so unsigned comparison against OpaqueHashBits
-            // reduces to `bits != 0` in the bits-on-the-left direction and
-            // `false` in the Null-on-the-left direction.
-            | NativeIntSource.OpaqueHashBits bits, NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
-                bits <> 0L
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits _ -> false
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 // var1 >u var2  ⟺  var2 <u var1
                 SyntheticCrossArrayOffset.cltUnVerbatim var2 var1
             | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
                 SyntheticCrossArrayOffset.cgtUnVerbatim var1 var2
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
-              NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> false
-            | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
             | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
-                orderByrefsOrFail "cgt.un" ByrefOrderQuestion.LeftAbove p1 p2
+                orderByrefsOrFail
+                    "cgt.un"
+                    ByrefOrderQuestion.LeftAbove
+                    (ManagedPointerSource.Byref p1)
+                    (ManagedPointerSource.Byref p2)
             // GC handle addresses are minted from 1 upwards (see
             // GcHandleRegistry.empty), so a GcHandlePtr is never zero. The
             // common idiom emitting cgt.un against zero is a non-null check on
@@ -278,15 +269,6 @@ module EvalStackValueComparisons =
             // never strictly greater.
             | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> true
             | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> false
-            // `ManagedPointer Null` denotes the value 0 — it's the
-            // representation `cliTypeZeroOf` plants for `IntPtr.Zero` /
-            // `UIntPtr.Zero` (and any other zero-initialised nint slot). Under
-            // unsigned comparison 0 is the minimum, so `Null > v` is always
-            // false, and `v > Null` is just `v != 0` (which holds for both
-            // strictly positive and negative-reinterpreted-as-huge-unsigned
-            // values).
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim _ -> false
-            | NativeIntSource.Verbatim v, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> v <> 0L
             // A non-null managed pointer is a live address. We don't know its
             // numeric value, but it's strictly non-zero (cf. the GcHandlePtr
             // arms above): the comparison against `Verbatim 0L` is well-defined
@@ -296,7 +278,7 @@ module EvalStackValueComparisons =
             | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer _ -> false
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
-            cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+            cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var2))
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             cgtUn var1 (signExtendInt32 var2)
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -306,11 +288,11 @@ module EvalStackValueComparisons =
             not (EvalStackFloat.toDouble var1 <= EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
-            cgtUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
+            cgtUn (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var1)) var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
             cgtUn
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var1))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var2))
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> false
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
@@ -354,39 +336,29 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
             | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
-            // See cgt.un: `ManagedPointer Null` is the value 0 under unsigned
-            // comparison, so `bits < Null` is always false and `Null < bits`
-            // is `bits != 0`.
-            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits bits ->
-                bits <> 0L
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 // var1 <u var2  ⟺  var2 >u var1
                 SyntheticCrossArrayOffset.cgtUnVerbatim var2 var1
             | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
                 SyntheticCrossArrayOffset.cltUnVerbatim var1 var2
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
-              NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> true
-            | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
             | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
-                orderByrefsOrFail "clt.un" ByrefOrderQuestion.LeftBelow p1 p2
+                orderByrefsOrFail
+                    "clt.un"
+                    ByrefOrderQuestion.LeftBelow
+                    (ManagedPointerSource.Byref p1)
+                    (ManagedPointerSource.Byref p2)
             // Mirror of the cgt.un arms: GC handles are minted from 1 upwards,
             // so they are never zero. This makes `bge.un handle, 0`
             // (lowered through `cgeUn = not cltUn`) and direct `0 < handle`
             // checks answer truthfully instead of crashing.
             | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> false
             | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> true
-            // Mirror of the cgt.un arms: `ManagedPointer Null` is the value 0,
-            // so `Null < v` is `v != 0` (unsigned), `v < Null` is always false,
-            // and a non-null managed pointer is strictly greater than 0.
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim v -> v <> 0L
-            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            // Mirror of the cgt.un arms: a managed pointer into storage is strictly greater than 0.
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim 0L -> false
             | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer _ -> true
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
-            cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+            cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var2))
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             cltUn var1 (signExtendInt32 var2)
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
@@ -396,11 +368,11 @@ module EvalStackValueComparisons =
             not (EvalStackFloat.toDouble var1 >= EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
-            cltUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
+            cltUn (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var1)) var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
             cltUn
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var1))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var2))
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
@@ -519,7 +491,7 @@ module EvalStackValueComparisons =
             ceq
                 counters
                 (EvalStackValue.NativeInt var1)
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var2))
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
@@ -549,7 +521,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
             ceq
                 counters
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer var1))
                 (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
 
@@ -560,10 +532,10 @@ module EvalStackValueComparisons =
     /// bit-pattern placeholder is not one, and the caller has already unwrapped it to its bits.
     let private tryByrefOperand (v : EvalStackValue) : ManagedPointerSource option =
         match v with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref _ as p)
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p))
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p),
-                                                              _)) -> Some p
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref _ as p) -> Some p
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer p, _)) ->
+            Some (ManagedPointerSource.Byref p)
         | _ -> None
 
     /// `ceq`, but returning the deferral of a pair of byrefs rather than failing on it, so a

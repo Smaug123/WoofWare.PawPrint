@@ -334,7 +334,7 @@ module TestEvalStack =
                 }
 
         let managedPtr = EvalStackValue.ManagedPointer ptr
-        let nativePtr = EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+        let nativePtr = EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr)
         let nativeZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
         let managedNull = EvalStackValue.ManagedPointer ManagedPointerSource.Null
 
@@ -449,63 +449,6 @@ module TestEvalStack =
             failwith "Expected ble.un to report a GcHandlePtr as not <= zero"
 
     [<Test>]
-    let ``unsigned comparisons treat ManagedPointer Null as zero against Verbatim`` () : unit =
-        // `ManagedPointer Null` is the value 0 in a different shape from `Verbatim 0L`.
-        // `NativeIntSource.ofManagedPointer` never builds a native int of that shape, but
-        // while `cgtUn` keeps an arm for it, the arm must relate the two correctly.
-        // `clt.un` / `cge.un` / `cle.un` must answer symmetrically.
-        let nullPtr =
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-
-        let verbatimZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
-        let verbatimOne = EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
-        // `-1L` reinterprets as `0xFFFF_FFFF_FFFF_FFFF`, the maximum uint64, so it
-        // exercises the wrap-around case that a naive signed implementation would
-        // get wrong.
-        let verbatimMaxU = EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)
-
-        if EvalStackValueComparisons.cgtUn nullPtr verbatimZero then
-            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim 0L"
-
-        if EvalStackValueComparisons.cgtUn verbatimZero nullPtr then
-            failwith "cgt.un should report Verbatim 0L as not strictly greater than ManagedPointer Null"
-
-        if EvalStackValueComparisons.cltUn nullPtr verbatimZero then
-            failwith "clt.un should report ManagedPointer Null as not strictly less than Verbatim 0L"
-
-        if EvalStackValueComparisons.cltUn verbatimZero nullPtr then
-            failwith "clt.un should report Verbatim 0L as not strictly less than ManagedPointer Null"
-
-        // Non-zero Verbatim against Null: Null is "0", so the Verbatim side
-        // strictly dominates under unsigned comparison whenever it is non-zero.
-        if not (EvalStackValueComparisons.cgtUn verbatimOne nullPtr) then
-            failwith "cgt.un should report Verbatim 1L as strictly greater than ManagedPointer Null"
-
-        if EvalStackValueComparisons.cgtUn nullPtr verbatimOne then
-            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim 1L"
-
-        if not (EvalStackValueComparisons.cltUn nullPtr verbatimOne) then
-            failwith "clt.un should report ManagedPointer Null as strictly less than Verbatim 1L"
-
-        if EvalStackValueComparisons.cltUn verbatimOne nullPtr then
-            failwith "clt.un should report Verbatim 1L as not strictly less than ManagedPointer Null"
-
-        // Signed-negative Verbatim reinterprets as the max unsigned value, so
-        // the relation is still "Null = 0 < max_uint64" even though signed `-1 < 0`.
-        if not (EvalStackValueComparisons.cgtUn verbatimMaxU nullPtr) then
-            failwith "cgt.un should report Verbatim -1L (max unsigned) as strictly greater than ManagedPointer Null"
-
-        if EvalStackValueComparisons.cgtUn nullPtr verbatimMaxU then
-            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim -1L"
-
-        // bge.un / ble.un derived comparisons must agree.
-        if not (EvalStackValueComparisons.cgeUn nullPtr verbatimZero) then
-            failwith "bge.un should report ManagedPointer Null as >= Verbatim 0L"
-
-        if not (EvalStackValueComparisons.cleUn nullPtr verbatimZero) then
-            failwith "ble.un should report ManagedPointer Null as <= Verbatim 0L"
-
-    [<Test>]
     let ``unsigned comparisons treat non-null ManagedPointer as strictly greater than Verbatim zero`` () : unit =
         // A non-null managed pointer is some live address, which we model as an
         // unknown but strictly non-zero value (cf. the GcHandlePtr arms). That
@@ -515,11 +458,10 @@ module TestEvalStack =
         let ptr =
             EvalStackValue.NativeInt (
                 NativeIntSource.ManagedPointer (
-                    ManagedPointerSource.Byref
-                        {
-                            Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 0us)
-                            Projections = []
-                        }
+                    {
+                        Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 0us)
+                        Projections = []
+                    }
                 )
             )
 
@@ -590,41 +532,6 @@ module TestEvalStack =
         exn.Message |> shouldContainText "refusing to use managed pointer"
 
     [<Test>]
-    let ``signed comparisons treat ManagedPointer Null as zero against an int32 and a Verbatim`` () : unit =
-        // `NativeIntSource.ofManagedPointer` never builds a native int of this shape, but
-        // while the comparisons keep an arm for it, it is the value 0 under signed comparison.
-        let nullPtr =
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-
-        let property (i : int32) : bool =
-            let asInt32 = EvalStackValue.Int32 (Int32Source.Verbatim i)
-            let asNativeInt = EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 i))
-            let counters = PointerHashState.empty
-
-            EvalStackValueComparisons.clt asInt32 nullPtr = (i < 0)
-            && EvalStackValueComparisons.clt nullPtr asInt32 = (0 < i)
-            && EvalStackValueComparisons.cgt asInt32 nullPtr = (i > 0)
-            && EvalStackValueComparisons.cgt nullPtr asInt32 = (0 > i)
-            && EvalStackValueComparisons.ceq counters asInt32 nullPtr = (i = 0)
-            && EvalStackValueComparisons.ceq counters nullPtr asInt32 = (i = 0)
-            && EvalStackValueComparisons.clt asNativeInt nullPtr = (i < 0)
-            && EvalStackValueComparisons.clt nullPtr asNativeInt = (0 < i)
-            && EvalStackValueComparisons.cgt asNativeInt nullPtr = (i > 0)
-            && EvalStackValueComparisons.cgt nullPtr asNativeInt = (0 > i)
-
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 500,
-            Prop.forAll (Arb.fromGen (Gen.choose (Int32.MinValue, Int32.MaxValue))) property
-        )
-
-        // Null against itself is 0 against 0.
-        if EvalStackValueComparisons.clt nullPtr nullPtr then
-            failwith "clt should report ManagedPointer Null as not strictly less than itself"
-
-        if EvalStackValueComparisons.cgt nullPtr nullPtr then
-            failwith "cgt should report ManagedPointer Null as not strictly greater than itself"
-
-    [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
         // Widening a synthetic cross-array offset to NativeInt in an Int64-target slot erases
         // the Int64Source wrapper. The coercion must preserve the variant unchanged so the
@@ -655,11 +562,10 @@ module TestEvalStack =
         let pointerAt (byteOffset : int) : EvalStackValue =
             EvalStackValue.NativeInt (
                 NativeIntSource.ManagedPointer (
-                    ManagedPointerSource.Byref
-                        {
-                            Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
-                            Projections = []
-                        }
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+                        Projections = []
+                    }
                 )
             )
 
@@ -1249,8 +1155,8 @@ module TestEvalStack =
         // narrowing an address is usually about.
         for value in
             [
-                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer byref)
-                EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer byref, true))
+                EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer byref)
+                EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ofManagedPointer byref, true))
             ] do
             for conv, expected in
                 [
@@ -1306,33 +1212,6 @@ module TestEvalStack =
                     ] do
                     let _, counters = conv.Apply value PointerHashState.empty
                     counters |> shouldEqual PointerHashState.empty
-
-        Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
-
-    [<Test>]
-    let ``narrowing a native-int placeholder truncates its own bits`` () : unit =
-        // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns rather than
-        // addresses, so they narrow verbatim and register no identity. All three of
-        // `Int64Source.widenedNativeInt`, the float-conversion helper, and
-        // `materialiseHashBits` have to agree about this, because a placeholder can
-        // arrive already-widened or straight from the native-int slot.
-        let property (bits : int64) : unit =
-            let placeholder =
-                NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
-
-            let narrowed, counters =
-                EvalStackValue.convToInt32 (EvalStackValue.NativeInt placeholder) PointerHashState.empty
-
-            narrowed
-            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 bits)))))
-
-            counters |> shouldEqual PointerHashState.empty
-
-            let viaHash, hashCounters =
-                PointerHashSynthesis.materialiseHashBits "placeholder" placeholder PointerHashState.empty
-
-            viaHash |> shouldEqual bits
-            hashCounters |> shouldEqual PointerHashState.empty
 
         Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
 

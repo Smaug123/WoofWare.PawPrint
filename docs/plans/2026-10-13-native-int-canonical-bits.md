@@ -63,14 +63,17 @@ every new consumer would have to remember the normalisation.
    `NullReferenceException` through `Verbatim 0`, which is `*(int*)0`. One
    classifier, `EvalStackValue.isNullAddress`, names the null addresses for
    these and for `ldobj`, `stobj` and `initobj`, which already accepted it.
-2. Every producer above builds its native int with
+2. Done (#1922). Every producer above builds its native int with
    `NativeIntSource.ofManagedPointer`, which turns a pointer of known bits
    into `Verbatim`, and `EvalStack.Push'` refuses a native int that holds one
    as a pointer, in every build. The eleven instructions are unparked. `div`
    on a byref of known bits divides the bits, which removes its two wrong
    answers; a null byref is still legal, so those arms remain reachable.
-3. `NativeIntSource.ManagedPointer` carries an `AddressedByref` rather than a
-   `ManagedPointerSource`, so that a native int of known bits cannot be built
-   at all, and `Push'` no longer needs to check. Narrowing the type on the
-   main branch of 2026-10-13 broke 167 sites in the library, most of them the
-   bridge arms for the pointer spelling, which this deletes.
+3. Done. `NativeIntSource.ManagedPointer` carries an `AddressedByref` rather
+   than a `ManagedPointerSource`, so a native int of known bits cannot be
+   built at all, and `Push'` no longer checks. The arms that matched a native
+   int holding a null pointer or a placeholder are gone, as is the property in
+   `TestBinaryArithmetic` that compared the two spellings, since only one can
+   be written. A null byref on the stack, `EvalStackValue.ManagedPointer
+   Null`, is still legal, and becomes `Verbatim 0` wherever it is held as a
+   native int.

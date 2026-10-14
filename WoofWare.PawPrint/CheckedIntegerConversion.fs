@@ -102,8 +102,6 @@ module CheckedIntegerConversion =
         | EvalStackValue.Int32 source -> Int32Source.value operation source |> ofInt32 reading |> convert target |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i)
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ofInt64 reading i |> convert target |> Some
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-            convert target 0I |> Some
         | EvalStackValue.Float f ->
             let f = EvalStackFloat.toDouble f
 

@@ -58,7 +58,7 @@ class Program
         if (Interlocked.Exchange(ref StaticSlot, (short)22) != -11 || StaticSlot != 22) return 23;
         if (Interlocked.Exchange(ref StaticSlot, (short)0) != 22 || StaticSlot != 0) return 24;
 
-        // IntPtr starting at zero: exercises the ManagedPointer Null → NativeInt decode path.
+        // IntPtr starting at zero, as a default IntPtr holds it.
         IntPtr ip = IntPtr.Zero;
         IntPtr ipOld = Interlocked.Exchange(ref ip, new IntPtr(77));
         if (ipOld != IntPtr.Zero || ip != new IntPtr(77)) return 25;
