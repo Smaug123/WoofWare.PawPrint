@@ -11,7 +11,7 @@ open WoofWare.PosixKernel
 /// (Linux CoreLib) and `SystemNative_GetUInt64OSThreadId` (macOS CoreLib), which
 /// `System.Threading.Lock` uses as its owner identity.
 ///
-/// The kernel mints the id (`UnixTaskLifecycle.spawn`) and `OsThreadIdPal` projects
+/// The kernel mints the id (`UnixThreadLifecycle.spawn`) and `OsThreadIdPal` projects
 /// it to the shim's two widths. Two things matter to a guest. No two live threads
 /// may share an id, because `Lock` reads a matching id as the same thread
 /// re-entering. And the numbers are what a quiet Linux hands out, since a guest can
@@ -40,7 +40,7 @@ module TestOsThreadId =
     let private machine () : IlMachineState = machineOn KernelConfig.Default
 
     let private idOf (thread : ThreadId) (state : IlMachineState) : uint64 =
-        OsThreadId.toUInt64 (UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))
+        OsThreadId.toUInt64 (UnixThreadState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))
 
     // --- What the shim reports of an id ---
 
@@ -53,7 +53,7 @@ module TestOsThreadId =
                     LeaderThreadId = Some id
                 }
 
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
     [<Test>]
     let ``the 64-bit shim reports the id whole, and the 32-bit one its low half with 0 as the sentinel`` () =
@@ -188,7 +188,8 @@ module TestOsThreadId =
                 |> shouldEqual (Map.keys expected |> List.ofSeq)
 
                 for KeyValue (thread, expectedId) in expected do
-                    let id = UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+                    let id =
+                        UnixThreadState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
 
                     (thread, OsThreadIdPal.tryGetUInt32 id)
                     |> shouldEqual (thread, uint32 expectedId)

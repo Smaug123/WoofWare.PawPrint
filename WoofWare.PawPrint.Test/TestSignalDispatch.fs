@@ -207,7 +207,7 @@ module TestSignalDispatch =
             | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
             | other ->
                 let masks =
-                    UnixSystem.tasks kernel.System
+                    UnixSystem.threads kernel.System
                     |> Map.map (fun task _ -> SignalState.maskOf task (UnixSystem.signals kernel.System))
 
                 failwith $"sending %O{signal} answered %A{other}; the tasks' masks were %A{masks}"
@@ -217,7 +217,7 @@ module TestSignalDispatch =
     /// `signal` sent now stays pending rather than being taken or acted on.
     let private blockEverywhere (signal : Signal) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
-            (kernel, UnixSystem.tasks kernel.System |> Map.keys)
+            (kernel, UnixSystem.threads kernel.System |> Map.keys)
             ||> Seq.fold (fun kernel task -> SignalFrames.enter task (Set.singleton signal) kernel)
         )
 
@@ -225,7 +225,7 @@ module TestSignalDispatch =
     /// leaving whatever it held off pending and now receivable.
     let private unblockEverywhere (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
-            (kernel, SignalState.tasksWithFrames (UnixSystem.signals kernel.System))
+            (kernel, SignalState.threadsWithFrames (UnixSystem.signals kernel.System))
             ||> Seq.fold (fun kernel task -> SignalFrames.leave task kernel)
         )
 
@@ -455,7 +455,7 @@ module TestSignalDispatch =
                 |> setDisposition Signal.SIGCONT SignalDisposition.Default
                 |> fun state ->
                     state.MapKernel (fun kernel ->
-                        (kernel, UnixSystem.tasks kernel.System |> Map.keys)
+                        (kernel, UnixSystem.threads kernel.System |> Map.keys)
                         ||> Seq.fold (fun kernel task ->
                             SignalFrames.enter task (Set.ofList [ Signal.SIGCONT ; Signal.SIGWINCH ]) kernel
                         )
@@ -689,7 +689,7 @@ module TestSignalDispatch =
             |> poll
 
         pipeContents state |> shouldEqual [ 15uy ; 2uy ]
-        SignalState.tasksWithFrames state.Kernel.Signals |> shouldEqual Set.empty
+        SignalState.threadsWithFrames state.Kernel.Signals |> shouldEqual Set.empty
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
 
     [<Test>]
@@ -713,7 +713,7 @@ module TestSignalDispatch =
         let state = poll state
         pipeContents state |> shouldEqual [ 40uy ; 40uy ]
         state.Kernel.Signals |> SignalState.pending |> shouldEqual []
-        SignalState.tasksWithFrames state.Kernel.Signals |> shouldEqual Set.empty
+        SignalState.threadsWithFrames state.Kernel.Signals |> shouldEqual Set.empty
 
     [<Test>]
     let ``a signal read after its registration went is handled as not cancelled, by the dispatcher itself`` () : unit =
@@ -883,7 +883,7 @@ module TestSignalDispatch =
 
     /// The read the dispatcher's task sleeps in, if it sleeps in one.
     let private dispatcherRead (dispatcher : ThreadId) (state : IlMachineState) : ParkedPipeRead option =
-        match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
+        match UnixThreadState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
         | Some (ParkedSyscall.PipeRead read) -> Some read
         | None -> None
         | Some other -> failwith $"the dispatcher is parked in %A{other}"
@@ -1276,7 +1276,7 @@ module TestSignalDispatch =
         (state.ThreadState |> Map.find dispatcher).Status
         |> shouldEqual ThreadStatus.Runnable
 
-        UnixTaskState.parkedIn (EmulatedKernel.taskOf reader state.Kernel.Tasks)
+        UnixThreadState.parkedIn (EmulatedKernel.taskOf reader state.Kernel.Tasks)
         |> Option.isSome
         |> shouldEqual true
 
@@ -1498,7 +1498,7 @@ module TestSignalDispatch =
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
 
         exn.Message
-        |> shouldContainText "the process's leader blocks it while another task does not"
+        |> shouldContainText "the process's leader blocks it while another thread does not"
 
     [<Test>]
     let ``poll refuses a dispatcher that is the leader`` () : unit =

@@ -63,7 +63,7 @@ type IlMachineState =
         ///
         /// The one cursor with that property, and it stays specific to CPU
         /// placement. A thread's OS thread id is the kernel's to mint
-        /// (`UnixTaskLifecycle.spawn`) when the thread gets its OS thread, and every
+        /// (`UnixThreadLifecycle.spawn`) when the thread gets its OS thread, and every
         /// such thread consumes one, as the signal-handling thread a real runtime
         /// creates does.
         ///

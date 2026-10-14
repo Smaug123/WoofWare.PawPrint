@@ -67,7 +67,7 @@ Divergent rows (impure guests, per-flavour arms):
 The retry-after-refusal rows above are the *no-SO_ERROR-read* path
 (`probe3.c`): reading `SO_ERROR` first consumes the pending error and changes
 the retry answers (probe-measured ECONNABORTED on Linux; Darwin answers EISCONN
-either way, remeasured on Darwin 27 in `docs/probes/so-error/`).
+either way, remeasured on Darwin 27 in [`docs/probes/so-error/`](https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/so-error)).
 `GetSocketErrorOption` is not modelled this slice, so only the delivery path
 is reachable; the consumed path becomes this table's business when that
 native lands in the wake slice.

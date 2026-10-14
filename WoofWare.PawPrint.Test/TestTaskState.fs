@@ -18,7 +18,7 @@ type ParkingSyscall =
 /// `Cpu` and `OsThreadId` used to be total fields on `ThreadState`, because a
 /// `Map<ThreadId, _>` has no truthful default for an absent key: "core 0" is a
 /// guess and a shared OS thread id silently breaks `System.Threading.Lock`.
-/// They are now fields of a `UnixTaskState` in the kernel, and the guarantee
+/// They are now fields of a `UnixThreadState` in the kernel, and the guarantee
 /// that replaces compile-time totality is that a key is never absent — one task
 /// per thread with an OS thread, minted when the thread is started.
 ///
@@ -65,7 +65,7 @@ module TestTaskState =
         state.Kernel.Leader |> shouldEqual (ThreadId 0)
         state.Kernel.Tasks |> Map.keys |> List.ofSeq |> shouldEqual [ ThreadId 0 ]
 
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf (ThreadId 0) state.Kernel.Tasks)
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf (ThreadId 0) state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual (uint64 (ProcessId.toInt32 (UnixSystem.processId state.Kernel.System)))
 
@@ -90,11 +90,11 @@ module TestTaskState =
         agrees state
 
         // The id after the leader's, which is the process ID.
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual 4243UL
 
-        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> shouldEqual None
 
     [<Test>]
@@ -145,10 +145,10 @@ module TestTaskState =
 
         agrees state
 
-        UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> shouldEqual (CpuId 0)
 
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual 4243UL
 
@@ -172,12 +172,12 @@ module TestTaskState =
         let ids =
             threads state
             |> Map.toList
-            |> List.map (fun (t, _) -> UnixTaskState.osThreadId (EmulatedKernel.taskOf t state.Kernel.Tasks))
+            |> List.map (fun (t, _) -> UnixThreadState.osThreadId (EmulatedKernel.taskOf t state.Kernel.Tasks))
 
         ids |> List.distinct |> List.length |> shouldEqual ids.Length
 
         ids
-        |> List.contains (UnixTaskState.osThreadId (EmulatedKernel.taskOf parked state.Kernel.Tasks))
+        |> List.contains (UnixThreadState.osThreadId (EmulatedKernel.taskOf parked state.Kernel.Tasks))
         |> shouldEqual true
 
     [<Test>]
@@ -198,10 +198,10 @@ module TestTaskState =
             |> ThreadFixtures.start (ThreadId 0) first
 
         // The entry thread took the rotation's first slot.
-        UnixTaskState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
+        UnixThreadState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
         |> shouldEqual (CpuId 1)
 
-        UnixTaskState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
+        UnixThreadState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
         |> shouldEqual (CpuId 2)
 
     [<Test>]
@@ -213,7 +213,7 @@ module TestTaskState =
 
         first |> shouldEqual state.Kernel.Leader
 
-        UnixTaskState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
+        UnixThreadState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
         |> shouldEqual (CpuId 0)
 
         state.NextCpuRotation |> shouldEqual 1
@@ -236,7 +236,7 @@ module TestTaskState =
         |> shouldEqual [ EmulatedKernelDefect.ThreadWithoutTask thread ]
 
         let exn =
-            Assert.Throws<exn> (fun () -> EmulatedKernel.taskOf thread state.Kernel.Tasks |> ignore<UnixTaskState>)
+            Assert.Throws<exn> (fun () -> EmulatedKernel.taskOf thread state.Kernel.Tasks |> ignore<UnixThreadState>)
 
         exn.Message |> shouldContainText "has no task"
 
@@ -357,8 +357,8 @@ module TestTaskState =
         state.ThreadState.[first].Status |> shouldEqual ThreadStatus.Terminated
         state.Kernel.Tasks |> shouldEqual (Map.remove first before)
 
-        UnixTaskState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
-        |> shouldEqual (UnixTaskState.cpu (EmulatedKernel.taskOf second before))
+        UnixThreadState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
+        |> shouldEqual (UnixThreadState.cpu (EmulatedKernel.taskOf second before))
 
         agrees state
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
@@ -376,12 +376,12 @@ module TestTaskState =
         let state =
             state.MapKernel (SignalFrames.enter worker (Set.singleton Signal.SIGUSR1))
 
-        SignalState.tasksWithFrames (UnixSystem.signals state.Kernel.System)
+        SignalState.threadsWithFrames (UnixSystem.signals state.Kernel.System)
         |> shouldEqual (Set.singleton worker)
 
         let state = Scheduler.onThreadTerminated worker state
 
-        SignalState.tasksWithFrames (UnixSystem.signals state.Kernel.System)
+        SignalState.threadsWithFrames (UnixSystem.signals state.Kernel.System)
         |> shouldBeEmpty
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
@@ -433,11 +433,11 @@ module TestTaskState =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) state.Kernel.System
+                UnixThreadLifecycle.spawn (ThreadId 0) thread (CpuId 3) state.Kernel.System
                 |> ignore<SpawnAnswer * UnixSystem<ThreadId, NativeSignalHandler>>
             )
 
-        exn.Message |> shouldContainText "already names a task"
+        exn.Message |> shouldContainText "already names a thread"
 
     [<Test>]
     let ``waking a thread that is not parked in a syscall is refused`` () : unit =
@@ -465,7 +465,7 @@ module TestTaskState =
         let state, thread =
             ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
-        UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        UnixThreadState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> shouldEqual (CpuId 1)
 
         // An `epoll_wait` of 10 ms on a port nothing can make ready, which the
@@ -484,7 +484,7 @@ module TestTaskState =
             | other -> failwith $"expected the epoll_wait to park, got %A{other}"
             |> Scheduler.parkInSyscall thread
 
-        match UnixTaskState.parkedIn (EmulatedKernel.taskOf thread parked.Kernel.Tasks) with
+        match UnixThreadState.parkedIn (EmulatedKernel.taskOf thread parked.Kernel.Tasks) with
         | Some (ParkedSyscall.EpollWait wait) ->
             wait.MaxEvents |> shouldEqual 8
 
@@ -510,14 +510,14 @@ module TestTaskState =
             | EpollWaitOutcome.Answered [], system -> expired.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"expected the wait to time out, got %A{other}"
 
-        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        UnixThreadState.parkedIn (EmulatedKernel.taskOf thread released.Kernel.Tasks)
         |> shouldEqual None
 
         agrees released
 
         // Parking must not disturb the rest of the task.
-        UnixTaskState.cpu (EmulatedKernel.taskOf thread released.Kernel.Tasks)
-        |> shouldEqual (UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks))
+        UnixThreadState.cpu (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        |> shouldEqual (UnixThreadState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks))
 
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread released.Kernel.Tasks)
-        |> shouldEqual (UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        |> shouldEqual (UnixThreadState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))

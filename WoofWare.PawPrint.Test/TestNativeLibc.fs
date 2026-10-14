@@ -49,7 +49,7 @@ module TestNativeLibc =
         (system : UnixSystem<int, NativeSignalHandler>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        match UnixTaskLifecycle.spawn leader task (CpuId 0) system with
+        match UnixThreadLifecycle.spawn leader task (CpuId 0) system with
         | SpawnAnswer.Spawned _, system -> system
         | SpawnAnswer.Failed error, _ -> failwith $"spawning task %d{task} failed with %O{error}"
 
@@ -644,7 +644,7 @@ module TestNativeLibc =
                         ProcessId = ProcessId.parseOrFail "test" pid
                     }
 
-            UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
+            UnixThreadState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
         let darwinId (id : uint64) : OsThreadId =
             let kernel =
@@ -654,7 +654,7 @@ module TestNativeLibc =
                         LeaderThreadId = Some id
                     }
 
-            UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
+            UnixThreadState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
         let linux (pid : int32) : bool =
             NativeLibc.gettid SimulatedUnixFlavour.Linux (linuxId pid) = Some pid

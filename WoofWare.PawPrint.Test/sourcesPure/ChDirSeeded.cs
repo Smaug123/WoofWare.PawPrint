@@ -3,7 +3,7 @@ using System.IO;
 
 // `chdir(2)` through `Environment.CurrentDirectory`, in the rows Linux and macOS
 // answer identically — which, measured, is all of them: see
-// docs/probes/chdir/, whose two columns agree on every row.
+// https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/chdir, whose two columns agree on every row.
 //
 // This is a *pure* test, so it runs on the real CLR as well as under PawPrint,
 // and every claim below has to hold on both. That rules out saying anything
