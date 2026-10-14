@@ -105,13 +105,15 @@ Stage 1 comes first (`TestOpcodeFaultsOnPawPrint`). On its first run, 46 of the
 14 were parked, and every disagreement was a refusal rather than a wrong
 exception. `add.ovf.un` and `sub.ovf.un` were unimplemented, and `conv.r.un`
 refused a float operand, which CoreCLR converts without raising; all three are
-now done. The other 11 are still parked, for one reason:
-`CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer,
-which is what a C# array initialiser leaves in an element it does not store.
-`add`, `sub` and `mul` compute with it as 0, but `div`, `div.un`, `rem`,
-`rem.un`, `and`, `or`, `xor`, `shl`, `shr`, `shr.un` and `mul.ovf.un` refuse
-it. CoreCLR raises `DivideByZeroException` for the divisions and computes the
-rest.
+now done. The other 11 were parked for one reason: `CliType.zeroOfPrimitive`
+made a native int's zero a null managed pointer, which is what a C# array
+initialiser leaves in an element it does not store. `add`, `sub` and `mul`
+computed with it as 0, but `div`, `div.un`, `rem`, `rem.un`, `and`, `or`,
+`xor`, `shl`, `shr`, `shr.un` and `mul.ovf.un` refused it, where CoreCLR raises
+`DivideByZeroException` for the divisions and computes the rest. A native int
+of known bits now always holds them as a number
+(`docs/plans/2026-10-13-native-int-canonical-bits.md`), so all 60 instructions
+run unparked.
 
 Stages 2 and 3 do not yet run under PawPrint.
 

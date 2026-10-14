@@ -89,8 +89,8 @@ module TestFieldReferenceResolution =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let reflected = System.Reflection.Assembly.Load (AssemblyName assemblyName)
 
-        Path.GetDirectoryName reflected.Location
-        |> shouldEqual (Path.GetFullPath frameworkDir)
+        FrameworkUnderTest.resolveLinks (Path.GetDirectoryName reflected.Location)
+        |> shouldEqual (FrameworkUnderTest.resolveLinks frameworkDir)
 
         let corelib =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))

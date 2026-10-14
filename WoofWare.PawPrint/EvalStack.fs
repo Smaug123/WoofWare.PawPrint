@@ -122,12 +122,6 @@ module EvalStackValue =
         | NativeIntSource.Verbatim i -> i
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith $"%s{operation}: refusing to convert cross-array offset to a float"
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
-        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns, not
-            // addresses, so converting one to a float is ordinary arithmetic on a
-            // number the guest itself supplied.
-            bits
         | NativeIntSource.ManagedPointer ptr ->
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to a float"
         | NativeIntSource.FunctionPointer methodInfo ->
@@ -269,7 +263,8 @@ module EvalStackValue =
             // `UnmanagedMemoryStream.Initialize` idiom checks for; modelling
             // that would require revisiting `NATIVE_INT_SIZE`.
             match src with
-            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr
+            | NativeIntSource.ManagedPointer ptr ->
+                UnsignedNativeIntSource.FromManagedPointer (ManagedPointerSource.Byref ptr)
             | NativeIntSource.SyntheticCrossArrayOffset s -> UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s
             | NativeIntSource.Verbatim n -> UnsignedNativeIntSource.Verbatim (uint64 n)
             | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
@@ -283,7 +278,8 @@ module EvalStackValue =
             match i with
             | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim
             | NativeIntSource.SyntheticCrossArrayOffset i -> UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i
-            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr
+            | NativeIntSource.ManagedPointer ptr ->
+                UnsignedNativeIntSource.FromManagedPointer (ManagedPointerSource.Byref ptr)
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -439,7 +435,8 @@ module EvalStackValue =
         // about, and `materialiseHashBits` refuses byrefs precisely so that a
         // synthesised number can never stand in for an address PawPrint doesn't model.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, _))
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convI4FromInt64 ptr, counters
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+            narrowByrefTo32 convI4FromInt64 (ManagedPointerSource.Byref ptr), counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I4" src counters
@@ -473,9 +470,8 @@ module EvalStackValue =
             // Same rationale as the NativeInt arm: keep the pointer's provenance
             // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
             // recovers the original ManagedPointer.
-            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true
-        | EvalStackValue.NullObjectRef ->
-            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) true
+            Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer ptr) true
+        | EvalStackValue.NullObjectRef -> Int64Source.Verbatim 0L
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
@@ -490,9 +486,8 @@ module EvalStackValue =
         | EvalStackValue.Float f ->
             (EvalStackFloat.toDouble f |> FloatToInteger.toUInt64 |> int64)
             |> Int64Source.Verbatim
-        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false
-        | EvalStackValue.NullObjectRef ->
-            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false
+        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer ptr) false
+        | EvalStackValue.NullObjectRef -> Int64Source.Verbatim 0L
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
@@ -556,7 +551,8 @@ module EvalStackValue =
         // Same rationale as `convToInt32`: the byref survives the narrowing so that
         // the mask managed code is about to apply stays answerable.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, _))
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convU4FromInt64 ptr, counters
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+            narrowByrefTo32 convU4FromInt64 (ManagedPointerSource.Byref ptr), counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U4" src counters
@@ -695,15 +691,14 @@ module EvalStackValue =
     /// Whether `value`, used as the address of an indirection (`ldind`, `stind`, `ldobj`, `stobj`,
     /// `initobj` and the like), is null, so that the access raises `NullReferenceException`.
     ///
-    /// A null address has four spellings on the stack: a null object reference, which IL can
-    /// push where an address belongs; a null managed pointer; a native int holding one, which is
-    /// what a default `IntPtr` holds; and the native int 0, which is what an unmanaged null
-    /// (`ldc.i4.0; conv.u`, as in `*(int*)0`) and any `conv` round-trip of a null pointer give.
+    /// A null address has three spellings on the stack: a null object reference, which IL can
+    /// push where an address belongs; a null managed pointer; and the native int 0, which is
+    /// what a default `IntPtr` holds, and what an unmanaged null (`ldc.i4.0; conv.u`, as in
+    /// `*(int*)0`) and any `conv` of a null pointer give.
     let isNullAddress (value : EvalStackValue) : bool =
         match value with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) -> true
         | _ -> false
 
@@ -731,7 +726,6 @@ module EvalStackValue =
             tryExactIntegerBits (EvalStackValue.NativeInt src)
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ValueSome i
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) -> ValueSome bits
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
         | EvalStackValue.ManagedPointer ptr -> ManagedPointerSource.tryBitPatternBits ptr
         | EvalStackValue.NullObjectRef -> ValueSome 0L
         | EvalStackValue.NativeInt _
@@ -1008,10 +1002,8 @@ module EvalStackValue =
                 | NativeIntSource.OpaqueHashBits bits ->
                     failwith
                         $"refusing to interpret synthesised pointer-hash bits 0x%x{bits} as an object ref (would forge a heap address)"
-                | NativeIntSource.ManagedPointer ptr ->
-                    match ptr with
-                    | ManagedPointerSource.Null -> CliType.ObjectRef None
-                    | _ -> failwith "TODO: non-null managed pointer in NativeIntSource coerced to ObjectRef"
+                | NativeIntSource.ManagedPointer _ ->
+                    failwith "TODO: non-null managed pointer in NativeIntSource coerced to ObjectRef"
             | EvalStackValue.UserDefinedValueType obj ->
                 let popped = CliValueType.DereferenceFieldAt 0 NATIVE_INT_SIZE obj
 
@@ -1039,7 +1031,10 @@ module EvalStackValue =
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith
                         "refusing to interpret synthetic cross-storage byte offset as a runtime pointer: the value is a deterministic sentinel, not a real address"
-                | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
+                | NativeIntSource.ManagedPointer src ->
+                    ManagedPointerSource.Byref src
+                    |> CliRuntimePointer.Managed
+                    |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr typeHandle ->
@@ -1237,7 +1232,7 @@ module EvalStackValue =
             CliType.Numeric (CliNumericType.Int64 (Int64Source.widenedNativeInt src true))
         | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.ManagedPointer ptr ->
             CliType.Numeric (
-                CliNumericType.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true)
+                CliNumericType.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ofManagedPointer ptr) true)
             )
         | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.NullObjectRef ->
             CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
@@ -1276,12 +1271,6 @@ type EvalStack =
         | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
             failwith
                 $"eval-stack invariant violated: primitive-like struct %O{vt.Declared} pushed as UserDefinedValueType (kind = %O{vt.PrimitiveLikeKind})"
-        // Invariant: a native int whose bits are known holds them as `Verbatim`, never as a
-        // pointer (`NativeIntSource.ofManagedPointer`), so that every consumer sees one spelling.
-        | EvalStackValue.NativeInt n
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (n, _)) when NativeIntSource.holdsBitPatternPointer n ->
-            failwith
-                $"eval-stack invariant violated: native int %O{n} holds a pointer of known bits; build it with NativeIntSource.ofManagedPointer"
         | _ -> ()
 
         {

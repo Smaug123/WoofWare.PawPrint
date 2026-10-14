@@ -311,6 +311,41 @@ itself or the containing type is not fully instantiated"). A case's expected out
 has to be recorded per runtime, alongside its parking (below), unless the case asserts only a
 fact that holds on every supported major.
 
+### Re-measured on 2026-10-13
+
+The same method against the same RC1, from `main` after P1–P5 and with `SystemNative_AlignedAlloc`
+answered, this time with guests compiled against net10 as a P6e leg would compile them, and the
+`RealRuntime` oracle on real RC1. The default suite had 241 failures of 4441 and the Guest suite
+687 of 1508.
+
+* **Startup** stops at the same three shape facts, each now a clean refusal: the four-argument
+  `AppContext.Setup`, the bare-handle stub, and the delegate layout. With stand-ins for those, a
+  trivial guest runs. `EqualityComparer<T>.Create` no longer blocks. The net11 delegate arm needs
+  a changed multicast reader as well as renamed fields: the invocation list is a `Wrapper[]` of
+  `{ Delegate Value }`.
+* **Residual causes** (default / Guest):
+
+  | cause | blocked | against 2026-09-23 |
+  | --- | --- | --- |
+  | `ObjectHeader.AcquireThinLock` (net11 only: net10's `Monitor.Enter` takes an InternalCall fast path); `Interlocked.CompareExchange(int*, int, int)` is very likely the next blocker behind it | 159 / 626 | 71 / 401 |
+  | `Unsafe.BitCast` refused in `MemoryExtensions.MinMaxInteger` (net10 reaches the mechanism only behind `AdvSimd`, which PawPrint's scalar profile never takes) | 15 / 17 | 15 / 9 |
+  | `MarshalNative_HasLayout` | 0 / 15 | 0 / 13 |
+  | `ThreadNative_SetWaitSleepJoinState`: RC1 on Unix waits through the managed `WaitSubsystem`, which is also why `TestNativeWaitOneCore` finds no `WaitHandle_WaitOneCore` import | 0 / 14 | new |
+  | `GCMemoryInfoData` (RC1 has `InlineArray5<GCGenerationInfo> _generationInfo`), `Delegate_GetMethodDesc`, `GetIsCollectible` (an InternalCall on RC1, a QCall on net10), `RuntimeModule_GetTypes` (three arguments on RC1) | 0 / 6 | `RuntimeModule_GetTypes` new |
+  | audits and contract rows of the CoreLib under test, visible since P2 | 9 / 0 | new |
+
+  The rest were artefacts of the measurement (its stand-ins, no net11 linux pack in the store at
+  the time, the host-reflection oracles on the net10 host, no RC1 ASP.NET Core) or the rows below.
+  Suite growth (1181 to 1508 Guest tests) is the inferred, unchecked reason for the larger counts.
+* **Wrong answers**: `EnvironmentCurrentManagedThreadId.cs` and `LockHeldByOtherThread.cs` share
+  the unseeded `ManagedThreadId.t_currentManagedThreadId` (RC1's `Lock.IsHeldByCurrentThread`
+  reads it), read from the IL and not yet confirmed by a fix.
+* **Real net11 differs from real net10** in twelve tests: the two above; a `callvirt` of a
+  `MethodSpec` over a `MethodDef` that RC1 rejects with `InvalidProgramException`; and the
+  `ExceptionMaking` fixtures that install a culture whose `Name` throws during exception
+  construction, where RC1 overflows the stack in nine and lets the `TypeInitializationException`
+  wrapper escape in another. Those need per-runtime endings through P4.
+
 ## Nix, tests, and CI
 
 ### The test host runs the oldest supported major; newer majors are guest-only
@@ -384,17 +419,20 @@ The net11 set pins **11.0.0-rc.1.26425.128**:
 
 That was the newest net11 nixpkgs carried on 2026-09-23. No RC2 was tagged yet.
 
-It comes from **a second nixpkgs input, used only for the net11 set**. The net10 set stays on the
-existing input, byte-identical. Bumping net11 (RC2, then GA) is then the `sync-dotnet-runtime`
-motion against the second input alone. The two inputs collapse into one when one nixpkgs rev
-carries both pins we want, and at the latest when net10 retires.
+Both sets come from **the one nixpkgs input**. The rev `flake.lock` names since the 10.0.12
+bump (`c9fe7d12`) carries `runtime_10_0` at 10.0.12 and `runtime_11_0` at 11.0.0-rc.1.26425.128,
+so pinning net11 changes nothing about the net10 set. Bumping net11 (RC2, then GA) is the
+`sync-dotnet-runtime` motion for the net11 entry.
 
-Two alternatives were rejected:
+The fallback is **a second nixpkgs input, used only for the set that must move**: if a future
+rev moves one pin where the other must not follow, the moving set takes its runtime from a second
+input, and the two collapse again once one rev carries both pins we want, and at the latest when
+net10 retires. On 2026-09-23 this was the plan of record, because nixpkgs-unstable's net11 rev
+would also have moved net10 from 10.0.7 to 10.0.12 and the SDK to a new feature band; the
+servicing bump has since landed by itself, so one input serves.
 
-* **One input, bumped to a rev that carries net11.** Measured: nixpkgs-unstable on 2026-09-23
-  moves net10 from 10.0.7 to 10.0.12, and the SDK from 10.0.203 to 10.0.401, a new feature band
-  with a new F# compiler and new analysers. That drags a servicing bump and a toolchain change
-  into this stage, and it couples the two pins' cadences for as long as both exist.
+One alternative was rejected:
+
 * **Wait for net11 GA before adding any pin.** This avoids carrying RC bumps, but it does not
   avoid any frontier work: everything measured on RC1 was also present on preview 7.
 
@@ -405,7 +443,11 @@ muxer, with only the oldest major's SDK. Measured on aarch64-darwin:
 
 * it adds 130 MB to the closure (1.37 → 1.50 GB), against 1.42 GB for combining the full net11 SDK;
 * `dotnet --version` stays on SDK 10;
-* the muxer runs both a net10 guest and a net11 guest.
+* the muxer runs both a net10 guest and a net11 guest;
+* each framework directory in the combined install is a symbolic link into the package that
+  provides it, and the host is not consistent about which spelling it reports: CoreLib's location
+  has the links resolved, but `Assembly.Load` of another framework assembly reports the linked
+  path. A test that compares framework paths compares them through `FrameworkUnderTest.resolveLinks`.
 
 The muxer resolves the highest `hostfxr` present, so net10 apps start through RC1's `hostfxr`
 (measured, with `COREHOST_TRACE`). That is accepted: `hostfxr` is the version-agnostic half of the
@@ -607,37 +649,60 @@ mutation-testing skill applies to each table/classifier they introduce.
    image.
 6. **Nix, tests and CI for a second runtime**, as designed above, in PRs that each keep `main`
    green. The first five are version-agnostic and land on net10 alone:
-   * **P1 `FrameworkUnderTest`, the runtime-dir half.** The module, with `Net10` its only value;
+   * **(landed, #1521) P1 `FrameworkUnderTest`, the runtime-dir half.** The module, with `Net10` its only value;
      the 82 `SelectForDll` calls and the `RealRuntime` framework binding routed through it; the
      precondition, the ratchet, and the harness postcondition. Behaviour-identical on net10.
-   * **P2 `HostImage`.** The fixture reads of the host's CoreLib go through one named binding,
+   * **(landed, #1907) P2 `HostImage`.** The fixture reads of the host's CoreLib go through one named binding,
      and the shape-asserting fixtures read the selected runtime's images.
-   * **P3 the F# case publish becomes framework-dependent**, run on the selected framework.
-   * **P4 parking keyed on `EmulatedRuntime`**, with per-runtime expected outcomes, across the
+   * **(landed, #1903) P3 the F# case publish becomes framework-dependent**, run on the selected framework.
+   * **(landed, #1909) P4 parking keyed on `EmulatedRuntime`**, with per-runtime expected outcomes, across the
      `Guest` fixtures, and `ParkedOn.check` for the rest; every current park is `everywhere`.
-   * **P5 the `DelegateLayout` classification**, net10 arm live, writers and readers together, the
+   * **(landed, #1520) P5 the `DelegateLayout` classification**, net10 arm live, writers and readers together, the
      refusal arm exercised with a fabricated CoreLib as in stage 4.
 
-   Then **P6, net11 arrives**, with:
-   * the `Net11` case and pin, the net11 pin set on its own nixpkgs input, and the per-runtime
-     checks and environment variables;
-   * the combined devshell and the matrix leg;
-   * the `NativeDispatch` composition decided against the real image;
-   * the startup arms: `SetupShape.FourArg` reading its out-slot back, the stub layout's
-     bare-handle arm and its readers, the delegate layout's net11 arm, the
-     `EqualityComparer<T>.Create` row, and the `AppContext_TryGetHostPropertyValue` QCall (RC1
-     declares `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`);
-   * every residual net11 failure parked through P4.
+   Then **net11 arrives**, in five PRs. The shape classifications decide from the loaded image,
+   not from a version key, so their net11 arms land ahead of the `Net11` case, each checked
+   against the real RC1 CoreLib that P6a puts in the devshell:
+   * **P6a, the pins.** The net11 entry of `runtimes` in `flake.nix` (RC1's runtime, source and
+     linux-x64 pack), the per-runtime `runtime-version-pin-<runtime>` checks, the combined
+     devshell, and the per-runtime environment variables, read only through `FrameworkUnderTest`
+     (`TestFrameworkLocatorRatchet` enforces it). Behaviour-identical on net10.
+   * **P6b–d, the startup arms**, one PR each, with their readers and writers:
+     `SetupShape.FourArg` reading its out-slot back; the stub layout's bare-handle arm; and the
+     delegate layout's net11 arm, whose multicast reader must unwrap the invocation list's
+     `Wrapper` elements as well as read renamed fields.
 
-   **P6 is never opened without the startup arms.** Without them one cause blocks every test
+     Until the `Net11` case exists, their tests reach RC1's CoreLib through
+     `FrameworkUnderTest.requireNet11CoreLibPath`, which P6e folds into the runtime-keyed
+     accessors. None of them can run RC1's startup end to end before P6e, which is where each
+     arm is first exercised on the real image rather than classified against it: RC1's `Setup`
+     itself reaches `HashHelpers.Primes`, which needs P6c's stub arm.
+
+     P6b's out-slot is a native block holding one object-reference cell (`HostStartupCall`'s
+     `ExceptionSlot`), written null before the call as the VM's protected local is. An
+     exception `Setup` stores there fails startup exactly as one escaping net10's `Setup`
+     does. RC1 keeps the three-argument `Environment.InitializeCommandLineArgs` that PawPrint
+     calls, beside the five-argument `[UnmanagedCallersOnly]` wrapper the VM calls; if a later
+     CoreLib drops it, that call takes the same `ExceptionSlot`.
+   * **P6e, the switch-on.** The `Net11` case and pin; the `NativeDispatch` composition decided
+     against the real image, with the `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
+     `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) and the
+     `EqualityComparer<T>.Create` row if a guest reaches it; the matrix leg; and every residual
+     net11 failure parked through P4.
+
+   **P6e is never opened without the startup arms.** Without them one cause blocks every test
    that starts a guest (454 default-suite tests on RC1 from the delegate layout alone), and
-   parking all of them on that one reason would be parking by exclusion in all but name. There
-   is no separate servicing-bump PR: the second nixpkgs input leaves the net10 set untouched.
+   parking all of them on that one reason would be parking by exclusion in all but name. The thin
+   lock is past startup, and by the 2026-10-13 measurement P6e parks most of the net11 Guest cases
+   on it; that is the first thing stage 7 walks.
 7. **Walk the net11 blockers one at a time**, in the measured frontier order where known:
    * thin-lock addressing;
    * the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`;
-   * `SystemNative_AlignedAlloc`, `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`
-     and `Delegate_GetMethodDesc`;
+   * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
+     and `RuntimeModule_GetTypes`'s three-argument shape (`SystemNative_AlignedAlloc`, which
+     net10 reaches too, lands on net10 ahead of the leg);
+   * the managed `WaitSubsystem` that RC1 waits through on Unix, starting at
+     `ThreadNative_SetWaitSleepJoinState`;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * the thread-static seed, and the `LockHeldByOtherThread.cs` mismatch;

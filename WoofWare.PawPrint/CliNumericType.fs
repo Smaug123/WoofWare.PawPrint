@@ -131,13 +131,6 @@ module Int64Source =
         match src with
         | NativeIntSource.Verbatim n -> Int64Source.Verbatim n
         | NativeIntSource.SyntheticCrossArrayOffset s -> Int64Source.SyntheticCrossArrayOffset s
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Int64Source.Verbatim 0L
-        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns;
-            // widening to int64 is a verbatim move, not a provenance-carrying
-            // wrap. Should normally be canonicalised before reaching here, but
-            // defending in depth keeps the invariant local.
-            Int64Source.Verbatim bits
         | NativeIntSource.OpaqueHashBits bits -> Int64Source.OpaqueHashBits bits
         | _ -> Int64Source.WidenedNativeInt (src, signed)
 
@@ -413,10 +406,7 @@ type CliNumericType =
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
             | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "refusing to convert cross-array offset to bytes"
-            | NativeIntSource.ManagedPointer src ->
-                match src with
-                | ManagedPointerSource.Null -> BitConverter.GetBytes 0L
-                | _ -> failwith "refusing to express pointer as bytes"
+            | NativeIntSource.ManagedPointer _ -> failwith "refusing to express pointer as bytes"
             | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
             | NativeIntSource.MethodHandlePtr _ -> failwith "refusing to express MethodHandlePtr as bytes"
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"

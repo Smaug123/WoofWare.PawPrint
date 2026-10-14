@@ -501,8 +501,7 @@ module internal DynamicScopeOperand =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
         | other ->
             failwith
                 $"%s{operation}: expected a RuntimeFieldHandleInternal holding a field-registry handle, got %O{other}"

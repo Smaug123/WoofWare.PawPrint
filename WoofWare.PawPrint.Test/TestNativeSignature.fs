@@ -564,7 +564,6 @@ public sealed class MethodSignatureHost
             CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
             CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
-            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
         ]
 
     /// The `RuntimeFieldHandleInternal` null sentinel in the shape a real guest produces, so that
@@ -1112,7 +1111,7 @@ public sealed class MethodSignatureHost
     let corSigPointerSpellings : (ManagedPointerSource -> CliType) list =
         [
             (fun ptr -> CliType.RuntimePointer (CliRuntimePointer.Managed ptr))
-            (fun ptr -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)))
+            (fun ptr -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer ptr)))
         ]
 
     [<TestCaseSource(nameof corSigPointerSpellings)>]

@@ -9,9 +9,12 @@ open NUnit.Framework
 /// A test that finds its own framework to run a guest on escapes `FrameworkUnderTest`: it runs on
 /// whatever that finds, whichever runtime was selected, and no check notices. A test that finds the
 /// host's CoreLib file for itself hides that it reads the host's image rather than the selected
-/// runtime's. So the members that locate a framework may be named only in `FrameworkUnderTest.fs`,
-/// the members that locate an assembly's file only in `HostImage.fs`, and either elsewhere only
-/// where an allowance below says why the use there is not doing the owning module's job.
+/// runtime's. A test that reads a devshell variable naming a runtime's pins (its source, its
+/// linux-x64 pack, its framework) can read one runtime's pins while another is under test. So the
+/// members that locate a framework, and those variables, may be named only in
+/// `FrameworkUnderTest.fs`, the members that locate an assembly's file only in `HostImage.fs`, and
+/// any of them elsewhere only where an allowance below says why the use there is not doing the
+/// owning module's job.
 ///
 /// The scan is over the text of every file the test project compiles, embedded into the test
 /// assembly by the project file, comments included. It sees names, not values: it cannot see a
@@ -50,12 +53,27 @@ module TestFrameworkLocatorRatchet =
                 "read the test host's CoreLib through HostImage, or the selected runtime's through FrameworkUnderTest.coreLibPath ()"
         }
 
+    /// An environment variable in which the Nix devshell names one runtime's pins, by a prefix
+    /// that each runtime suffixes with its own name. Only `FrameworkUnderTest` chooses a suffix,
+    /// by an exhaustive match on the runtime, so nothing reads one runtime's pins for another's.
+    let private devshellVariable (prefix : string) : Locator =
+        {
+            Name = prefix
+            Pattern = Regex (Regex.Escape prefix)
+            Owner = "FrameworkUnderTest.fs"
+            Remedy =
+                "read the runtime under test's pins through FrameworkUnderTest (runtimeSource, linuxFrameworkDirectory)"
+        }
+
     let private locators : Locator list =
         [
             frameworkLocator "SelectForDll"
             frameworkLocator "GetRuntimeDirectory"
             fileLocator "Location"
             fileLocator "FullyQualifiedName"
+            devshellVariable "DOTNET_RUNTIME_SRC"
+            devshellVariable "DOTNET_LINUX_FRAMEWORK_DIR"
+            devshellVariable "DOTNET_FRAMEWORK_DIR"
         ]
 
     type private Allowance =
@@ -281,6 +299,10 @@ module TestFrameworkLocatorRatchet =
     [<TestCase("Assembly.GetAssembly(typeof<obj>).Location", "Location")>]
     [<TestCase("typeof<obj>.Module.FullyQualifiedName", "FullyQualifiedName")>]
     [<TestCase("// PawPrint reads typeof<obj>.Assembly.Location", "Location")>]
+    [<TestCase("Environment.GetEnvironmentVariable \"DOTNET_RUNTIME_SRC_NET10\"", "DOTNET_RUNTIME_SRC")>]
+    [<TestCase("let v = \"DOTNET_LINUX_FRAMEWORK_DIR_NET11\"", "DOTNET_LINUX_FRAMEWORK_DIR")>]
+    [<TestCase("Environment.GetEnvironmentVariable \"DOTNET_FRAMEWORK_DIR_NET11\"", "DOTNET_FRAMEWORK_DIR")>]
+    [<TestCase("// read it from $DOTNET_RUNTIME_SRC", "DOTNET_RUNTIME_SRC")>]
     let ``a planted locator is caught`` (planted : string, expected : string) : unit =
         violations allowances (plantedIn "TestPureCases.fs" planted)
         |> reportedIn "TestPureCases.fs"

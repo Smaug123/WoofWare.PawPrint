@@ -219,7 +219,7 @@ public static class Entry
 
             CliValueType.WithFieldSetById
                 ptrField
-                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer target)))
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer target)))
                 vt
             |> CliType.ValueType,
             state

@@ -605,11 +605,6 @@ module NativeSystemNative =
             // descriptor, but the shipped shim is a release build, so the
             // assert is compiled out and what remains is `(int)fd`.
             int value
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-            // The null managed pointer is the integer zero, though
-            // `NativeIntSource.ofManagedPointer` never builds a native int of
-            // that shape; zero is a legitimate descriptor number — fd 0 is stdin.
-            0
         | CliType.Numeric (CliNumericType.NativeInt source) ->
             failwith
                 $"%s{operation}: expected verbatim IntPtr file descriptor, got tagged native-int source %O{source} (fd integers should arrive as plain numeric values across the SystemNative boundary)"
@@ -704,7 +699,7 @@ module NativeSystemNative =
             // `NativeIntSource.FunctionPointer` rather than becoming a
             // `RuntimePointer`, so a buffer parameter does see these.
             match source with
-            | NativeIntSource.ManagedPointer ptr -> classify ptr
+            | NativeIntSource.ManagedPointer ptr -> classify (ManagedPointerSource.Byref ptr)
             | NativeIntSource.Verbatim bits -> BufferPointer.RawAddress (uint64 bits)
             // An opaque hash is an exact bit pattern by its own contract, so it
             // is as good an address as any other number a guest invents.
@@ -2692,7 +2687,7 @@ module NativeSystemNative =
             // in `pal_time.c` -- *not* `pal_process.c`, where you might
             // reasonably look first. That tree is outside our sparse
             // dotnet/runtime checkout, so fetch the file at the pinned commit
-            // rather than looking in `$DOTNET_RUNTIME_SRC`.)
+            // rather than looking in `$DOTNET_RUNTIME_SRC_NET10`.)
             // It is a stateful sampler: it reads the process's cumulative user/kernel CPU
             // time, diffs it against whatever `*previous` held from the
             // caller's last call, overwrites `*previous` with the fresh
@@ -7224,8 +7219,6 @@ module NativeSystemNative =
             let data : Result<uint64, string> =
                 match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[4] with
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)) -> Ok (uint64 value)
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-                    Ok 0UL
                 | CliType.RuntimePointer (CliRuntimePointer.Verbatim value) -> Ok (uint64 value)
                 | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> Ok 0UL
                 | other ->

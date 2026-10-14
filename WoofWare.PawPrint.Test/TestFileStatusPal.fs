@@ -30,14 +30,7 @@ module TestFileStatusPal =
     extern int private hostChflags(string path, uint32 flags)
 
     let private pinnedHeader () : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir ->
+        let dir = FrameworkUnderTest.requireRuntimeSource ()
 
         let path = Path.Combine (dir, "src", "native", "libs", "System.Native", "pal_io.h")
 
@@ -116,25 +109,19 @@ module TestFileStatusPal =
         // would prove nothing, so the oracle is upstream's own declaration:
         // the very numbers the guest's CoreLib will compare against.
         let path =
-            match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-            | null
-            | "" ->
-                Assert.Ignore
-                    "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
+            let dir = FrameworkUnderTest.requireRuntimeSource ()
 
-                failwith "unreachable: Assert.Ignore did not throw"
-            | dir ->
-                Path.Combine (
-                    dir,
-                    "src",
-                    "libraries",
-                    "Common",
-                    "src",
-                    "Interop",
-                    "Unix",
-                    "System.Native",
-                    "Interop.Stat.cs"
-                )
+            Path.Combine (
+                dir,
+                "src",
+                "libraries",
+                "Common",
+                "src",
+                "Interop",
+                "Unix",
+                "System.Native",
+                "Interop.Stat.cs"
+            )
 
         if not (File.Exists path) then
             failwith

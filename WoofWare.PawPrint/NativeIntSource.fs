@@ -304,7 +304,10 @@ module FunctionPointerTarget =
 [<NoComparison>]
 type NativeIntSource =
     | Verbatim of int64
-    | ManagedPointer of ManagedPointerSource
+    /// A managed pointer into storage, held as a native int. A pointer of known bits is held as
+    /// `Verbatim` instead; `NativeIntSource.ofManagedPointer` builds either from a
+    /// `ManagedPointerSource`.
+    | ManagedPointer of AddressedByref
     | FunctionPointer of FunctionPointerTarget
     | TypeHandlePtr of RuntimeTypeHandleTarget
     /// `TypeDesc*` for a runtime type: the untagged half of a TypeDesc-shaped
@@ -615,19 +618,12 @@ module NativeIntSource =
     /// A managed pointer held as a native int, as `conv.u` or a store into an `IntPtr` leaves it.
     /// A pointer of known bits (`Null`, or a `NativeIntPlaceholder`) becomes those bits as
     /// `Verbatim`: CoreCLR cannot tell such a native int from the integer, so neither may
-    /// PawPrint, and the evaluation stack refuses any native int that holds one as a pointer.
-    /// Only a pointer into storage stays a `ManagedPointer`.
+    /// PawPrint. Only a pointer into storage stays a `ManagedPointer`.
     let ofManagedPointer (ptr : ManagedPointerSource) : NativeIntSource =
-        match ManagedPointerSource.tryBitPatternBits ptr with
-        | ValueSome bits -> NativeIntSource.Verbatim bits
-        | ValueNone -> NativeIntSource.ManagedPointer ptr
-
-    /// Whether `n` holds a pointer of known bits as a pointer, which `ofManagedPointer` never
-    /// produces.
-    let holdsBitPatternPointer (n : NativeIntSource) : bool =
-        match n with
-        | NativeIntSource.ManagedPointer ptr -> (ManagedPointerSource.tryBitPatternBits ptr).IsSome
-        | _ -> false
+        match ptr with
+        | ManagedPointerSource.Byref addressed -> NativeIntSource.ManagedPointer addressed
+        | ManagedPointerSource.Null -> NativeIntSource.Verbatim 0L
+        | ManagedPointerSource.NativeIntPlaceholder bits -> NativeIntSource.Verbatim bits
 
     /// A freshly-minted GC handle, as the runtime hands it to managed code:
     /// untagged. Managed code is what adds tag bits, via `and`/`or`/`xor`.
@@ -674,10 +670,8 @@ module NativeIntSource =
         // between the stub and the blittable memmove path, so answering anything else here would
         // silently send a non-blittable struct down the memmove path.
         | NativeIntSource.FunctionPointer _ -> false
-        | NativeIntSource.ManagedPointer src ->
-            match src with
-            | ManagedPointerSource.Null -> true
-            | _ -> false
+        // A pointer into storage is never null.
+        | NativeIntSource.ManagedPointer _ -> false
 
     let isNonnegative (n : NativeIntSource) : bool =
         match n with
@@ -721,15 +715,6 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.OpaqueHashBits b -> a < b
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.Verbatim b
         | NativeIntSource.Verbatim a, NativeIntSource.OpaqueHashBits b -> a < b
-        // `ManagedPointer Null` is the value 0, though `ofManagedPointer` never builds a native
-        // int of that shape. Signed comparison against a known bit pattern therefore reduces to
-        // comparing the bits against 0L.
-        | NativeIntSource.OpaqueHashBits a, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> a < 0L
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits b -> 0L < b
-        | NativeIntSource.Verbatim a, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> a < 0L
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim b -> 0L < b
-        | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
-          NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
         | _, _ -> failwith $"TODO: NativeIntSource.isLess on non-Verbatim sources: %O{a} vs %O{b}"
 
 type CliRuntimePointer =

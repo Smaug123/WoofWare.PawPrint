@@ -157,7 +157,7 @@ public class Program
 
     [<Test>]
     let ``SHA256 through the EVP digest natives agrees with the host on the linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let terminalState =
             runOnLinuxFramework "EvpDigestNatives.cs" frameworkDir guestSource
@@ -182,7 +182,7 @@ public class Program
     /// CoreLib does not screen at all, so it would surface as a failure much further in.
     [<Test>]
     let ``an unmodelled algorithm is refused by name on the linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """

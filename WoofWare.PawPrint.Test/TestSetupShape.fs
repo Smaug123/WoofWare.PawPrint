@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.IO
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
@@ -19,15 +20,31 @@ module TestSetupShape =
 
     let private int32 : TypeDefn = TypeDefn.PrimitiveType PrimitiveType.Int32
 
-    /// Parameter types to build signatures from: the three `Setup` has, and near misses of each.
+    /// The `System.Exception` that `classify` is told is CoreLib's own.
+    let private exceptionIdentity : ResolvedTypeIdentity =
+        ResolvedTypeIdentity.ofDefinitionInAssembly "FabricatedCorelib" (MetadataTokens.TypeDefinitionHandle 2)
+
+    /// Another type in the same image.
+    let private otherIdentity : ResolvedTypeIdentity =
+        ResolvedTypeIdentity.ofDefinitionInAssembly "FabricatedCorelib" (MetadataTokens.TypeDefinitionHandle 3)
+
+    let private exceptionPtr : TypeDefn =
+        TypeDefn.Pointer (TypeDefn.FromDefinition (exceptionIdentity, SignatureTypeKind.Class))
+
+    /// Parameter types to build signatures from: the four `Setup` has, and near misses of each.
     let private parameterAlphabet : TypeDefn list =
         [
             charPtrPtr
             int32
+            exceptionPtr
             TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.Char)
             TypeDefn.Pointer (TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.Byte))
             TypeDefn.PrimitiveType PrimitiveType.Int64
             TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.UInt32)
+            TypeDefn.Pointer (TypeDefn.FromDefinition (otherIdentity, SignatureTypeKind.Class))
+            TypeDefn.Pointer (TypeDefn.FromDefinition (exceptionIdentity, SignatureTypeKind.ValueType))
+            TypeDefn.FromDefinition (exceptionIdentity, SignatureTypeKind.Class)
+            TypeDefn.Byref (TypeDefn.FromDefinition (exceptionIdentity, SignatureTypeKind.Class))
         ]
 
     let private staticHeader : SignatureHeader =
@@ -60,9 +77,9 @@ module TestSetupShape =
             shorter @ longest
 
     [<Test>]
-    let ``classify recognises exactly net10's three-argument signature`` () =
-        // Every signature over the alphabet with up to five parameters: the net10 shape, the
-        // net11 and Mono arities, and every one-type-off near miss of each position.
+    let ``classify recognises exactly net10's and net11's signatures`` () =
+        // Every signature over the alphabet with up to five parameters: the net10 and net11
+        // shapes, Mono's arity, and every one-type-off near miss of each position.
         let mutable recognised = 0
 
         for (header, genericCount) in headers do
@@ -78,16 +95,16 @@ module TestSetupShape =
                         }
 
                     let expected =
-                        if
-                            header = staticHeader
-                            && ret = MethodReturnType.Void
-                            && parameters = [ charPtrPtr ; charPtrPtr ; int32 ]
-                        then
+                        if header <> staticHeader || ret <> MethodReturnType.Void then
+                            None
+                        elif parameters = [ charPtrPtr ; charPtrPtr ; int32 ] then
                             Some SetupShape.ThreeArg
+                        elif parameters = [ charPtrPtr ; charPtrPtr ; int32 ; exceptionPtr ] then
+                            Some SetupShape.FourArg
                         else
                             None
 
-                    let actual = SetupShape.classify signature
+                    let actual = SetupShape.classify exceptionIdentity signature
 
                     if actual <> expected then
                         failwith $"classify %O{signature} gave %O{actual}; expected %O{expected}"
@@ -95,8 +112,8 @@ module TestSetupShape =
                     if actual.IsSome then
                         recognised <- recognised + 1
 
-        // Vacuity guard: the enumeration really does contain the accepted signature.
-        recognised |> shouldEqual 1
+        // Vacuity guard: the enumeration really does contain both accepted signatures.
+        recognised |> shouldEqual 2
 
     let private loadImage (name : string) (image : byte[]) : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -104,7 +121,11 @@ module TestSetupShape =
         Assembly.read loggerFactory (Some name) (new MemoryStream (image))
 
     /// An image declaring `System.AppContext` with the given members, standing in for a CoreLib.
-    let private fabricateCorelib (members : string) : DumpedAssembly =
+    /// It declares its own `System.Exception`, as CoreLib does, when `ownException` is set; otherwise
+    /// `Exception` names the framework's, through a type reference.
+    let private fabricate (ownException : bool) (members : string) : DumpedAssembly =
+        let exceptionDeclaration = if ownException then "public class Exception { }" else ""
+
         let source =
             $$"""
 using System;
@@ -112,6 +133,8 @@ using System.Runtime.InteropServices;
 
 namespace System
 {
+    {{exceptionDeclaration}}
+
     public class AppContext
     {
         {{members}}
@@ -123,6 +146,9 @@ namespace System
             Roslyn.compileAssembly "FabricatedCorelib" OutputKind.DynamicallyLinkedLibrary [] [ source ]
 
         loadImage "FabricatedCorelib" image
+
+    /// `fabricate` an image declaring its own `System.Exception`, as a real CoreLib does.
+    let private fabricateCorelib (members : string) : DumpedAssembly = fabricate true members
 
     let private refusal (corelib : DumpedAssembly) : string =
         let e =
@@ -147,6 +173,18 @@ namespace System
         setup.Name |> shouldEqual "Setup"
 
     [<Test>]
+    let ``.NET 11's CoreLib declares the four-argument Setup`` () =
+        let corelibPath = FrameworkUnderTest.requireNet11CoreLibPath ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use stream = File.OpenRead corelibPath
+        let corelib = Assembly.read loggerFactory (Some corelibPath) stream
+
+        let setup, shape = AppContextSeed.locateSetup corelib
+        shape |> shouldEqual SetupShape.FourArg
+        setup.Name |> shouldEqual "Setup"
+
+    [<Test>]
     let ``a fabricated net10 Setup is recognised`` () =
         // Control for the refusals below: the fabrication is read the way the real CoreLib is.
         let corelib =
@@ -156,16 +194,35 @@ namespace System
         shape |> shouldEqual SetupShape.ThreeArg
 
     [<Test>]
-    let ``net11's four-argument Setup is refused, naming its signature`` () =
+    let ``a fabricated net11 Setup is recognised`` () =
         let corelib =
             fabricateCorelib
                 "[UnmanagedCallersOnly] internal static unsafe void Setup(char** pNames, char** pValues, int count, Exception* pException) {}"
 
-        let message = refusal corelib
+        let _, shape = AppContextSeed.locateSetup corelib
+        shape |> shouldEqual SetupShape.FourArg
 
-        message
+    [<Test>]
+    let ``a CoreLib declaring no System.Exception of its own is refused`` () =
+        // The image's `Exception` is the framework's, reached through a type reference, so there
+        // is no CoreLib exception type for an out-slot to hold.
+        let corelib =
+            fabricate
+                false
+                "[UnmanagedCallersOnly] internal static unsafe void Setup(char** pNames, char** pValues, int count, Exception* pException) {}"
+
+        refusal corelib
+        |> shouldContainText "Could not find System.Exception in CoreLib"
+
+    [<Test>]
+    let ``a four-argument Setup whose out-slot holds another of CoreLib's types is refused`` () =
+        let corelib =
+            fabricateCorelib
+                "[UnmanagedCallersOnly] internal static unsafe void Setup(char** pNames, char** pValues, int count, AppContext* pException) {}"
+
+        refusal corelib
         |> shouldContainText
-            "has the signature `Default Setup(ptr[ptr[char]], ptr[ptr[char]], int32, ptr[ref[System.Exception]]) : void`"
+            "has the signature `Default Setup(ptr[ptr[char]], ptr[ptr[char]], int32, ptr[System.AppContext]) : void`"
 
     [<Test>]
     let ``Mono's five-argument Setup is refused, naming its signature`` () =
@@ -211,7 +268,7 @@ namespace System
         |> shouldContainText "`Default Setup(ptr[ptr[char]], ptr[ptr[char]], int32) : void`"
 
         message
-        |> shouldContainText "`Default Setup(ptr[ptr[char]], ptr[ptr[char]], int32, ptr[ref[System.Exception]]) : void`"
+        |> shouldContainText "`Default Setup(ptr[ptr[char]], ptr[ptr[char]], int32, ptr[System.Exception]) : void`"
 
     [<Test>]
     let ``an instance Setup is not the host's entry point`` () =

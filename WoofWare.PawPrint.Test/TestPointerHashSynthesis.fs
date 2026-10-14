@@ -319,22 +319,13 @@ module TestPointerHashSynthesis =
         counters |> shouldEqual PointerHashState.empty
 
     [<Test>]
-    let ``null managed pointer is materialised to 0L and does not touch counters`` () : unit =
-        let bits, counters =
-            materialise (NativeIntSource.ManagedPointer ManagedPointerSource.Null) PointerHashState.empty
-
-        bits |> shouldEqual 0L
-        counters |> shouldEqual PointerHashState.empty
-
-    [<Test>]
     let ``non-null managed pointer is refused with reason embedded in message`` () : unit =
         let src =
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref
-                    {
-                        Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21)
-                        Projections = []
-                    }
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21)
+                    Projections = []
+                }
             )
 
         let ex =
@@ -569,12 +560,7 @@ module TestPointerHashSynthesis =
         // bits, a managed pointer and a cross-array offset are values whose bits are known (or
         // knowably absent) without any assignment, so asking this question about them is a
         // category error rather than a miss.
-        for src in
-            [
-                NativeIntSource.Verbatim 4L
-                NativeIntSource.OpaqueHashBits 4L
-                NativeIntSource.ManagedPointer ManagedPointerSource.Null
-            ] do
+        for src in [ NativeIntSource.Verbatim 4L ; NativeIntSource.OpaqueHashBits 4L ] do
             let exn =
                 Assert.Throws (fun () ->
                     PointerHashSynthesis.tryExistingHashBits PointerHashState.empty src

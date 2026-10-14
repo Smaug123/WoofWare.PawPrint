@@ -2158,17 +2158,10 @@ public static class Cases
         match name with
         | "host" -> hostCoreLib (), List.ofSeq (FrameworkUnderTest.runtimeDirs ()), hostTarget ()
         | "linux-x64" ->
-            match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
-            | null
-            | "" ->
-                Assert.Ignore "DOTNET_LINUX_FRAMEWORK_DIR is unset; run inside the Nix devshell"
-                failwith "unreachable: Assert.Ignore did not throw"
-            | dir ->
-                let _, loggerFactory = LoggerFactory.makeTest ()
+            let dir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
+            let _, loggerFactory = LoggerFactory.makeTest ()
 
-                Assembly.readFile loggerFactory (Path.Combine (dir, "System.Private.CoreLib.dll")),
-                [ dir ],
-                JitTarget.X64
+            Assembly.readFile loggerFactory (Path.Combine (dir, "System.Private.CoreLib.dll")), [ dir ], JitTarget.X64
         | other -> failwith $"unknown CoreLib %s{other}"
 
     /// Whether `method`'s IL calls, constructs and throws nothing but through its calls to itself, so

@@ -17,7 +17,7 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 /// and CI run the Linux one — different guest code.
 ///
 /// These tests pin the mechanism that closes that gap: a pinned linux-x64 framework (Nix's
-/// `dotnet-linux-framework`, surfaced as `$DOTNET_LINUX_FRAMEWORK_DIR`) placed at the head of
+/// `linuxFramework`, read through `FrameworkUnderTest.requireLinuxFrameworkDirectory`) placed at the head of
 /// the interpreter's runtime-dir list, which binds by simple name and takes the first hit.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -33,7 +33,7 @@ module TestLinuxCoreLibFlavour =
         |> Seq.choose (fun method -> method.TryNativeImport |> Option.map _.EntryPointName)
         |> Set.ofSeq
 
-    /// Guards against `$DOTNET_LINUX_FRAMEWORK_DIR` pointing at the wrong pack — including at a
+    /// Guards against the pinned linux-x64 framework being the wrong pack — including at a
     /// macOS one, which would make every other test here quietly assert nothing.
     ///
     /// The two entry points are the opposite arms of `Environment.GetOSVersion`, which CoreLib
@@ -46,7 +46,7 @@ module TestLinuxCoreLibFlavour =
     /// neither flavour can pass as the other.
     [<Test>]
     let ``the pinned framework really is the Linux CoreLib flavour`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -64,7 +64,7 @@ module TestLinuxCoreLibFlavour =
     /// unimplemented primitive would surface.
     [<Test>]
     let ``a guest runs against the pinned linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """
@@ -138,7 +138,7 @@ public class Program
     /// thread and a nested `Exit` does not throw `SynchronizationLockException`.
     [<Test>]
     let ``System.Threading.Lock reaches TryGetUInt32OSThreadId on the linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """
@@ -198,7 +198,7 @@ public class Program
     /// wrappers, whose bodies are likewise executed rather than modelled.
     [<Test>]
     let ``LeadingZeroCount runs against the pinned linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """
@@ -249,7 +249,7 @@ public class Program
     /// shapes, so this case runs the other.
     [<Test>]
     let ``TrailingZeroCount runs against the pinned linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """
@@ -309,7 +309,7 @@ public class Program
     /// wrappers, whose bodies are likewise executed rather than modelled.
     [<Test>]
     let ``PopCount runs against the pinned linux-x64 CoreLib`` () : unit =
-        let frameworkDir = requireLinuxFramework ()
+        let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
             """

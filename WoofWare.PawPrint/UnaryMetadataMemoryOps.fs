@@ -105,9 +105,12 @@ module internal UnaryMetadataMemoryOps =
         match addr with
         | addr when EvalStackValue.isNullAddress addr ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | EvalStackValue.ManagedPointer src
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+        | EvalStackValue.ManagedPointer src ->
             writeAt src
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+            writeAt (ManagedPointerSource.Byref src)
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | EvalStackValue.NullObjectRef -> failwith "unreachable: a null Stobj target is handled above"
@@ -218,8 +221,9 @@ module internal UnaryMetadataMemoryOps =
             match addr with
             | EvalStackValue.ObjectRef _ ->
                 failwith "Ldobj on an object reference is invalid; expected a managed pointer"
-            | EvalStackValue.ManagedPointer ptr
-            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> readThrough ptr state
+            | EvalStackValue.ManagedPointer ptr -> readThrough ptr state
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                readThrough (ManagedPointerSource.Byref ptr) state
             | EvalStackValue.Float _
             | EvalStackValue.Int64 _
             | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"

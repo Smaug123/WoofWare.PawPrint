@@ -39,7 +39,7 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 ///
 /// What it does not claim:
 /// - **The Linux CoreLib only.** PawPrint runs the pinned linux-x64 framework
-///   (`$DOTNET_LINUX_FRAMEWORK_DIR`), and the test is ignored where that is unset. ASP.NET Core
+///   (`FrameworkUnderTest.requireLinuxFrameworkDirectory`), and the test is ignored outside the Nix devshell. ASP.NET Core
 ///   itself binds from the framework under test, since the pack holds only
 ///   `Microsoft.NETCore.App`. On a macOS CoreLib, `HttpClient` asks CFNetwork for the system
 ///   proxy settings, which PawPrint does not implement. The real run uses the host's own
@@ -309,7 +309,7 @@ module TestAspNetTwoProcess =
     /// Run `guests` on both sides, and fail unless each half exited 42 on both and wrote the same
     /// standard output on both, which must be `serverStdout` and `clientStdout`.
     let private agree (guests : GuestPair) (serverStdout : string) (clientStdout : string) : unit =
-        let linuxFramework = requireLinuxFramework ()
+        let linuxFramework = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let (realServer, realClient), (pawPrintServer, pawPrintClient) =
             DifferentialOracle.alongsideInterpreted

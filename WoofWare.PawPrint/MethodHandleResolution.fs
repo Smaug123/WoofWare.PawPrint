@@ -27,7 +27,6 @@ module MethodHandleResolution =
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle, got %O{other}"

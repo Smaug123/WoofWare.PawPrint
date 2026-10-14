@@ -17,18 +17,6 @@ module TestNativeContractTable =
 
     let private rows : NativeContractRow list = NativeContractTable.rows.Force ()
 
-    /// The pinned runtime source only exists inside the Nix devshell, so a plain `dotnet test` in a
-    /// non-Nix checkout skips rather than fails.
-    let private requireRuntimeSrc () : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir -> dir
-
     [<Test>]
     let ``the table has rows of both kinds, each native once`` () : unit =
         let fcalls = NativeContractTable.fcalls.Force ()
@@ -88,7 +76,8 @@ module TestNativeContractTable =
 
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
-        let coreclr = Path.Combine (requireRuntimeSrc (), "src", "coreclr")
+        let coreclr =
+            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
 
         let read (path : string) : string =
             File.ReadAllText (Path.Combine (coreclr, path))
