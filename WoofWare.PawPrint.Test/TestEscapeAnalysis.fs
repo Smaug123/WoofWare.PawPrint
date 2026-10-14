@@ -31,6 +31,9 @@ public class Locking
 {
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
     public void Instance() { }
+
+    // The monitor is that of the object `newobj` made.
+    public static void OnNew() => new Locking().Instance();
 }
 
 public static class Intrinsics
@@ -744,14 +747,18 @@ public static class SR
             { expect "Fixture.Cases" "PropagatesOneHop" with
                 Contains = [ ioe ]
             }
+            // Taking the monitor may allocate its sync block, or wait and be interrupted; and the
+            // `lockTaken` the JIT passes `Monitor.Enter` is false.
             { expect "Fixture.Cases" "Synchronised" with
                 Contains =
                     [
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 // Its monitor is its type's, never null.
-                Excludes = [ "=System.ArgumentNullException" ]
+                Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
+                Unknown = Some false
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -764,6 +771,17 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
+                Excludes = [ "=System.ArgumentException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Locking" "OnNew" with
+                Contains =
+                    [
+                        "=System.Threading.ThreadInterruptedException"
+                        "=System.Threading.SynchronizationLockException"
+                    ]
+                Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
+                Unknown = Some false
             }
             { expect "Fixture.Cases" "Unsynchronised" with
                 Excludes =
