@@ -5538,9 +5538,11 @@ public static class Runners
     ///     `Runners.Repointed`: local 0, a `bool`, holds 1, and the method called, before it loads
     ///     through its argument, stores 0 through it, passes it to `Clear`, stores 0 through it
     ///     on one path of two, or points the argument at a local of its own holding 0;
-    ///   - `Runners.Leaked`: the address of local 0, a `bool`, is passed to `Keep`, which keeps it
-    ///     as a pointer; then local 0 is set to 1, and the address is passed to `Writer.Unless`,
-    ///     whose type's initializer, which the first call runs first, stores 0 through the pointer.
+    ///   - `Runners.Leaked` and `Runners.LeakedInFinally`: the address of local 0, a `bool`, is
+    ///     passed to `Keep_Writer` (or, in a `finally` handler a `leave` runs, `Keep_FinallyWriter`),
+    ///     which keeps it as a pointer; then local 0 is set to 1, and the address is passed to
+    ///     `Writer.Unless` (or `FinallyWriter.Unless`), whose type's initializer, which the first
+    ///     call runs first, stores 0 through the pointer.
     let private fabricatePointees () : byte[] =
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "Pointees", typeof<obj>.Assembly)
@@ -5765,54 +5767,66 @@ public static class Runners
         runner "MayClearFirst" typeof<bool> holdsOne mayClearFirst
         runner "Repointed" typeof<bool> holdsOne repointed
 
-        let kept =
-            runners.DefineField (
-                "Kept",
-                typeof<bool>.MakePointerType (),
-                FieldAttributes.Public ||| FieldAttributes.Static
-            )
-
-        let keep =
-            let method =
-                runners.DefineMethod ("Keep", staticAttributes, typeof<Void>, [| typeof<bool>.MakeByRefType () |])
-
-            let il = method.GetILGenerator ()
-            il.Emit Emit.OpCodes.Ldarg_0
-            il.Emit Emit.OpCodes.Conv_U
-            il.Emit (Emit.OpCodes.Stsfld, kept)
-            il.Emit Emit.OpCodes.Ret
-            method
-
-        // Not `beforefieldinit`, so its initializer runs before the first call of its method.
-        let writer =
-            modul.DefineType (
-                "Pointees.Writer",
-                TypeAttributes.Public
-                ||| TypeAttributes.Class
-                ||| TypeAttributes.Abstract
-                ||| TypeAttributes.Sealed
-            )
-
-        let initializer = writer.DefineTypeInitializer().GetILGenerator ()
-        initializer.Emit (Emit.OpCodes.Ldsfld, kept)
-        initializer.Emit Emit.OpCodes.Ldc_I4_0
-        initializer.Emit Emit.OpCodes.Stind_I1
-        initializer.Emit Emit.OpCodes.Ret
-
-        let writerUnless =
-            let method =
-                writer.DefineMethod (
-                    "Unless",
-                    staticAttributes,
-                    typeof<int>,
-                    [| typeof<bool>.MakeByRefType () ; typeof<int> ; typeof<int> |]
+        // `Keep_<name>`, which keeps the address it is passed as a pointer, and `<name>.Unless`, the
+        // first call of which runs `<name>`'s initializer first, storing 0 through that pointer.
+        let keeper (name : string) =
+            let kept =
+                runners.DefineField (
+                    $"Kept_%s{name}",
+                    typeof<bool>.MakePointerType (),
+                    FieldAttributes.Public ||| FieldAttributes.Static
                 )
 
-            let il = method.GetILGenerator ()
-            il.Emit Emit.OpCodes.Ldarg_0
-            il.Emit Emit.OpCodes.Ldind_U1
-            divideUnless il
-            method
+            let keep =
+                let method =
+                    runners.DefineMethod (
+                        $"Keep_%s{name}",
+                        staticAttributes,
+                        typeof<Void>,
+                        [| typeof<bool>.MakeByRefType () |]
+                    )
+
+                let il = method.GetILGenerator ()
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit Emit.OpCodes.Conv_U
+                il.Emit (Emit.OpCodes.Stsfld, kept)
+                il.Emit Emit.OpCodes.Ret
+                method
+
+            // Not `beforefieldinit`, so its initializer runs before the first call of its method.
+            let writer =
+                modul.DefineType (
+                    $"Pointees.%s{name}",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Class
+                    ||| TypeAttributes.Abstract
+                    ||| TypeAttributes.Sealed
+                )
+
+            let initializer = writer.DefineTypeInitializer().GetILGenerator ()
+            initializer.Emit (Emit.OpCodes.Ldsfld, kept)
+            initializer.Emit Emit.OpCodes.Ldc_I4_0
+            initializer.Emit Emit.OpCodes.Stind_I1
+            initializer.Emit Emit.OpCodes.Ret
+
+            let unless =
+                let method =
+                    writer.DefineMethod (
+                        "Unless",
+                        staticAttributes,
+                        typeof<int>,
+                        [| typeof<bool>.MakeByRefType () ; typeof<int> ; typeof<int> |]
+                    )
+
+                let il = method.GetILGenerator ()
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit Emit.OpCodes.Ldind_U1
+                divideUnless il
+                method
+
+            writer, keep, unless
+
+        let leakedWriter, keep, writerUnless = keeper "Writer"
 
         runner
             "Leaked"
@@ -5826,8 +5840,26 @@ public static class Runners
             )
             writerUnless
 
+        let finallyWriter, keepInFinally, finallyWriterUnless = keeper "FinallyWriter"
+
+        runner
+            "LeakedInFinally"
+            typeof<bool>
+            (fun il ->
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                il.BeginFinallyBlock ()
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                il.Emit (Emit.OpCodes.Call, keepInFinally)
+                il.EndExceptionBlock ()
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Stloc_0
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            )
+            finallyWriterUnless
+
         runners.CreateType () |> ignore<Type>
-        writer.CreateType () |> ignore<Type>
+        leakedWriter.CreateType () |> ignore<Type>
+        finallyWriter.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
         builder.Save image
@@ -5871,6 +5903,7 @@ public static class Runners
                 yield "MayClearFirst", divides true, DispatchClaim.Precise
                 yield "Repointed", divides true, DispatchClaim.Precise
                 yield "Leaked", divides true, DispatchClaim.Precise
+                yield "LeakedInFinally", divides true, DispatchClaim.Precise
             ]
 
         let runtime =
