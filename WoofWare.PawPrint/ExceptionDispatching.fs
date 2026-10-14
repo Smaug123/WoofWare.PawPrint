@@ -1291,11 +1291,22 @@ module ExceptionDispatching =
         // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
         // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
         // frame of its own — and so carries the question forward instead.
+        //
+        // A thrown object that is not an exception has no `_stackTrace` to splice. CoreCLR raises
+        // a fresh `RuntimeWrappedException` in its place (`IL_Throw`, jithelpers.cpp), and that has
+        // never been thrown, so the flag is spent on an empty trace and marks nothing.
+        let state, exceptionAncestor =
+            IlMachineState.tryExceptionAncestor loggerFactory corelib exceptionType state
+
         let state, restoredFrames =
             state
             |> consumeForeignExceptionRaise
                 currentThread
-                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
+                (fun () ->
+                    match exceptionAncestor with
+                    | Some _ -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state
+                    | None -> []
+                )
 
         let restoredFrames = restoredFrames |> Option.defaultValue []
 

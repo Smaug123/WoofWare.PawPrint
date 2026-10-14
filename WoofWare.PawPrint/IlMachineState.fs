@@ -239,6 +239,8 @@ module IlMachineState =
 
     let setRuntimeExceptionField = IlMachineRuntimeMetadata.setRuntimeExceptionField
 
+    let tryExceptionAncestor = IlMachineRuntimeMetadata.tryExceptionAncestor
+
     let setExceptionStackTraceString =
         IlMachineRuntimeMetadata.setExceptionStackTraceString
 

@@ -217,8 +217,9 @@ class Program
         builder.Save stream
         stream.ToArray ()
 
-    [<Test>]
-    let ``the report names a thrown object that is not an exception`` () : unit =
+    /// The report of a C# console app whose `Main` body is `mainBody`, run beside `fabricateThrower`'s
+    /// image, which it may call as `Thrower.Throw()`.
+    let private runThrowerDriver (mainBody : string) : string list =
         let fabricated = fabricateThrower ()
 
         let driver =
@@ -227,15 +228,15 @@ class Program
                 OutputKind.ConsoleApplication
                 [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange fabricated) ]
                 [
-                    """
+                    $"""
 class Program
-{
+{{
     static int Main()
-    {
-        Thrower.Throw();
+    {{
+%s{mainBody}
         return 0;
-    }
-}
+    }}
+}}
 """
                 ]
 
@@ -258,20 +259,14 @@ class Program
             use _loggerFactoryResource = loggerFactory
             use peImage = new MemoryStream (driver)
 
-            let lines =
-                BoundedRun.run
-                    loggerFactory
-                    "ThrowerDriver"
-                    (Some driverPath)
-                    peImage
-                    (HostConfig.Default dotnetRuntimeDirs)
-                |> ExpectRun.ended
-                |> reportOf
-
-            lines.Length |> shouldEqual 3
-            lines.[0] |> shouldEqual "System.String (not a System.Exception)"
-            indexOfLineContaining "Thrower.Throw at IL offset " lines |> shouldEqual 1
-            indexOfLineContaining "Program.Main at IL offset " lines |> shouldEqual 2
+            BoundedRun.run
+                loggerFactory
+                "ThrowerDriver"
+                (Some driverPath)
+                peImage
+                (HostConfig.Default dotnetRuntimeDirs)
+            |> ExpectRun.ended
+            |> reportOf
         finally
             try
                 if Directory.Exists tempDir then
@@ -279,6 +274,59 @@ class Program
             with
             | :? IOException
             | :? UnauthorizedAccessException -> ()
+
+    /// The report of a string thrown by `Thrower.Throw` from `Program.Main`, escaping unhandled.
+    let private assertReportsThrownString (lines : string list) : unit =
+        lines.Length |> shouldEqual 3
+        lines.[0] |> shouldEqual "System.String (not a System.Exception)"
+        indexOfLineContaining "Thrower.Throw at IL offset " lines |> shouldEqual 1
+        indexOfLineContaining "Program.Main at IL offset " lines |> shouldEqual 2
+
+    [<Test>]
+    let ``the report names a thrown object that is not an exception`` () : unit =
+        runThrowerDriver "        Thrower.Throw();" |> assertReportsThrownString
+
+    /// A run that has concretised `System.Exception` before the throw still has nowhere in a
+    /// thrown string to put a stack trace.
+    [<Test>]
+    let ``the report names a thrown object that is not an exception after an exception type is in use`` () : unit =
+        runThrowerDriver
+            """
+        System.GC.KeepAlive(new System.Exception());
+        Thrower.Throw();"""
+        |> assertReportsThrownString
+
+    /// `catch { throw; }` is a `catch (object)` whose `rethrow` raises the caught string again,
+    /// carrying the trace it was caught with.
+    [<Test>]
+    let ``the report names a rethrown object that is not an exception`` () : unit =
+        runThrowerDriver
+            """
+        System.GC.KeepAlive(new System.Exception());
+        try
+        {
+            Thrower.Throw();
+        }
+        catch
+        {
+            throw;
+        }"""
+        |> assertReportsThrownString
+
+    /// A pending foreign-raise flag is spent by the next raise, whatever it throws. CoreCLR spends
+    /// it on the fresh `RuntimeWrappedException` it wraps a thrown string in, whose trace is empty,
+    /// so no boundary is marked.
+    [<Test>]
+    let ``the report names a thrown object that is not an exception when a foreign raise is pending`` () : unit =
+        runThrowerDriver
+            """
+        typeof(System.Exception)
+            .GetMethod(
+                "PrepareForForeignExceptionRaise",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            .Invoke(null, null);
+        Thrower.Throw();"""
+        |> assertReportsThrownString
 
     [<Test>]
     let ``a stored exception is described by its message and its captured frames`` () : unit =

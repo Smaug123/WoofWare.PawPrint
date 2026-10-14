@@ -911,6 +911,27 @@ module IlMachineRuntimeMetadata =
         )
         |> String.concat Environment.NewLine
 
+    /// `System.Exception`'s concrete handle if `objType` is `System.Exception` or derives from it,
+    /// and `None` for any other type: CoreCLR's `IsException` (excep.cpp), which walks the parent
+    /// chain looking for `Exception`. IL may `throw` any object, and only an exception has the
+    /// fields in which a raise leaves its trace.
+    let tryExceptionAncestor
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (objType : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle option
+        =
+        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) =
+            match AllConcreteTypes.lookup current state.TypeSystem.ConcreteTypes with
+            | Some ct when ct.Identity = baseClassTypes.Exception.Identity -> state, Some current
+            | _ ->
+                match resolveBaseConcreteType loggerFactory baseClassTypes state current with
+                | state, None -> state, None
+                | state, Some parent -> walk state parent
+
+        walk state objType
+
     /// Write one field on an already-allocated exception object.
     ///
     /// `ExceptionDispatching.allocateRuntimeException` only zero-initialises the object and does
@@ -955,8 +976,8 @@ module IlMachineRuntimeMetadata =
                 |> FieldIdentity.fieldId declaringTypeHandle
 
             IlMachineThreadState.setInstanceFieldById exceptionAddr fieldId value state
-        // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
-        // lack either piece, and there is nothing to project into in that case.
+        // Skeletal states in low-level dispatch tests may lack either piece, and there is nothing to
+        // project into in that case.
         | None, _
         | _, None -> state
 
@@ -973,31 +994,32 @@ module IlMachineRuntimeMetadata =
         match stackTrace with
         | [] -> state
         | _ :: _ ->
-            // Low-level dispatch tests sometimes use synthetic exception addresses in skeletal states.
-            // Full guest execution has both pieces, so only then can we project into the managed object.
-            match
-                ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
-                AllConcreteTypes.findExistingNonGenericConcreteType
-                    state.TypeSystem.ConcreteTypes
-                    baseClassTypes.Exception.Identity
-            with
-            | Some _, Some exceptionHandle ->
-                let trace = renderExceptionStackTrace state stackTrace
 
-                let traceAddr, state =
-                    allocateManagedString loggerFactory baseClassTypes trace state
+        match ManagedHeap.tryGetObjectConcreteType exceptionAddr state.ManagedHeap with
+        // Low-level dispatch tests use synthetic exception addresses with nothing on the heap.
+        | None -> state
+        | Some objType ->
 
-                let stackTraceStringField =
-                    FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_stackTraceString"
-                    |> FieldIdentity.fieldId exceptionHandle
+        match tryExceptionAncestor loggerFactory baseClassTypes objType state with
+        // CoreCLR raises a `RuntimeWrappedException` in place of any other object and writes the
+        // trace there (`IL_Throw`, jithelpers.cpp). PawPrint raises the object itself, and its
+        // trace lives only in the dispatch.
+        | state, None -> state
+        | state, Some exceptionHandle ->
+            let trace = renderExceptionStackTrace state stackTrace
 
-                IlMachineThreadState.setInstanceFieldById
-                    exceptionAddr
-                    stackTraceStringField
-                    (CliType.ObjectRef (Some traceAddr))
-                    state
-            | None, _
-            | _, None -> state
+            let traceAddr, state =
+                allocateManagedString loggerFactory baseClassTypes trace state
+
+            let stackTraceStringField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_stackTraceString"
+                |> FieldIdentity.fieldId exceptionHandle
+
+            IlMachineThreadState.setInstanceFieldById
+                exceptionAddr
+                stackTraceStringField
+                (CliType.ObjectRef (Some traceAddr))
+                state
 
     /// The concrete field id of `System.Exception._stackTrace`, given the concrete handle of
     /// `System.Exception` itself. The field is declared on `Exception`, so it must be resolved
@@ -1012,6 +1034,9 @@ module IlMachineRuntimeMetadata =
 
     /// Read the frozen-stack-trace token out of `exceptionAddr`'s `_stackTrace`. `None` means the
     /// exception has never been thrown, which is a legitimate state and not an error.
+    ///
+    /// `exceptionAddr` must be an exception (`tryExceptionAncestor`); any other thrown object has
+    /// no `_stackTrace`, and this fails on one.
     ///
     /// Fails if the field holds a token PawPrint did not mint. The invariant is not that
     /// `recordThrownStackTrace` is the only writer — guest IL writes `_stackTrace` too, since
@@ -1044,9 +1069,18 @@ module IlMachineRuntimeMetadata =
                 "frozenStackTraceToken: System.Exception has no concrete type handle, but an exception object exists on the heap; this is an interpreter bug"
         | Some exceptionHandle ->
 
-        match
-            AllocatedNonArrayObject.DereferenceFieldById (stackTraceFieldId baseClassTypes exceptionHandle) exceptionObj
-        with
+        let stackTraceField = stackTraceFieldId baseClassTypes exceptionHandle
+
+        if
+            not (
+                CliValueType.TryAllFields exceptionObj.Contents
+                |> List.exists (fun f -> FieldId.exactlyEqual stackTraceField f.Id)
+            )
+        then
+            failwith
+                $"frozenStackTraceToken: object @ %O{exceptionAddr} of type %O{exceptionObj.ConcreteType} is not an exception, so it has no _stackTrace; the caller must ask tryExceptionAncestor first. This is an interpreter bug."
+
+        match AllocatedNonArrayObject.DereferenceFieldById stackTraceField exceptionObj with
         | CliType.ObjectRef None -> None
         | CliType.ObjectRef (Some tokenAddr) ->
             if state.FrozenStackTraces |> Map.containsKey tokenAddr then
@@ -1058,7 +1092,8 @@ module IlMachineRuntimeMetadata =
 
     /// The frames behind `exceptionAddr`'s `_stackTrace` token: the trace as of its last dispatch.
     /// Empty means the exception has never been thrown, which is a legitimate state — an
-    /// `ExceptionDispatchInfo` may be captured from an unthrown exception.
+    /// `ExceptionDispatchInfo` may be captured from an unthrown exception. `exceptionAddr` must be
+    /// an exception, as for `frozenStackTraceToken`.
     ///
     /// This is the read side of `recordThrownStackTrace`, and the two must agree about what a
     /// token means; `frozenStackTraceToken` is what enforces that the token is one PawPrint minted.
@@ -1116,15 +1151,15 @@ module IlMachineRuntimeMetadata =
         | [] -> state
         | _ :: _ ->
 
-        // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
-        // lack either piece, and there is nothing to project into in that case.
-        match
-            ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
-            AllConcreteTypes.findExistingNonGenericConcreteType
-                state.TypeSystem.ConcreteTypes
-                baseClassTypes.Exception.Identity
-        with
-        | Some _, Some exceptionHandle ->
+        match ManagedHeap.tryGetObjectConcreteType exceptionAddr state.ManagedHeap with
+        // Low-level dispatch tests use synthetic exception addresses with nothing on the heap.
+        | None -> state
+        | Some objType ->
+
+        match tryExceptionAncestor loggerFactory baseClassTypes objType state with
+        // As in `setExceptionStackTraceString`: only an exception carries a trace of its own.
+        | state, None -> state
+        | state, Some exceptionHandle ->
             let state, sbyteHandle =
                 LoadedTypeInfo.typeInfoToTypeDefn'
                     baseClassTypes
@@ -1161,8 +1196,6 @@ module IlMachineRuntimeMetadata =
                 (stackTraceFieldId baseClassTypes exceptionHandle)
                 (CliType.ObjectRef (Some tokenAddr))
                 state
-        | None, _
-        | _, None -> state
 
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated

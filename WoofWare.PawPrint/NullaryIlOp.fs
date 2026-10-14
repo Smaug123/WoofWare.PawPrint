@@ -2527,10 +2527,23 @@ module NullaryIlOp =
                 // Its `StackTrace` out of `CatchExceptions` *is* stale: that is the snapshot this
                 // catch handler was entered with. The trace a rethrow inherits is the exception's
                 // own, whatever `_stackTrace` holds now.
+                //
+                // A caught object that is not an exception has no `_stackTrace`. What CoreCLR
+                // rethrows is the `RuntimeWrappedException` it raised in that object's place
+                // (`IL_Throw`, jithelpers.cpp), whose trace is still the snapshot unless the guest
+                // has thrown that wrapper again since. It cannot have here: PawPrint allocates no
+                // wrapper, and hands every clause the object itself.
+                let state, exceptionAncestor =
+                    IlMachineState.tryExceptionAncestor loggerFactory corelib exceptionType state
+
                 let cliException =
-                    { cliException with
-                        StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
-                    }
+                    match exceptionAncestor with
+                    | Some _ ->
+                        { cliException with
+                            StackTrace =
+                                IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                        }
+                    | None -> cliException
 
                 match
                     ExceptionDispatching.dispatchException
