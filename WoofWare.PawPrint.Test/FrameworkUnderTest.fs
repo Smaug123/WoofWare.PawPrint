@@ -15,6 +15,9 @@ type FrameworkUnderTestError =
     /// `PAWPRINT_TEST_RUNTIME` is set, but not to the name of a supported runtime. The empty
     /// string is such a value: only an unset variable selects the default.
     | UnknownRuntime of value : string
+    /// The runtime's framework is found only through an environment variable that the Nix devshell
+    /// sets, and `variable` is unset.
+    | Unlocated of runtime : EmulatedRuntime * variable : string
     /// A directory on the runtime-dir list does not exist.
     | MissingDirectory of runtime : EmulatedRuntime * directory : string
     /// No directory on the runtime-dir list holds a CoreLib, so a guest could bind none.
@@ -55,7 +58,7 @@ type SelectedFramework =
 
 /// Which framework the suite's guests run on, under PawPrint and under the `RealRuntime` oracle.
 ///
-/// `PAWPRINT_TEST_RUNTIME` names an `EmulatedRuntime` case (`Net10`); unset, it selects
+/// `PAWPRINT_TEST_RUNTIME` names an `EmulatedRuntime` case (`Net10` or `Net11`); unset, it selects
 /// `EmulatedRuntime.Net10`. A value naming no supported runtime, or a selected runtime whose
 /// framework cannot be found or whose CoreLib is not that runtime's, fails every caller of
 /// `runtimeDirs` and `sharedFrameworkDirectory` rather than falling back to the test host's own
@@ -82,6 +85,7 @@ module FrameworkUnderTest =
     let name (runtime : EmulatedRuntime) : string =
         match runtime with
         | EmulatedRuntime.Net10 -> "Net10"
+        | EmulatedRuntime.Net11 -> "Net11"
 
     /// The runtime `EnvironmentVariable`'s value selects: `None` is an unset variable. Matching is
     /// exact, so any value that is not some supported runtime's `name` is an error.
@@ -167,6 +171,8 @@ module FrameworkUnderTest =
             let names = EmulatedRuntime.supported |> List.map name |> String.concat ", "
 
             $"%s{EnvironmentVariable} is %A{value}, which names no supported runtime. Set it to one of: %s{names}; or unset it to select %s{name defaultRuntime}."
+        | FrameworkUnderTestError.Unlocated (runtime, variable) ->
+            $"%s{name runtime}'s framework is named by %s{variable}, which is unset; run under `nix develop`."
         | FrameworkUnderTestError.MissingDirectory (runtime, directory) ->
             $"The runtime directories for %s{name runtime} include %s{directory}, which does not exist."
         | FrameworkUnderTestError.NoCoreLib (runtime, runtimeDirs) ->
@@ -185,21 +191,48 @@ module FrameworkUnderTest =
 
             $"The CoreLib %s{coreLib}%s{from} %s{classified}, but the framework under test is %s{name expected}."
 
-    /// Where each runtime's framework is looked for. Not checked; `check` does that.
-    let private candidateRuntimeDirs (runtime : EmulatedRuntime) : ImmutableArray<string> =
+    /// The environment variables in which the Nix devshell names `runtime`'s shared framework
+    /// directories (`Microsoft.NETCore.App`, then `Microsoft.AspNetCore.App`), for a runtime the
+    /// test host does not itself run on; `None` for the test host's own runtime.
+    let frameworkVariables (runtime : EmulatedRuntime) : string list option =
         match runtime with
+        | EmulatedRuntime.Net10 -> None
+        | EmulatedRuntime.Net11 -> Some [ "DOTNET_FRAMEWORK_DIR_NET11" ; "DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11" ]
+
+    /// Where `runtime`'s framework is looked for. Not checked; `check` does that.
+    let private candidateRuntimeDirs
+        (runtime : EmulatedRuntime)
+        : Result<ImmutableArray<string>, FrameworkUnderTestError>
+        =
+        match frameworkVariables runtime with
         // The test host runs on this runtime, so its framework is the one the test assembly's
         // own runtimeconfig selects.
-        | EmulatedRuntime.Net10 ->
+        | None ->
             DotnetRuntime.SelectForDll typeof<Marker>.Assembly.Location
             |> ImmutableArray.CreateRange
+            |> Ok
+        | Some variables ->
+            let folder (dirs : Result<ImmutableArray<string>, FrameworkUnderTestError>) (variable : string) =
+                dirs
+                |> Result.bind (fun dirs ->
+                    match Environment.GetEnvironmentVariable variable with
+                    | null
+                    | "" -> Error (FrameworkUnderTestError.Unlocated (runtime, variable))
+                    | dir -> Ok (dirs.Add dir)
+                )
+
+            variables |> List.fold folder (Ok ImmutableArray.Empty)
+
+    /// `runtime`'s framework, checked as `check` does, whether or not it is the one under test.
+    let locate (runtime : EmulatedRuntime) : Result<SelectedFramework, FrameworkUnderTestError> =
+        candidateRuntimeDirs runtime |> Result.bind (check runtime)
 
     let private selection : Lazy<Result<SelectedFramework, FrameworkUnderTestError>> =
         lazy
             (Environment.GetEnvironmentVariable EnvironmentVariable
              |> Option.ofObj
              |> parse
-             |> Result.bind (fun runtime -> check runtime (candidateRuntimeDirs runtime)))
+             |> Result.bind locate)
 
     /// The framework under test. Fails, with the reason, if the selection is invalid.
     let selected () : SelectedFramework =
@@ -210,17 +243,25 @@ module FrameworkUnderTest =
     /// The runtime under test.
     let runtime () : EmulatedRuntime = (selected ()).Runtime
 
+    /// One NUnit case per supported runtime, for a fixture that checks something against each
+    /// runtime's own image through `requireCoreLibPathOf`.
+    let everyRuntime : TestCaseData list =
+        EmulatedRuntime.supported
+        |> List.map (fun runtime -> TestCaseData(runtime).SetArgDisplayNames (name runtime))
+
     /// The environment variable in which the Nix devshell names `runtime`'s pinned dotnet/runtime
     /// source, a sparse checkout at the tag of the version `flake.nix` pins for it.
     let runtimeSourceVariable (runtime : EmulatedRuntime) : string =
         match runtime with
         | EmulatedRuntime.Net10 -> "DOTNET_RUNTIME_SRC_NET10"
+        | EmulatedRuntime.Net11 -> "DOTNET_RUNTIME_SRC_NET11"
 
     /// The environment variable in which the Nix devshell names the managed assemblies of
     /// `runtime`'s linux-x64 runtime pack, at the version `flake.nix` pins for it.
     let linuxFrameworkVariable (runtime : EmulatedRuntime) : string =
         match runtime with
         | EmulatedRuntime.Net10 -> "DOTNET_LINUX_FRAMEWORK_DIR_NET10"
+        | EmulatedRuntime.Net11 -> "DOTNET_LINUX_FRAMEWORK_DIR_NET11"
 
     let private devshellDirectory (variable : string) : string option =
         match Environment.GetEnvironmentVariable variable with
@@ -257,19 +298,16 @@ module FrameworkUnderTest =
     let requireLinuxFrameworkDirectory () : string =
         requireDevshellDirectory (linuxFrameworkVariable (runtime ())) "exercise the linux-x64 CoreLib"
 
-    /// The CoreLib of the .NET 11 release candidate that the devshell carries as a framework, for
-    /// checking a shape PawPrint must handle there against the image itself while `EmulatedRuntime`
-    /// has no case for that runtime; outside the Nix devshell, the calling test is ignored.
-    let requireNet11CoreLibPath () : string =
-        let dir =
-            requireDevshellDirectory "DOTNET_FRAMEWORK_DIR_NET11" "check a shape against .NET 11's CoreLib"
-
-        let path = Path.Combine (dir, "System.Private.CoreLib.dll")
-
-        if not (File.Exists path) then
-            failwith $"DOTNET_FRAMEWORK_DIR_NET11 is %s{dir}, which has no System.Private.CoreLib.dll"
-
-        path
+    /// `runtime`'s CoreLib, whichever runtime is under test, for a fixture that checks a shape
+    /// PawPrint must handle on every supported runtime against each runtime's own image. A runtime
+    /// whose framework only the Nix devshell names ignores the calling test outside it.
+    let requireCoreLibPathOf (runtime : EmulatedRuntime) : string =
+        match locate runtime with
+        | Ok selected -> selected.CoreLibPath
+        | Error (FrameworkUnderTestError.Unlocated (_, variable)) ->
+            Assert.Ignore $"%s{variable} is unset; run under `nix develop` to read %s{name runtime}'s CoreLib."
+            failwith "unreachable: Assert.Ignore did not throw"
+        | Error error -> failwith $"%s{name runtime}'s CoreLib cannot be read: %s{describe error}"
 
     /// The `DotnetRuntimeDirs` to run a guest along. A caller may put directories ahead of these
     /// (the guest's own siblings, say); if one of them holds a CoreLib, the guest runs on that

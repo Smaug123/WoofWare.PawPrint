@@ -45,6 +45,9 @@
       # - `linuxFrameworkTfm` and `linuxFrameworkHash` describe its linux-x64 runtime pack
       #   (`linuxFramework` below). The TFM tracks the major version; the hash tracks
       #   `expectedRuntimeVersion`, so bump it in the same commit.
+      # - `aspNetCore`, on a runtime newer than the oldest, is nixpkgs's ASP.NET Core shared
+      #   framework at that runtime's version, which guests that run ASP.NET Core bind. The oldest
+      #   runtime's comes with the SDK. Its version must equal `expectedRuntimeVersion` too.
       runtimes = {
         net10 = {
           runtime = pkgs.dotnetCorePackages.runtime_10_0;
@@ -61,16 +64,17 @@
           sourceHash = "sha256-q9OZEYDuXnbTdi81CDsObuL+DyyOioRi7RqHIxYTjoA=";
           linuxFrameworkTfm = "net11.0";
           linuxFrameworkHash = "sha256-+oYmT/VOyfRO84M5ZnmQerKBlPSbXf4DIT8VoqGSJLY=";
+          aspNetCore = pkgs.dotnetCorePackages.aspnetcore_11_0;
         };
       };
       # The oldest runtime, which the test host, the package and every executable run on.
       dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
       dotnet-runtime = runtimes.net10.runtime;
       # The devshell's one `dotnet`: the oldest runtime's SDK, with every newer runtime's shared
-      # framework beside it, so the same muxer runs the test host and a guest on any runtime. It
+      # frameworks beside it, so the same muxer runs the test host and a guest on any runtime. It
       # resolves the newest `hostfxr` present, so net10 apps start through net11's; `hostfxr` is
       # the version-agnostic half of the host, which only selects a framework directory.
-      dotnet-devshell = pkgs.dotnetCorePackages.combinePackages [dotnet-sdk runtimes.net11.runtime];
+      dotnet-devshell = pkgs.dotnetCorePackages.combinePackages [dotnet-sdk runtimes.net11.runtime runtimes.net11.aspNetCore];
       # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
       # native helpers) from the devshell as $DOTNET_RUNTIME_SRC_<RUNTIME>. Sparse-checked-out to
       # just the trees we actually read, to keep the closure small.
@@ -230,13 +234,18 @@
           pkgs.lib.nameValuePair "runtime-version-pin-${name}"
           (pkgs.runCommand "runtime-version-pin-${name}" {}
             (
-              if pin.runtime.version == pin.expectedRuntimeVersion
-              then "touch $out"
-              else ''
+              if pin.runtime.version != pin.expectedRuntimeVersion
+              then ''
                 echo "Runtime pin drift for ${name}: nixpkgs provides ${pin.runtime.version} but expectedRuntimeVersion = ${pin.expectedRuntimeVersion}." >&2
                 echo "Bump ${name}'s sourceRev (to the public v<new> tag commit), sourceHash, expectedRuntimeVersion and linuxFrameworkHash, and EmulatedRuntime.pin in WoofWare.PawPrint/EmulatedRuntime.fs, together." >&2
                 exit 1
               ''
+              else if pin ? aspNetCore && pin.aspNetCore.version != pin.expectedRuntimeVersion
+              then ''
+                echo "ASP.NET Core pin drift for ${name}: nixpkgs provides ${pin.aspNetCore.version} but expectedRuntimeVersion = ${pin.expectedRuntimeVersion}." >&2
+                exit 1
+              ''
+              else "touch $out"
             )))
         runtimes;
       devShell = pkgs.mkShell {
@@ -259,6 +268,8 @@
         # it. The net10 one needs no variable: the test host runs on it, and finds it from its
         # own runtimeconfig.
         DOTNET_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.NETCore.App/${runtimes.net11.expectedRuntimeVersion}";
+        # Likewise its ASP.NET Core shared framework, which net10's comes with the SDK.
+        DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.AspNetCore.App/${runtimes.net11.expectedRuntimeVersion}";
         # Force polling-based file watcher to avoid hangs in
         # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
         # path can deadlock under load when ASP.NET hosts created in tests

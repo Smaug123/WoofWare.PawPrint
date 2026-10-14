@@ -155,7 +155,7 @@ module TestFrameworkUnderTest =
         )
 
     [<TestCase 9us>]
-    [<TestCase 11us>]
+    [<TestCase 12us>]
     let ``A CoreLib of another major ahead of the framework fails the selection`` (major : uint16) : unit =
         withTempDir (fun dir ->
             let patched = PatchedCoreLib.write major dir
@@ -173,6 +173,40 @@ module TestFrameworkUnderTest =
                 unsupported.FoundMajor |> shouldEqual (int major)
             | other -> failwith $"expected CoreLibMismatch, got %O{other}"
         )
+
+    let otherRuntimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof otherRuntimes)>]
+    let ``Another supported runtime's framework ahead of the framework under test fails the selection``
+        (other : EmulatedRuntime)
+        : unit
+        =
+        if other = FrameworkUnderTest.runtime () then
+            Assert.Ignore "this case is the runtime under test"
+
+        let otherCoreLib = FrameworkUnderTest.requireCoreLibPathOf other
+
+        let otherDir =
+            match Path.GetDirectoryName otherCoreLib with
+            | null -> failwith $"logic error: %s{otherCoreLib} has no directory"
+            | dir -> dir
+
+        let dirs =
+            seq {
+                yield otherDir
+                yield! FrameworkUnderTest.runtimeDirs ()
+            }
+            |> ImmutableArray.CreateRange
+
+        match FrameworkUnderTest.check (FrameworkUnderTest.runtime ()) dirs with
+        | Error (FrameworkUnderTestError.CoreLibMismatch (expected, _, path, Ok found) as error) ->
+            expected |> shouldEqual (FrameworkUnderTest.runtime ())
+            path |> shouldEqual (Some otherCoreLib)
+            found |> shouldEqual other
+
+            FrameworkUnderTest.describe error
+            |> shouldContainText $"is %s{FrameworkUnderTest.name other}'s"
+        | result -> failwith $"expected CoreLibMismatch naming %O{other}, got %O{result}"
 
     [<Test>]
     let ``A run on the framework under test serves it`` () : unit =
@@ -202,7 +236,7 @@ module TestFrameworkUnderTest =
         | other -> failwith $"expected the guest to exit normally, got %O{other}"
 
     [<TestCase 9us>]
-    [<TestCase 11us>]
+    [<TestCase 12us>]
     let ``A CoreLib of another major does not serve the framework under test`` (major : uint16) : unit =
         withTempDir (fun dir ->
             let patched = PatchedCoreLib.write major dir
@@ -240,13 +274,13 @@ module TestFrameworkUnderTest =
     [<Test>]
     let ``A state that loaded a CoreLib of another major does not serve the framework under test`` () : unit =
         withTempDir (fun dir ->
-            let patched = PatchedCoreLib.write 11us dir
+            let patched = PatchedCoreLib.write 12us dir
             let corelib = Assembly.readFile NullLoggerFactory.Instance patched
 
             let e =
                 Assert.Throws<Exception> (fun () -> FrameworkUnderTest.assertServes (stateHaving (Some corelib)))
 
-            e.Message |> shouldContainText "states major 11"
+            e.Message |> shouldContainText "states major 12"
         )
 
     [<Test>]

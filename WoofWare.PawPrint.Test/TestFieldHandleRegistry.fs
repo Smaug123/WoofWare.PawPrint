@@ -303,7 +303,7 @@ public class GenericHolder<T>
     [<Test>]
     let ``on .NET 11's CoreLib, a stub is written and read through the bare-handle layout`` () : unit =
         let fixture =
-            makeFieldHandleFixtureOn (FrameworkUnderTest.requireNet11CoreLibPath ())
+            makeFieldHandleFixtureOn (FrameworkUnderTest.requireCoreLibPathOf EmulatedRuntime.Net11)
 
         let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
         let stubAddr = runtimeFieldInfoStubAddress fieldHandle

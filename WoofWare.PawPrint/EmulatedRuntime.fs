@@ -22,6 +22,8 @@ open System.Collections.Immutable
 type EmulatedRuntime =
     /// .NET 10: a CoreLib whose `AssemblyVersion` major is 10.
     | Net10
+    /// .NET 11: a CoreLib whose `AssemblyVersion` major is 11.
+    | Net11
 
 /// A runtime build's identity: its CoreLib's `AssemblyInformationalVersion` with the SemVer build
 /// metadata (a `+` and everything after it) removed, e.g. `10.0.12-servicing.26422.108`.
@@ -91,12 +93,14 @@ type UnsupportedRuntime =
 module EmulatedRuntime =
 
     /// Every runtime PawPrint supports.
-    let supported : EmulatedRuntime list = [ EmulatedRuntime.Net10 ]
+    let supported : EmulatedRuntime list =
+        [ EmulatedRuntime.Net10 ; EmulatedRuntime.Net11 ]
 
     /// The CoreLib `AssemblyVersion` major that identifies `runtime`.
     let major (runtime : EmulatedRuntime) : int =
         match runtime with
         | EmulatedRuntime.Net10 -> 10
+        | EmulatedRuntime.Net11 -> 11
 
     /// The build `runtime`'s native surface was validated against.
     let pin (runtime : EmulatedRuntime) : RuntimePin =
@@ -109,6 +113,13 @@ module EmulatedRuntime =
                 Build = RuntimeBuild.OfInformationalVersion "10.0.12-servicing.26422.108"
                 SourceRef = "v10.0.12"
                 SourceCommit = "4271d88e0aebf3d04f188f1334c2220d80555ef6"
+            }
+        | EmulatedRuntime.Net11 ->
+            {
+                TargetFramework = "net11.0"
+                Build = RuntimeBuild.OfInformationalVersion "11.0.0-rc.1.26425.128"
+                SourceRef = "v11.0.0-rc.1.26425.128"
+                SourceCommit = "ab19415702aa8139d5369e47c73edb47343c34ad"
             }
 
     /// The supported runtime whose CoreLib states `coreLibMajor` as its `AssemblyVersion` major,

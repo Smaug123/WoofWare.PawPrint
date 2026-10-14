@@ -133,9 +133,12 @@ public static class Program
                     $"major %d{coreLibMajor}: supported runtimes with it are %A{expected}, classified as %A{classified}"
 
     [<Test>]
-    let ``Net10 is the runtime of CoreLib major 10, and nothing else is supported`` () =
-        EmulatedRuntime.supported |> shouldEqual [ EmulatedRuntime.Net10 ]
+    let ``Net10 and Net11 are the runtimes of CoreLib majors 10 and 11, and nothing else is supported`` () =
+        EmulatedRuntime.supported
+        |> shouldEqual [ EmulatedRuntime.Net10 ; EmulatedRuntime.Net11 ]
+
         EmulatedRuntime.ofCoreLibMajor 10 |> shouldEqual (Some EmulatedRuntime.Net10)
+        EmulatedRuntime.ofCoreLibMajor 11 |> shouldEqual (Some EmulatedRuntime.Net11)
 
     [<Test>]
     let ``A runtime build is the informational version up to its build metadata`` () =
@@ -159,7 +162,7 @@ public static class Program
 
     [<TestCase 0us>]
     [<TestCase 9us>]
-    [<TestCase 11us>]
+    [<TestCase 12us>]
     [<TestCase 65535us>]
     let ``Startup refuses a CoreLib whose major is not supported, naming what is`` (major : uint16) =
         let dir =
@@ -198,6 +201,8 @@ public static class Program
                 refusal.Unsupported.CoreLibPath |> shouldEqual (Some patched)
                 refusal.DotnetRuntimeDirs |> shouldEqual runtimeDirs
                 refusal.Message |> shouldContainText $"is .NET major %d{major}"
-                refusal.Message |> shouldContainText "supports CoreLib majors: 10 (net10.0)"
+
+                refusal.Message
+                |> shouldContainText "supports CoreLib majors: 10 (net10.0), 11 (net11.0)."
         finally
             Directory.Delete (dir, true)
