@@ -728,6 +728,11 @@ public static class SR
     let private expectations : Expectation list =
         let ioe = "=System.InvalidOperationException"
 
+        // Waiting for a contended monitor calls the waiting thread's synchronization context, whose
+        // `Wait` may be any override.
+        let synchronizationContextWait =
+            "System.Threading.SynchronizationContext::InvokeWaitMethodHelper IL VirtualCall System.Threading.SynchronizationContext::Wait"
+
         [
             { expect "Fixture.Cases" "ThrowsDirectly" with
                 Contains = [ ioe ]
@@ -747,18 +752,20 @@ public static class SR
             { expect "Fixture.Cases" "PropagatesOneHop" with
                 Contains = [ ioe ]
             }
-            // The `lockTaken` the JIT passes `Monitor.Enter` is false. Taking a contended monitor
-            // waits, and a wait may run the thread's `SynchronizationContext.Wait`, which may throw
-            // anything.
+            // The `lockTaken` the JIT passes `Monitor.Enter` is false. Taking the monitor may allocate
+            // its sync block, or wait and be interrupted; and a wait may run the thread's
+            // `SynchronizationContext.Wait`, which may throw anything.
             { expect "Fixture.Cases" "Synchronised" with
                 Contains =
                     [
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 // Its monitor is its type's, never null.
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -768,20 +775,24 @@ public static class SR
                 Contains =
                     [
                         "=System.ArgumentNullException"
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Locking" "OnNew" with
                 Contains =
                     [
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "Unsynchronised" with
                 Excludes =
@@ -1941,9 +1952,10 @@ public static class SR
         |> shouldEqual preserving
 
     /// The runtime makes each exception a native raises by running its parameterless constructor,
-    /// whose own exceptions escape in its place.
+    /// whose own exceptions escape in its place, and the exceptions of the methods it calls escape
+    /// it too.
     [<Test>]
-    let ``a native method the contract table describes raises what its row says, and what making those runs``
+    let ``a native method the contract table describes raises what its row says, what making those runs, and what its calls raise``
         ()
         : unit
         =
@@ -1989,9 +2001,18 @@ public static class SR
                         analysis, made |> Set.add ("=" + name.FullName) |> Set.union (render analysis escapes)
                     )
 
+                let analysis, (made, unknown) =
+                    ((analysis, (made, false)), row.Contract.Runs)
+                    ||> List.fold (fun (analysis, (made, unknown)) call ->
+                        let analysis, escapes =
+                            EscapeAnalysis.escapes analysis (methodNamed corelib call.DeclaringType call.Method)
+
+                        analysis, (Set.union made (render analysis escapes), unknown || escapes.Unknown)
+                    )
+
                 let analysis, escapes = EscapeAnalysis.escapes analysis key
                 render analysis escapes |> shouldEqual made
-                escapes.Unknown |> shouldEqual false
+                escapes.Unknown |> shouldEqual unknown
                 analysis
             )
 

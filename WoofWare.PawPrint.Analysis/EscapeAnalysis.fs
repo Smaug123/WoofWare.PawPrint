@@ -127,8 +127,9 @@ type internal CallSite =
     /// A method the runtime runs by itself at this instruction: the parameterless constructor of an
     /// exception it makes there (`ExceptionMaking`), a type initializer the instruction runs, or
     /// what it runs to throw again a type initializer's own exception
-    /// (`Exception.InternalPreserveStackTrace`). The instruction does not make this call, so what
-    /// the instruction leaves on the stack is not what the method returns.
+    /// (`Exception.InternalPreserveStackTrace`). So too a CoreLib method that a native method calls
+    /// (`NativeContract.Runs`), in place of the native's body. The instruction does not make this
+    /// call, so what the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
 
 /// What a `brtrue` or `brfalse` tests of the value it pops.
@@ -587,6 +588,42 @@ module EscapeAnalysis =
         | found ->
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
+
+    /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes.
+    let private nativeCall (state : EscapeAnalysisState) (call : ManagedCall) : MethodKey * SpelledArgument list =
+        let corelib = state.BaseTypes.Corelib
+
+        let ns, name =
+            match call.DeclaringType.LastIndexOf '.' with
+            | -1 -> "", call.DeclaringType
+            | dot -> call.DeclaringType.Substring (0, dot), call.DeclaringType.Substring (dot + 1)
+
+        let found =
+            corelib.TryGetTopLevelTypeDef ns name
+            |> Option.toList
+            |> List.collect (fun ty ->
+                ty.Methods
+                |> List.filter (fun m -> m.Name = call.Method)
+                |> List.choose (fun m -> m.TryMetadata |> Option.map (fun facts -> ty, m, facts))
+            )
+
+        match found with
+        | [ ty, method, facts ] when
+            ty.Generics.IsEmpty
+            && method.Signature.GenericParameterCount = 0
+            && (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length = call.Arguments.Length
+            ->
+            let passes =
+                call.Arguments
+                |> List.map (fun argument ->
+                    match argument with
+                    | NativeArgument.Unnamed -> SpelledArgument.Value StackValue.Unknown
+                )
+
+            MethodKey.make corelib facts.Handle, passes
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name"
 
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
     /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
@@ -2259,12 +2296,17 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted (raised : ThrownType list) (assumed : Assumption list) (runs : MethodKey list) : LocalFacts =
+        let contracted
+            (raised : ThrownType list)
+            (assumed : Assumption list)
+            (runs : (MethodKey * SpelledArgument list) list)
+            : LocalFacts
+            =
             {
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
-                Calls = runs |> List.map (fun method -> 0, runtimeRuns method, [])
+                Calls = runs |> List.map (fun (method, passes) -> 0, runtimeRuns method, passes)
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
@@ -2282,22 +2324,30 @@ module EscapeAnalysis =
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
-            state, contracted (List.map fst raised) [] (List.collect snd raised)
+
+            state,
+            contracted (List.map fst raised) [] (raised |> List.collect snd |> List.map (fun method -> method, []))
         | Runs.Native native ->
+            let contract = NativeMethod.contract native
+
             // CoreCLR makes each exception a native raises by running its parameterless constructor
             // (`EEException::CreateThrowable`).
-            let raises = (NativeMethod.contract native).Raises
-            state, contracted (exactly raises) [] (raises |> List.map (parameterlessConstructor state))
+            let constructors =
+                contract.Raises
+                |> List.map (fun name -> parameterlessConstructor state name, [])
+
+            state, contracted (exactly contract.Raises) [] (constructors @ List.map (nativeCall state) contract.Runs)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.
-            state, contracted (exactly ResourceLookup.raises) [] [ preserveStackTrace state ]
+            state, contracted (exactly ResourceLookup.raises) [] [ preserveStackTrace state, [] ]
         | Runs.Assumed assumption ->
             state,
             contracted
                 (exactly (Assumption.raises assumption))
                 [ assumption ]
-                (Assumption.constructs assumption |> List.map (parameterlessConstructor state))
+                (Assumption.constructs assumption
+                 |> List.map (fun name -> parameterlessConstructor state name, []))
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
