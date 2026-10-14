@@ -135,8 +135,8 @@ type internal SpelledInteger =
 /// A location a managed pointer on the stack may point to.
 [<RequireQualifiedAccess>]
 type internal SpelledAddress =
-    /// The local at this index, whose address the `ldloca` at the offset `taken` pushed.
-    | Local of index : int * taken : int
+    /// The local at this index.
+    | Local of index : int
     /// Wherever the managed pointer the caller passed as the argument at this index points. The
     /// body never stores to the argument or takes its address, so it holds that pointer throughout.
     | Argument of index : int
@@ -532,9 +532,9 @@ module internal StackValues =
             | Pushed.Address ->
                 match op with
                 | IlOp.UnaryConst (UnaryConstIlOp.Ldloca_s index) ->
-                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index, offset))))
+                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index))))
                 | IlOp.UnaryConst (UnaryConstIlOp.Ldloca index) ->
-                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index, offset))))
+                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index))))
                 | _ -> fixedValue StackValue.Unknown
             | Pushed.FromToken TokenValue.NewArray
             | Pushed.FromToken TokenValue.Handle

@@ -26,13 +26,14 @@ method) may add more:
   type as the runtime converts it (a `bool` holds the low byte of an `int` passed for it), so
   `ObjectDisposedException.ThrowIf` called with `false` throws nothing. A `ref` argument points to
   the value the caller's local held when the call was made, where the caller decides it: a local of
-  an integer type whose address no path took before the `ldloca` that passes it, which nothing has
-  stored to since except the caller's own `stloc`s. The method knows that value for a load through
+  an integer type whose address, since any path took it, has met nothing but loads, branches,
+  arithmetic and stores to the caller's own arguments and locals, so that nothing else can hold
+  it. The method knows that value for a load through
   the argument (of the local's width or narrower: CoreCLR's CPUs are little-endian) made before
   it stores to anything but its own arguments and locals or runs other code, so `Monitor.Enter`,
   passed the `lockTaken` a `lock` statement sets to `false`, throws no `ArgumentException`. A
-  `lock` inside a loop passes a local whose address the previous iteration took, and stays
-  imprecise. An object a call returns is
+  `lock` inside a loop passes a local whose address the previous iteration passed to `Enter`,
+  and stays imprecise. An object a call returns is
   null or not as the callee's `ret`s return it. Asked about by itself, a method may be passed any
   value its parameter types admit, null among them, and so may one whose body stores to the
   argument or takes its address;

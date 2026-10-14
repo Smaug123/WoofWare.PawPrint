@@ -5,11 +5,16 @@ open WoofWare.PawPrint
 /// What a local of an integer type holds on entry to an instruction, over every path to it.
 type internal LocalState =
     {
-        /// One of these integers, as the stack held them when the body stored them; `None` for any
-        /// value of the local's type.
+        /// One of these integers, as the stack held them when the body stored them, where only
+        /// the body's own stores have stored to it (`Escaped`); `None` for any value of the local's
+        /// type.
         Holds : Set<SpelledInteger> option
         /// Whether some path to the instruction takes the local's address.
-        Exposed : bool
+        Taken : bool
+        /// Whether, on some path to the instruction, something ran after the local's address was
+        /// taken that `OwnWrites.only` does not accept, which may have kept the address, so that
+        /// whatever kept it may store to the local through it at any time after.
+        Escaped : bool
     }
 
 /// What a body's locals of integer types whose addresses it takes hold on entry to each of its
@@ -52,7 +57,8 @@ module internal LocalValues =
                     let holds = Set.union a b
                     if holds.Count > limit then None else Some holds
                 | _ -> None
-            Exposed = a.Exposed || b.Exposed
+            Taken = a.Taken || b.Taken
+            Escaped = a.Escaped || b.Escaped
         }
 
     /// What the locals of `body` whose types `types` gives (one for each local, by index, `None`
@@ -119,7 +125,7 @@ module internal LocalValues =
                     Map.add
                         index
                         { before.[index] with
-                            Exposed = true
+                            Taken = true
                         }
                         before
                 | _ -> before
@@ -140,19 +146,15 @@ module internal LocalValues =
                         state
                 | _ -> state
 
-            // What `op` does through a pointer, or what the code it runs does, may store to any
-            // local whose address has been taken.
+            // What `op` does with an address, or what the code it runs does, may keep it.
             if OwnWrites.only op then
                 state
             else
                 state
                 |> Map.map (fun _ local ->
-                    if local.Exposed then
-                        { local with
-                            Holds = None
-                        }
-                    else
-                        local
+                    { local with
+                        Escaped = local.Escaped || local.Taken
+                    }
                 )
 
         let entry = System.Collections.Generic.Dictionary<int, Map<int, LocalState>> ()
@@ -176,7 +178,8 @@ module internal LocalValues =
             (everywhere
                 {
                     Holds = None
-                    Exposed = false
+                    Taken = false
+                    Escaped = false
                 })
 
         // A handler may be entered from anywhere in its protected block.
@@ -185,7 +188,8 @@ module internal LocalValues =
                 everywhere
                     {
                         Holds = None
-                        Exposed = true
+                        Taken = true
+                        Escaped = true
                     }
 
             match region with
@@ -209,13 +213,16 @@ module internal LocalValues =
             | Successors.TargetsAndFallThrough targets ->
                 next :: targets |> List.iter (fun target -> arrive target state)
             | Successors.Leave target ->
-                // The `finally` handlers it runs may store to any local, and take the address of
-                // those they take it of.
+                // The `finally` handlers it runs may store to any local, take the address of those
+                // they take it of, and run anything.
                 state
                 |> Map.map (fun index local ->
+                    let taken = local.Taken || addressedInHandlers.Contains index
+
                     {
                         Holds = None
-                        Exposed = local.Exposed || addressedInHandlers.Contains index
+                        Taken = taken
+                        Escaped = local.Escaped || taken
                     }
                 )
                 |> arrive target
@@ -227,24 +234,22 @@ module internal LocalValues =
 
     /// The integer type of the locals `addresses` names, and what they hold on entry to the
     /// instruction at `offset`, if that is known: every address is a local's, all of one type,
-    /// which no path took the address of before the `ldloca` that pushed it, so that nothing but
-    /// this method's run of instructions can have stored to it since.
+    /// whose address has not escaped there, so that nothing but the body's own stores can have
+    /// stored to it, and nothing else holds its address.
     let held
         (locals : LocalValues)
         (offset : int)
         (addresses : Set<SpelledAddress>)
         : (PrimitiveType * Set<SpelledInteger>) option
         =
-        let stateAt (at : int) (index : int) : LocalState option =
-            Map.tryFind at locals.Entry |> Option.bind (Map.tryFind index)
-
         let ofAddress (address : SpelledAddress) : (PrimitiveType * Set<SpelledInteger>) option =
             match address with
             | SpelledAddress.Argument _ -> None
-            | SpelledAddress.Local (index, taken) ->
-                match Map.tryFind index locals.Types, stateAt taken index, stateAt offset index with
-                | Some ty, Some atTaking, Some atOffset when not atTaking.Exposed ->
-                    atOffset.Holds |> Option.map (fun holds -> ty, holds)
+            | SpelledAddress.Local index ->
+                let state = Map.tryFind offset locals.Entry |> Option.bind (Map.tryFind index)
+
+                match Map.tryFind index locals.Types, state with
+                | Some ty, Some state when not state.Escaped -> state.Holds |> Option.map (fun holds -> ty, holds)
                 | _ -> None
 
         let held = addresses |> Set.toList |> List.map ofAddress
