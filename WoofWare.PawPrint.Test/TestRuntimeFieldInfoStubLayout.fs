@@ -25,6 +25,18 @@ module TestRuntimeFieldInfoStubLayout =
             "RuntimeFieldHandleInternal", "m_fieldHandle"
         ]
 
+    /// The instance fields of .NET 11's `RuntimeFieldInfoStub`, likewise.
+    let private net11Fields : (string * string) list =
+        [
+            "object", "m_keepalive"
+            "IntPtr", "m_b"
+            "object", "m_c"
+            "object", "m_d"
+            "object", "m_e"
+            "object", "m_f"
+            "IntPtr", "m_fieldHandle"
+        ]
+
     let private typeAlphabet : string list =
         [
             "object"
@@ -43,29 +55,36 @@ module TestRuntimeFieldInfoStubLayout =
 
     let private insertAt (i : int) (x : 'a) (l : 'a list) : 'a list = List.take i l @ [ x ] @ List.skip i l
 
-    /// Every stub field list one edit away from net10's, plus net10's itself, and a relayout of
-    /// the kind .NET 11 made: padding reordered, `m_b` and `m_fieldHandle` both bare `IntPtr`s.
-    let private stubVariants : (string * string) list list =
-        let n = net10Fields.Length
+    /// Every stub field list one edit away from `fields`, and `fields` itself.
+    let private neighbourhood (fields : (string * string) list) : (string * string) list list =
+        let n = fields.Length
 
         [
-            yield net10Fields
+            yield fields
 
             for i in 0 .. n - 1 do
-                yield removeAt i net10Fields
+                yield removeAt i fields
 
-                let ty, name = net10Fields.[i]
-                yield replaceAt i (ty, name + "_") net10Fields
+                let ty, name = fields.[i]
+                yield replaceAt i (ty, name + "_") fields
 
                 for other in typeAlphabet do
                     if other <> ty then
-                        yield replaceAt i (other, name) net10Fields
+                        yield replaceAt i (other, name) fields
 
             for i in 0 .. n - 2 do
-                yield replaceAt i net10Fields.[i + 1] (replaceAt (i + 1) net10Fields.[i] net10Fields)
+                yield replaceAt i fields.[i + 1] (replaceAt (i + 1) fields.[i] fields)
 
             for i in 0..n do
-                yield insertAt i ("object", "m_extra") net10Fields
+                yield insertAt i ("object", "m_extra") fields
+        ]
+
+    /// The neighbourhoods of net10's and net11's field lists, and last, a relayout of neither: the
+    /// padding moved behind `m_f`, with `m_b` and `m_fieldHandle` both bare `IntPtr`s.
+    let private stubVariants : (string * string) list list =
+        [
+            yield! neighbourhood net10Fields
+            yield! neighbourhood net11Fields
 
             yield
                 [
@@ -117,6 +136,8 @@ module TestRuntimeFieldInfoStubLayout =
                     |> stubClass $"StubOver%s{name}"
                 )
 
+            let bareStub = stubClass "BareStub" net11Fields
+
             // A stub carrying an extra static field: statics are not part of the layout.
             let withStatic =
                 (stubClass "StubWithStatic" net10Fields)
@@ -130,6 +151,7 @@ module TestRuntimeFieldInfoStubLayout =
                     yield! stubs
                     yield! handles
                     yield! overHandles
+                    yield bareStub
                     yield withStatic
                     yield "}"
                 ]
@@ -147,10 +169,48 @@ module TestRuntimeFieldInfoStubLayout =
         |> Seq.filter (fun ty -> ty.Namespace = "Fabricated" && ty.Name = name)
         |> Seq.exactlyOne
 
-    let private isRecognised (result : Result<RuntimeFieldInfoStubLayout, string>) : bool =
+    /// Which layout `result` recognised, by name.
+    let private layoutKind (result : Result<RuntimeFieldInfoStubLayout, string>) : string option =
         match result with
-        | Ok (RuntimeFieldInfoStubLayout.WrappedHandle _) -> true
-        | Error _ -> false
+        | Ok (RuntimeFieldInfoStubLayout.WrappedHandle _) -> Some "WrappedHandle"
+        | Ok (RuntimeFieldInfoStubLayout.BareHandle _) -> Some "BareHandle"
+        | Error _ -> None
+
+    let private isRecognised (result : Result<RuntimeFieldInfoStubLayout, string>) : bool = (layoutKind result).IsSome
+
+    let private readCorelib (corelibPath : string) : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use stream = File.OpenRead corelibPath
+        Assembly.read loggerFactory (Some corelibPath) stream
+
+    /// The names of the fields `layout` classified, in the stub's declaration order, then the
+    /// field of `RuntimeFieldHandleInternal`.
+    let private fieldNames (layout : RuntimeFieldInfoStubLayout) : string list =
+        match layout with
+        | RuntimeFieldInfoStubLayout.WrappedHandle fields ->
+            [
+                fields.Keepalive
+                fields.C
+                fields.D
+                fields.B
+                fields.E
+                fields.F
+                fields.FieldHandle
+                fields.HandleInternalHandle
+            ]
+        | RuntimeFieldInfoStubLayout.BareHandle fields ->
+            [
+                fields.Keepalive
+                fields.B
+                fields.C
+                fields.D
+                fields.E
+                fields.F
+                fields.FieldHandle
+                fields.HandleInternalHandle
+            ]
+        |> List.map (fun field -> field.Name)
 
     [<Test>]
     let ``the framework under test's CoreLib stub has that runtime's layout`` () =
@@ -168,11 +228,7 @@ module TestRuntimeFieldInfoStubLayout =
                     "m_handle"
                 ]
 
-        let corelibPath = FrameworkUnderTest.coreLibPath ()
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
-        use stream = File.OpenRead corelibPath
-        let corelib = Assembly.read loggerFactory (Some corelibPath) stream
+        let corelib = readCorelib (FrameworkUnderTest.coreLibPath ())
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         match
@@ -181,23 +237,39 @@ module TestRuntimeFieldInfoStubLayout =
                 baseClassTypes.RuntimeFieldInfoStub
                 baseClassTypes.RuntimeFieldHandleInternal
         with
-        | Ok (RuntimeFieldInfoStubLayout.WrappedHandle fields) ->
-            [
-                fields.Keepalive
-                fields.C
-                fields.D
-                fields.B
-                fields.E
-                fields.F
-                fields.FieldHandle
-                fields.HandleInternalHandle
-            ]
-            |> List.map (fun field -> field.Name)
-            |> shouldEqual expected
+        | Ok (RuntimeFieldInfoStubLayout.WrappedHandle _ as layout) -> fieldNames layout |> shouldEqual expected
+        | Ok other -> failwith $"expected the wrapped-handle layout, got %A{other}"
         | Error refusal -> failwith refusal
 
     [<Test>]
-    let ``classify recognises exactly net10's stub field list`` () =
+    let ``.NET 11's CoreLib stub has the bare-handle layout`` () =
+        let corelib = readCorelib (FrameworkUnderTest.requireNet11CoreLibPath ())
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        match
+            RuntimeFieldInfoStubLayout.classify
+                corelib
+                baseClassTypes.RuntimeFieldInfoStub
+                baseClassTypes.RuntimeFieldHandleInternal
+        with
+        | Ok (RuntimeFieldInfoStubLayout.BareHandle _ as layout) ->
+            fieldNames layout
+            |> shouldEqual
+                [
+                    "m_keepalive"
+                    "m_b"
+                    "m_c"
+                    "m_d"
+                    "m_e"
+                    "m_f"
+                    "m_fieldHandle"
+                    "m_handle"
+                ]
+        | Ok other -> failwith $"expected the bare-handle layout, got %A{other}"
+        | Error refusal -> failwith refusal
+
+    [<Test>]
+    let ``classify recognises exactly net10's and net11's stub field lists`` () =
         let assembly = fabricated.Force ()
         let handleInternal = typeNamed assembly "RuntimeFieldHandleInternal"
 
@@ -207,20 +279,22 @@ module TestRuntimeFieldInfoStubLayout =
                 let result =
                     RuntimeFieldInfoStubLayout.classify assembly (typeNamed assembly $"Stub%i{i}") handleInternal
 
-                let expected = (fields = net10Fields)
+                let expected =
+                    if fields = net10Fields then Some "WrappedHandle"
+                    elif fields = net11Fields then Some "BareHandle"
+                    else None
 
-                if isRecognised result <> expected then
-                    failwith
-                        $"Stub%i{i} with fields %A{fields} classified as %A{result}; expected recognised=%b{expected}"
+                if layoutKind result <> expected then
+                    failwith $"Stub%i{i} with fields %A{fields} classified as %A{result}; expected %A{expected}"
 
                 expected
             )
-            |> List.filter id
+            |> List.choose id
             |> List.length
 
-        // Vacuity guard: net10's own list is among the variants, and nothing else is accepted.
-        recognised |> shouldEqual 1
-        stubVariants.Length |> shouldBeGreaterThan 60
+        // Vacuity guard: both runtimes' lists are among the variants, and nothing else is accepted.
+        recognised |> shouldEqual 2
+        stubVariants.Length |> shouldBeGreaterThan 120
 
     [<Test>]
     let ``static fields are not part of the layout`` () =
@@ -247,6 +321,14 @@ module TestRuntimeFieldInfoStubLayout =
             if isRecognised result <> expected then
                 failwith $"StubOver%s{name} classified as %A{result}; expected recognised=%b{expected}"
 
+            // A bare-handle stub never holds a `RuntimeFieldHandleInternal`, but its reader makes
+            // one, so the same type is required of it.
+            let bare =
+                RuntimeFieldInfoStubLayout.classify assembly (typeNamed assembly "BareStub") (typeNamed assembly name)
+
+            if isRecognised bare <> expected then
+                failwith $"BareStub over %s{name} classified as %A{bare}; expected recognised=%b{expected}"
+
     [<Test>]
     let ``m_fieldHandle must be the RuntimeFieldHandleInternal classify is given`` () =
         let assembly = fabricated.Force ()
@@ -261,7 +343,7 @@ module TestRuntimeFieldInfoStubLayout =
         |> shouldEqual false
 
     [<Test>]
-    let ``a relayout of net11's kind is refused, naming the fields found`` () =
+    let ``a relayout of neither runtime's is refused, naming the fields found`` () =
         let assembly = fabricated.Force ()
         let index = stubVariants.Length - 1
 
