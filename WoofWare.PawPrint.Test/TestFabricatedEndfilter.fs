@@ -127,4 +127,6 @@ public static class Driver
 
     [<Test>]
     let ``endfilter accepts exactly the result 1, as the real runtime does`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "Filt" (fabricate ()) "EndfilterDriver" driverSource 0

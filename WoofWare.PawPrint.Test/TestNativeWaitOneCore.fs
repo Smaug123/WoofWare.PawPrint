@@ -120,6 +120,9 @@ public static class Entry
 
     [<Test>]
     let ``An ordinary wait parks alertably`` () : unit =
+        Net11Frontier.park
+            "On .NET 11, `WaitHandle` on Unix waits through the managed `WaitSubsystem`, and the fixture finds no `QCall`/`WaitHandle_WaitOneCore` import to call (\"QCall entry point WaitHandle_WaitOneCore not found on System.Threading.WaitHandle\"). Un-park when the fixture reaches each runtime's wait."
+
         let id, status = parkedStatus 0
 
         status
@@ -127,6 +130,9 @@ public static class Entry
 
     [<Test>]
     let ``A trivial wait parks non-alertably`` () : unit =
+        Net11Frontier.park
+            "On .NET 11, `WaitHandle` on Unix waits through the managed `WaitSubsystem`, and the fixture finds no `QCall`/`WaitHandle_WaitOneCore` import to call (\"QCall entry point WaitHandle_WaitOneCore not found on System.Threading.WaitHandle\"). Un-park when the fixture reaches each runtime's wait."
+
         let id, status = parkedStatus 1
 
         status

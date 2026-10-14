@@ -180,6 +180,8 @@ class Program
 
     [<Test>]
     let ``a death by a signal that dumps core reports the dump exactly when the process writes dumps`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // SIGQUIT (3 under both numberings) dumps core by default; SIGTERM does
         // not. Both routes to the death, libc's kill(2) and the shim's
         // re-raise, read the process's setting.
@@ -201,6 +203,8 @@ class Program
 
     [<Test>]
     let ``the shim re-raises SIGKILL though sigaction refuses to restore it`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The restore fails with EINVAL, unchecked, and kill(2) goes ahead.
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match runSelfSignal platform CoreDumps.Written [ "9" ; "shim" ] with
@@ -210,6 +214,8 @@ class Program
 
     [<Test>]
     let ``the shim's re-raise of Linux's 33 is refused, because glibc's handler would run`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let exn =
             Assert.Catch<exn> (fun () ->
                 runSelfSignal SimulatedUnixPlatform.linuxX64 CoreDumps.Suppressed [ "33" ; "shim" ]

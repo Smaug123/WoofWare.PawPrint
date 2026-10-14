@@ -45,6 +45,8 @@ module TestNativeContractTable =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every row names a native of the CoreLib, which is recognised as that row`` (which : AuditedCoreLib) : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
         let corelib = TestIntrinsicBody.coreLib which
 
         let natives =
@@ -87,6 +89,8 @@ module TestNativeContractTable =
         (which : AuditedCoreLib)
         : unit
         =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
         let corelib = TestIntrinsicBody.coreLib which
 
         for row in rows do
@@ -141,6 +145,8 @@ module TestNativeContractTable =
     /// it can call in `vm/corelib.h`, each by an ID `METHOD__<class>__<method>`.
     [<Test>]
     let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
         let coreclr =
             Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
 
@@ -199,6 +205,8 @@ module TestNativeContractTable =
 
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
         let coreclr =
             Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
 

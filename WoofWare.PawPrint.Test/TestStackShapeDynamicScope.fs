@@ -56,12 +56,16 @@ module TestStackShapeDynamicScope =
 
     [<Test>]
     let ``a call to a dynamic method not yet minted takes its arity from the DynamicMethod object`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The callee has never run when the caller first executes, so its signature is read
         // from `_parameterTypes` and `_returnType` rather than from a minted body.
         run "DynamicMethodCallsUnminted.cs"
 
     [<Test>]
     let ``a scope entry swapped for a reflected method after the mint does not stop the body`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The decoder refuses a `RuntimeMethodHandle` in method position when the body is minted,
         // but a guest can put one there afterwards. PawPrint refuses the call when it executes; a
         // call that never executes must not be refused ahead of it.
@@ -69,6 +73,8 @@ module TestStackShapeDynamicScope =
 
     [<Test>]
     let ``a field of the declaring type's parameter takes the shape of the closed type's argument`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // `Box<float>.Item` is declared `!0`; loaded through a scope entry naming the field on
         // `Box<float>`, it is a float32, and may meet a float32 literal at a join.
         run "DynamicFieldOnGenericType.cs"

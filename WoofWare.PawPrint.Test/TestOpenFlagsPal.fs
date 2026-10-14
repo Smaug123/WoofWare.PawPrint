@@ -31,6 +31,9 @@ module TestOpenFlagsPal =
 
     [<Test>]
     let ``every PAL value is the one the pinned header defines`` () : unit =
+        Net11Frontier.park
+            ".NET 11's `pal_io.h` defines two open flags .NET 10's does not, `PAL_O_NONBLOCK_READ` (1024) and `PAL_O_NONBLOCK_WRITE` (2048), which `OpenFlagsPal` does not convert. Un-park when the PAL conversion follows each runtime's flags."
+
         let path =
             Path.Combine (
                 FrameworkUnderTest.requireRuntimeSource (),

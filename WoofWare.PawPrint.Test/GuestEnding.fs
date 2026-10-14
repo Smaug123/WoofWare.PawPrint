@@ -51,3 +51,21 @@ module GuestEnding =
         match checkReal caseName expected result with
         | Ok () -> ()
         | Error message -> failwith message
+
+[<RequireQualifiedAccess>]
+module GuestTable =
+
+    /// `everywhere`'s entries with `here`'s added, for a fixture's arm for one runtime. Fails if a
+    /// case is in both, since `here`'s entry would silently replace the one stated for every
+    /// runtime; a case whose entry differs between runtimes belongs in each runtime's own table.
+    let fold (what : string) (everywhere : Map<'case, 'v>) (here : Map<'case, 'v>) : Map<'case, 'v> =
+        let both =
+            here
+            |> Map.filter (fun case _ -> everywhere.ContainsKey case)
+            |> Map.keys
+            |> List.ofSeq
+
+        if not both.IsEmpty then
+            failwith $"%s{what}: cases stated both for every runtime and for this one: %A{both}"
+
+        Map.fold (fun acc case value -> Map.add case value acc) everywhere here

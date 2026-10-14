@@ -90,6 +90,8 @@ class Program
     [<TestCase("return", -1)>]
     [<TestCase("exit", 65543)>]
     let ``an exit keeps what the flavour keeps of the latched exit code`` (how : string, status : int) : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         for platform, kept in
             [
                 SimulatedUnixPlatform.linuxX64, status &&& 0xff

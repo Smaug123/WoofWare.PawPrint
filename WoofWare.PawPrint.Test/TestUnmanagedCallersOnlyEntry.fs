@@ -90,6 +90,19 @@ module TestUnmanagedCallersOnlyEntry =
 
     [<TestCaseSource(nameof cases)>]
     let ``entering an UnmanagedCallersOnly method from managed code is fatal`` (sourceName : string) : unit =
+        if
+            List.contains
+                sourceName
+                [
+                    "UnmanagedCallersOnlyDelegateInvoke.cs"
+                    "UnmanagedCallersOnlyForceEmitInvoke.cs"
+                    "UnmanagedCallersOnlyReflectionInvoke.cs"
+                    "UnmanagedCallersOnlySuppressGCTransition.cs"
+                    "UnmanagedCallersOnlyThreadStart.cs"
+                ]
+        then
+            Net11Frontier.park Net11Frontier.thinLock
+
         let image = Roslyn.compile [ Assembly.getEmbeddedResourceAsString sourceName assy ]
 
         // The oracle first, so that a guest which stopped reaching the refusal on real .NET is
@@ -142,6 +155,8 @@ module TestUnmanagedCallersOnlyEntry =
     /// otherwise satisfied by a guest that could not have printed it at all.
     [<Test>]
     let ``the refusal precedes the declaring type's static constructor`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let sourceName = "UnmanagedCallersOnlyCctorNotRun.cs"
         let marker = "HOLDER CCTOR RAN"
 

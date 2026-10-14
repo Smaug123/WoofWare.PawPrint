@@ -111,7 +111,7 @@ module TestAspNetTwoProcess =
     // Made once: each reference holds a copy of its image in native memory (see `Roslyn`).
     let private aspNetCoreReferences : Lazy<MetadataReference list> =
         lazy
-            (Directory.GetFiles (FrameworkUnderTest.aspNetCoreFrameworkDirectory (), "*.dll")
+            (Directory.GetFiles (HostImage.aspNetCoreFrameworkDirectory, "*.dll")
              |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
              |> Array.toList)
 
@@ -350,6 +350,8 @@ module TestAspNetTwoProcess =
 
     [<Test>]
     let ``Kestrel and HttpClient as two processes on one machine agree with two real processes`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         agree
             requests
             "server: listening\nserver: stopped after serving both item requests\n"
@@ -367,6 +369,8 @@ module TestAspNetTwoProcess =
     /// the client's next request goes over a new connection; see the module's docstring.
     [<Test>]
     let ``Kestrel closing an idle connection under a live HttpClient agrees with two real processes`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         agree
             idleClose
             "server: listening\nserver: stopped after accepting a second connection once the first had ended\n"

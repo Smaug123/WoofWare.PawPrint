@@ -99,6 +99,8 @@ class Program
 
     [<Test>]
     let ``Prepared debugger stepping agrees with normal run`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let mutable directReturnCount = 0
         let mutable workerThreadCount = 0
         let mutable unhandledExceptionCount = 0

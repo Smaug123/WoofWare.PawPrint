@@ -792,6 +792,8 @@ class Program
     /// `/state` is the first call the debugging workflow tells you to make.
     [<Test>]
     let ``the pre-Main placeholder frame reports no source location`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             let source =
                 """
@@ -918,6 +920,8 @@ class Program
 
     [<Test>]
     let ``Debugger HTTP step events carry each guest write, attributed to its step`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             use server = startServer interleavedOutputSource
             use client = client server (Some token)
@@ -952,6 +956,8 @@ class Program
 
     [<Test>]
     let ``Debugger HTTP output reports the guest's whole output log`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             use server = startServer interleavedOutputSource
             use client = client server (Some token)
@@ -1615,6 +1621,8 @@ class Program
 
     [<Test>]
     let ``Debugger HTTP heap objects expose structured fields and outgoing references`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             use server = startServer objectGraphSource
             use client = client server (Some token)
@@ -1669,6 +1677,8 @@ class Program
 
     [<Test>]
     let ``Debugger HTTP lists the whole heap a page at a time`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             use server = startServer objectGraphSource
             use client = client server (Some token)
@@ -1751,6 +1761,8 @@ class Program
 
     [<Test>]
     let ``Debugger HTTP exposes static fields of every storage kind`` () : Task =
+        Net11Frontier.park Net11Frontier.thinLock
+
         task {
             use server = startServer objectGraphSource
             use client = client server (Some token)

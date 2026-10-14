@@ -147,4 +147,6 @@ public static class Driver
 
     [<Test>]
     let ``castclass and isinst treat a Nullable token as its boxed payload type`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "Cast" (fabricate ()) "CastclassNullableDriver" driverSource 0

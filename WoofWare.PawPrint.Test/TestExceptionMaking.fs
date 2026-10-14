@@ -360,6 +360,8 @@ static class Program
 
     [<Test>]
     let ``a native raises an exception its row names, made by running its parameterless constructor`` () : unit =
+        Net11Frontier.park Net11Frontier.exceptionMaking
+
         // Which of the row's exceptions the native raises for a string too long to allocate depends
         // on the target's allocator.
         let raised =
@@ -385,6 +387,9 @@ static class Program
 
     [<TestCaseSource(nameof faults)>]
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
+        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ] then
+            Net11Frontier.park Net11Frontier.exceptionMaking
+
         let case = cases.[fault]
 
         let run (mode : string) : RealRuntimeResult =
@@ -620,6 +625,8 @@ static class Program
         (exceptionName : string)
         : unit
         =
+        Net11Frontier.park Net11Frontier.exceptionMaking
+
         runBinding failure exceptionName [ "named" ; "twice" ; "nameless" ]
         |> shouldEqual
             [
@@ -719,6 +726,9 @@ static class Program
 
     [<Test>]
     let ``a type initializer's failure raises what ExceptionMaking says`` () : unit =
+        Net11Frontier.park
+            "Measured on real .NET 11: when looking up the message of the `TypeInitializationException` the runtime makes for a failed initializer raises, that wrapper is still raised (the guest exits 1), where on .NET 10 the initializer's own exception escapes in its place (4), as `ExceptionMaking.InitializerFailure` describes. Un-park when `ExceptionMaking` describes each runtime's making."
+
         let makings = makingsIn initializerImage.Value "Main" OpcodeFault.TypeInitialization
 
         makings |> shouldNotEqual []

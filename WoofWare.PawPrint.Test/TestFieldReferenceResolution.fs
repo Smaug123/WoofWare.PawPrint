@@ -84,8 +84,8 @@ module TestFieldReferenceResolution =
 
     [<TestCaseSource(nameof assemblyNames)>]
     let ``every field MemberRef resolves where the real runtime binds it`` (assemblyName : string) : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
         let reflected = System.Reflection.Assembly.Load (AssemblyName assemblyName)
 
@@ -447,8 +447,8 @@ module TestFieldReferenceResolution =
 
     [<Test>]
     let ``field MemberRefs in shapes no compiler emits resolve where the real runtime binds them`` () : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =

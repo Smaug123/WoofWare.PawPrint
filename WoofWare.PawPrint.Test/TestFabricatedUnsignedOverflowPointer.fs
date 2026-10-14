@@ -166,6 +166,8 @@ public static class Driver
         ()
         : unit
         =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "U" (fabricate ()) "UnsignedOverflowPointerDriver" driverSource 0
 
     [<TestCase("AddThenLoad", "add.ovf.un")>]

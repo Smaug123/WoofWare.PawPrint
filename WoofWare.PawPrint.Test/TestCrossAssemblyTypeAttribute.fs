@@ -15,6 +15,8 @@ module TestCrossAssemblyTypeAttribute =
     /// if the handler takes its scope from the `QCallModule` argument rather than from the ctor.
     [<Test>]
     let ``System.Type-valued attribute argument resolves against the decorated assembly`` () : unit =
+        Net11Frontier.park Net11Frontier.bitCast
+
         {
             Assemblies =
                 [

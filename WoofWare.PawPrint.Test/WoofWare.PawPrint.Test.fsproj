@@ -21,6 +21,7 @@
     <Compile Include="FrameworkUnderTest.fs" />
     <Compile Include="HostImage.fs" />
     <Compile Include="ParkedOn.fs" />
+    <Compile Include="Net11Frontier.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />

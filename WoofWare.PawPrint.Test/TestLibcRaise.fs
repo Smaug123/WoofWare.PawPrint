@@ -107,6 +107,8 @@ class Program
 
     [<Test>]
     let ``a signal the process discards is answered from either thread under either flavour`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // 28 is SIGWINCH on both, discarded by default; 13 is SIGPIPE, which
         // the runtime ignores from startup.
         for platform in everyPlatform do
@@ -116,6 +118,8 @@ class Program
 
     [<Test>]
     let ``a number raise cannot send is EINVAL from either thread under either flavour`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // 32 and 33 are signals on Linux, which glibc keeps for itself, and
         // past Darwin's last.
         for platform in everyPlatform do
@@ -125,6 +129,8 @@ class Program
 
     [<Test>]
     let ``SIGTERM at its default kills the process from either thread`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         for platform in everyPlatform do
             for thread in [ "main" ; "worker" ] do
                 match run platform [ thread ; "15" ; "none" ] with
@@ -133,11 +139,15 @@ class Program
 
     [<Test>]
     let ``a registered signal raised on the main thread runs its handler`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         for platform in everyPlatform do
             exitsWith 42 platform [ "main" ; "15" ; "registered" ]
 
     [<Test>]
     let ``a caught signal raised on another thread is refused, being left pending there`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // System.Native's handler, and the runtime's hardware-fault handler for
         // SIGILL (4 on both).
         for platform in everyPlatform do
@@ -146,12 +156,16 @@ class Program
 
     [<Test>]
     let ``a hardware-fault signal raised on the main thread is survived once`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // 4 is SIGILL on both, whose handler restores the default and returns.
         for platform in everyPlatform do
             exitsWith 42 platform [ "main" ; "4" ; "none" ]
 
     [<Test>]
     let ``a signal is read under the configured flavour's numbering`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // 20 is SIGTSTP on Linux, which would stop the process, and SIGCHLD on
         // Darwin, which is discarded.
         exitsWith 42 SimulatedUnixPlatform.macOsArm64 [ "main" ; "20" ; "none" ]

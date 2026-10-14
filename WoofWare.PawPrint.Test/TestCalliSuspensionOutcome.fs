@@ -185,6 +185,8 @@ public static unsafe class Program
     /// must not be mistaken for a call that did not happen.
     [<Test>]
     let ``calli reports Executed when the callee is an intrinsic that raises`` () =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let source =
             """
 using System;

@@ -186,7 +186,7 @@ module TestOraclePolicy =
     [<Test>]
     let ``the oracle refuses a case that gives its seed's root an owner`` () : unit =
         let case =
-            TestImpureCases.runEverywhere
+            TestImpureCases.registeredEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let rootOwned =
@@ -241,7 +241,7 @@ module TestOraclePolicy =
         // happens to the one that tries. Refused before the guest runs, so the
         // diagnostic does not depend on how far the interpreter got.
         let case =
-            TestImpureCases.runEverywhere
+            TestImpureCases.registeredEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let forced =
@@ -256,6 +256,8 @@ module TestOraclePolicy =
 
     [<Test>]
     let ``a divergent case registered as compared is caught`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The wiring, not the decision: proof that `TestImpureCases.runTest` really does
         // consult the policy and really does run the oracle when it says so.
         //
@@ -266,7 +268,7 @@ module TestOraclePolicy =
         // that ignored the policy, or ran the oracle and discarded its answer, would let
         // this pass.
         let divergent =
-            TestImpureCases.runEverywhere
+            TestImpureCases.registeredEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         divergent.Oracle |> shouldEqual OraclePolicy.Never
@@ -290,6 +292,8 @@ module TestOraclePolicy =
 
     [<Test>]
     let ``the two runtimes' own answers are compared, not just the declared one`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The other half of `compareOutcomes`. Above, the real runtime disagreed with
         // the number the case wrote down; here it *agrees* with it, and PawPrint is the
         // one that differs. Nothing in the corpus can exercise this while the suite is
@@ -297,7 +301,7 @@ module TestOraclePolicy =
         // fixture -- so the divergence is manufactured by declaring the real runtime's
         // answer as the expected one.
         let divergent =
-            TestImpureCases.runEverywhere
+            TestImpureCases.registeredEverywhere
             |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
 
         let forced =

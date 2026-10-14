@@ -90,6 +90,20 @@ module TestSignalTerminatedCases =
 
     [<TestCaseSource(nameof cases)>]
     let ``A guest killed by a signal dies of it on both runtimes`` (case : SignalTerminatedCase) : unit =
+        if
+            List.contains
+                case.FileName
+                [
+                    "KillSelf.cs"
+                    "LibcRaiseTerminatesFromThread.cs"
+                    "PosixSignalKillNotCancelled.cs"
+                    "PosixSignalRaiseNotCancelled.cs"
+                    "PosixSignalReenabledAfterFaultRestore.cs"
+                    "PosixSignalRegisteredFaultSignal.cs"
+                ]
+        then
+            Net11Frontier.park Net11Frontier.thinLock
+
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
 

@@ -64,6 +64,8 @@ module TestLinuxCoreLibFlavour =
     /// unimplemented primitive would surface.
     [<Test>]
     let ``a guest runs against the pinned linux-x64 CoreLib`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =
@@ -138,6 +140,9 @@ public class Program
     /// thread and a nested `Exit` does not throw `SynchronizationLockException`.
     [<Test>]
     let ``System.Threading.Lock reaches TryGetUInt32OSThreadId on the linux-x64 CoreLib`` () : unit =
+        Net11Frontier.park
+            "On .NET 11, `System.Threading.Lock` identifies its owner by the managed thread id (`ManagedThreadId.CurrentManagedThreadIdUnchecked`), not by an OS thread id, so no CoreLib flavour reaches `TryGetUInt32OSThreadId` from it; the guest's sentinel no longer tells the flavours apart. Un-park when the test picks a distinction .NET 11's flavours still have."
+
         let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =

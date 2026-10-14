@@ -504,6 +504,8 @@ public static class Program
         ()
         : unit
         =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 

@@ -134,8 +134,8 @@ module TestMethodReferenceResolution =
 
     [<TestCaseSource(nameof assemblyNames)>]
     let ``every method MemberRef resolves where the real runtime binds it`` (assemblyName : string) : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let reflected = Assembly.Load (AssemblyName assemblyName)
@@ -235,8 +235,8 @@ module TestMethodReferenceResolution =
 
     [<Test>]
     let ``a reference whose parent type the provider no longer declares says so`` () : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let compile (name : string) (references : byte[] list) (text : string) : byte[] =

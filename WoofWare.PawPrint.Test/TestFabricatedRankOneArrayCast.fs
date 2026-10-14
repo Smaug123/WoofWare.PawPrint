@@ -358,6 +358,8 @@ public static class Driver
 
     [<Test>]
     let ``an SZ array is an instance of the rank-1 multi-dimensional array type`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "Arrays" (fabricate ()) "RankOneArrayCastDriver" driverSource 0
 
     /// Each check returns its own index on failure. A non-zero lower bound is not constructed,
@@ -397,4 +399,6 @@ public static class Driver
 
     [<Test>]
     let ``constructing a rank-1 multi-dimensional array with a zero lower bound builds an SZ array`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "Arrays" (fabricate ()) "RankOneArrayConstructionDriver" constructionDriverSource 0

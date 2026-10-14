@@ -212,6 +212,35 @@ module TestGuestParking =
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
+    let ``GuestTable.fold is the union of disjoint tables, and refuses tables that share a case`` () : unit =
+        let property (everywhere : Map<int, string>) (here : Map<int, string>) : bool =
+            let shared =
+                Set.intersect (everywhere |> Map.keys |> Set.ofSeq) (here |> Map.keys |> Set.ofSeq)
+
+            if shared.IsEmpty then
+                let folded = GuestTable.fold "test" everywhere here
+
+                Map.count folded = Map.count everywhere + Map.count here
+                && Map.forall (fun case value -> Map.tryFind case folded = Some value) everywhere
+                && Map.forall (fun case value -> Map.tryFind case folded = Some value) here
+            else
+                try
+                    GuestTable.fold "test" everywhere here |> ignore<Map<int, string>>
+                    false
+                with e ->
+                    e.Message.Contains "stated both for every runtime and for this one"
+
+        // Keys from a small range, so that many pairs share a case.
+        let genTable : Gen<Map<int, string>> =
+            Gen.listOf (Gen.zip (Gen.choose (0, 5)) (Gen.elements [ "a" ; "b" ]))
+            |> Gen.map Map.ofList
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 1000,
+            Prop.forAll (Arb.fromGen (Gen.zip genTable genTable)) (fun (a, b) -> property a b)
+        )
+
+    [<Test>]
     let ``F# cases parked or ending specially everywhere are so on every runtime`` () : unit =
         for runtime in everyRuntime do
             let cases = TestFSharpPureCases.onRuntime runtime
@@ -234,7 +263,10 @@ module TestGuestParking =
         |> shouldEqual []
 
     [<Test>]
-    let ``Impure cases parked or run everywhere are so on every runtime`` () : unit =
+    let ``Impure cases parked everywhere are so on every runtime, and every registered case runs or is parked``
+        ()
+        : unit
+        =
         for runtime in everyRuntime do
             let cases = TestImpureCases.onRuntime runtime
 
@@ -255,9 +287,10 @@ module TestGuestParking =
                     failwith
                         $"%O{runtime}: %s{case.FileName} is parked everywhere, but not parked, or parked differently, here"
 
-            for case in TestImpureCases.runEverywhere do
-                if not (contains case cases.Run) then
-                    failwith $"%O{runtime}: %s{case.FileName} runs everywhere, but does not run here"
+            for case in TestImpureCases.registeredEverywhere do
+                if not (contains case cases.Run || contains case parked) then
+                    failwith
+                        $"%O{runtime}: %s{case.FileName} is registered everywhere, but neither runs nor is parked here"
 
             for case in cases.Run do
                 if contains case parked then

@@ -1466,6 +1466,9 @@ public static class SR
 
     [<Test>]
     let ``each fixture method's escaping exceptions are as stated`` () : unit =
+        Net11Frontier.park
+            "On .NET 11 a `lock` runs CoreLib's managed thin lock instead of .NET 10's `Monitor` InternalCalls, so the escape analysis finds many more exceptions able to escape the fixture's `ContextCases.Locks` than the fixture states, which are .NET 10's. Un-park when the fixture states each runtime's escapes."
+
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1531,6 +1534,8 @@ public static class SR
 
     [<Test>]
     let ``a fixture method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
+        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
+
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1564,6 +1569,8 @@ public static class SR
 
     [<Test>]
     let ``a CoreLib method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
+        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
+
         let corelib = hostCoreLib ()
 
         let analysis =
@@ -1620,6 +1627,8 @@ public static class SR
 
     [<Test>]
     let ``what callers pass makes a fixture method's answer only more precise`` () : unit =
+        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
+
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1639,6 +1648,8 @@ public static class SR
 
     [<Test>]
     let ``what callers pass makes a CoreLib method's answer only more precise`` () : unit =
+        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
+
         let analysis = analysisOver [] id
         let corelib = hostCoreLib ()
 
@@ -1730,6 +1741,8 @@ public static class SR
 
     [<Test>]
     let ``allowed no assumption, no answer assumes anything, and one that relied on none is unchanged`` () : unit =
+        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
+
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1959,6 +1972,8 @@ public static class SR
         ()
         : unit
         =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
         let corelib = hostCoreLib ()
 
         let tabulated =
@@ -3349,6 +3364,9 @@ public static class Runners
     /// the calls are emitted directly.
     [<Test>]
     let ``a multidimensional array constructor taking lower bounds can reject them`` () : unit =
+        Net11Frontier.park
+            "On .NET 11's CoreLib, `EscapeAnalysis.resourceMessageLookup` finds no `Environment.GetResourceStringLocal(string)`, the method its resource-lookup assumption (`ResourceLookup`) names, so the analysis stops: \"expected System.Private.CoreLib, Version=11.0.0.0 ... to define one Environment.GetResourceStringLocal(string), found 0\". Un-park when the assumption names each runtime's resource lookup."
+
         let _, loggerFactory = LoggerFactory.makeTest ()
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()

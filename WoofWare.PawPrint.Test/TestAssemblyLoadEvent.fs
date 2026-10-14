@@ -28,6 +28,8 @@ module TestAssemblyLoadEvent =
     /// `AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on this, and is what real .NET does.
     [<Test>]
     let ``an exception escaping an AssemblyLoad handler ends the run rather than reaching the guest`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let name = "AssemblyLoadHandlerThrowIsSwallowed.cs"
         let image = Roslyn.compile [ source "sourcesPure" name ]
 
@@ -57,6 +59,8 @@ module TestAssemblyLoadEvent =
     /// replacing with it.
     [<Test>]
     let ``creating a dynamic assembly with AssemblyLoad subscribed is refused`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let name = "AssemblyLoadEventDynamic.cs"
         let image = Roslyn.compile [ source "sourcesImpure" name ]
 
