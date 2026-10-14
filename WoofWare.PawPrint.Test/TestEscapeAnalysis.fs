@@ -728,6 +728,11 @@ public static class SR
     let private expectations : Expectation list =
         let ioe = "=System.InvalidOperationException"
 
+        // Waiting for a contended monitor calls the waiting thread's synchronization context, whose
+        // `Wait` may be any override.
+        let synchronizationContextWait =
+            "System.Threading.SynchronizationContext::InvokeWaitMethodHelper IL VirtualCall System.Threading.SynchronizationContext::Wait"
+
         [
             { expect "Fixture.Cases" "ThrowsDirectly" with
                 Contains = [ ioe ]
@@ -747,18 +752,20 @@ public static class SR
             { expect "Fixture.Cases" "PropagatesOneHop" with
                 Contains = [ ioe ]
             }
-            // The `lockTaken` the JIT passes `Monitor.Enter` is false. Taking a contended monitor
-            // waits, and a wait may run the thread's `SynchronizationContext.Wait`, which may throw
-            // anything.
+            // The `lockTaken` the JIT passes `Monitor.Enter` is false. Taking the monitor may allocate
+            // its sync block, or wait and be interrupted; and a wait may run the thread's
+            // `SynchronizationContext.Wait`, which may throw anything.
             { expect "Fixture.Cases" "Synchronised" with
                 Contains =
                     [
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 // Its monitor is its type's, never null.
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -768,20 +775,24 @@ public static class SR
                 Contains =
                     [
                         "=System.ArgumentNullException"
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Locking" "OnNew" with
                 Contains =
                     [
+                        "=System.OutOfMemoryException"
                         "=System.Threading.ThreadInterruptedException"
                         "=System.Threading.SynchronizationLockException"
                     ]
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "Unsynchronised" with
                 Excludes =
