@@ -24,7 +24,16 @@ method) may add more:
   nothing. An argument of an integer type (`bool`, `char`, or an integer of up to 64 bits) is the
   constants the caller passes it, where the caller decides them, each converted to the parameter's
   type as the runtime converts it (a `bool` holds the low byte of an `int` passed for it), so
-  `ObjectDisposedException.ThrowIf` called with `false` throws nothing. An object a call returns is
+  `ObjectDisposedException.ThrowIf` called with `false` throws nothing. A `ref` argument points to
+  the value the caller's local held when the call was made, where the caller decides it: a local of
+  an integer type whose address, since any path took it, has met nothing but loads, branches,
+  arithmetic and stores to the caller's own arguments and locals, so that nothing else can hold
+  it. The method knows that value for a load through
+  the argument (of the local's width or narrower: CoreCLR's CPUs are little-endian) made before
+  it stores to anything but its own arguments and locals or runs other code, so `Monitor.Enter`,
+  passed the `lockTaken` a `lock` statement sets to `false`, throws no `ArgumentException`. A
+  `lock` inside a loop passes a local whose address the previous iteration passed to `Enter`,
+  and stays imprecise. An object a call returns is
   null or not as the callee's `ret`s return it. Asked about by itself, a method may be passed any
   value its parameter types admit, null among them, and so may one whose body stores to the
   argument or takes its address;
@@ -57,8 +66,9 @@ method) may add more:
   which nothing else reaches), only the way the answer goes is followed (`ControlFlow.mayExecute`),
   and so it is where the value branched on straight away is an object known to be null or not: one
   `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
-  null; or an integer known to be zero or not: a constant an `ldc` pushed, or an argument whose
-  callers all pass zero or all pass something else. Every other branch is followed both ways. A handler counts only if something in its
+  null; or an integer known to be zero or not: a constant an `ldc` pushed, an argument whose
+  callers all pass zero or all pass something else, or a load through a `ref` argument whose
+  callers' locals all hold zero or all hold something else. Every other branch is followed both ways. A handler counts only if something in its
   protected block does. Tokens in code left out are still bound, below, which for a capability
   query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
   binds what only the other way reaches;

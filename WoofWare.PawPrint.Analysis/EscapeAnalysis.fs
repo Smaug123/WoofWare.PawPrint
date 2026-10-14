@@ -119,6 +119,17 @@ type internal CallSite =
     /// the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
 
+/// What a call passes as one of its arguments, as far as the calling body says.
+[<RequireQualifiedAccess>]
+type internal SpelledArgument =
+    /// What the evaluation stack holds there.
+    | Value of StackValue
+    /// The address of a location of the integer type `location` (`StackInteger.ofParameter`) that
+    /// holds one of `holds` when the call is made, as the stack held them when the body stored
+    /// them, and that only the method called can store to until it stores through a pointer or
+    /// runs other code (`LocalValues.held`).
+    | Pointer of location : PrimitiveType * holds : Set<SpelledInteger>
+
 /// What a `brtrue` or `brfalse` tests of the value it pops.
 [<RequireQualifiedAccess>]
 type internal Tested =
@@ -155,9 +166,9 @@ type internal LocalFacts =
         /// Where an assumption's contract stands in for code the body runs: an exception the
         /// contract does not list may arise there if the assumption fails.
         Assumed : (int * Assumption) list
-        /// Each call, and what it passes: the object each argument may be, `this` first, or for
-        /// `newobj` the object it makes. Empty for a call the JIT emits in place of the body's own.
-        Calls : (int * CallSite * StackValue list) list
+        /// Each call, and what it passes: each argument, `this` first, or for `newobj` the object
+        /// it makes. Empty for a call the JIT emits in place of the body's own.
+        Calls : (int * CallSite * SpelledArgument list) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
         Rethrows : (int * ExceptionRegion) list
@@ -284,6 +295,21 @@ type internal PassedValue =
     /// These integers, as `ldarg` pushes the argument, of one of the integer types
     /// `StackInteger.ofParameter` names (`StackInteger.passedAs`).
     | Integers of Set<StackInteger>
+    /// A managed pointer, as an argument of a byref type, to a location of the integer type
+    /// `location` that holds one of `holds` on entry, as the stack held them when they were stored
+    /// there (`StackInteger.loadedAs`), and that only the method can store to until it stores
+    /// through a pointer or runs other code.
+    | Pointer of location : PrimitiveType * holds : Set<StackInteger>
+
+/// What a parameter takes, as far as what its callers pass it is followed.
+[<RequireQualifiedAccess>]
+type internal ParameterKind =
+    /// An integer of this type (`StackInteger.ofParameter`).
+    | Integer of PrimitiveType
+    /// A managed pointer.
+    | Byref
+    /// Anything else, an object among them.
+    | Other
 
 /// One instantiation of a method definition, as the calls reaching it call it, which a summary is
 /// computed for.
@@ -668,7 +694,7 @@ module EscapeAnalysis =
     let private raisedAt
         (offset : int)
         (raised : (ThrownType * MethodKey list) list)
-        : (int * ThrownType) list * (int * CallSite * StackValue list) list
+        : (int * ThrownType) list * (int * CallSite * SpelledArgument list) list
         =
         let raises = raised |> List.map (fun (thrown, _) -> offset, thrown)
 
@@ -1840,16 +1866,23 @@ module EscapeAnalysis =
         // What `ldarg` of the argument at `index` pushes, whose parameter's type is `parameter`
         // (`None` for `this`), and which its spelling alone makes `declared`.
         let passed (index : int) (parameter : TypeDefn option) (declared : StackValue) : StackValue =
+            let isByref =
+                match parameter |> Option.map TypeDefn.stripCustomModifiers with
+                | Some (TypeDefn.Byref _) -> true
+                | _ -> false
+
             match declared with
             | _ when written.Contains index -> declared
             | _ when (parameter |> Option.bind StackInteger.ofParameter).IsSome ->
                 StackValue.Integers (Set.singleton (SpelledInteger.Argument index))
+            | _ when isByref -> StackValue.Addresses (Set.singleton (SpelledAddress.Argument index))
             | StackValue.Objects objects ->
                 match Set.toList objects with
                 | [ SpelledObject.Within spelling ] ->
                     StackValue.Objects (Set.singleton (SpelledObject.Argument (index, spelling)))
                 | _ -> declared
             | StackValue.Integers _
+            | StackValue.Addresses _
             | StackValue.Unknown -> declared
 
         let arguments =
@@ -1902,6 +1935,7 @@ module EscapeAnalysis =
                                 Some (StackValue.Objects (Set.singleton (SpelledObject.Returned (offset, declared))))
                             // A managed pointer, or something else that is not an object.
                             | StackValue.Integers _
+                            | StackValue.Addresses _
                             | StackValue.Unknown -> state, Some StackValue.Unknown
                         | _ -> state, None
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, MetadataOperand.FromMetadata token) ->
@@ -1993,8 +2027,10 @@ module EscapeAnalysis =
                 | Some (PassedValue.Objects passed) when passed.Classes.IsEmpty -> [ Some false ]
                 | Some (PassedValue.Objects _)
                 | None -> [ None ]
-                | Some (PassedValue.Integers _) ->
-                    failwith $"BUG: integers were passed as argument %d{index}, whose parameter is not an integer"
+                | Some (PassedValue.Integers _)
+                | Some (PassedValue.Pointer _) ->
+                    failwith
+                        $"BUG: something other than objects was passed as argument %d{index}, which is spelled as one"
             | SpelledObject.Within _
             | SpelledObject.Returned _ -> [ None ]
 
@@ -2006,8 +2042,22 @@ module EscapeAnalysis =
                 | Some (PassedValue.Integers values) ->
                     values |> Seq.map (StackInteger.isZero >> not >> Some) |> List.ofSeq
                 | None -> [ None ]
-                | Some (PassedValue.Objects _) ->
-                    failwith $"BUG: objects were passed as argument %d{index}, whose parameter is an integer"
+                | Some (PassedValue.Objects _)
+                | Some (PassedValue.Pointer _) ->
+                    failwith $"BUG: something other than integers was passed as argument %d{index}, an integer"
+            | SpelledInteger.Loaded (index, loaded) ->
+                match passed.TryFind index with
+                | Some (PassedValue.Pointer (location, holds)) ->
+                    holds
+                    |> Seq.map (fun held ->
+                        StackInteger.loadedAs location loaded held
+                        |> Option.map (StackInteger.isZero >> not)
+                    )
+                    |> List.ofSeq
+                | None -> [ None ]
+                | Some (PassedValue.Objects _)
+                | Some (PassedValue.Integers _) ->
+                    failwith $"BUG: something other than a pointer was passed as argument %d{index}, a byref"
 
         let known =
             match tested with
@@ -2073,6 +2123,7 @@ module EscapeAnalysis =
             | _ when not (executed.Contains offset) -> returned
             | Some returned, StackValue.Objects objects -> Some (Set.union returned objects)
             | _, StackValue.Integers _
+            | _, StackValue.Addresses _
             | _, StackValue.Unknown
             | None, _ -> None
         )
@@ -2301,7 +2352,7 @@ module EscapeAnalysis =
             (offset : int)
             : EscapeAnalysisState *
               (int * ThrownType) list *
-              (int * CallSite * StackValue list) list *
+              (int * CallSite * SpelledArgument list) list *
               (int * Opacity * MethodKey option) list
             =
             match op with
@@ -2441,12 +2492,12 @@ module EscapeAnalysis =
             (spellings : SpelledType[])
             (objectsAt : int -> int -> SpelledObject list option)
             (calleeArguments : int -> int option)
-            (passedAt : int -> bool -> StackValue list)
+            (passedAt : int -> bool -> SpelledArgument list)
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
                 opaque : (int * Opacity * MethodKey option) list,
-                calls : (int * CallSite * StackValue list) list
+                calls : (int * CallSite * SpelledArgument list) list
             )
             (index : int)
             =
@@ -2733,23 +2784,44 @@ module EscapeAnalysis =
             match valueAt offset fromTop with
             | StackValue.Objects objects -> Some (Set.toList objects)
             | StackValue.Integers _
+            | StackValue.Addresses _
             | StackValue.Unknown -> None
 
         let calleeArguments (offset : int) : int option =
             Map.tryFind offset bodySpellings.Effects.Callees
             |> Option.map (fun arity -> arity.Arguments)
 
+        // What the body's locals of integer types hold, where it takes their addresses.
+        let locals =
+            let types =
+                body.LocalVars
+                |> Option.map (Seq.map StackInteger.ofParameter >> List.ofSeq)
+                |> Option.defaultValue []
+
+            LocalValues.analyse body types values
+
         // What the call at `offset` passes, `this` first, which is the object it makes where
         // `makesObject`. A slot the flow could not type may hold anything.
-        let passedAt (offset : int) (makesObject : bool) : StackValue list =
+        let passedAt (offset : int) (makesObject : bool) : SpelledArgument list =
             let made =
                 if makesObject then
                     [
                         Map.tryFind offset bodySpellings.Tokens
                         |> Option.defaultValue StackValue.Unknown
+                        |> SpelledArgument.Value
                     ]
                 else
                     []
+
+            let passed (value : StackValue) : SpelledArgument =
+                match value with
+                | StackValue.Addresses addresses ->
+                    match LocalValues.held locals offset addresses with
+                    | Some (location, holds) -> SpelledArgument.Pointer (location, holds)
+                    | None -> SpelledArgument.Value value
+                | StackValue.Objects _
+                | StackValue.Integers _
+                | StackValue.Unknown -> SpelledArgument.Value value
 
             let arguments =
                 match calleeArguments offset with
@@ -2757,7 +2829,7 @@ module EscapeAnalysis =
                 | Some count ->
                     [
                         for fromTop in count - 1 .. -1 .. 0 do
-                            valueAt offset fromTop
+                            passed (valueAt offset fromTop)
                     ]
 
             made @ arguments
@@ -2872,6 +2944,16 @@ module EscapeAnalysis =
         let returns = returnedOver returnSites executed
 
         let consults =
+            let ofIntegers (integers : Set<SpelledInteger>) : int list =
+                integers
+                |> Seq.choose (fun integer ->
+                    match integer with
+                    | SpelledInteger.Argument index
+                    | SpelledInteger.Loaded (index, _) -> Some index
+                    | SpelledInteger.Constant _ -> None
+                )
+                |> List.ofSeq
+
             let ofValue (value : StackValue) : int list =
                 match value with
                 | StackValue.Objects objects ->
@@ -2882,21 +2964,17 @@ module EscapeAnalysis =
                         | _ -> None
                     )
                     |> List.ofSeq
-                | StackValue.Integers integers ->
-                    integers
-                    |> Seq.choose (fun integer ->
-                        match integer with
-                        | SpelledInteger.Argument index -> Some index
-                        | SpelledInteger.Constant _ -> None
-                    )
-                    |> List.ofSeq
+                | StackValue.Integers integers -> ofIntegers integers
+                | StackValue.Addresses _
                 | StackValue.Unknown -> []
 
             [
                 // A virtual call's receiver is among what it passes.
                 for _, _, passes in calls do
                     for passed in passes do
-                        yield! ofValue passed
+                        match passed with
+                        | SpelledArgument.Value value -> yield! ofValue value
+                        | SpelledArgument.Pointer (_, holds) -> yield! ofIntegers holds
 
                 yield! ofValue returns
 
@@ -3524,9 +3602,10 @@ module EscapeAnalysis =
                     | SpelledObject.Argument (index, declared) ->
                         match instance.Passed.TryFind index with
                         | Some (PassedValue.Objects passed) -> state, Some passed
-                        | Some (PassedValue.Integers _) ->
+                        | Some (PassedValue.Integers _)
+                        | Some (PassedValue.Pointer _) ->
                             failwith
-                                $"BUG: integers were passed as argument %d{index}, whose parameter is not an integer"
+                                $"BUG: something other than objects was passed as argument %d{index}, which is spelled as one"
                         | None -> ofSpelling state declared false true
 
                 state, objects |> Option.map (ObjectClasses.union soFar)
@@ -3541,7 +3620,7 @@ module EscapeAnalysis =
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
-        (passes : StackValue list)
+        (passes : SpelledArgument list)
         (receiver : (ConcreteTypeHandle * bool) option)
         (reached : MethodInstance)
         : EscapeAnalysisState * MethodInstance
@@ -3552,12 +3631,31 @@ module EscapeAnalysis =
 
         let state, reachedFacts = factsFor state reached.Definition
 
-        // The integer type of the parameter at each index, `this` at 0, where it has one.
-        let integerParameters : PrimitiveType option list =
+        // What the parameter at each index takes, `this` at 0.
+        let parameters : ParameterKind list =
             let _, method = methodOf state reached.Definition
 
-            (if method.IsStatic then [] else [ None ])
-            @ List.map StackInteger.ofParameter method.Signature.ParameterTypes
+            let ofParameter (parameter : TypeDefn) : ParameterKind =
+                match StackInteger.ofParameter parameter, TypeDefn.stripCustomModifiers parameter with
+                | Some integer, _ -> ParameterKind.Integer integer
+                | None, TypeDefn.Byref _ -> ParameterKind.Byref
+                | None, _ -> ParameterKind.Other
+
+            (if method.IsStatic then [] else [ ParameterKind.Other ])
+            @ List.map ofParameter method.Signature.ParameterTypes
+
+        // `convert` of every one of `values`; `None` where it fails for one of them.
+        let convertedAll
+            (convert : StackInteger -> StackInteger option)
+            (values : Set<StackInteger>)
+            : Set<StackInteger> option
+            =
+            let converted = values |> Set.toList |> List.map convert
+
+            if List.forall Option.isSome converted then
+                Some (converted |> List.choose id |> Set.ofList)
+            else
+                None
 
         // The integers among `integers`, as `instance` decides them.
         let integersOf (integers : Set<SpelledInteger>) : Set<StackInteger> option =
@@ -3570,8 +3668,18 @@ module EscapeAnalysis =
                     match instance.Passed.TryFind index with
                     | Some (PassedValue.Integers values) -> Some (Set.union values soFar)
                     | None -> None
-                    | Some (PassedValue.Objects _) ->
-                        failwith $"BUG: objects were passed as argument %d{index}, whose parameter is an integer"
+                    | Some (PassedValue.Objects _)
+                    | Some (PassedValue.Pointer _) ->
+                        failwith $"BUG: something other than integers was passed as argument %d{index}, an integer"
+                | Some soFar, SpelledInteger.Loaded (index, loaded) ->
+                    match instance.Passed.TryFind index with
+                    | Some (PassedValue.Pointer (location, holds)) ->
+                        convertedAll (StackInteger.loadedAs location loaded) holds
+                        |> Option.map (Set.union soFar)
+                    | None -> None
+                    | Some (PassedValue.Objects _)
+                    | Some (PassedValue.Integers _) ->
+                        failwith $"BUG: something other than a pointer was passed as argument %d{index}, a byref"
             )
 
         let state, passed =
@@ -3589,32 +3697,28 @@ module EscapeAnalysis =
                             })
                         passed
                 | _ ->
-                    match List.tryItem index integerParameters |> Option.flatten, List.tryItem index passes with
-                    | Some parameter, Some (StackValue.Integers integers) ->
-                        let values =
+                    match List.tryItem index parameters, List.tryItem index passes with
+                    | Some (ParameterKind.Integer parameter),
+                      Some (SpelledArgument.Value (StackValue.Integers integers)) ->
+                        match
                             integersOf integers
-                            |> Option.bind (fun values ->
-                                let converted =
-                                    values |> Set.toList |> List.choose (StackInteger.passedAs parameter)
-
-                                if converted.Length = values.Count then
-                                    Some (Set.ofList converted)
-                                else
-                                    None
-                            )
-
-                        match values with
+                            |> Option.bind (convertedAll (StackInteger.passedAs parameter))
+                        with
                         | Some values -> state, Map.add index (PassedValue.Integers values) passed
                         | None -> state, passed
-                    | Some _, _ -> state, passed
-                    | None, Some (StackValue.Objects objects) ->
+                    | Some ParameterKind.Byref, Some (SpelledArgument.Pointer (location, holds)) ->
+                        match integersOf holds with
+                        | Some holds -> state, Map.add index (PassedValue.Pointer (location, holds)) passed
+                        | None -> state, passed
+                    | Some ParameterKind.Other, Some (SpelledArgument.Value (StackValue.Objects objects)) ->
                         match objectTypes state inProgress instance facts objects with
                         | state, Some objects when objects.Classes.Count <= returnedClassesLimit ->
                             state, Map.add index (PassedValue.Objects objects) passed
                         | state, _ -> state, passed
-                    | None, Some (StackValue.Integers _)
-                    | None, Some StackValue.Unknown
-                    | None, None -> state, passed
+                    | Some (ParameterKind.Integer _), _
+                    | Some ParameterKind.Byref, _
+                    | Some ParameterKind.Other, _
+                    | None, _ -> state, passed
             )
 
         state,
@@ -3629,7 +3733,7 @@ module EscapeAnalysis =
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
-        (passes : StackValue list)
+        (passes : SpelledArgument list)
         (receiver : (ConcreteTypeHandle * bool) option)
         (outcome : DispatchOutcome)
         : EscapeAnalysisState * DispatchOutcome
@@ -3739,7 +3843,7 @@ module EscapeAnalysis =
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
-        (passes : StackValue list)
+        (passes : SpelledArgument list)
         (receivers : Set<SpelledObject>)
         (callee : Callee)
         : EscapeAnalysisState * DispatchOutcome list option
@@ -3781,7 +3885,8 @@ module EscapeAnalysis =
             let state, types =
                 match facts.Returns with
                 | StackValue.Unknown
-                | StackValue.Integers _ -> state, None
+                | StackValue.Integers _
+                | StackValue.Addresses _ -> state, None
                 | StackValue.Objects objects ->
                     objectTypes state (Set.add (Pending.Return instance) inProgress) instance facts objects
 

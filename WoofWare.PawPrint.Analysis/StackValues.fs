@@ -82,6 +82,39 @@ module internal StackInteger =
         | PrimitiveType.UInt64, StackInteger.Int64 _ -> Some value
         | _ -> None
 
+    /// How many bytes a location of the integer type `integer` (`ofParameter`) takes; `None` for
+    /// any other type.
+    let private width (integer : PrimitiveType) : int option =
+        match integer with
+        | PrimitiveType.Boolean
+        | PrimitiveType.SByte
+        | PrimitiveType.Byte -> Some 1
+        | PrimitiveType.Char
+        | PrimitiveType.Int16
+        | PrimitiveType.UInt16 -> Some 2
+        | PrimitiveType.Int32
+        | PrimitiveType.UInt32 -> Some 4
+        | PrimitiveType.Int64
+        | PrimitiveType.UInt64 -> Some 8
+        | PrimitiveType.Single
+        | PrimitiveType.Double
+        | PrimitiveType.String
+        | PrimitiveType.TypedReference
+        | PrimitiveType.IntPtr
+        | PrimitiveType.UIntPtr
+        | PrimitiveType.Object -> None
+
+    /// What `ldind` of the integer type `loaded` pushes from a location of the integer type
+    /// `location` where the stack's `held` was stored, which a store truncates to the location's
+    /// width (ECMA-335 III.1.6): the location's first bytes, as many as `loaded` takes, read as
+    /// `loaded`. CoreCLR runs only on little-endian CPUs, where those are its low bytes. `None`
+    /// where `loaded` is the wider, so that the load reads bytes past the location, or where the IL
+    /// would need a conversion to push `held` as `loaded`.
+    let loadedAs (location : PrimitiveType) (loaded : PrimitiveType) (held : StackInteger) : StackInteger option =
+        match width location, width loaded with
+        | Some locationWidth, Some loadedWidth when loadedWidth <= locationWidth -> passedAs loaded held
+        | _ -> None
+
 /// An integer a stack slot may hold.
 [<RequireQualifiedAccess>]
 type internal SpelledInteger =
@@ -92,6 +125,21 @@ type internal SpelledInteger =
     /// (`MethodInstance.Passed`), or, where that is not known, any value of that type. The body never
     /// stores to the argument or takes its address, so it holds that value throughout.
     | Argument of index : int
+    /// What `ldind` of the integer type `loaded` reads through the managed pointer the caller passed
+    /// as the argument at this index, before the body writes anything but its own arguments and
+    /// locals or runs other code: what the location holds on entry (`MethodInstance.Passed`), or,
+    /// where that is not known, any value. The body never stores to the argument or takes its
+    /// address, so it holds that pointer throughout.
+    | Loaded of argument : int * loaded : PrimitiveType
+
+/// A location a managed pointer on the stack may point to.
+[<RequireQualifiedAccess>]
+type internal SpelledAddress =
+    /// The local at this index.
+    | Local of index : int
+    /// Wherever the managed pointer the caller passed as the argument at this index points. The
+    /// body never stores to the argument or takes its address, so it holds that pointer throughout.
+    | Argument of index : int
 
 /// What a stack slot holds, as far as the body's spellings say.
 [<RequireQualifiedAccess>]
@@ -100,6 +148,8 @@ type internal StackValue =
     | Objects of Set<SpelledObject>
     /// One of these integers.
     | Integers of Set<SpelledInteger>
+    /// A managed pointer to one of these locations.
+    | Addresses of Set<SpelledAddress>
     /// Anything: a value that is not one this follows, or one whose type the body does not say.
     | Unknown
 
@@ -136,6 +186,267 @@ type internal BodySpellings =
         Effects : StackEffectInputs
     }
 
+/// Which instructions of a body leave every location but the method's own arguments and locals as
+/// they found it.
+[<RequireQualifiedAccess>]
+module internal OwnWrites =
+
+    /// Whether running `op`, where it completes without throwing, stores to nothing but the
+    /// arguments and locals of the method running it and runs no code but that method's own, so
+    /// that every other location then holds what it held before.
+    let only (op : IlOp) : bool =
+        match op with
+        | IlOp.Nullary nullary ->
+            match nullary with
+            | NullaryIlOp.Nop
+            | NullaryIlOp.LdArg0
+            | NullaryIlOp.LdArg1
+            | NullaryIlOp.LdArg2
+            | NullaryIlOp.LdArg3
+            | NullaryIlOp.Ldloc_0
+            | NullaryIlOp.Ldloc_1
+            | NullaryIlOp.Ldloc_2
+            | NullaryIlOp.Ldloc_3
+            | NullaryIlOp.Stloc_0
+            | NullaryIlOp.Stloc_1
+            | NullaryIlOp.Stloc_2
+            | NullaryIlOp.Stloc_3
+            | NullaryIlOp.Pop
+            | NullaryIlOp.Dup
+            | NullaryIlOp.Ret
+            | NullaryIlOp.LdcI4_0
+            | NullaryIlOp.LdcI4_1
+            | NullaryIlOp.LdcI4_2
+            | NullaryIlOp.LdcI4_3
+            | NullaryIlOp.LdcI4_4
+            | NullaryIlOp.LdcI4_5
+            | NullaryIlOp.LdcI4_6
+            | NullaryIlOp.LdcI4_7
+            | NullaryIlOp.LdcI4_8
+            | NullaryIlOp.LdcI4_m1
+            | NullaryIlOp.LdNull
+            | NullaryIlOp.Ceq
+            | NullaryIlOp.Cgt
+            | NullaryIlOp.Cgt_un
+            | NullaryIlOp.Clt
+            | NullaryIlOp.Clt_un
+            | NullaryIlOp.Sub
+            | NullaryIlOp.Sub_ovf
+            | NullaryIlOp.Sub_ovf_un
+            | NullaryIlOp.Add
+            | NullaryIlOp.Add_ovf
+            | NullaryIlOp.Add_ovf_un
+            | NullaryIlOp.Mul
+            | NullaryIlOp.Mul_ovf
+            | NullaryIlOp.Mul_ovf_un
+            | NullaryIlOp.Div
+            | NullaryIlOp.Div_un
+            | NullaryIlOp.Rem
+            | NullaryIlOp.Rem_un
+            | NullaryIlOp.Neg
+            | NullaryIlOp.Not
+            | NullaryIlOp.Shr
+            | NullaryIlOp.Shr_un
+            | NullaryIlOp.Shl
+            | NullaryIlOp.And
+            | NullaryIlOp.Or
+            | NullaryIlOp.Xor
+            | NullaryIlOp.Conv_I
+            | NullaryIlOp.Conv_I1
+            | NullaryIlOp.Conv_I2
+            | NullaryIlOp.Conv_I4
+            | NullaryIlOp.Conv_I8
+            | NullaryIlOp.Conv_R4
+            | NullaryIlOp.Conv_R8
+            | NullaryIlOp.Conv_U
+            | NullaryIlOp.Conv_U1
+            | NullaryIlOp.Conv_U2
+            | NullaryIlOp.Conv_U4
+            | NullaryIlOp.Conv_U8
+            | NullaryIlOp.Conv_r_un
+            | NullaryIlOp.Conv_ovf_i
+            | NullaryIlOp.Conv_ovf_u
+            | NullaryIlOp.Conv_ovf_i1
+            | NullaryIlOp.Conv_ovf_i2
+            | NullaryIlOp.Conv_ovf_i4
+            | NullaryIlOp.Conv_ovf_i8
+            | NullaryIlOp.Conv_ovf_u1
+            | NullaryIlOp.Conv_ovf_u2
+            | NullaryIlOp.Conv_ovf_u4
+            | NullaryIlOp.Conv_ovf_u8
+            | NullaryIlOp.Conv_ovf_i_un
+            | NullaryIlOp.Conv_ovf_u_un
+            | NullaryIlOp.Conv_ovf_i1_un
+            | NullaryIlOp.Conv_ovf_u1_un
+            | NullaryIlOp.Conv_ovf_i2_un
+            | NullaryIlOp.Conv_ovf_u2_un
+            | NullaryIlOp.Conv_ovf_i4_un
+            | NullaryIlOp.Conv_ovf_u4_un
+            | NullaryIlOp.Conv_ovf_i8_un
+            | NullaryIlOp.Conv_ovf_u8_un
+            | NullaryIlOp.Ckfinite
+            | NullaryIlOp.LdLen
+            | NullaryIlOp.Ldind_ref
+            | NullaryIlOp.Ldind_i
+            | NullaryIlOp.Ldind_i1
+            | NullaryIlOp.Ldind_i2
+            | NullaryIlOp.Ldind_i4
+            | NullaryIlOp.Ldind_i8
+            | NullaryIlOp.Ldind_u1
+            | NullaryIlOp.Ldind_u2
+            | NullaryIlOp.Ldind_u4
+            | NullaryIlOp.Ldind_r4
+            | NullaryIlOp.Ldind_r8
+            | NullaryIlOp.Ldelem_i
+            | NullaryIlOp.Ldelem_i1
+            | NullaryIlOp.Ldelem_u1
+            | NullaryIlOp.Ldelem_i2
+            | NullaryIlOp.Ldelem_u2
+            | NullaryIlOp.Ldelem_i4
+            | NullaryIlOp.Ldelem_u4
+            | NullaryIlOp.Ldelem_i8
+            | NullaryIlOp.Ldelem_r4
+            | NullaryIlOp.Ldelem_r8
+            | NullaryIlOp.Ldelem_ref
+            | NullaryIlOp.Throw
+            | NullaryIlOp.Rethrow
+            | NullaryIlOp.Endfilter
+            | NullaryIlOp.Endfinally
+            | NullaryIlOp.Volatile
+            | NullaryIlOp.Tail
+            | NullaryIlOp.Readonly
+            | NullaryIlOp.Break
+            | NullaryIlOp.Arglist
+            | NullaryIlOp.Refanytype -> true
+            | NullaryIlOp.Stind_ref
+            | NullaryIlOp.Stind_I
+            | NullaryIlOp.Stind_I1
+            | NullaryIlOp.Stind_I2
+            | NullaryIlOp.Stind_I4
+            | NullaryIlOp.Stind_I8
+            | NullaryIlOp.Stind_R4
+            | NullaryIlOp.Stind_R8
+            | NullaryIlOp.Stelem_i
+            | NullaryIlOp.Stelem_i1
+            | NullaryIlOp.Stelem_i2
+            | NullaryIlOp.Stelem_i4
+            | NullaryIlOp.Stelem_i8
+            | NullaryIlOp.Stelem_r4
+            | NullaryIlOp.Stelem_r8
+            | NullaryIlOp.Stelem_ref
+            | NullaryIlOp.Cpblk
+            | NullaryIlOp.Initblk
+            | NullaryIlOp.Localloc -> false
+        | IlOp.UnaryConst unary ->
+            match unary with
+            | UnaryConstIlOp.Stloc _
+            | UnaryConstIlOp.Stloc_s _
+            | UnaryConstIlOp.Ldc_I8 _
+            | UnaryConstIlOp.Ldc_I4 _
+            | UnaryConstIlOp.Ldc_R4 _
+            | UnaryConstIlOp.Ldc_R8 _
+            | UnaryConstIlOp.Ldc_I4_s _
+            | UnaryConstIlOp.Br _
+            | UnaryConstIlOp.Br_s _
+            | UnaryConstIlOp.Brfalse_s _
+            | UnaryConstIlOp.Brtrue_s _
+            | UnaryConstIlOp.Brfalse _
+            | UnaryConstIlOp.Brtrue _
+            | UnaryConstIlOp.Beq_s _
+            | UnaryConstIlOp.Blt_s _
+            | UnaryConstIlOp.Ble_s _
+            | UnaryConstIlOp.Bgt_s _
+            | UnaryConstIlOp.Bge_s _
+            | UnaryConstIlOp.Beq _
+            | UnaryConstIlOp.Blt _
+            | UnaryConstIlOp.Ble _
+            | UnaryConstIlOp.Bgt _
+            | UnaryConstIlOp.Bge _
+            | UnaryConstIlOp.Bne_un_s _
+            | UnaryConstIlOp.Bge_un_s _
+            | UnaryConstIlOp.Bgt_un_s _
+            | UnaryConstIlOp.Ble_un_s _
+            | UnaryConstIlOp.Blt_un_s _
+            | UnaryConstIlOp.Bne_un _
+            | UnaryConstIlOp.Bge_un _
+            | UnaryConstIlOp.Bgt_un _
+            | UnaryConstIlOp.Ble_un _
+            | UnaryConstIlOp.Blt_un _
+            | UnaryConstIlOp.Ldloc_s _
+            | UnaryConstIlOp.Ldloca_s _
+            | UnaryConstIlOp.Ldarga _
+            | UnaryConstIlOp.Ldarg_s _
+            | UnaryConstIlOp.Ldarga_s _
+            | UnaryConstIlOp.Starg_s _
+            | UnaryConstIlOp.Starg _
+            | UnaryConstIlOp.Unaligned _
+            | UnaryConstIlOp.Ldloc _
+            | UnaryConstIlOp.Ldloca _
+            | UnaryConstIlOp.Ldarg _ -> true
+            // It runs the `finally` handlers it leaves.
+            | UnaryConstIlOp.Leave _
+            | UnaryConstIlOp.Leave_s _ -> false
+        | IlOp.Switch _ -> true
+        // A token can name a method to call, a type whose initializer runs, or a location to
+        // store to.
+        | IlOp.UnaryMetadataToken _
+        | IlOp.UnaryStringToken _ -> false
+
+    /// The offsets of `body` that a run reaches only through instructions of which `only` holds,
+    /// so that every location but the method's own arguments and locals holds on entry to each of
+    /// them what it held when the method was called. A handler is entered only after something
+    /// throws, which runs other code.
+    let reachedFirst (body : MethodInstructions<'methodVars>) : Set<int> =
+        let successors (offset : int) : int list =
+            let op = body.Locations.[offset]
+            let next = offset + IlOp.NumberOfBytes op
+
+            match ControlFlow.successorsOf offset op with
+            | Successors.None -> []
+            | Successors.FallThrough -> [ next ]
+            | Successors.Targets targets -> targets
+            | Successors.TargetsAndFallThrough targets -> next :: targets
+            | Successors.Leave target -> [ target ]
+
+        // Everything control can reach from `starts`, following each instruction for which
+        // `follows` holds to its successors.
+        let reach (starts : int list) (follows : int -> bool) : Set<int> =
+            let seen = System.Collections.Generic.HashSet<int> ()
+            let worklist = System.Collections.Generic.Stack<int> ()
+
+            for start in starts do
+                if body.Locations.ContainsKey start && seen.Add start then
+                    worklist.Push start
+
+            while worklist.Count > 0 do
+                let offset = worklist.Pop ()
+
+                if follows offset then
+                    for next in successors offset do
+                        if body.Locations.ContainsKey next && seen.Add next then
+                            worklist.Push next
+
+            Set.ofSeq seen
+
+        let first = reach [ 0 ] (fun offset -> only body.Locations.[offset])
+
+        let after =
+            [
+                for offset, op in Map.toSeq body.Locations do
+                    if not (only op) then
+                        yield! successors offset
+                for region in body.ExceptionRegions do
+                    match region with
+                    | ExceptionRegion.Filter (filterOffset, offsets) ->
+                        yield filterOffset
+                        yield offsets.HandlerOffset
+                    | ExceptionRegion.Catch (_, offsets)
+                    | ExceptionRegion.Finally offsets
+                    | ExceptionRegion.Fault offsets -> yield offsets.HandlerOffset
+            ]
+
+        Set.difference first (reach after (fun _ -> true))
+
 /// Which objects each slot of the evaluation stack may hold on entry to every instruction of a
 /// body, joined over every path that reaches it. It assumes the IL is well typed: a value held
 /// where the body spells a type is of that type, as the JIT also assumes when it devirtualises.
@@ -155,17 +466,31 @@ module internal StackValues =
         match a, b with
         | StackValue.Objects a, StackValue.Objects b -> bounded (Set.union a b) StackValue.Objects
         | StackValue.Integers a, StackValue.Integers b -> bounded (Set.union a b) StackValue.Integers
-        | StackValue.Objects _, StackValue.Integers _
-        | StackValue.Integers _, StackValue.Objects _
+        | StackValue.Addresses a, StackValue.Addresses b -> bounded (Set.union a b) StackValue.Addresses
+        | StackValue.Objects _, (StackValue.Integers _ | StackValue.Addresses _)
+        | StackValue.Integers _, (StackValue.Objects _ | StackValue.Addresses _)
+        | StackValue.Addresses _, (StackValue.Objects _ | StackValue.Integers _)
         | StackValue.Unknown, _
         | _, StackValue.Unknown -> Ok StackValue.Unknown
 
-    let private lattice (spellings : BodySpellings) : SlotLattice<StackValue> =
+    let private lattice (spellings : BodySpellings) (unwritten : Set<int>) : SlotLattice<StackValue> =
         let fixedValue (value : StackValue) : Result<StackValue list -> StackValue, StackShapeError> =
             Ok (fun _ -> value)
 
         let constant (value : StackInteger) =
             fixedValue (StackValue.Integers (Set.singleton (SpelledInteger.Constant value)))
+
+        // What `ldind` of the integer type `loaded` at `offset` pushes from the address it pops.
+        let load (offset : int) (loaded : PrimitiveType) =
+            Ok (fun popped ->
+                match List.head popped with
+                | StackValue.Addresses addresses when unwritten.Contains offset ->
+                    match Set.toList addresses with
+                    | [ SpelledAddress.Argument index ] ->
+                        StackValue.Integers (Set.singleton (SpelledInteger.Loaded (index, loaded)))
+                    | _ -> StackValue.Unknown
+                | _ -> StackValue.Unknown
+            )
 
         let push (offset : int) (op : IlOp) (pushed : Pushed) =
             match pushed with
@@ -196,6 +521,20 @@ module internal StackValues =
                 | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4_s value) -> constant (StackInteger.Int32 (int32 value))
                 | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4 value) -> constant (StackInteger.Int32 value)
                 | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I8 value) -> constant (StackInteger.Int64 value)
+                | IlOp.Nullary NullaryIlOp.Ldind_i1 -> load offset PrimitiveType.SByte
+                | IlOp.Nullary NullaryIlOp.Ldind_u1 -> load offset PrimitiveType.Byte
+                | IlOp.Nullary NullaryIlOp.Ldind_i2 -> load offset PrimitiveType.Int16
+                | IlOp.Nullary NullaryIlOp.Ldind_u2 -> load offset PrimitiveType.UInt16
+                | IlOp.Nullary NullaryIlOp.Ldind_i4 -> load offset PrimitiveType.Int32
+                | IlOp.Nullary NullaryIlOp.Ldind_u4 -> load offset PrimitiveType.UInt32
+                | IlOp.Nullary NullaryIlOp.Ldind_i8 -> load offset PrimitiveType.Int64
+                | _ -> fixedValue StackValue.Unknown
+            | Pushed.Address ->
+                match op with
+                | IlOp.UnaryConst (UnaryConstIlOp.Ldloca_s index) ->
+                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index))))
+                | IlOp.UnaryConst (UnaryConstIlOp.Ldloca index) ->
+                    fixedValue (StackValue.Addresses (Set.singleton (SpelledAddress.Local (int index))))
                 | _ -> fixedValue StackValue.Unknown
             | Pushed.FromToken TokenValue.NewArray
             | Pushed.FromToken TokenValue.Handle
@@ -203,7 +542,6 @@ module internal StackValues =
             | Pushed.FromToken TokenValue.TypedReference
             | Pushed.Arithmetic
             | Pushed.Bitwise
-            | Pushed.Address
             | Pushed.Indirect
             | Pushed.Element
             | Pushed.ArgumentHandle
@@ -229,4 +567,4 @@ module internal StackValues =
     /// The objects each slot may hold on entry to every instruction of `body` that the flow
     /// could type.
     let analyse (spellings : BodySpellings) (body : MethodInstructions<'methodVars>) : StackFlow<StackValue> =
-        StackFlow.analyse (lattice spellings) spellings.Effects body
+        StackFlow.analyse (lattice spellings (OwnWrites.reachedFirst body)) spellings.Effects body
