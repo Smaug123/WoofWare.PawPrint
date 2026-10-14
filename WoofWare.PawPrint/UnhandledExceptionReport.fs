@@ -216,3 +216,19 @@ module UnhandledExceptionReport =
 
         describeObject state exceptionFields 0 exn.ExceptionObject (Some exn.StackTrace)
         |> String.concat Environment.NewLine
+
+    /// <summary>
+    /// Describe the object at <paramref name="addr" />, an exception that guest code caught and
+    /// stored rather than let escape, from the heap of <paramref name="state" />.
+    /// </summary>
+    /// <remarks>
+    /// As <c>describe</c>, except that the frames are the ones the exception's
+    /// <c>_stackTrace</c> captured, since no dispatch that ended a run carries them.
+    /// </remarks>
+    let describeStored (state : IlMachineState) (addr : ManagedHeapAddress) : string =
+        let exceptionFields =
+            tryExceptionType state
+            |> Option.map (fun (ty, handle) -> exceptionFields ty handle)
+
+        describeObject state exceptionFields 0 addr None
+        |> String.concat Environment.NewLine

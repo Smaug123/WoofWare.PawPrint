@@ -279,3 +279,69 @@ class Program
             with
             | :? IOException
             | :? UnauthorizedAccessException -> ()
+
+    [<Test>]
+    let ``a stored exception is described by its message and its captured frames`` () : unit =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static Exception Stored;
+
+    static void Thrower()
+    {
+        throw new InvalidOperationException("stored message");
+    }
+
+    static int Main()
+    {
+        try
+        {
+            Thrower();
+        }
+        catch (Exception e)
+        {
+            Stored = e;
+        }
+
+        return Stored == null ? 1 : 0;
+    }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (Roslyn.compile [ source ])
+
+        let state =
+            match
+                BoundedRun.run
+                    loggerFactory
+                    "StoredException.cs"
+                    None
+                    peImage
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                |> ExpectRun.ended
+            with
+            | RunOutcome.NormalExit (state, _, _) -> state
+            | _ -> failwith "expected the guest to exit normally"
+
+        state.LatchedExitCode |> shouldEqual 0
+
+        // Every live allocation is described without throwing, and exactly one is the
+        // exception the guest stored.
+        let stored =
+            HeapObserver.liveAddresses state.ManagedHeap
+            |> Seq.map (fun addr -> UnhandledExceptionReport.describeStored state addr)
+            |> Seq.map (fun s -> s.Split Environment.NewLine |> List.ofArray)
+            |> Seq.filter (fun lines -> List.head lines = "System.InvalidOperationException: stored message")
+            |> Seq.toList
+
+        match stored with
+        | [ lines ] ->
+            indexOfLineContaining "Program.Thrower at IL offset " lines |> shouldEqual 1
+            indexOfLineContaining "Program.Main at IL offset " lines |> shouldEqual 2
+            lines.Length |> shouldEqual 3
+        | other -> failwith $"expected exactly one stored exception, found %d{other.Length}"

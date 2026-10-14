@@ -555,10 +555,16 @@ module internal ProgramStartup =
             // `computeState` installed is still in place, never having been consumed.
             let state, phase = enterCommandLineInit state
             atPhase state phase
-        | Some (state, setupFrame) ->
+        | Some (state, setupFrame, readBack) ->
             logger.LogInformation "Seeding AppContext from the host's configuration properties"
 
             let onSeeded (state : IlMachineState) : IlMachineState * StartupPhase =
-                state |> reinstateStartupFrame |> enterCommandLineInit
+                // An exception `Setup` stored rather than let escape is one the VM rethrows, which
+                // fails the launch; it gets the same loud failure as one that escaped.
+                match AppContextSeed.caught readBack state with
+                | Some exn ->
+                    failwith
+                        $"Seeding AppContext threw an exception, which Setup caught and stored for the host to rethrow:\n%s{UnhandledExceptionReport.describeStored state exn}"
+                | None -> state |> reinstateStartupFrame |> enterCommandLineInit
 
             atPhase (installCall setupFrame state) (StartupPhase.SeedingAppContext onSeeded)

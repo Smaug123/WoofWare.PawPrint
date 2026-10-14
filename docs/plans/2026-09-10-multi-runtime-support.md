@@ -671,6 +671,19 @@ mutation-testing skill applies to each table/classifier they introduce.
      `SetupShape.FourArg` reading its out-slot back; the stub layout's bare-handle arm; and the
      delegate layout's net11 arm, whose multicast reader must unwrap the invocation list's
      `Wrapper` elements as well as read renamed fields.
+
+     Until the `Net11` case exists, their tests reach RC1's CoreLib through
+     `FrameworkUnderTest.requireNet11CoreLibPath`, which P6e folds into the runtime-keyed
+     accessors. None of them can run RC1's startup end to end before P6e, which is where each
+     arm is first exercised on the real image rather than classified against it: RC1's `Setup`
+     itself reaches `HashHelpers.Primes`, which needs P6c's stub arm.
+
+     P6b's out-slot is a native block holding one object-reference cell (`HostStartupCall`'s
+     `ExceptionSlot`), written null before the call as the VM's protected local is. An
+     exception `Setup` stores there fails startup exactly as one escaping net10's `Setup`
+     does. RC1 keeps the three-argument `Environment.InitializeCommandLineArgs` that PawPrint
+     calls, beside the five-argument `[UnmanagedCallersOnly]` wrapper the VM calls; if a later
+     CoreLib drops it, that call takes the same `ExceptionSlot`.
    * **P6e, the switch-on.** The `Net11` case and pin; the `NativeDispatch` composition decided
      against the real image, with the `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
      `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) and the

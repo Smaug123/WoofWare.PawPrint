@@ -16,6 +16,10 @@ type internal SetupShape =
     /// `static void Setup(char** pNames, char** pValues, int count)`, as .NET 10's CoreCLR CoreLib
     /// declares it.
     | ThreeArg
+    /// `static void Setup(char** pNames, char** pValues, int count, Exception* pException)`, as
+    /// .NET 11's CoreCLR CoreLib declares it: an `[UnmanagedCallersOnly]` method that stores any
+    /// exception it catches in `*pException` for the host to rethrow.
+    | FourArg
 
 [<RequireQualifiedAccess>]
 module internal SetupShape =
@@ -25,13 +29,26 @@ module internal SetupShape =
         | TypeDefn.Pointer (TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.Char)) -> Some ()
         | _ -> None
 
+    /// A pointer to the class `target`.
+    let private (|PointerTo|_|) (target : ResolvedTypeIdentity) (ty : TypeDefn) : unit option =
+        match ty with
+        | TypeDefn.Pointer (TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)) when identity = target ->
+            Some ()
+        | _ -> None
+
     /// A static, non-generic method with the default managed calling convention.
     let private plainStaticHeader : SignatureHeader =
         SignatureHeader (SignatureKind.Method, SignatureCallingConvention.Default, SignatureAttributes.None)
 
     /// The shape `signature` has, or `None` if it has none of them. The whole signature is
-    /// compared, header and return type included.
-    let classify (signature : TypeMethodSignature<TypeDefn>) : SetupShape option =
+    /// compared, header and return type included. `corelibException` is the `System.Exception`
+    /// that the CoreLib declaring `signature` defines, which is the only type a `FourArg`
+    /// out-slot may hold.
+    let classify
+        (corelibException : ResolvedTypeIdentity)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : SetupShape option
+        =
         if signature.Header.Get <> plainStaticHeader then
             None
         else
@@ -39,11 +56,22 @@ module internal SetupShape =
         match signature.ReturnType, signature.ParameterTypes with
         | MethodReturnType.Void, [ CharPtrPtr ; CharPtrPtr ; TypeDefn.PrimitiveType PrimitiveType.Int32 ] ->
             Some SetupShape.ThreeArg
+        | MethodReturnType.Void,
+          [ CharPtrPtr ; CharPtrPtr ; TypeDefn.PrimitiveType PrimitiveType.Int32 ; PointerTo corelibException ] ->
+            Some SetupShape.FourArg
         | _ -> None
 
     /// The signatures `classify` recognises, for a refusal to name.
     let describeKnown : string =
-        "static void Setup(char** pNames, char** pValues, int count)"
+        "static void Setup(char** pNames, char** pValues, int count)` or `static void Setup(char** pNames, char** pValues, int count, System.Exception* pException)"
+
+/// What the host reads once `AppContext.Setup` has returned, which its `SetupShape` decides.
+[<RequireQualifiedAccess>]
+type internal SetupReadBack =
+    /// `SetupShape.ThreeArg`: nothing, because an exception escapes the call itself.
+    | Nothing
+    /// `SetupShape.FourArg`: the out-slot in which `Setup` stores what it caught.
+    | ExceptionSlot of ExceptionSlot
 
 /// Seeds `System.AppContext` the way a real runtime host does, so that feature switches
 /// declared in `runtimeconfig.json` — `System.Diagnostics.Tracing.EventSource.IsSupported`
@@ -53,11 +81,12 @@ module internal SetupShape =
 ///
 ///     internal static unsafe void AppContext.Setup(char** pNames, char** pValues, int count)
 ///
-/// with two arrays of NUL-terminated UTF-16 strings that `hostpolicy` allocated. `Setup` is
-/// ordinary managed IL — it news up a `Dictionary<string, object>`, walks the arrays doing
-/// pointer arithmetic, and `new string(char*)`s each entry — so PawPrint runs CoreLib's own
-/// code here. The host's contribution, and the only thing this module synthesises, is the
-/// two `char**` buffers.
+/// with two arrays of NUL-terminated UTF-16 strings that `hostpolicy` allocated; .NET 11's
+/// `Setup` takes a fourth argument, an `Exception*` out-slot. `Setup` is ordinary managed IL —
+/// it news up a `Dictionary<string, object>`, walks the arrays doing pointer arithmetic, and
+/// `new string(char*)`s each entry — so PawPrint runs CoreLib's own code here. The host's
+/// contribution, and the only thing this module synthesises, is the two `char**` buffers and
+/// the out-slot.
 ///
 /// This module only *builds the call*; installing and pumping it is `Program.prepare`'s
 /// business, because that is where the entry thread's frame lifecycle is managed.
@@ -112,12 +141,15 @@ module AppContextSeed =
         let appContext =
             HostStartupCall.findCorelibType corelib "System" "AppContext" Purpose
 
+        let exceptionType =
+            HostStartupCall.findCorelibType corelib "System" "Exception" Purpose
+
         let candidates =
             appContext.Methods |> List.filter (fun m -> m.Name = "Setup" && m.IsStatic)
 
         match candidates with
         | [ setup ] ->
-            match SetupShape.classify setup.Signature with
+            match SetupShape.classify exceptionType.Identity setup.Signature with
             | Some shape -> setup, shape
             | None ->
                 failwith
@@ -134,7 +166,8 @@ module AppContextSeed =
                 $"Found several static System.AppContext::Setup methods in CoreLib (%s{found}); expected exactly one. PawPrint calls it to %s{Purpose}."
 
     /// Build the call to `AppContext.Setup` that seeds `properties`, returning the machine
-    /// state with the argument buffers allocated and a frame ready to be installed and run.
+    /// state with the argument buffers allocated, a frame ready to be installed and run, and
+    /// what `caught` is to read once that frame has returned.
     ///
     /// `None` when there is nothing to seed, which skips the call rather than making it with a
     /// count of zero; the difference is not observable to the guest.
@@ -142,12 +175,12 @@ module AppContextSeed =
     /// The native blocks allocated here are never freed. `hostpolicy`'s arrays
     /// outlive the call too, and a guest is entitled to have kept a `char*` into one — so
     /// freeing them would turn a legal (if strange) guest into a use-after-free report.
-    let prepareCall
+    let internal prepareCall
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (properties : AppContextProperties)
         (state : IlMachineState)
-        : (IlMachineState * MethodState) option
+        : (IlMachineState * MethodState * SetupReadBack) option
         =
         if AppContextProperties.isEmpty properties then
             // Skipping differs from calling with a count of zero internally — `Setup`
@@ -176,17 +209,37 @@ module AppContextSeed =
 
         let setup, shape = locateSetup baseClassTypes.Corelib
 
-        let args =
+        let common =
+            [
+                CliType.RuntimePointer (CliRuntimePointer.Managed pNames)
+                CliType.RuntimePointer (CliRuntimePointer.Managed pValues)
+                CliType.Numeric (CliNumericType.Int32 (List.length entries))
+            ]
+
+        let args, readBack, state =
             match shape with
-            | SetupShape.ThreeArg ->
-                ImmutableArray.CreateRange
-                    [
-                        CliType.RuntimePointer (CliRuntimePointer.Managed pNames)
-                        CliType.RuntimePointer (CliRuntimePointer.Managed pValues)
-                        CliType.Numeric (CliNumericType.Int32 (List.length entries))
-                    ]
+            | SetupShape.ThreeArg -> common, SetupReadBack.Nothing, state
+            | SetupShape.FourArg ->
+                let slot, state = HostStartupCall.allocateExceptionSlot state
+
+                common @ [ CliType.RuntimePointer (CliRuntimePointer.Managed slot.Pointer) ],
+                SetupReadBack.ExceptionSlot slot,
+                state
 
         let state, frame, _declaringType =
-            HostStartupCall.buildFrame loggerFactory baseClassTypes setup args Purpose state
+            HostStartupCall.buildFrame
+                loggerFactory
+                baseClassTypes
+                setup
+                (ImmutableArray.CreateRange args)
+                Purpose
+                state
 
-        Some (state, frame)
+        Some (state, frame, readBack)
+
+    /// The exception `Setup` caught and stored for the host to rethrow, read from `state`, the
+    /// machine once the call prepared with `readBack` has returned; `None` if it caught none.
+    let internal caught (readBack : SetupReadBack) (state : IlMachineState) : ManagedHeapAddress option =
+        match readBack with
+        | SetupReadBack.Nothing -> None
+        | SetupReadBack.ExceptionSlot slot -> HostStartupCall.readExceptionSlot slot state

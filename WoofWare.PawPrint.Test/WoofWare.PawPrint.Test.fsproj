@@ -376,6 +376,7 @@
     <Compile Include="TestFabricatedFieldMarshal.fs" />
     <Compile Include="TestFabricatedFieldReference.fs" />
     <Compile Include="TestSetupShape.fs" />
+    <Compile Include="TestHostExceptionSlot.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
