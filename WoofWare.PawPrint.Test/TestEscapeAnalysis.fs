@@ -5520,21 +5520,18 @@ public static class Runners
             typeof<uint64>, Emit.OpCodes.Ldind_I8
         ]
 
-    /// `int32` constants whose low byte is zero, though not all of them are.
-    let private lowByteZero : int32 list = [ 0 ; 0x100 ; 0x10000 ; Int32.MinValue ]
-
     /// An image whose runners store to a local and pass its address to a method that branches on
     /// what it loads through the address; each runner takes `(int a, int b)`, and the method computes
     /// `a / b` only where the branch falls through:
     ///   - `Runners.Local_<T>_<i>`: `ldc <constant i>; stloc.0; ldloca.s 0`, with local 0 a `T`,
     ///     then `ldarg.0; ldarg.1; call Unless_<T>`, where `Unless_<T>(ref T p, int a, int b)` is
     ///     `ldarg.0; ldind; brtrue L; a / b`;
-    ///   - `Runners.Narrowed_<i>`: the same with an `int` local holding `lowByteZero`'s constant i,
-    ///     passed to `Unless_Byte`, which loads the low byte;
+    ///   - `Runners.Narrowed_<i>`: the same with an `int` local, passed to `Unless_Byte`, which
+    ///     loads its first byte: the low byte, on a little-endian CPU;
     ///   - `Runners.Stored` and `Runners.Cleared`: local 0, a `bool` holding 1, is set to 0
     ///     through the address the call passes before the call, by `stind.i1` or by `Clear`;
-    ///   - `Runners.JoinedNonZero` and `Runners.JoinedMixed`: local 0 holds 1 where `a` is 1, and
-    ///     otherwise 2 or 0;
+    ///   - `Runners.JoinedNonZero`, `Runners.JoinedMixed` and `Runners.JoinedMixedSwapped`: local 0
+    ///     holds 1, 1 or 0 where `a` is 1, and otherwise 2, 0 or 1;
     ///   - `Runners.ClearedInFinally`: local 0, a `bool` holding 1, is set to 0 by the `finally`
     ///     handler the `leave` before the `ldloca` runs;
     ///   - `Runners.ClearsFirst`, `Runners.CallsFirst`, `Runners.MayClearFirst` and
@@ -5642,7 +5639,7 @@ public static class Runners
                     (storeThenAddress (fun il -> il.Emit (Emit.OpCodes.Ldc_I8, constant)))
                     unless.[parameter]
 
-        for i, constant in List.indexed lowByteZero do
+        for i, constant in List.indexed narrowConstants do
             runner
                 $"Narrowed_%d{i}"
                 typeof<int>
@@ -5670,7 +5667,7 @@ public static class Runners
             )
             unless.[typeof<bool>]
 
-        let joined (name : string) (otherwise : Emit.OpCode) =
+        let joined (name : string) (whenOne : Emit.OpCode) (otherwise : Emit.OpCode) =
             runner
                 name
                 typeof<bool>
@@ -5684,15 +5681,16 @@ public static class Runners
                     il.Emit Emit.OpCodes.Stloc_0
                     il.Emit (Emit.OpCodes.Br, join)
                     il.MarkLabel one
-                    il.Emit Emit.OpCodes.Ldc_I4_1
+                    il.Emit whenOne
                     il.Emit Emit.OpCodes.Stloc_0
                     il.MarkLabel join
                     il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
                 )
                 unless.[typeof<bool>]
 
-        joined "JoinedNonZero" Emit.OpCodes.Ldc_I4_2
-        joined "JoinedMixed" Emit.OpCodes.Ldc_I4_0
+        joined "JoinedNonZero" Emit.OpCodes.Ldc_I4_1 Emit.OpCodes.Ldc_I4_2
+        joined "JoinedMixed" Emit.OpCodes.Ldc_I4_1 Emit.OpCodes.Ldc_I4_0
+        joined "JoinedMixedSwapped" Emit.OpCodes.Ldc_I4_0 Emit.OpCodes.Ldc_I4_1
 
         runner
             "ClearedInFinally"
@@ -5795,12 +5793,13 @@ public static class Runners
                 for parameter in wideParameters do
                     for i, constant in List.indexed wideConstants do
                         yield $"Local_%s{parameter.Name}_%d{i}", divides (constant = 0L), DispatchClaim.Precise
-                for i, _ in List.indexed lowByteZero do
-                    yield $"Narrowed_%d{i}", divides true, DispatchClaim.Precise
+                for i, constant in List.indexed narrowConstants do
+                    yield $"Narrowed_%d{i}", divides (byte constant = 0uy), DispatchClaim.Precise
                 yield "Stored", divides true, DispatchClaim.Precise
                 yield "Cleared", divides true, DispatchClaim.Precise
                 yield "JoinedNonZero", divides false, DispatchClaim.Precise
                 yield "JoinedMixed", divides true, DispatchClaim.Precise
+                yield "JoinedMixedSwapped", divides true, DispatchClaim.Precise
                 yield "ClearedInFinally", divides true, DispatchClaim.Precise
                 yield "ClearsFirst", divides true, DispatchClaim.Precise
                 yield "CallsFirst", divides true, DispatchClaim.Precise
