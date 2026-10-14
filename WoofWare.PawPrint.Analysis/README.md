@@ -57,7 +57,8 @@ method) may add more:
   the maths functions `Math` and `MathF` call, CoreLib's P/Invokes into the framework's own
   native libraries, and the FCalls and QCalls of its contract table), when it raises what that
   contract says, and what the parameterless constructor of each of those exceptions raises, which
-  CoreCLR runs to make it. A `newobj` of a constructor of
+  CoreCLR runs to make it, and what each CoreLib method the contract says it calls raises, passed
+  arguments the analysis cannot name. A `newobj` of a constructor of
   `System.String`, which is native, calls the `String.Ctor` CoreCLR runs in its place
   (`StringConstructor`);
 * code that a capability query rules out on that CPU, or that a test of whether an object is null
@@ -109,8 +110,9 @@ method) may add more:
   `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, and the answer has what those raise:
   releasing the monitor throws `SynchronizationLockException` if the body has already released
   it, either throws `ArgumentNullException` for an instance method `call`ed on null, and taking a
-  contended monitor is "unknown", because it waits, and a wait may run the thread's
-  `SynchronizationContext.Wait`, which may do anything. The lock is the receiver, of
+  contended monitor may allocate its sync block, or wait and be interrupted, and is "unknown",
+  because a wait may call the thread's `SynchronizationContext.Wait`, which may be any override.
+  The lock is the receiver, of
   the classes and nullness the caller passes, or for a static method its type's `RuntimeType`,
   which the JIT may look up with `RuntimeTypeHandle.GetRuntimeTypeFromHandle`.
 
