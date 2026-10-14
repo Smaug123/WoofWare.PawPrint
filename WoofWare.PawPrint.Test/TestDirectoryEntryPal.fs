@@ -34,25 +34,19 @@ module TestDirectoryEntryPal =
     [<Test>]
     let ``every DirectoryEntryKind is numbered as the pinned Interop.ReadDir.cs numbers it`` () : unit =
         let path =
-            match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-            | null
-            | "" ->
-                Assert.Ignore
-                    "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
+            let dir = FrameworkUnderTest.requireRuntimeSource ()
 
-                failwith "unreachable: Assert.Ignore did not throw"
-            | dir ->
-                Path.Combine (
-                    dir,
-                    "src",
-                    "libraries",
-                    "Common",
-                    "src",
-                    "Interop",
-                    "Unix",
-                    "System.Native",
-                    "Interop.ReadDir.cs"
-                )
+            Path.Combine (
+                dir,
+                "src",
+                "libraries",
+                "Common",
+                "src",
+                "Interop",
+                "Unix",
+                "System.Native",
+                "Interop.ReadDir.cs"
+            )
 
         if not (File.Exists path) then
             failwith

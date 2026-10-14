@@ -29,20 +29,17 @@ module TestOpenFlagsPal =
 
     // ------------------------------------------------------------ the PAL values
 
-    let private requireRuntimeSrc () : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir -> dir
-
     [<Test>]
     let ``every PAL value is the one the pinned header defines`` () : unit =
         let path =
-            Path.Combine (requireRuntimeSrc (), "src", "native", "libs", "System.Native", "pal_io.h")
+            Path.Combine (
+                FrameworkUnderTest.requireRuntimeSource (),
+                "src",
+                "native",
+                "libs",
+                "System.Native",
+                "pal_io.h"
+            )
 
         let pinned =
             Regex.Matches (

@@ -118,7 +118,7 @@ module TestIntrinsicContracts =
 
         // The primitives the pinned linux-x64 CoreLib performs, as `TestIntrinsicBody` pins them.
         let corelib =
-            match LinuxCoreLibFlavour.linuxFrameworkDir with
+            match FrameworkUnderTest.linuxFrameworkDirectory () with
             | Some dir ->
                 let _, loggerFactory = LoggerFactory.makeTest ()
                 let corelib = Assembly.readFile loggerFactory (LinuxCoreLibFlavour.corelibPath dir)
