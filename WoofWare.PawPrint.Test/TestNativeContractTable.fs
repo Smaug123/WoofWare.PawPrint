@@ -2,6 +2,8 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.IO
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -121,6 +123,7 @@ module TestNativeContractTable =
                 "System.OutOfMemoryException"
                 "returns"
                 "none"
+                "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,?,?,?)"
                 "vm/file.cpp:Entry"
                 "Because."
             ]
@@ -134,22 +137,98 @@ module TestNativeContractTable =
 
         let malformed =
             [
-                row (List.take 6 good)
+                row (List.take 7 good)
                 replacing 0 "Call"
                 replacing 0 "FCall"
                 replacing 2 "OutOfMemoryException"
                 replacing 2 "System.OutOfMemoryException|"
                 replacing 3 "sometimes"
                 replacing 4 "null"
-                replacing 5 "vm/file.cpp"
-                replacing 5 ":Entry"
+                replacing 5 ""
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper"
+                replacing 5 "InvokeWaitMethodHelper(?)"
+                replacing 5 "System.Threading.SynchronizationContext::(?)"
+                replacing 5 "::InvokeWaitMethodHelper(?)"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)x"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,,?)"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,0)"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|"
+                replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|-"
+                replacing 6 "vm/file.cpp"
+                replacing 6 ":Entry"
                 replacing 1 "Entry Point"
-                replacing 6 " "
+                replacing 7 " "
             ]
 
         for line in malformed do
             Assert.Throws<exn> (fun () -> NativeContractTable.ofText line |> ignore<NativeContractRow list>)
             |> ignore<exn>
+
+    /// A row's `runs` field as the table spells it.
+    let private spellRuns (calls : ManagedCall list) : string =
+        match calls with
+        | [] -> "-"
+        | calls ->
+            calls
+            |> List.map (fun call ->
+                let arguments =
+                    call.Arguments
+                    |> List.map (fun argument ->
+                        match argument with
+                        | NativeArgument.Unnamed -> "?"
+                    )
+                    |> String.concat ","
+
+                $"%s{call.DeclaringType}::%s{call.Method}(%s{arguments})"
+            )
+            |> String.concat "|"
+
+    [<Test>]
+    let ``the table's reader reads back the calls a row runs`` () : unit =
+        // A name as the table spells a type's or a method's: no white space, and none of the
+        // characters that delimit the field.
+        let name : Gen<string> =
+            gen {
+                let! head = Gen.elements [ 'A' ; 'b' ; '_' ; '<' ]
+                let! tail = Gen.listOf (Gen.elements [ 'x' ; 'Y' ; '0' ; '.' ; '`' ; '>' ; '_' ])
+                return System.String (Array.ofList (head :: tail))
+            }
+
+        let call : Gen<ManagedCall> =
+            gen {
+                let! declaringType = name
+                let! method = name
+                let! arity = Gen.choose (0, 5)
+
+                return
+                    {
+                        DeclaringType = declaringType
+                        Method = method
+                        Arguments = List.replicate arity NativeArgument.Unnamed
+                    }
+            }
+
+        let property (calls : ManagedCall list) : unit =
+            let line =
+                String.concat
+                    "\t"
+                    [
+                        "QCall"
+                        "Entry"
+                        "-"
+                        "returns"
+                        "none"
+                        spellRuns calls
+                        "vm/file.cpp:Entry"
+                        "Because."
+                    ]
+
+            match NativeContractTable.ofText line with
+            | [ read ] -> read.Contract.Runs |> shouldEqual calls
+            | read -> failwith $"%s{line} read as %d{read.Length} rows"
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen (Gen.listOf call)) property)
 
     /// An image named `name` that disables runtime marshalling, declaring natives a row names and
     /// others that differ from one in a single respect: FCalls on `System.Environment` and

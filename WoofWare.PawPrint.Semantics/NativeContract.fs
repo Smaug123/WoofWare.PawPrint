@@ -43,6 +43,25 @@ module ExceptionName =
                     _Name = fullName.Substring (dot + 1)
                 }
 
+/// What a native method passes a managed method as one of its arguments, as a row of the contract
+/// table spells it.
+[<RequireQualifiedAccess>]
+type NativeArgument =
+    /// A value the row does not name, which may be anything the parameter's declared type allows.
+    | Unnamed
+
+/// A call a native method can make of a method of CoreLib's, whose exceptions escape the native
+/// method to its caller.
+type ManagedCall =
+    {
+        /// The top-level type declaring the method, by namespace and name joined with a dot.
+        DeclaringType : string
+        /// The method's name, which no other method of the type has.
+        Method : string
+        /// What the native passes as each of the method's arguments, `this` first.
+        Arguments : NativeArgument list
+    }
+
 /// What a method CoreCLR implements in native code (`NativeMethod`) can do to its caller, as an
 /// analyser needs it. Unrecoverable failures (`StackOverflowException`, `OutOfMemoryException` from
 /// an operation that allocates nothing, and a fault in native code, which ends the process) are out
@@ -57,6 +76,10 @@ type NativeContract =
         CanReturn : bool
         /// What is known of its result's nullness.
         Result : ResultNullness
+        /// The calls of CoreLib's methods it can make, each any number of times, besides the
+        /// constructors of the exceptions it raises. The empty list is a positive claim that it
+        /// runs no other managed code.
+        Runs : ManagedCall list
     }
 
 /// A method of CoreLib's that CoreCLR implements in native code, as the contract table names it.
@@ -92,8 +115,8 @@ type NativeContractRow =
 
 /// The contracts of CoreLib's native methods, as checked in beside this file
 /// (`NativeContractTable.tsv`, embedded). Every native method a row names runs no managed code but
-/// the parameterless constructor of each exception it raises, which CoreCLR runs to make it, and
-/// whose own exceptions escape in its place.
+/// the methods its row says it calls, and the parameterless constructor of each exception it
+/// raises, which CoreCLR runs to make it, and whose own exceptions escape in its place.
 [<RequireQualifiedAccess>]
 module NativeContractTable =
 
@@ -102,9 +125,9 @@ module NativeContractTable =
             failwith $"NativeContractTable: %s{why} in %s{line}"
 
         match line.Split '\t' with
-        | [| kind ; name ; raises ; returns ; result ; sources ; reason |] ->
+        | [| kind ; name ; raises ; returns ; result ; runs ; sources ; reason |] ->
             if
-                [ kind ; name ; raises ; returns ; result ; sources ]
+                [ kind ; name ; raises ; returns ; result ; runs ; sources ]
                 |> List.exists (Seq.exists Char.IsWhiteSpace)
             then
                 fail "white space in a field before the reason"
@@ -144,6 +167,46 @@ module NativeContractTable =
                 | "maybenull" -> ResultNullness.MaybeNull
                 | other -> fail $"unknown result %s{other}"
 
+            let runs =
+                match runs with
+                | "-" -> []
+                | runs ->
+                    runs.Split '|'
+                    |> Array.map (fun call ->
+                        let opening = call.IndexOf '('
+
+                        if opening < 0 || not (call.EndsWith ')') then
+                            fail $"a call %s{call}, not Type::Method(arguments)"
+
+                        let isName (name : string) : bool =
+                            name <> "" && name.IndexOfAny [| '(' ; ')' ; ',' ; ':' |] < 0
+
+                        let declaringType, method =
+                            match call.Substring(0, opening).Split "::" with
+                            | [| declaringType ; method |] when isName declaringType && isName method ->
+                                declaringType, method
+                            | _ -> fail $"a call %s{call}, not Type::Method(arguments)"
+
+                        let arguments =
+                            match call.Substring (opening + 1, call.Length - opening - 2) with
+                            | "" -> []
+                            | arguments ->
+                                arguments.Split ','
+                                |> Array.map (fun argument ->
+                                    match argument with
+                                    | "?" -> NativeArgument.Unnamed
+                                    | other -> fail $"an argument %s{other}, not ?"
+                                )
+                                |> List.ofArray
+
+                        {
+                            DeclaringType = declaringType
+                            Method = method
+                            Arguments = arguments
+                        }
+                    )
+                    |> List.ofArray
+
             let sources =
                 sources.Split '|'
                 |> Array.map (fun source ->
@@ -170,11 +233,12 @@ module NativeContractTable =
                         Raises = raises
                         CanReturn = canReturn
                         Result = result
+                        Runs = runs
                     }
                 Sources = sources
                 Reason = reason
             }
-        | _ -> fail "not seven tab-separated fields"
+        | _ -> fail "not eight tab-separated fields"
 
     /// The rows of a table in the checked-in format, whatever its line endings. A line starting
     /// with `#` is a comment.
