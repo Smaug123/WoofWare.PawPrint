@@ -63,6 +63,17 @@ type OpaqueSite =
         Names : MethodKey option
     }
 
+/// What a call passes as one of its arguments, as far as the calling body says.
+[<RequireQualifiedAccess>]
+type internal SpelledArgument =
+    /// What the evaluation stack holds there.
+    | Value of StackValue
+    /// The address of a location of the integer type `location` (`StackInteger.ofParameter`) that
+    /// holds one of `holds` when the call is made, as the stack held them when the body stored
+    /// them, and that only the method called can store to until it stores through a pointer or
+    /// runs other code (`LocalValues.held`).
+    | Pointer of location : PrimitiveType * holds : Set<SpelledInteger>
+
 /// Something that happens outside a method's body, so that none of its own handlers can catch it.
 [<RequireQualifiedAccess>]
 type internal OutsideBodyFact =
@@ -70,11 +81,12 @@ type internal OutsideBodyFact =
     /// What happens turns on something the analysis cannot see, such as how a type variable of the
     /// method is instantiated when the JIT binds a member of it.
     | Opaque of Opacity
-    /// The runtime runs this method, which has no type variables: another module's initializer,
-    /// as binding a token first activates the module, or what the runtime runs to throw that
-    /// initializer's own exception again, or the constructor it runs to make the exception a
-    /// failure to bind raises.
-    | Runs of MethodKey
+    /// The runtime runs this method, which has no type variables, passing it `passes`, `this`
+    /// first, as the body's spellings say: another module's initializer, as binding a token first
+    /// activates the module, or what the runtime runs to throw that initializer's own exception
+    /// again, or the constructor it runs to make the exception a failure to bind raises, or what
+    /// the JIT runs to take and release a synchronized method's monitor.
+    | Runs of MethodKey * passes : SpelledArgument list
 
 /// How a call's token instantiates the method it names, as the calling body spells it.
 [<RequireQualifiedAccess>]
@@ -118,17 +130,6 @@ type internal CallSite =
     /// (`Exception.InternalPreserveStackTrace`). The instruction does not make this call, so what
     /// the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
-
-/// What a call passes as one of its arguments, as far as the calling body says.
-[<RequireQualifiedAccess>]
-type internal SpelledArgument =
-    /// What the evaluation stack holds there.
-    | Value of StackValue
-    /// The address of a location of the integer type `location` (`StackInteger.ofParameter`) that
-    /// holds one of `holds` when the call is made, as the stack held them when the body stored
-    /// them, and that only the method called can store to until it stores through a pointer or
-    /// runs other code (`LocalValues.held`).
-    | Pointer of location : PrimitiveType * holds : Set<SpelledInteger>
 
 /// What a `brtrue` or `brfalse` tests of the value it pops.
 [<RequireQualifiedAccess>]
@@ -608,6 +609,30 @@ module EscapeAnalysis =
         | found ->
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
+
+    /// The one static method of CoreLib's `ns.typeName` of this name that takes `arity` arguments.
+    let private corelibStatic
+        (state : EscapeAnalysisState)
+        (ns : string)
+        (typeName : string)
+        (name : string)
+        (arity : int)
+        : MethodKey
+        =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef ns typeName
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m -> m.Name = name && m.IsStatic && m.Signature.ParameterTypes.Length = arity)
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one static %s{ns}.%s{typeName}.%s{name} of %d{arity} arguments, found %d{found.Length}"
 
     /// The `(string, string, string, int)` instance constructor of a CoreLib exception type, which
     /// CoreCLR runs to make a `TypeLoadException` (`ExceptionMaking.TypeLoadConstructor`).
@@ -1260,7 +1285,8 @@ module EscapeAnalysis =
             let thrown, made =
                 runtimeRaises state "System.TypeLoadException" ExceptionMaking.TypeLoadConstructor
 
-            OutsideBodyFact.Raises thrown :: List.map OutsideBodyFact.Runs made
+            OutsideBodyFact.Raises thrown
+            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
         | BindFailure.AssemblyUnavailable ->
             [
                 OutsideBodyFact.Raises (ThrownType.Exactly (corelibType state "System.IO" "FileNotFoundException"))
@@ -1564,7 +1590,9 @@ module EscapeAnalysis =
 
                         state,
                         Some CallTarget.Missing,
-                        OutsideBodyFact.Raises thrown :: OutsideBodyFact.Runs made :: signatureFailures
+                        OutsideBodyFact.Raises thrown
+                        :: OutsideBodyFact.Runs (made, [])
+                        :: signatureFailures
                     | state, CallTarget.TypeMissing ->
                         state, Some CallTarget.TypeMissing, raisesOf (Some BindFailure.TypeAbsent)
                     | state, CallTarget.AssemblyMissing ->
@@ -1587,7 +1615,7 @@ module EscapeAnalysis =
                     match target with
                     | FieldReferenceTarget.Missing ->
                         let thrown, made = constructedRaise state "System.MissingFieldException"
-                        state, None, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs made ]
+                        state, None, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
                     | FieldReferenceTarget.ParentTypeMissing _ -> state, None, raisesOf (Some BindFailure.TypeAbsent)
                     | FieldReferenceTarget.ParentAssemblyUnavailable _ ->
                         state, None, raisesOf (Some BindFailure.AssemblyUnavailable)
@@ -2455,8 +2483,9 @@ module EscapeAnalysis =
                             let wrapper, preserve = initializerFailure state
 
                             OutsideBodyFact.Raises wrapper
-                            :: OutsideBodyFact.Runs preserve
-                            :: (initializers |> List.map OutsideBodyFact.Runs)
+                            :: OutsideBodyFact.Runs (preserve, [])
+                            :: (initializers
+                                |> List.map (fun initializer -> OutsideBodyFact.Runs (initializer, [])))
                             @ failures
 
                     state, target, unbound, Set.union bindingFailures (Set.ofList failures)
@@ -2744,28 +2773,6 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
-        // A synchronized method takes a monitor around its body, outside its handlers: on its
-        // receiver, which `call` may pass as null, or on its type if static. Taking it may be
-        // interrupted, and releasing it fails if the body already has.
-        let localFailures =
-            let synchronized =
-                match method with
-                | MethodInfo.Metadata (_, facts) -> facts.ImplAttributes.HasFlag MethodImplAttributes.Synchronized
-                | MethodInfo.Synthesised _ -> false
-
-            if synchronized then
-                [
-                    corelibType state "System.Threading" "ThreadInterruptedException"
-                    corelibType state "System.Threading" "SynchronizationLockException"
-                    if not method.IsStatic then
-                        corelibException state "ArgumentNullException"
-                ]
-                |> List.map (ThrownType.Exactly >> OutsideBodyFact.Raises)
-                |> Set.ofList
-                |> Set.union localFailures
-            else
-                localFailures
-
         let state, targets, unbound, bindingFailures =
             ((state, Map.empty, Set.empty, localFailures), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
@@ -2774,6 +2781,76 @@ module EscapeAnalysis =
         let state, bodySpellings = bodySpellingsOf state assembly method body unbound
         let values = StackValues.analyse bodySpellings body
         let spellings = Array.ofList bodySpellings.Spellings
+
+        // A synchronized method takes a monitor around its body, outside its handlers, as the JIT
+        // has it on a target with funclets, which every `JitTarget` is (`CORINFO_HELP_MON_ENTER`
+        // and `CORINFO_HELP_MON_EXIT`): `Monitor.Enter(lock, ref acquired)` before the body, with
+        // `acquired` false, and `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, however it
+        // ends. The lock is the receiver as the caller passed it, which `call` may pass as null, or
+        // for a static method its type's `RuntimeType`, which the JIT may look up with
+        // `RuntimeTypeHandle.GetRuntimeTypeFromHandle` (`CORINFO_HELP_GETSYNCFROMCLASSHANDLE`).
+        let state, spellings, monitor =
+            let synchronized =
+                match method with
+                | MethodInfo.Metadata (_, facts) -> facts.ImplAttributes.HasFlag MethodImplAttributes.Synchronized
+                | MethodInfo.Synthesised _ -> false
+
+            if not synchronized then
+                state, spellings, []
+            else
+                let state, spellings, lock =
+                    if method.IsStatic then
+                        let runtimeType = corelibType state "System" "RuntimeType"
+                        let state, spelling, _ = spelledDefinition state runtimeType
+
+                        let spelled =
+                            {
+                                Type = spelling
+                                SpelledIn = runtimeType.AssemblyFullName
+                                InBodyContext = true
+                            }
+
+                        state,
+                        Array.append spellings [| spelled |],
+                        StackValue.Objects (Set.singleton (SpelledObject.Exactly spellings.Length))
+                    else
+                        let receiver =
+                            match bodySpellings.Arguments with
+                            | StackValue.Objects objects :: _ ->
+                                match Set.toList objects with
+                                | [ SpelledObject.Argument (0, spelling) ]
+                                | [ SpelledObject.Within spelling ] ->
+                                    StackValue.Objects (Set.singleton (SpelledObject.Argument (0, spelling)))
+                                | _ -> StackValue.Unknown
+                            | _ -> StackValue.Unknown
+
+                        state, spellings, receiver
+
+                let acquired =
+                    SpelledArgument.Pointer (
+                        PrimitiveType.Boolean,
+                        Set.singleton (SpelledInteger.Constant (StackInteger.Int32 0))
+                    )
+
+                state,
+                spellings,
+                [
+                    OutsideBodyFact.Runs (
+                        corelibStatic state "System.Threading" "Monitor" "Enter" 2,
+                        [ SpelledArgument.Value lock ; acquired ]
+                    )
+                    OutsideBodyFact.Runs (
+                        corelibStatic state "System.Threading" "Monitor" "ExitIfLockTaken" 2,
+                        [ SpelledArgument.Value lock ; SpelledArgument.Value StackValue.Unknown ]
+                    )
+                    if method.IsStatic then
+                        OutsideBodyFact.Runs (
+                            corelibStatic state "System" "RuntimeTypeHandle" "GetRuntimeTypeFromHandle" 1,
+                            [ SpelledArgument.Value StackValue.Unknown ]
+                        )
+                ]
+
+        let outsideBody = Set.union bindingFailures (Set.ofList monitor)
 
         let valueAt (offset : int) (fromTop : int) : StackValue =
             match Map.tryFind offset values.Entry with
@@ -2976,6 +3053,16 @@ module EscapeAnalysis =
                         | SpelledArgument.Value value -> yield! ofValue value
                         | SpelledArgument.Pointer (_, holds) -> yield! ofIntegers holds
 
+                for fact in outsideBody do
+                    match fact with
+                    | OutsideBodyFact.Runs (_, passes) ->
+                        for passed in passes do
+                            match passed with
+                            | SpelledArgument.Value value -> yield! ofValue value
+                            | SpelledArgument.Pointer (_, holds) -> yield! ofIntegers holds
+                    | OutsideBodyFact.Raises _
+                    | OutsideBodyFact.Opaque _ -> ()
+
                 yield! ofValue returns
 
                 for tested in tests.Values do
@@ -2993,7 +3080,7 @@ module EscapeAnalysis =
             Calls = List.rev calls
             Rethrows = List.rev rethrows
             Regions = regions
-            OutsideBody = bindingFailures
+            OutsideBody = outsideBody
             Spellings = spellings
             Returns = returns
             Consults = consults
@@ -4021,20 +4108,25 @@ module EscapeAnalysis =
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
             )
 
+        let state, outside =
+            ((state, []), facts.OutsideBody)
+            ||> Seq.fold (fun (state, outside) fact ->
+                match fact with
+                | OutsideBodyFact.Runs (method, passes) ->
+                    let state, reached =
+                        passedTo state Set.empty instance facts passes None (instanceOf state method [] [])
+
+                    state, reached :: outside
+                | OutsideBodyFact.Raises _
+                | OutsideBodyFact.Opaque _ -> state, outside
+            )
+
         state,
         {
             Callees = List.rev callees
             Raises = List.rev raises
             Undecided = List.rev undecided
-            Outside =
-                facts.OutsideBody
-                |> Seq.choose (fun fact ->
-                    match fact with
-                    | OutsideBodyFact.Runs method -> Some (instanceOf state method [] [])
-                    | OutsideBodyFact.Raises _
-                    | OutsideBodyFact.Opaque _ -> None
-                )
-                |> List.ofSeq
+            Outside = List.rev outside
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
