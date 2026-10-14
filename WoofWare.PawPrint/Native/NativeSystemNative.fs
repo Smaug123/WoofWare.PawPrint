@@ -606,10 +606,9 @@ module NativeSystemNative =
             // assert is compiled out and what remains is `(int)fd`.
             int value
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-            // `IntPtr.Zero` can arrive spelled as the null managed pointer
-            // rather than as `Verbatim 0L`; the guest-level value is the
-            // integer zero either way, and zero is a legitimate descriptor
-            // number — fd 0 is stdin.
+            // The null managed pointer is the integer zero, though
+            // `NativeIntSource.ofManagedPointer` never builds a native int of
+            // that shape; zero is a legitimate descriptor number — fd 0 is stdin.
             0
         | CliType.Numeric (CliNumericType.NativeInt source) ->
             failwith
@@ -1103,10 +1102,7 @@ module NativeSystemNative =
             // the guest declared.
             CliValueType.WithFieldSetById field.Id (CliType.OfBytesLike field.Contents bytes) structure
 
-        let namePointer =
-            match name with
-            | ManagedPointerSource.Null -> NativeIntSource.Verbatim 0L
-            | pointer -> NativeIntSource.ManagedPointer pointer
+        let namePointer = NativeIntSource.ofManagedPointer name
 
         let structure =
             structure
@@ -3625,7 +3621,7 @@ module NativeSystemNative =
 
             state.MapKernel (EmulatedKernel.withDirectoryStreamFd block (int fd))
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer handle))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer handle))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -7030,7 +7026,7 @@ module NativeSystemNative =
                     ctx.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed destination)
-                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer pointer)))
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer pointer)))
 
             let stride = SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
 

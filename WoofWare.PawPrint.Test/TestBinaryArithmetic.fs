@@ -722,6 +722,218 @@ module TestBinaryArithmetic =
             ]
         |> Gen.map (fun bits -> if bits = 0L then 1L else bits)
 
+    [<Test>]
+    let ``div of bit-pattern byrefs divides their bits as the host does`` () : unit =
+        let state = state ()
+
+        let pointer (bits : int64) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern bits)
+
+        // Zero is the null byref, which the placeholder generator leaves out.
+        let genBits : Gen<int64> =
+            Gen.frequency [ 4, genPlaceholderBits ; 1, Gen.constant 0L ]
+
+        let property (a : int64, b : int64) : unit =
+            let expected =
+                try
+                    Ok (EvalStackValue.NativeInt (NativeIntSource.Verbatim (a / b)))
+                with
+                | :? System.DivideByZeroException -> Error OpcodeFault.DivideByZero
+                | :? System.OverflowException -> Error OpcodeFault.Overflow
+
+            BinaryArithmetic.executeFaulting baseClassTypes ArithmeticOperation.div state (pointer a) (pointer b)
+            |> Result.map fst
+            |> shouldEqual expected
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genBits)) property)
+
+    [<Test>]
+    let ``div by a null byref raises DivideByZeroException`` () : unit =
+        let state = state ()
+        let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        for dividend in [ EvalStackValue.Int32 (Int32Source.Verbatim 0) ; nullPtr ] do
+            BinaryArithmetic.executeFaulting baseClassTypes ArithmeticOperation.div state dividend nullPtr
+            |> Result.map fst
+            |> shouldEqual (Error OpcodeFault.DivideByZero)
+
+    /// What an operation made of a pair of operands, with a native int of known bits held as those
+    /// bits, so that the two spellings of one value compare equal.
+    [<RequireQualifiedAccess>]
+    type private SpellingOutcome =
+        | Answered of EvalStackValue
+        | Compared of bool
+        | Faulted of OpcodeFault
+        | Refused of message : string
+
+    /// `value` with a pointer held as a native int, of known bits as those bits. A pointer's stack
+    /// kind is not compared: ECMA-335 III.1.5 types `native int + &` as `&`, which is what the
+    /// number gives, where the null pointer took the native int's arms.
+    let private canonical (value : EvalStackValue) : EvalStackValue =
+        let canonicalNativeInt (n : NativeIntSource) : NativeIntSource =
+            match n with
+            | NativeIntSource.ManagedPointer ptr -> NativeIntSource.ofManagedPointer ptr
+            | n -> n
+
+        match value with
+        | EvalStackValue.NativeInt n -> EvalStackValue.NativeInt (canonicalNativeInt n)
+        | EvalStackValue.ManagedPointer ptr -> EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (n, signed)) ->
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt (canonicalNativeInt n) signed)
+        | value -> value
+
+    /// The operand shapes a native int 0 can meet in a comparison or binary arithmetic, with `arr`
+    /// a live array for the byrefs to point into.
+    let private spellingPartners (arr : ManagedHeapAddress) : EvalStackValue list =
+        let numbers = [ 0L ; 1L ; -1L ; 8L ; System.Int64.MinValue ; System.Int64.MaxValue ]
+
+        let crossOffset (source : int64) (target : int64) : SyntheticCrossArrayOffset =
+            SyntheticCrossArrayOffset.make
+                (ByteStorageIdentity.Array (ManagedHeapAddress 301))
+                target
+                (ByteStorageIdentity.Array (ManagedHeapAddress 302))
+                source
+
+        [
+            for n in numbers do
+                EvalStackValue.Int32 (Int32Source.Verbatim (int32 n))
+                EvalStackValue.Int64 (Int64Source.Verbatim n)
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim n)
+                EvalStackValue.Int64 (Int64Source.OpaqueHashBits n)
+                EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits n)
+                EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern n)
+            for source, target in [ 0L, 0L ; 4L, 0L ; 0L, 4L ] do
+                EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset (crossOffset source target))
+                EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset (crossOffset source target))
+            EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr 7L)
+            EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 0xBEEFL)
+            EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 7, 0L))
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.MethodHandlePtr 7L) true)
+            arrayPointer arr 1
+            EvalStackValue.NativeInt (
+                NativeIntSource.ManagedPointer (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arr, 1)
+                            Projections = []
+                        }
+                )
+            )
+            EvalStackValue.NullObjectRef
+            EvalStackValue.Float (EvalStackFloat.Double 0.0)
+        ]
+
+    [<Test>]
+    let ``every operation answers a native int 0 alike, whether it holds a null pointer or the number`` () : unit =
+        let state, arr = stateWithIntArray (valuesOfLength 4)
+
+        let attempt (f : unit -> SpellingOutcome) : SpellingOutcome =
+            try
+                f ()
+            with e ->
+                SpellingOutcome.Refused e.Message
+
+        let compared (f : EvalStackValue -> EvalStackValue -> bool) (a : EvalStackValue) (b : EvalStackValue) =
+            SpellingOutcome.Compared (f a b)
+
+        let unchecked (op : IArithmeticOperation) (a : EvalStackValue) (b : EvalStackValue) =
+            BinaryArithmetic.execute baseClassTypes op state a b
+            |> fst
+            |> canonical
+            |> SpellingOutcome.Answered
+
+        let faulting (op : FaultingArithmeticOperation) (a : EvalStackValue) (b : EvalStackValue) =
+            match BinaryArithmetic.executeFaulting baseClassTypes op state a b with
+            | Ok (result, _) -> SpellingOutcome.Answered (canonical result)
+            | Error fault -> SpellingOutcome.Faulted fault
+
+        let operations : (string * (EvalStackValue -> EvalStackValue -> SpellingOutcome)) list =
+            [
+                "ceq", compared (EvalStackValueComparisons.ceq PointerHashState.empty)
+                "cgt", compared EvalStackValueComparisons.cgt
+                "cgt.un", compared EvalStackValueComparisons.cgtUn
+                "clt", compared EvalStackValueComparisons.clt
+                "clt.un", compared EvalStackValueComparisons.cltUn
+                "add", unchecked ArithmeticOperation.add
+                "sub", unchecked ArithmeticOperation.sub
+                "mul", unchecked ArithmeticOperation.mul
+                "add.ovf", faulting ArithmeticOperation.addOvf
+                "add.ovf.un", faulting ArithmeticOperation.addOvfUn
+                "sub.ovf", faulting ArithmeticOperation.subOvf
+                "sub.ovf.un", faulting ArithmeticOperation.subOvfUn
+                "mul.ovf", faulting ArithmeticOperation.mulOvf
+                "mul.ovf.un", faulting ArithmeticOperation.mulOvfUn
+                "div", faulting ArithmeticOperation.div
+                "rem", faulting ArithmeticOperation.rem
+                "rem.un", faulting ArithmeticOperation.remUn
+            ]
+
+        let nullPointer =
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+
+        let number = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+
+        // Where PawPrint answered for the null pointer, it must answer the same for the number:
+        // CoreCLR cannot tell them apart. The reverse need not hold, since PawPrint refused some
+        // operations on the null pointer that it computes on the number.
+        let disagreements =
+            [
+                for name, operation in operations do
+                    for partner in spellingPartners arr do
+                        for nullFirst in [ true ; false ] do
+                            let apply (zero : EvalStackValue) =
+                                attempt (fun () ->
+                                    if nullFirst then
+                                        operation zero partner
+                                    else
+                                        operation partner zero
+                                )
+
+                            // The null pointer's arms sign-extended an int32 beside it, where
+                            // CoreCLR zero-extends one for the unsigned checked forms
+                            // (`TestFabricatedUnsignedOverflowPointer`), so the number's answer is
+                            // the right one there.
+                            let signExtendedWrongly =
+                                name.EndsWith ".ovf.un"
+                                && (
+                                    match partner with
+                                    | EvalStackValue.Int32 _ -> true
+                                    | _ -> false
+                                )
+
+                            match apply nullPointer with
+                            | SpellingOutcome.Refused _ -> ()
+                            | _ when signExtendedWrongly -> ()
+                            | expected ->
+                                let actual = apply number
+
+                                if actual <> expected then
+                                    let operands = if nullFirst then $"0, %O{partner}" else $"%O{partner}, 0"
+
+                                    $"%s{name} (%s{operands}): %A{expected} for the null pointer, %A{actual} for the number"
+            ]
+
+        match disagreements with
+        | [] -> ()
+        | disagreements -> failwith (String.concat "\n" disagreements)
+
+    [<Test>]
+    let ``div of 0 by a pointer into storage is 0`` () : unit =
+        let state, arr = stateWithIntArray (valuesOfLength 4)
+        let pointer = arrayPointer arr 1
+
+        // A pointer into storage is never 0, so the quotient is 0 whatever its address.
+        for dividend in
+            [
+                EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+            ] do
+            match BinaryArithmetic.executeFaulting baseClassTypes ArithmeticOperation.div state dividend pointer with
+            | Ok (result, _) ->
+                canonical result
+                |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+            | Error fault -> failwith $"div of %O{dividend} by a pointer into storage faulted with %O{fault}"
+
     let private byteHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
