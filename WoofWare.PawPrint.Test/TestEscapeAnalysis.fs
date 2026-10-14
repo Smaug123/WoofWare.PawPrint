@@ -590,6 +590,28 @@ public static class ContextCases
     // An element may be null, so what returns one may too.
     public static void ChecksElement() => Check(First(new object[1]));
 
+    // `ThrowIf` throws only for a true condition, which its callers here decide.
+    public static void DisposedIfFalse() => ObjectDisposedException.ThrowIf(false, Unset);
+
+    public static void DisposedIfTrue() => ObjectDisposedException.ThrowIf(true, Unset);
+
+    public static void DisposedIfParameter(bool b) => ObjectDisposedException.ThrowIf(b, Unset);
+
+    static void DisposedIf(bool b) => ObjectDisposedException.ThrowIf(b, Unset);
+
+    public static void PassesFalseOn() => DisposedIf(false);
+
+    public static void PassesTrueOn() => DisposedIf(true);
+
+    // The parameter no longer holds what the caller passed.
+    static void DisposedUnless(bool b)
+    {
+        b = !b;
+        ObjectDisposedException.ThrowIf(b, Unset);
+    }
+
+    public static void PassesFalseToNegated() => DisposedUnless(false);
+
 }
 
 public sealed class Sealed
@@ -1141,6 +1163,26 @@ public static class SR
             }
             { expect "Fixture.ContextCases" "SameType" with
                 Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "DisposedIfFalse" with
+                Excludes = [ "=System.ObjectDisposedException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "DisposedIfTrue" with
+                Contains = [ "=System.ObjectDisposedException" ]
+            }
+            { expect "Fixture.ContextCases" "DisposedIfParameter" with
+                Contains = [ "=System.ObjectDisposedException" ]
+            }
+            { expect "Fixture.ContextCases" "PassesFalseOn" with
+                Excludes = [ "=System.ObjectDisposedException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "PassesTrueOn" with
+                Contains = [ "=System.ObjectDisposedException" ]
+            }
+            { expect "Fixture.ContextCases" "PassesFalseToNegated" with
+                Contains = [ "=System.ObjectDisposedException" ]
             }
         ]
 
@@ -5252,6 +5294,186 @@ public static class Runners
 
         let _, failures =
             dispatchFailures fixture "Branches" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// The integer types narrower than 64 bits that a parameter may have, each with whether a
+    /// constant `int32` passed as one is zero once the parameter holds it.
+    let private narrowParameters : (Type * (int32 -> bool)) list =
+        [
+            typeof<bool>, (fun value -> byte value = 0uy)
+            typeof<sbyte>, (fun value -> sbyte value = 0y)
+            typeof<byte>, (fun value -> byte value = 0uy)
+            typeof<int16>, (fun value -> int16 value = 0s)
+            typeof<uint16>, (fun value -> uint16 value = 0us)
+            typeof<char>, (fun value -> char value = '\000')
+            typeof<int32>, (fun value -> value = 0)
+            typeof<uint32>, (fun value -> uint32 value = 0u)
+        ]
+
+    let private narrowConstants : int32 list =
+        [ 0 ; 1 ; -1 ; 0x100 ; 0x10000 ; Int32.MinValue ]
+
+    let private wideParameters : Type list = [ typeof<int64> ; typeof<uint64> ]
+
+    let private wideConstants : int64 list = [ 0L ; 1L ; 0x100000000L ; Int64.MinValue ]
+
+    /// An image whose runners pass integer constants to methods that branch on the parameter they
+    /// are passed in, which C# compiled for debugging does not do; each runner takes `(int a, int b)`
+    /// and computes `a / b` only where the branch falls through:
+    ///   - `Runners.Pass_<T>_<i>`: `ldc <constant i>; ldarg.0; ldarg.1; call Unless_<T>`, where
+    ///     `Unless_<T>(T v, int a, int b)` is `ldarg.0; brtrue L; a / b`;
+    ///   - `Runners.ViaInt32_<T>_<i>` and `Runners.ViaBoolean_<T>_<i>`: the same, through a method
+    ///     that takes the constant as an `int` or a `bool` and passes it on to `Unless_<T>`;
+    ///   - `Runners.Inline_<i>`: `ldc.i4 <constant i>; brtrue L; a / b`.
+    let private fabricateIntegerBranches () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Integers", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Integers"
+
+        let runners =
+            modul.DefineType (
+                "Integers.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let staticAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+
+        // `brtrue` over the value on the stack, then `a / b` from arguments `a` and `b`.
+        let divideUnless (il : Emit.ILGenerator) (a : Emit.OpCode) (b : Emit.OpCode) =
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit a
+            il.Emit b
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+        let operands = [| typeof<int> ; typeof<int> |]
+
+        let unless =
+            [
+                for parameter in List.map fst narrowParameters @ wideParameters do
+                    let callee =
+                        runners.DefineMethod (
+                            $"Unless_%s{parameter.Name}",
+                            staticAttributes,
+                            typeof<int>,
+                            [| parameter ; typeof<int> ; typeof<int> |]
+                        )
+
+                    let il = callee.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    divideUnless il Emit.OpCodes.Ldarg_1 Emit.OpCodes.Ldarg_2
+                    parameter, callee
+            ]
+            |> dict
+
+        // A runner that pushes a constant with `push`, then calls `callee` with it and its operands.
+        let runner (name : string) (push : Emit.ILGenerator -> unit) (callee : Emit.MethodBuilder) =
+            let method = runners.DefineMethod (name, staticAttributes, typeof<int>, operands)
+            let il = method.GetILGenerator ()
+            push il
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit (Emit.OpCodes.Call, callee)
+            il.Emit Emit.OpCodes.Ret
+
+        // A method that takes a value as a `through`, and passes it on to `Unless_<parameter>`.
+        let forwarder (through : Type) (parameter : Type) =
+            let method =
+                runners.DefineMethod (
+                    $"Forward_%s{through.Name}_%s{parameter.Name}",
+                    staticAttributes,
+                    typeof<int>,
+                    [| through ; typeof<int> ; typeof<int> |]
+                )
+
+            let il = method.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit Emit.OpCodes.Ldarg_2
+            il.Emit (Emit.OpCodes.Call, unless.[parameter])
+            il.Emit Emit.OpCodes.Ret
+            method
+
+        for parameter, _ in narrowParameters do
+            let viaInt32 = forwarder typeof<int32> parameter
+            let viaBoolean = forwarder typeof<bool> parameter
+
+            for i, constant in List.indexed narrowConstants do
+                let push (il : Emit.ILGenerator) = il.Emit (Emit.OpCodes.Ldc_I4, constant)
+                runner $"Pass_%s{parameter.Name}_%d{i}" push unless.[parameter]
+                runner $"ViaInt32_%s{parameter.Name}_%d{i}" push viaInt32
+                runner $"ViaBoolean_%s{parameter.Name}_%d{i}" push viaBoolean
+
+        for parameter in wideParameters do
+            for i, constant in List.indexed wideConstants do
+                runner
+                    $"Pass_%s{parameter.Name}_%d{i}"
+                    (fun il -> il.Emit (Emit.OpCodes.Ldc_I8, constant))
+                    unless.[parameter]
+
+        for i, constant in List.indexed narrowConstants do
+            let method =
+                runners.DefineMethod ($"Inline_%d{i}", staticAttributes, typeof<int>, operands)
+
+            let il = method.GetILGenerator ()
+            il.Emit (Emit.OpCodes.Ldc_I4, constant)
+            divideUnless il Emit.OpCodes.Ldarg_0 Emit.OpCodes.Ldarg_1
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a branch on an integer a caller passes as a constant goes the way the parameter's value decides`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateIntegerBranches ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Integers.dll") (new MemoryStream (image))
+
+        let divides (zero : bool) : Set<string> =
+            if zero then
+                Set.ofList [ dividesByZero ; overflows ]
+            else
+                Set.empty
+
+        let cases =
+            [
+                for parameter, isZero in narrowParameters do
+                    for i, constant in List.indexed narrowConstants do
+                        yield $"Pass_%s{parameter.Name}_%d{i}", divides (isZero constant), DispatchClaim.Precise
+                        yield $"ViaInt32_%s{parameter.Name}_%d{i}", divides (isZero constant), DispatchClaim.Precise
+
+                        // A `bool` holds the constant's low byte, which the parameter then holds.
+                        yield
+                            $"ViaBoolean_%s{parameter.Name}_%d{i}", divides (byte constant = 0uy), DispatchClaim.Precise
+                for parameter in wideParameters do
+                    for i, constant in List.indexed wideConstants do
+                        yield $"Pass_%s{parameter.Name}_%d{i}", divides (constant = 0L), DispatchClaim.Precise
+                for i, constant in List.indexed narrowConstants do
+                    yield $"Inline_%d{i}", divides (constant = 0), DispatchClaim.Precise
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Integers" image
+
+        let _, failures =
+            dispatchFailures fixture "Integers" runtime cases (analysisOver [ fixture ] id)
 
         match failures with
         | [] -> ()

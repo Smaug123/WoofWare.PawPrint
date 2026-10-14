@@ -607,7 +607,7 @@ module Scheduler =
          ||> Map.foldBack (fun tid ts acc ->
              match ts.Status with
              | ThreadStatus.BlockedInSyscall ->
-                 match UnixTaskState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
+                 match UnixThreadState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
                  | None ->
                      failwith
                          $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
@@ -627,7 +627,7 @@ module Scheduler =
             match Map.tryFind dispatcher state.ThreadState with
             | Some {
                        Status = ThreadStatus.Parked
-                   } when (UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks)).IsSome ->
+                   } when (UnixThreadState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks)).IsSome ->
                 Some dispatcher
             | Some _
             | None -> None

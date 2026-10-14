@@ -638,7 +638,7 @@ type ThreadState =
     member this.LiveFrameCount : int = this.MethodStates.Count
 
     /// The caller must also make sure the thread has a task in the kernel
-    /// (`UnixTaskLifecycle.spawn`, or the leader `EmulatedKernel.create`
+    /// (`UnixThreadLifecycle.spawn`, or the leader `EmulatedKernel.create`
     /// made), which is where its processor and OS thread id live. `ThreadState`
     /// cannot do that itself — `EmulatedKernel` is compiled after this file —
     /// and `EmulatedKernel.checkTaskInvariants` reports a thread without a

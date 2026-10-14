@@ -234,7 +234,7 @@ Option 2, in the order the plan set out.
    directories between parents. Coverage guard measured over eight runs (64, 64,
    65, 65, 67, 67, 71, 75 orphans seen); mutation-checked by removing
    `isOrphanedDirectory`'s root special case.
-3. Extended `docs/probes/chdir/chdir.py` with the recovery rows and re-measured
+3. Extended [`docs/probes/chdir/chdir.py`](https://github.com/Smaug123/WoofWare.PosixKernel/blob/a31630834a56ee717dede659a307c979fe83728e/docs/probes/chdir/chdir.py) with the recovery rows and re-measured
    both flavours. They agree: `chdir("..")` out of a removed directory recovers
    `getcwd`, and `chdir(".")` in one leaves it failing ENOENT both before and
    after.

@@ -1332,7 +1332,7 @@ module TestImpureCases =
                     state.Kernel.Tasks
                     |> Map.toList
                     |> List.choose (fun (thread, task) ->
-                        match UnixTaskState.park task |> Option.map (fun park -> park.Syscall) with
+                        match UnixThreadState.park task |> Option.map (fun park -> park.Syscall) with
                         | Some (ParkedSyscall.ConnectionRead _ as parked)
                         | Some (ParkedSyscall.ConnectionWrite _ as parked) -> Some (thread, parked)
                         | Some _
@@ -1434,7 +1434,7 @@ module TestImpureCases =
 
                     state.Kernel.Tasks
                     |> Map.forall (fun thread _ ->
-                        (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                        (UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
                     )
                     |> shouldEqual true
                 )
@@ -1466,7 +1466,7 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun _ task -> (UnixTaskState.park task).IsNone)
+                    |> Map.forall (fun _ task -> (UnixThreadState.park task).IsNone)
                     |> shouldEqual true
                 )
         }
@@ -1515,7 +1515,7 @@ module TestImpureCases =
     /// `SocketOptions.cs` under `platform`: TCP_NODELAY, IPV6_V6ONLY and
     /// SO_LINGER through the managed `Socket` API, which exits 0 for Linux's
     /// answers where the flavours disagree and 100 for Darwin's
-    /// (`docs/probes/sockopt-options/`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/sockopt-options`).
     let private socketOptionsCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "SocketOptions.cs"
@@ -1536,7 +1536,7 @@ module TestImpureCases =
     /// `SocketPeerName.cs` under `platform`: `getpeername(2)` through the
     /// managed `RemoteEndPoint` and by hand, which exits 0 for Linux's ENOTCONN
     /// on a refused socket and 100 for Darwin's EINVAL
-    /// (`docs/probes/getpeername/getpeername.c`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/blob/a31630834a56ee717dede659a307c979fe83728e/docs/probes/getpeername/getpeername.c`).
     let private socketPeerNameCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "SocketPeerName.cs"
@@ -1557,7 +1557,7 @@ module TestImpureCases =
     /// `SocketDualMode.cs` under `platform`: a dual-mode IPv6 socket talking
     /// to an IPv4 listener through the managed `Socket` API, which exits 0 for
     /// Linux's answers where the flavours disagree and 100 for Darwin's
-    /// (`docs/probes/dual-mode/`).
+    /// (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/dual-mode`).
     ///
     /// `new Socket(SocketType.Stream, ProtocolType.Tcp)` makes an IPv4 socket
     /// where `DOTNET_SYSTEM_NET_DISABLEIPV6` is set, so the case names it, and
@@ -1618,7 +1618,9 @@ module TestImpureCases =
     /// once it was disposed. Linux only: the guest names Linux's watcher, so it must run on the
     /// Linux CoreLib in `linuxFramework`, which the case checks it did; and only a Linux host's
     /// real runtime is an oracle for it, since a macOS one watches with FSEvents. Its names are
-    /// relative.
+    /// relative. On a busy machine the real runtime's watcher can raise the rename as Deleted and
+    /// Created rather than Renamed (the guest's header says why), and the guest accepts either; the
+    /// output checked here is PawPrint's, which must be Renamed.
     let private fileSystemWatcherLinuxCase (linuxFramework : string) : EndToEndTestCase =
         {
             FileName = "FileSystemWatcherLinux.cs"
@@ -2875,7 +2877,7 @@ module TestImpureCases =
                     Some (fun state ->
                         state.Kernel.Tasks
                         |> Map.forall (fun thread _ ->
-                            (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                            (UnixThreadState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
                         )
                         |> shouldEqual true
                     )
@@ -4955,7 +4957,7 @@ module TestImpureCases =
                     Some (fun state ->
                         SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        SignalState.threadsWithMasksToRestore state.Kernel.Signals
                         |> shouldEqual Set.empty
 
                         SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
@@ -4979,7 +4981,7 @@ module TestImpureCases =
                     Some (fun state ->
                         SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        SignalState.threadsWithMasksToRestore state.Kernel.Signals
                         |> shouldEqual Set.empty
 
                         SignalState.maskOf state.Kernel.Leader state.Kernel.Signals

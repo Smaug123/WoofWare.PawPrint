@@ -143,7 +143,7 @@ module NativeSystemNative =
 
     /// The OS thread id of the thread currently executing the native call.
     let private osThreadIdOf (_operation : string) (ctx : NativeCallContext) : OsThreadId =
-        UnixTaskState.osThreadId (EmulatedKernel.taskOf ctx.Thread ctx.State.Kernel.Tasks)
+        UnixThreadState.osThreadId (EmulatedKernel.taskOf ctx.Thread ctx.State.Kernel.Tasks)
 
     let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
@@ -606,10 +606,9 @@ module NativeSystemNative =
             // assert is compiled out and what remains is `(int)fd`.
             int value
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
-            // `IntPtr.Zero` can arrive spelled as the null managed pointer
-            // rather than as `Verbatim 0L`; the guest-level value is the
-            // integer zero either way, and zero is a legitimate descriptor
-            // number — fd 0 is stdin.
+            // The null managed pointer is the integer zero, though
+            // `NativeIntSource.ofManagedPointer` never builds a native int of
+            // that shape; zero is a legitimate descriptor number — fd 0 is stdin.
             0
         | CliType.Numeric (CliNumericType.NativeInt source) ->
             failwith
@@ -1103,10 +1102,7 @@ module NativeSystemNative =
             // the guest declared.
             CliValueType.WithFieldSetById field.Id (CliType.OfBytesLike field.Contents bytes) structure
 
-        let namePointer =
-            match name with
-            | ManagedPointerSource.Null -> NativeIntSource.Verbatim 0L
-            | pointer -> NativeIntSource.ManagedPointer pointer
+        let namePointer = NativeIntSource.ofManagedPointer name
 
         let structure =
             structure
@@ -3625,7 +3621,7 @@ module NativeSystemNative =
 
             state.MapKernel (EmulatedKernel.withDirectoryStreamFd block (int fd))
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer handle))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer handle))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -4098,7 +4094,7 @@ module NativeSystemNative =
             // the descriptor the guest passed cannot be trusted for that, since
             // numbers are reused as soon as they are freed and another thread
             // may have closed and reopened this one while this call slept.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _) ->
                 // Unreachable: a task parked in a socket wait is not running IL,
@@ -4616,7 +4612,7 @@ module NativeSystemNative =
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Accept`: the kernel finishes the read from the park,
             // into the buffer the call was made with.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.PipeRead _)
             | Some (ParkedSyscall.ConnectionRead _)
             | Some (ParkedSyscall.InotifyRead _) ->
@@ -5672,7 +5668,7 @@ module NativeSystemNative =
             // nothing from the guest's length cell, which the guest may have
             // written since: the shim screened and copied it before `accept4`
             // slept, and the park holds the copy.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.Accept parked) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -5705,7 +5701,7 @@ module NativeSystemNative =
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
                 failwith
-                    $"%s{operation}: thread %O{ctx.Thread} entered an accept while its task is parked in %A{UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+                    $"%s{operation}: thread %O{ctx.Thread} entered an accept while its task is parked in %A{UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             // The wrapper's own screens, which precede the descriptor lookup —
@@ -6229,7 +6225,7 @@ module NativeSystemNative =
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Read`: the kernel finishes the call from the park,
             // into the buffer it was made with.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.ConnectionRead _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -6401,7 +6397,7 @@ module NativeSystemNative =
 
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Write`, which finishes a send as it finishes a write.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -7067,7 +7063,7 @@ module NativeSystemNative =
                     ctx.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed destination)
-                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer pointer)))
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer pointer)))
 
             let stride = SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
 
@@ -7641,7 +7637,7 @@ module NativeSystemNative =
             // was entered through also drains the kqueue, which ends the wait).
             // So a re-entry consults no screen and no descriptor table: the
             // kernel finishes the call from the park.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.EpollWait _) ->
                 let outcome, system =
                     try
@@ -7978,7 +7974,7 @@ module NativeSystemNative =
             // the guest may have written since: the shim copied the array into
             // its own `struct pollfd`s before sleeping, so the call finishes on
             // what it was entered with.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.Poll parked) ->
                 if List.length parked.Entries <> int eventCount then
                     failwith
@@ -8031,7 +8027,7 @@ module NativeSystemNative =
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
                 failwith
-                    $"%s{operation}: thread %O{ctx.Thread} entered a poll while its task is parked in %A{UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+                    $"%s{operation}: thread %O{ctx.Thread} entered a poll while its task is parked in %A{UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             let system = state.Kernel.System
@@ -8267,7 +8263,7 @@ module NativeSystemNative =
             // `SystemNative_Read`. The kernel says how much more of the buffer
             // it takes now, and the rest is read from the guest only then, as a
             // real write copies it only as room appears.
-            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.PipeWrite _)
             | Some (ParkedSyscall.ConnectionWrite _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]

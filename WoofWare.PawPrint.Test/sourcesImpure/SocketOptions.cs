@@ -7,7 +7,7 @@ using System.Net.Sockets;
 // reach `SystemNative_SetSockOpt`, `SystemNative_GetSockOpt`,
 // `SystemNative_SetLingerOption` and `SystemNative_GetLingerOption`.
 //
-// Measured on Linux 6.18.5 and Darwin 27.0.0 (`docs/probes/sockopt-options/`).
+// Measured on Linux 6.18.5 and Darwin 27.0.0 (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/sockopt-options`).
 // The flavours disagree in seven places, and the exit code says which answered
 // all seven: 0 for Linux's answers, 100 for Darwin's, and the index of the first
 // other answer otherwise.

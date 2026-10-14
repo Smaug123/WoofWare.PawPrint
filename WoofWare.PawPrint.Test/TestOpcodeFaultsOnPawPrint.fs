@@ -32,27 +32,7 @@ module TestOpcodeFaultsOnPawPrint =
     /// disagreement. Each is parked until the interpreter is fixed. Every disagreement so far is a
     /// refusal: PawPrint stops the run where the host completes or raises, rather than raising
     /// something else. `parkedOn` folds these into every runtime's parks.
-    let private parkedEverywhere : Map<NullaryIlOp, string> =
-        // `CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer, which is what
-        // an element a C# array initialiser leaves at its default holds. `add`, `sub` and `mul`
-        // take that as 0; these refuse it.
-        let nullNativeIntZero =
-            "refuses a native int whose zero is a null managed pointer (CliType.zeroOfPrimitive), where the host computes with 0"
-
-        [
-            NullaryIlOp.Div, nullNativeIntZero
-            NullaryIlOp.Div_un, nullNativeIntZero
-            NullaryIlOp.Rem, nullNativeIntZero
-            NullaryIlOp.Rem_un, nullNativeIntZero
-            NullaryIlOp.And, nullNativeIntZero
-            NullaryIlOp.Or, nullNativeIntZero
-            NullaryIlOp.Xor, nullNativeIntZero
-            NullaryIlOp.Shl, nullNativeIntZero
-            NullaryIlOp.Shr, nullNativeIntZero
-            NullaryIlOp.Shr_un, nullNativeIntZero
-            NullaryIlOp.Mul_ovf_un, nullNativeIntZero
-        ]
-        |> Map.ofList
+    let private parkedEverywhere : Map<NullaryIlOp, string> = Map.empty
 
     /// The instructions parked on `runtime`, each with its disagreement.
     let private parkedOn (runtime : EmulatedRuntime) : Map<NullaryIlOp, string> =

@@ -4063,7 +4063,7 @@ public unsafe struct PointerWrapper
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handle))
 
     [<Test>]
-    let ``Stind_ref treats native-int-wrapped null managed pointer as managed null reference`` () : unit =
+    let ``Stind_ref through native int 0 raises NullReferenceException`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -4071,9 +4071,7 @@ public unsafe struct PointerWrapper
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
-                thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
             |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
 
         match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref with

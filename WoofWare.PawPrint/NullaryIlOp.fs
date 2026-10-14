@@ -779,8 +779,8 @@ module NullaryIlOp =
                 Error ()
             else
                 NativeIntSource.Verbatim (int64<uint64> (uint64<float> f)) |> Ok
-        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Ok
-        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ofManagedPointer ptr |> Ok
+        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L |> Ok
         | EvalStackValue.ObjectRef addr ->
             failwith $"Conv_ovf_u: refusing to convert object reference %O{addr} to unsigned native int"
         | EvalStackValue.UserDefinedValueType valueType ->
@@ -881,8 +881,8 @@ module NullaryIlOp =
                 Error ()
             else
                 NativeIntSource.Verbatim (int64<float> (Math.Truncate f)) |> Ok
-        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Ok
-        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ofManagedPointer ptr |> Ok
+        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L |> Ok
         | EvalStackValue.ObjectRef addr ->
             failwith $"Conv_ovf_i: refusing to convert object reference %O{addr} to signed native int"
         | EvalStackValue.UserDefinedValueType valueType ->
@@ -925,7 +925,7 @@ module NullaryIlOp =
         let fromManagedPointer (ptr : ManagedPointerSource) : Result<NativeIntSource, unit> =
             match ptr with
             | ManagedPointerSource.NativeIntPlaceholder bits when bits < 0L -> Error ()
-            | _ -> NativeIntSource.ManagedPointer ptr |> Ok
+            | _ -> NativeIntSource.ofManagedPointer ptr |> Ok
 
         match value with
         | EvalStackValue.Int32 int32Source ->
@@ -1035,7 +1035,7 @@ module NullaryIlOp =
             else
                 NativeIntSource.Verbatim (int64<float> (Math.Truncate f)) |> Ok
         | EvalStackValue.ManagedPointer ptr -> fromManagedPointer ptr
-        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | EvalStackValue.NullObjectRef -> NativeIntSource.Verbatim 0L |> Ok
         | EvalStackValue.ObjectRef addr ->
             failwith $"Conv_ovf_i_un: refusing to convert object reference %O{addr} to signed native int"
         | EvalStackValue.UserDefinedValueType valueType ->
@@ -1458,7 +1458,7 @@ module NullaryIlOp =
         | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
         | UnsignedNativeIntSource.FromManagedPointer ptr ->
             ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-            |> NativeIntSource.ManagedPointer
+            |> NativeIntSource.ofManagedPointer
         | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i -> NativeIntSource.SyntheticCrossArrayOffset i
         | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
 
@@ -2179,7 +2179,7 @@ module NullaryIlOp =
                 match converted with
                 | NativeIntSource.ManagedPointer ptr ->
                     ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                    |> NativeIntSource.ManagedPointer
+                    |> NativeIntSource.ofManagedPointer
                 | other -> other
 
             let state =
@@ -2627,7 +2627,7 @@ module NullaryIlOp =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr))
+                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer ptr))
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
@@ -2724,7 +2724,7 @@ module NullaryIlOp =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
                         ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                        |> NativeIntSource.ManagedPointer
+                        |> NativeIntSource.ofManagedPointer
                     | other -> other
 
                 state
@@ -2833,7 +2833,7 @@ module NullaryIlOp =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
                         ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                        |> NativeIntSource.ManagedPointer
+                        |> NativeIntSource.ofManagedPointer
                     | other -> other
 
                 state
@@ -2861,7 +2861,7 @@ module NullaryIlOp =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
                         ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                        |> NativeIntSource.ManagedPointer
+                        |> NativeIntSource.ofManagedPointer
                     | other -> other
 
                 state

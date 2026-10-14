@@ -400,7 +400,7 @@ module NativeLibc =
             // makes the syscall every time.
             let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
 
-            match gettid flavour (UnixTaskState.osThreadId (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)) with
+            match gettid flavour (UnixThreadState.osThreadId (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)) with
             | Some tid ->
                 state
                 |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 tid)) ctx.Thread
