@@ -107,9 +107,10 @@ method) may add more:
 * a synchronized method takes a monitor around its body as the JIT has it, by running
   `Monitor.Enter(lock, ref acquired)`, with `acquired` false, before the body and
   `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, and the answer has what those raise:
-  taking the monitor may allocate its sync block or wait and be interrupted, releasing it throws
-  `SynchronizationLockException` if the body has already released it, and either throws
-  `ArgumentNullException` for an instance method `call`ed on null. The lock is the receiver, of
+  releasing the monitor throws `SynchronizationLockException` if the body has already released
+  it, either throws `ArgumentNullException` for an instance method `call`ed on null, and taking a
+  contended monitor is "unknown", because it waits, and a wait may run the thread's
+  `SynchronizationContext.Wait`, which may do anything. The lock is the receiver, of
   the classes and nullness the caller passes, or for a static method its type's `RuntimeType`,
   which the JIT may look up with `RuntimeTypeHandle.GetRuntimeTypeFromHandle`.
 
