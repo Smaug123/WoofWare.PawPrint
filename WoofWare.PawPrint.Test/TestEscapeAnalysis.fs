@@ -5535,6 +5535,8 @@ public static class Runners
     ///     through the address the call passes before the call, by `stind.i1` or by `Clear`;
     ///   - `Runners.JoinedNonZero` and `Runners.JoinedMixed`: local 0 holds 1 where `a` is 1, and
     ///     otherwise 2 or 0;
+    ///   - `Runners.ClearedInFinally`: local 0, a `bool` holding 1, is set to 0 by the `finally`
+    ///     handler the `leave` before the `ldloca` runs;
     ///   - `Runners.ClearsFirst`, `Runners.CallsFirst`, `Runners.MayClearFirst` and
     ///     `Runners.Repointed`: local 0, a `bool`, holds 1, and the method called, before it loads
     ///     through its argument, stores 0 through it, passes it to `Clear`, stores 0 through it
@@ -5692,6 +5694,21 @@ public static class Runners
         joined "JoinedNonZero" Emit.OpCodes.Ldc_I4_2
         joined "JoinedMixed" Emit.OpCodes.Ldc_I4_0
 
+        runner
+            "ClearedInFinally"
+            typeof<bool>
+            (fun il ->
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Stloc_0
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                il.BeginFinallyBlock ()
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Stloc_0
+                il.EndExceptionBlock ()
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            )
+            unless.[typeof<bool>]
+
         let clearsFirst =
             callee
                 "ClearsFirstCallee"
@@ -5784,6 +5801,7 @@ public static class Runners
                 yield "Cleared", divides true, DispatchClaim.Precise
                 yield "JoinedNonZero", divides false, DispatchClaim.Precise
                 yield "JoinedMixed", divides true, DispatchClaim.Precise
+                yield "ClearedInFinally", divides true, DispatchClaim.Precise
                 yield "ClearsFirst", divides true, DispatchClaim.Precise
                 yield "CallsFirst", divides true, DispatchClaim.Precise
                 yield "MayClearFirst", divides true, DispatchClaim.Precise
