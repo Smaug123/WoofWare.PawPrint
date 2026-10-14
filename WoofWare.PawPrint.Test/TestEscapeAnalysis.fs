@@ -612,6 +612,23 @@ public static class ContextCases
 
     public static void PassesFalseToNegated() => DisposedUnless(false);
 
+    // `Monitor.Enter` throws if the `lockTaken` it is passed is already true, which the local a
+    // `lock` passes is not.
+    public static void Locks(object o) { lock (o) { } }
+
+    public static void EntersTaken(object o)
+    {
+        bool taken = true;
+        System.Threading.Monitor.Enter(o, ref taken);
+    }
+
+    // Each iteration passes the address of the same local, which an earlier iteration's callee
+    // could have handed to another thread, so what it holds when `Enter` reads it is not known.
+    public static void LocksInLoop(object o, int n)
+    {
+        for (var i = 0; i < n; i++) { lock (o) { } }
+    }
+
 }
 
 public sealed class Sealed
@@ -1183,6 +1200,15 @@ public static class SR
             }
             { expect "Fixture.ContextCases" "PassesFalseToNegated" with
                 Contains = [ "=System.ObjectDisposedException" ]
+            }
+            { expect "Fixture.ContextCases" "Locks" with
+                Excludes = [ "=System.ArgumentException" ]
+            }
+            { expect "Fixture.ContextCases" "EntersTaken" with
+                Contains = [ "=System.ArgumentException" ]
+            }
+            { expect "Fixture.ContextCases" "LocksInLoop" with
+                Contains = [ "=System.ArgumentException" ]
             }
         ]
 
@@ -5474,6 +5500,303 @@ public static class Runners
 
         let _, failures =
             dispatchFailures fixture "Integers" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// The `ldind` that loads a location of each integer type.
+    let private loadOf : (Type * Emit.OpCode) list =
+        [
+            typeof<bool>, Emit.OpCodes.Ldind_U1
+            typeof<sbyte>, Emit.OpCodes.Ldind_I1
+            typeof<byte>, Emit.OpCodes.Ldind_U1
+            typeof<int16>, Emit.OpCodes.Ldind_I2
+            typeof<uint16>, Emit.OpCodes.Ldind_U2
+            typeof<char>, Emit.OpCodes.Ldind_U2
+            typeof<int32>, Emit.OpCodes.Ldind_I4
+            typeof<uint32>, Emit.OpCodes.Ldind_U4
+            typeof<int64>, Emit.OpCodes.Ldind_I8
+            typeof<uint64>, Emit.OpCodes.Ldind_I8
+        ]
+
+    /// `int32` constants whose low byte is zero, though not all of them are.
+    let private lowByteZero : int32 list = [ 0 ; 0x100 ; 0x10000 ; Int32.MinValue ]
+
+    /// An image whose runners store to a local and pass its address to a method that branches on
+    /// what it loads through the address; each runner takes `(int a, int b)`, and the method computes
+    /// `a / b` only where the branch falls through:
+    ///   - `Runners.Local_<T>_<i>`: `ldc <constant i>; stloc.0; ldloca.s 0`, with local 0 a `T`,
+    ///     then `ldarg.0; ldarg.1; call Unless_<T>`, where `Unless_<T>(ref T p, int a, int b)` is
+    ///     `ldarg.0; ldind; brtrue L; a / b`;
+    ///   - `Runners.Narrowed_<i>`: the same with an `int` local holding `lowByteZero`'s constant i,
+    ///     passed to `Unless_Byte`, which loads the low byte;
+    ///   - `Runners.Stored` and `Runners.Cleared`: local 0, a `bool` holding 1, is set to 0
+    ///     through the address the call passes before the call, by `stind.i1` or by `Clear`;
+    ///   - `Runners.JoinedNonZero` and `Runners.JoinedMixed`: local 0 holds 1 where `a` is 1, and
+    ///     otherwise 2 or 0;
+    ///   - `Runners.ClearsFirst`, `Runners.CallsFirst`, `Runners.MayClearFirst` and
+    ///     `Runners.Repointed`: local 0, a `bool`, holds 1, and the method called, before it loads
+    ///     through its argument, stores 0 through it, passes it to `Clear`, stores 0 through it
+    ///     on one path of two, or points the argument at a local of its own holding 0.
+    let private fabricatePointees () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Pointees", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Pointees"
+
+        let runners =
+            modul.DefineType (
+                "Pointees.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let staticAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+        let operands = [| typeof<int> ; typeof<int> |]
+
+        // `brtrue` over the value on the stack, then `a / b` from arguments 1 and 2.
+        let divideUnless (il : Emit.ILGenerator) =
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit Emit.OpCodes.Ldarg_2
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+        // A method taking `(ref <pointee> p, int a, int b)`, whose body starts with `prepare`, then
+        // loads through `p` with `load` and branches on what it loads.
+        let callee (name : string) (pointee : Type) (load : Emit.OpCode) (prepare : Emit.ILGenerator -> unit) =
+            let method =
+                runners.DefineMethod (
+                    name,
+                    staticAttributes,
+                    typeof<int>,
+                    [| pointee.MakeByRefType () ; typeof<int> ; typeof<int> |]
+                )
+
+            let il = method.GetILGenerator ()
+            prepare il
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit load
+            divideUnless il
+            method
+
+        let unless =
+            [
+                for pointee, load in loadOf do
+                    pointee, callee $"Unless_%s{pointee.Name}" pointee load ignore
+            ]
+            |> dict
+
+        let clear =
+            let method =
+                runners.DefineMethod ("Clear", staticAttributes, typeof<Void>, [| typeof<bool>.MakeByRefType () |])
+
+            let il = method.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Stind_I1
+            il.Emit Emit.OpCodes.Ret
+            method
+
+        // A runner with one local, of type `local`, whose body starts with `prepare`, which leaves
+        // an address on the stack, then passes that and its operands to `target`.
+        let runner (name : string) (local : Type) (prepare : Emit.ILGenerator -> unit) (target : Emit.MethodBuilder) =
+            let method = runners.DefineMethod (name, staticAttributes, typeof<int>, operands)
+            let il = method.GetILGenerator ()
+            il.DeclareLocal local |> ignore<Emit.LocalBuilder>
+            prepare il
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit (Emit.OpCodes.Call, target)
+            il.Emit Emit.OpCodes.Ret
+
+        let storeThenAddress (push : Emit.ILGenerator -> unit) (il : Emit.ILGenerator) =
+            push il
+            il.Emit Emit.OpCodes.Stloc_0
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+
+        let holdsOne = storeThenAddress (fun il -> il.Emit Emit.OpCodes.Ldc_I4_1)
+
+        for parameter, _ in narrowParameters do
+            for i, constant in List.indexed narrowConstants do
+                runner
+                    $"Local_%s{parameter.Name}_%d{i}"
+                    parameter
+                    (storeThenAddress (fun il -> il.Emit (Emit.OpCodes.Ldc_I4, constant)))
+                    unless.[parameter]
+
+        for parameter in wideParameters do
+            for i, constant in List.indexed wideConstants do
+                runner
+                    $"Local_%s{parameter.Name}_%d{i}"
+                    parameter
+                    (storeThenAddress (fun il -> il.Emit (Emit.OpCodes.Ldc_I8, constant)))
+                    unless.[parameter]
+
+        for i, constant in List.indexed lowByteZero do
+            runner
+                $"Narrowed_%d{i}"
+                typeof<int>
+                (storeThenAddress (fun il -> il.Emit (Emit.OpCodes.Ldc_I4, constant)))
+                unless.[typeof<byte>]
+
+        runner
+            "Stored"
+            typeof<bool>
+            (fun il ->
+                holdsOne il
+                il.Emit Emit.OpCodes.Dup
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Stind_I1
+            )
+            unless.[typeof<bool>]
+
+        runner
+            "Cleared"
+            typeof<bool>
+            (fun il ->
+                holdsOne il
+                il.Emit Emit.OpCodes.Dup
+                il.Emit (Emit.OpCodes.Call, clear)
+            )
+            unless.[typeof<bool>]
+
+        let joined (name : string) (otherwise : Emit.OpCode) =
+            runner
+                name
+                typeof<bool>
+                (fun il ->
+                    let one = il.DefineLabel ()
+                    let join = il.DefineLabel ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit Emit.OpCodes.Ldc_I4_1
+                    il.Emit (Emit.OpCodes.Beq, one)
+                    il.Emit otherwise
+                    il.Emit Emit.OpCodes.Stloc_0
+                    il.Emit (Emit.OpCodes.Br, join)
+                    il.MarkLabel one
+                    il.Emit Emit.OpCodes.Ldc_I4_1
+                    il.Emit Emit.OpCodes.Stloc_0
+                    il.MarkLabel join
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                )
+                unless.[typeof<bool>]
+
+        joined "JoinedNonZero" Emit.OpCodes.Ldc_I4_2
+        joined "JoinedMixed" Emit.OpCodes.Ldc_I4_0
+
+        let clearsFirst =
+            callee
+                "ClearsFirstCallee"
+                typeof<bool>
+                Emit.OpCodes.Ldind_U1
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                    il.Emit Emit.OpCodes.Stind_I1
+                )
+
+        let callsFirst =
+            callee
+                "CallsFirstCallee"
+                typeof<bool>
+                Emit.OpCodes.Ldind_U1
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Call, clear)
+                )
+
+        // Every operand `a` is nonzero, so the store runs.
+        let mayClearFirst =
+            callee
+                "MayClearFirstCallee"
+                typeof<bool>
+                Emit.OpCodes.Ldind_U1
+                (fun il ->
+                    let load = il.DefineLabel ()
+                    il.Emit Emit.OpCodes.Ldarg_1
+                    il.Emit (Emit.OpCodes.Brfalse, load)
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                    il.Emit Emit.OpCodes.Stind_I1
+                    il.MarkLabel load
+                )
+
+        let repointed =
+            callee
+                "RepointedCallee"
+                typeof<bool>
+                Emit.OpCodes.Ldind_U1
+                (fun il ->
+                    il.DeclareLocal typeof<bool> |> ignore<Emit.LocalBuilder>
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                    il.Emit Emit.OpCodes.Stloc_0
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                    il.Emit (Emit.OpCodes.Starg_S, 0uy)
+                )
+
+        runner "ClearsFirst" typeof<bool> holdsOne clearsFirst
+        runner "CallsFirst" typeof<bool> holdsOne callsFirst
+        runner "MayClearFirst" typeof<bool> holdsOne mayClearFirst
+        runner "Repointed" typeof<bool> holdsOne repointed
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a branch on what a method loads through the address of its caller's local goes the way the local decides``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricatePointees ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Pointees.dll") (new MemoryStream (image))
+
+        let divides (zero : bool) : Set<string> =
+            if zero then
+                Set.ofList [ dividesByZero ; overflows ]
+            else
+                Set.empty
+
+        let cases =
+            [
+                for parameter, isZero in narrowParameters do
+                    for i, constant in List.indexed narrowConstants do
+                        yield $"Local_%s{parameter.Name}_%d{i}", divides (isZero constant), DispatchClaim.Precise
+                for parameter in wideParameters do
+                    for i, constant in List.indexed wideConstants do
+                        yield $"Local_%s{parameter.Name}_%d{i}", divides (constant = 0L), DispatchClaim.Precise
+                for i, _ in List.indexed lowByteZero do
+                    yield $"Narrowed_%d{i}", divides true, DispatchClaim.Precise
+                yield "Stored", divides true, DispatchClaim.Precise
+                yield "Cleared", divides true, DispatchClaim.Precise
+                yield "JoinedNonZero", divides false, DispatchClaim.Precise
+                yield "JoinedMixed", divides true, DispatchClaim.Precise
+                yield "ClearsFirst", divides true, DispatchClaim.Precise
+                yield "CallsFirst", divides true, DispatchClaim.Precise
+                yield "MayClearFirst", divides true, DispatchClaim.Precise
+                yield "Repointed", divides true, DispatchClaim.Precise
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Pointees" image
+
+        let _, failures =
+            dispatchFailures fixture "Pointees" runtime cases (analysisOver [ fixture ] id)
 
         match failures with
         | [] -> ()
