@@ -28,7 +28,7 @@ alternatives, which is why this slice is the one:
 
 ## Measured, on both kernels
 
-`docs/probes/chdir/` holds the probe and both columns. **They are identical on
+[`docs/probes/chdir/`](https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/chdir) holds the probe and both columns. **They are identical on
 every row.** `chdir` is the first filesystem syscall in this workstream with no
 flavour divergence, and the rows cover the whole arm space — object type,
 final-symlink following, trailing separator, which permission bit, name length,

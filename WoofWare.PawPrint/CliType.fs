@@ -4987,10 +4987,7 @@ module CliType =
             {
                 Id = FieldId.metadata intPtrHandle valueField.Handle valueField.Name
                 Name = valueField.Name
-                Contents =
-                    CliType.Numeric (
-                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-                    )
+                Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                 Offset = None
                 Type = intPtrHandle
                 MarshallingDescriptor = valueField.MarshallingDescriptor
@@ -5015,10 +5012,7 @@ module CliType =
             {
                 Id = FieldId.metadata uintPtrHandle valueField.Handle valueField.Name
                 Name = valueField.Name
-                Contents =
-                    CliType.Numeric (
-                        CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-                    )
+                Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
                 Offset = None
                 Type = uintPtrHandle
                 MarshallingDescriptor = valueField.MarshallingDescriptor

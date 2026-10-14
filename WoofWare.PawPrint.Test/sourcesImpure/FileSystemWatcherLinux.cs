@@ -8,7 +8,8 @@ using System.Threading;
 // A FileSystemWatcher over the directory w, on the Linux CoreLib, whose watcher
 // is inotify (FileSystemWatcher.Linux.cs): the guest creates, writes, renames
 // and deletes a file in w, and checks that the watcher raises Created, Changed,
-// Renamed and Deleted for them, in that order and nothing else. Each event is
+// Renamed and Deleted for them, in that order and nothing else, except that the
+// rename may instead be raised as Deleted and Created (below). Each event is
 // printed as it is checked.
 //
 // Every operation is one syscall that queues the records of one event under the
@@ -20,8 +21,20 @@ using System.Threading;
 // - File.Move to a name that does not exist is rename(2): IN_MOVED_FROM and
 //   IN_MOVED_TO with one cookie, which the watcher pairs into Renamed.
 // - File.Delete is unlink(2): IN_DELETE.
-// The guest waits for each event before making the next change, so what the
-// watcher raises does not depend on when its thread reads.
+// The guest waits for each event before making the next change, so the events
+// of one change are never coalesced with those of another.
+//
+// The rename's two records are queued one after the other, not at once, and a
+// watcher thread blocked in read(2) can wake and read IN_MOVED_FROM alone. The
+// watcher then polls the descriptor for 2 ms, and if IN_MOVED_TO has not been
+// queued by then it raises Deleted for the old name, and Created for the new
+// one once IN_MOVED_TO arrives (FileSystemWatcher.Linux.cs, ProcessEvent). On
+// Linux 6.18 (measured), a reader blocked in read(2) saw IN_MOVED_FROM alone for
+// 21 to 31 renames in 20000, and with the CPUs oversubscribed IN_MOVED_TO came
+// up to 5.5 ms later, so on a busy machine the real runtime now and again raises
+// Deleted and Created. The guest accepts either form. PawPrint's kernel queues
+// both records within the rename's one step, and TestImpureCases checks that
+// PawPrint raises Renamed.
 //
 // The events are raised on the watcher's own thread, which blocks in read(2) on
 // the inotify descriptor. Each wait is bounded by a count of bounded waits, not
@@ -196,11 +209,27 @@ class Program
         if (failed != 0) return failed;
 
         File.Move("w/a", "w/b");
-        failed = Expect(2, "Renamed a b", 7, 8);
-        if (failed != 0) return failed;
+        if (!AwaitEvent(2)) return 7;
+        int next;
+        if (EventAt(2) == "Renamed a b")
+        {
+            Console.WriteLine("Renamed a b");
+            next = 3;
+        }
+        else if (EventAt(2) == "Deleted a")
+        {
+            Console.WriteLine("Deleted a");
+            failed = Expect(3, "Created b", 9, 10);
+            if (failed != 0) return failed;
+            next = 4;
+        }
+        else
+        {
+            return 8;
+        }
 
         File.Delete("w/b");
-        failed = Expect(3, "Deleted b", 9, 10);
+        failed = Expect(next, "Deleted b", 11, 12);
         if (failed != 0) return failed;
 
         watcher.Dispose();
@@ -212,10 +241,10 @@ class Program
             closed = IsClosed(inotify);
         }
 
-        if (!closed) return 11;
+        if (!closed) return 13;
 
-        // Nothing raised beyond the four, now that the watcher thread has ended.
-        if (EventCount() != 4) return 12;
+        // Nothing raised beyond those checked, now that the watcher thread has ended.
+        if (EventCount() != next + 1) return 14;
 
         return 0;
     }

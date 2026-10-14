@@ -95,10 +95,8 @@ namespace NativeIntBitwiseNotTest
                 return 13;
             }
 
-            // `UIntPtr.Zero` reaches the eval stack as a null managed pointer rather than
-            // as a verbatim integer, but PawPrint models null as exactly the bit pattern 0,
-            // so complementing it is an ordinary all-ones integer and still composes with
-            // the masking arms below.
+            // Complementing `UIntPtr.Zero` is an ordinary all-ones integer, and still
+            // composes with the masking arms below.
             nuint zeroPtr = UIntPtr.Zero;
 
             if (~zeroPtr == 0)

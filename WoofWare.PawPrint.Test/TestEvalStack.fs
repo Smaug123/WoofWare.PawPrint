@@ -450,14 +450,10 @@ module TestEvalStack =
 
     [<Test>]
     let ``unsigned comparisons treat ManagedPointer Null as zero against Verbatim`` () : unit =
-        // `IntPtr.Zero` / `UIntPtr.Zero` are `[Intrinsic]` static fields with no IL
-        // initialiser. `cliTypeZeroOf` populates their slots with
-        // `NativeIntSource.ManagedPointer ManagedPointerSource.Null`, which represents the
-        // value 0 but in a different shape from `Verbatim 0L`. The C# pattern
-        // `if (IntPtr.Zero != default(IntPtr))` lowers (in Debug mode) to
-        // `ldsfld; ldc.i4.0; conv.i; cgt.un`, so `cgtUn` must relate
-        // `ManagedPointer Null` and `Verbatim 0L` correctly. `clt.un` / `cge.un` / `cle.un`
-        // must answer symmetrically.
+        // `ManagedPointer Null` is the value 0 in a different shape from `Verbatim 0L`.
+        // `NativeIntSource.ofManagedPointer` never builds a native int of that shape, but
+        // while `cgtUn` keeps an arm for it, the arm must relate the two correctly.
+        // `clt.un` / `cge.un` / `cle.un` must answer symmetrically.
         let nullPtr =
             EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
 
@@ -595,10 +591,8 @@ module TestEvalStack =
 
     [<Test>]
     let ``signed comparisons treat ManagedPointer Null as zero against an int32 and a Verbatim`` () : unit =
-        // A zero-initialised `nint` local, field or `IntPtr.Zero` is planted as
-        // `NativeIntSource.ManagedPointer ManagedPointerSource.Null` (see `CliType.zeroOfPrimitive`),
-        // so `ldloc` of an untouched `nint` local reaches `clt`/`cgt`/`ceq` in that shape rather
-        // than as `Verbatim 0L`. It is the value 0 under signed comparison too.
+        // `NativeIntSource.ofManagedPointer` never builds a native int of this shape, but
+        // while the comparisons keep an arm for it, it is the value 0 under signed comparison.
         let nullPtr =
             EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
 

@@ -226,7 +226,7 @@
           pkgs.xmlstarlet
           pkgs.claude-code
           pkgs.codex
-          # `docs/probes/**/*.py` are run by hand from this shell, and
+          # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
           # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
           pkgs.python3
         ];

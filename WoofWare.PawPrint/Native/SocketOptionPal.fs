@@ -174,7 +174,7 @@ module SocketOptionPal =
     /// outside 0 to this. Elsewhere the smaller of Winsock's 65535 and the
     /// largest `int`; on Darwin, 32767 over `sysconf(_SC_CLK_TCK)`, so that the
     /// time in hundredths fits Darwin's sixteen bits. `_SC_CLK_TCK` measured
-    /// 100 on both (`docs/probes/sockopt-options/`).
+    /// 100 on both (`https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/sockopt-options`).
     let maxLingerSeconds (platform : SimulatedUnixPlatform) : int =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux -> 65535

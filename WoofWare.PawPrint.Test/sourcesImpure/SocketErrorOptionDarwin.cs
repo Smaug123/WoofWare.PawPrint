@@ -5,7 +5,7 @@ using System.Threading;
 // `SystemNative_GetSocketErrorOption` under the Darwin flavour: the shim's
 // `getsockopt(SOL_SOCKET, SO_ERROR)` through its own stack buffers, with the
 // error it reads converted to the PAL's numbering. Measured on Darwin 27.0.0
-// with docs/probes/so-error/.
+// with https://github.com/Smaug123/WoofWare.PosixKernel/tree/a31630834a56ee717dede659a307c979fe83728e/docs/probes/so-error.
 //
 //   * a pending refusal reads as ECONNREFUSED once, and the read takes it;
 //   * a connect answers EISCONN before the read and after it alike, wherever

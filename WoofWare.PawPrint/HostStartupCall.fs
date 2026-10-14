@@ -94,7 +94,7 @@ module HostStartupCall =
                 NativeMemoryPool.writeCell
                     blockId
                     (i * PointerSize)
-                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer target)))
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer target)))
                     pool
             )
 

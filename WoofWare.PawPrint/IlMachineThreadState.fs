@@ -388,7 +388,9 @@ module IlMachineThreadState =
         // Guest-visible, so it takes the first slot in the CPU rotation, which is
         // the processor the kernel put the leader on.
         let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
-        let leaderCpu = UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+
+        let leaderCpu =
+            UnixThreadState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
 
         if cpu <> leaderCpu then
             failwith
@@ -414,7 +416,7 @@ module IlMachineThreadState =
         =
         let answer =
             try
-                UnixTaskLifecycle.spawn parent thread cpu kernel.System
+                UnixThreadLifecycle.spawn parent thread cpu kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"%O{parent} creating %O{thread}: the kernel refused clone" e
 

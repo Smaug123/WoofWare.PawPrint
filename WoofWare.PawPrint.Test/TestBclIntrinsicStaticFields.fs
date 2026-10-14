@@ -27,13 +27,9 @@ module TestBclIntrinsicStaticFields =
     /// - `System.IntPtr::Zero` and `System.UIntPtr::Zero` — declared without an initialiser.
     ///   The JIT recognises these via `CORINFO_FIELD_INTRINSIC_ZERO` and synthesises a zero
     ///   load. PawPrint reads the static slot literally, and `CliType.zeroOfPrimitive`
-    ///   populates the slot with `NativeIntSource.ManagedPointer Null` (an isomorphic but
-    ///   distinct representation of nint zero). The comparison operators bridge the two
-    ///   representations of zero: `EvalStackValueComparisons.cgtUn`/`cltUn` carry explicit
-    ///   `Verbatim 0L` vs `ManagedPointer Null` arms (0 is the unsigned minimum), and
-    ///   `equalsForCli` relates them via `isZero`, so the simple C# `zero != default(IntPtr)`
-    ///   behaves correctly. The `IntPtrZero.cs` / `UIntPtrZero.cs` pure tests pin this
-    ///   contract and pass.
+    ///   populates the slot with `NativeIntSource.Verbatim 0L`, so the simple C#
+    ///   `zero != default(IntPtr)` behaves correctly. The `IntPtrZero.cs` / `UIntPtrZero.cs`
+    ///   pure tests pin this contract and pass.
     /// - `System.BitConverter::IsLittleEndian` — declared `= true` in the `!BIGENDIAN` build
     ///   (the only flavour PawPrint executes against). The normal `.cctor` populates it; the
     ///   `BitConverterIsLittleEndian.cs` pure test passes end-to-end. The `BIGENDIAN` build

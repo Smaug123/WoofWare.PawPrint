@@ -465,3 +465,48 @@ module TestNativeIntSource =
                 (Gen.zip genSyntheticCrossArrayOffset genSyntheticCrossArrayOffset |> Arb.fromGen)
                 (fun (a, b) -> property a b)
         )
+
+    /// The whole 64-bit range, which the default generator reaches only sparsely at its extremes.
+    let private genBits : Gen<int64> =
+        Gen.frequency
+            [
+                4, ArbMap.defaults |> ArbMap.generate<int64>
+                1, Gen.elements [ 0L ; 1L ; -1L ; System.Int64.MinValue ; System.Int64.MaxValue ]
+            ]
+
+    [<Test>]
+    let ``ofManagedPointer holds a bit-pattern pointer as its bits`` () : unit =
+        let property (bits : int64) : unit =
+            NativeIntSource.ofManagedPointer (ManagedPointerSource.ofBitPattern bits)
+            |> shouldEqual (NativeIntSource.Verbatim bits)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genBits) property)
+
+    [<Test>]
+    let ``ofManagedPointer keeps a pointer into storage`` () : unit =
+        let pointer =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 7, 2)
+                    Projections = []
+                }
+
+        NativeIntSource.ofManagedPointer pointer
+        |> shouldEqual (NativeIntSource.ManagedPointer pointer)
+
+    [<Test>]
+    let ``Push' rejects a native int holding a pointer of known bits`` () : unit =
+        let property (bits : int64) : unit =
+            let pointer = ManagedPointerSource.ofBitPattern bits
+
+            for illegal in
+                [
+                    EvalStackValue.NativeInt (NativeIntSource.ManagedPointer pointer)
+                    EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer pointer, true))
+                ] do
+                let ex =
+                    Assert.Throws<System.Exception> (fun () -> EvalStack.Push' illegal EvalStack.Empty |> ignore)
+
+                ex.Message |> shouldContainText "eval-stack invariant violated"
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genBits) property)

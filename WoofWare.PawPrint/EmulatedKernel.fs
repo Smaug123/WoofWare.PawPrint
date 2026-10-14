@@ -582,7 +582,7 @@ type EmulatedKernel =
         /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
         /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
         ///
-        /// Held here rather than on `UnixTaskState` because errno is libc's slot,
+        /// Held here rather than on `UnixThreadState` because errno is libc's slot,
         /// not the kernel's, and because this one is not only errno: CoreCLR reuses
         /// it for Windows last-error too, and `NativeWaitHandle` really does put
         /// Win32 numbers in it.
@@ -726,8 +726,8 @@ type EmulatedKernel =
     ///
     /// Exactly the live threads: `checkTaskInvariants` reports a thread with
     /// no task or a task with no thread. An absent key is therefore a bug
-    /// rather than a default, which is what lets `UnixTaskState` be total.
-    member this.Tasks : Map<ThreadId, UnixTaskState> = UnixSystem.tasks this.System
+    /// rather than a default, which is what lets `UnixThreadState` be total.
+    member this.Tasks : Map<ThreadId, UnixThreadState> = UnixSystem.threads this.System
 
     /// The process's first task: always `ThreadId 0`, the thread
     /// `IlMachineState.addThread` runs `Main` on. See `UnixSystem.leader`.
@@ -866,16 +866,16 @@ module EmulatedKernel =
         UnixPathResolution.currentDirectoryPath kernel.System
 
     /// The task that is `thread`, out of `tasks` (`EmulatedKernel.Tasks`),
-    /// for `UnixTaskState`'s readers to read.
+    /// for `UnixThreadState`'s readers to read.
     ///
     /// Fails loudly for a thread with no task. Every thread that has an OS
     /// thread has one (`checkTaskInvariants`), and a thread runs, makes a
     /// syscall or is asked about only while it has one, so a missing task is
     /// an interpreter bug rather than anything the guest did.
-    let taskOf (thread : ThreadId) (tasks : Map<ThreadId, UnixTaskState>) : UnixTaskState =
+    let taskOf (thread : ThreadId) (tasks : Map<ThreadId, UnixThreadState>) : UnixThreadState =
         // `TryGetValue` rather than `Map.tryFind`, whose option the driver would allocate on
         // every tick (`dispatch`).
-        let mutable task = Unchecked.defaultof<UnixTaskState>
+        let mutable task = Unchecked.defaultof<UnixThreadState>
 
         if tasks.TryGetValue (thread, &task) then
             task
@@ -1622,7 +1622,7 @@ module EmulatedKernel =
         }
 
 
-    /// `UnixTaskLifecycle.exitThread` through this kernel: `thread` has finished,
+    /// `UnixThreadLifecycle.exitThread` through this kernel: `thread` has finished,
     /// so its task leaves the kernel, taking its signal mask and the signals
     /// pending on it alone.
     ///
@@ -1637,7 +1637,7 @@ module EmulatedKernel =
         // read, and that is refused below.
         let outcome =
             try
-                UnixTaskLifecycle.exitThread thread 0 kernel.System
+                UnixThreadLifecycle.exitThread thread 0 kernel.System
             with
             | :? UnmodelledException
             | :? System.InvalidOperationException as e -> KernelRefusal.fail "EmulatedKernel.exitThread" e
@@ -1649,7 +1649,7 @@ module EmulatedKernel =
                 $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
 
     /// `thread` is about to run an instruction: `UnixScheduling.dispatch` of its task
-    /// to the processor its task is on (`UnixTaskState.Cpu`), which displaces whichever
+    /// to the processor its task is on (`UnixThreadState.Cpu`), which displaces whichever
     /// task that processor ran, in this process or another on the machine. PawPrint
     /// never migrates a thread, so the processor is always the one its thread was
     /// placed on (`cpuForRotation`).
@@ -1657,7 +1657,7 @@ module EmulatedKernel =
     /// Answers `kernel` itself when `thread` is already running there, which is every
     /// step of a thread after its first but the steps after a park or a displacement.
     let dispatch (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
-        let cpu = UnixTaskState.cpu (taskOf thread kernel.Tasks)
+        let cpu = UnixThreadState.cpu (taskOf thread kernel.Tasks)
         let system = UnixScheduling.dispatch thread cpu kernel.System
 
         if obj.ReferenceEquals (system, kernel.System) then
@@ -1667,7 +1667,7 @@ module EmulatedKernel =
                 System = system
             }
 
-    /// `UnixTaskLifecycle.exitGroup` through this kernel: `thread` calls
+    /// `UnixThreadLifecycle.exitGroup` through this kernel: `thread` calls
     /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process
     /// ends. The answer is the process's end (`EndedProcess`), whose
     /// `EndedProcess.termination` is how it ended; the kernel is left as it stood.
@@ -1681,7 +1681,7 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : EndedProcess<ThreadId, NativeSignalHandler>
         =
-        UnixTaskLifecycle.exitGroup thread status kernel.System
+        UnixThreadLifecycle.exitGroup thread status kernel.System
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
@@ -1767,7 +1767,7 @@ module EmulatedKernel =
         // The comparison is the library's; naming the two failures is this
         // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.
         let missing, extra =
-            UnixTaskTable.reconcile (liveThreads |> Map.toSeq |> Seq.map fst |> Set.ofSeq) kernel.Tasks
+            UnixThreadTable.reconcile (liveThreads |> Map.toSeq |> Seq.map fst |> Set.ofSeq) kernel.Tasks
 
         // The park record and the park status, which are written together and
         // must be cleared together. Stated as an implication plus a bound rather
@@ -1785,7 +1785,7 @@ module EmulatedKernel =
             |> List.collect (fun (thread, status) ->
                 let recorded =
                     match Map.tryFind thread kernel.Tasks with
-                    | Some task -> UnixTaskState.park task
+                    | Some task -> UnixThreadState.park task
                     | None -> None
 
                 match status, recorded with
@@ -1828,7 +1828,7 @@ module EmulatedKernel =
             | None -> []
 
         let frames =
-            SignalState.tasksWithFrames kernel.Signals
+            SignalState.threadsWithFrames kernel.Signals
             |> Set.toList
             |> List.map EmulatedKernelDefect.HandlerFramesBetweenInstructions
 
