@@ -1618,7 +1618,9 @@ module TestImpureCases =
     /// once it was disposed. Linux only: the guest names Linux's watcher, so it must run on the
     /// Linux CoreLib in `linuxFramework`, which the case checks it did; and only a Linux host's
     /// real runtime is an oracle for it, since a macOS one watches with FSEvents. Its names are
-    /// relative.
+    /// relative. On a busy machine the real runtime's watcher can raise the rename as Deleted and
+    /// Created rather than Renamed (the guest's header says why), and the guest accepts either; the
+    /// output checked here is PawPrint's, which must be Renamed.
     let private fileSystemWatcherLinuxCase (linuxFramework : string) : EndToEndTestCase =
         {
             FileName = "FileSystemWatcherLinux.cs"
