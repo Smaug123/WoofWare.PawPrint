@@ -336,6 +336,9 @@ module internal ProgramStartup =
             | Some c -> c
             | None -> failwith "Expected base class types to be available at this point"
 
+        let state =
+            IlMachineState.seedManagedThreadId loggerFactory baseClassTypes mainThread state
+
         // Now that we have base class types, concretize the main method for use in the rest of the function
         let state, concretizedMainMethod, mainTypeHandle =
             let rawMainMethod =

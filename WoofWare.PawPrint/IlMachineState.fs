@@ -255,6 +255,8 @@ module IlMachineState =
 
     let getCurrentManagedThreadId = IlMachineRuntimeMetadata.getCurrentManagedThreadId
 
+    let seedManagedThreadId = IlMachineRuntimeMetadata.seedManagedThreadId
+
     let synthesizeTypeInitializationException =
         IlMachineRuntimeMetadata.synthesizeTypeInitializationException
 

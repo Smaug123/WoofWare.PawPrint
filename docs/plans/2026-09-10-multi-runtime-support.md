@@ -1,6 +1,6 @@
 # Plan: support multiple emulated runtimes in one PawPrint
 
-Status: **stages 1–5 landed; stage 6 designed below and being split into PRs.** Companion to `2026-09-09-net11-spike.md`, which measured
+Status: **stages 1–6 landed; stage 7 under way.** Companion to `2026-09-09-net11-spike.md`, which measured
 what a .NET 11 upgrade costs; this plan restructures PawPrint so that upgrade — and every
 future one — lands incrementally on `main`, and so that one PawPrint build can run guests
 against more than one .NET major version.
@@ -663,11 +663,11 @@ mutation-testing skill applies to each table/classifier they introduce.
    Then **net11 arrives**, in five PRs. The shape classifications decide from the loaded image,
    not from a version key, so their net11 arms land ahead of the `Net11` case, each checked
    against the real RC1 CoreLib that P6a puts in the devshell:
-   * **P6a, the pins.** The net11 entry of `runtimes` in `flake.nix` (RC1's runtime, source and
+   * **(landed, #1924) P6a, the pins.** The net11 entry of `runtimes` in `flake.nix` (RC1's runtime, source and
      linux-x64 pack), the per-runtime `runtime-version-pin-<runtime>` checks, the combined
      devshell, and the per-runtime environment variables, read only through `FrameworkUnderTest`
      (`TestFrameworkLocatorRatchet` enforces it). Behaviour-identical on net10.
-   * **P6b–d, the startup arms**, one PR each, with their readers and writers:
+   * **(landed, #1927, #1928, #1929) P6b–d, the startup arms**, one PR each, with their readers and writers:
      `SetupShape.FourArg` reading its out-slot back; the stub layout's bare-handle arm; and the
      delegate layout's net11 arm, whose multicast reader must unwrap the invocation list's
      `Wrapper` elements as well as read renamed fields.
@@ -702,14 +702,14 @@ mutation-testing skill applies to each table/classifier they introduce.
      the binding fields. `methodDescOf` and the multicast stub match on that description.
    * **P6e, the switch-on**, in two PRs, since the net11 leg measured about 930 failures on
      2026-10-14 (about 800 of them the thin lock) and their parks would swamp the rest.
-     * **P6e-1, the case.** The `Net11` case and pin; the `NativeDispatch` composition decided
+     * **(landed, #1932) P6e-1, the case.** The `Net11` case and pin; the `NativeDispatch` composition decided
        against the real image, which is net10's handlers less `NativeMonitor`, whose four
        InternalCalls RC1's `Monitor` no longer declares; `FrameworkUnderTest` locating net11's
        framework, with its ASP.NET Core, which the devshell now carries; and
        `requireNet11CoreLibPath` folded into `requireCoreLibPathOf`, so each shape fixture checks
        every supported runtime's image on every leg. CI keeps the net10 leg alone, and the
        `Guest` tables give `Net11` net10's parks until P6e-2 measures its own.
-     * **P6e-2, the leg.** The CI matrix leg, and every residual net11 failure parked through P4,
+     * **(landed, #1934) P6e-2, the leg.** The CI matrix leg, and every residual net11 failure parked through P4,
        one reason per cause: the shared ones in `Net11Frontier` (the thin lock alone parks about
        800 tests), with `Net11Frontier.park` for a test outside the `Guest` tables. Parking
        exercised parts of the harness that net10 never had: a parked seeded, environment or
@@ -743,9 +743,12 @@ mutation-testing skill applies to each table/classifier they introduce.
      `ThreadNative_SetWaitSleepJoinState`;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
-   * the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which RC1's
-     `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read, so it accounts
-     for the `LockHeldByOtherThread.cs` mismatch too;
+   * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
+     RC1's `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read. PawPrint
+     writes each thread's managed id into its own slot when the thread starts, as RC1's VM does
+     (`InitializeCurrentThreadsStaticData`), so every reader of the slot sees it. It accounted for
+     the `LockHeldByOtherThread.cs` mismatch too, which now stops at the thin lock when it starts
+     its worker;
    * the narrow float-to-integer conversions, which RC1 saturates to the target's own range
      (`(byte)300.0` is 255, where net10 gives 44): the first behaviour fact of the opcode set
      itself to differ, so a runtime-keyed rule for `conv.i1`/`u1`/`i2`/`u2` and `char`, with

@@ -1329,6 +1329,58 @@ module IlMachineRuntimeMetadata =
                 failwith
                     $"Environment.CurrentManagedThreadId: non-main ThreadId %O{threadId} has no managed Thread object"
 
+    /// Give `thread` its own slot of CoreLib's `ManagedThreadId.t_currentManagedThreadId`, holding
+    /// `thread`'s managed thread id, as CoreCLR's VM does when a thread starts. Call it once per
+    /// thread, when the thread starts and before it runs guest code; the thread's managed id must
+    /// already be decided (see `getCurrentManagedThreadId`).
+    ///
+    /// A CoreLib that declares no `System.Threading.ManagedThreadId` (.NET 10's, whose
+    /// `Environment.CurrentManagedThreadId` asks the VM through an FCall instead) is left alone.
+    let seedManagedThreadId
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Threading" "ManagedThreadId" with
+        | None -> state
+        | Some managedThreadId ->
+            // .NET 11's VM maps this field's thread-static storage onto its own per-thread
+            // `ThreadLocalData.managedThreadId` (`threadstatics.cpp`, `CLASS__THREADID`), which
+            // `InitializeCurrentThreadsStaticData` sets to the thread's id when the thread starts.
+            let field =
+                match
+                    managedThreadId.Fields
+                    |> List.filter (fun field -> field.Name = "t_currentManagedThreadId")
+                with
+                | [ field ] when
+                    field.IsStatic
+                    && field.IsThreadStatic
+                    && field.Signature = TypeDefn.PrimitiveType PrimitiveType.Int32
+                    ->
+                    field
+                | fields ->
+                    failwith
+                        $"seedManagedThreadId: expected System.Threading.ManagedThreadId to declare one [ThreadStatic] static int t_currentManagedThreadId, as the VM's thread-static mapping requires, but found %d{fields.Length} fields of that name: %A{fields}"
+
+            let state, declaringType =
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies managedThreadId
+                |> IlMachineTypeResolution.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.DefinitionFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
+            IlMachineManagedByref.setStatic
+                (StaticOwner.forField thread field)
+                declaringType
+                (ComparableFieldDefinitionHandle.Make field.Handle)
+                (CliType.Numeric (CliNumericType.Int32 (getCurrentManagedThreadId thread state)))
+                state
+
     /// Synthesize a TypeInitializationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
     /// Sets the _innerException, _typeName, and _HResult fields on the TIE to match what the

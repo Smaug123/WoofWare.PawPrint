@@ -135,8 +135,6 @@ module TestPureCases =
                     "MarshalStructureToPtrStaticCtorDormant.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.marshalHasLayout)
-            "EnvironmentCurrentManagedThreadId.cs", Net11Frontier.managedThreadId
-            "LockHeldByOtherThread.cs", Net11Frontier.managedThreadId
             "ConvFloatSaturating.cs",
             """On .NET 11, an unchecked conversion from floating point to an integer narrower than 32 bits saturates to that integer's own range, where .NET 10 takes the low bits of the saturated `int32` conversion. Measured on RC1 against .NET 10: `(byte)300.0` is 255 (44), `(sbyte)-1e20` is -128 (0), `(short)70000.7` is 32767 (4464), `(char)70000.7` is 65535 (4464), and `(byte)-1.5` is 0 (255). The guest asserts .NET 10's rule, so real RC1 exits 40 at its first narrow check, and PawPrint converts by .NET 10's rule on every runtime. Un-park when the conversion opcodes take the runtime's rule and this case states .NET 11's results."""
             "ReflectionIsCollectible.cs",
@@ -276,6 +274,7 @@ module TestPureCases =
                     "LiteralFieldName.cs"
                     "LiteralFieldType.cs"
                     "LiteralFieldValue.cs"
+                    "LockHeldByOtherThread.cs"
                     "LockOnArray.cs"
                     "MainBackgroundBeforeStartingForegroundWorker.cs"
                     "MainBackgroundThenForegroundAgainBeforeWorker.cs"

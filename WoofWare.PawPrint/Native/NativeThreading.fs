@@ -901,6 +901,9 @@ module NativeThreading =
             let state =
                 IlMachineState.startUnstartedThread ctx.Thread newThreadId newMethodState state
 
+            let state =
+                IlMachineState.seedManagedThreadId ctx.LoggerFactory ctx.BaseClassTypes newThreadId state
+
             // A method reached by a call has its declaring type's initialiser armed by
             // `callMethodWithCommitment`; the bottom frame is entered without a call, so the
             // same rule is applied here, on the worker. `Thread` has already been initialised
