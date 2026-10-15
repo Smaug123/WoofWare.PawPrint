@@ -29,10 +29,6 @@ module Net11Frontier =
     let gcMemoryInfo : string =
         "On .NET 11, `System.GCMemoryInfoData` has no `_generationInfo0` field, which `GC.GetMemoryInfo`'s native filler writes: \"System.GCMemoryInfoData does not declare expected instance field '_generationInfo0'\". Un-park when the native filler writes .NET 11's layout."
 
-    /// The thread-static managed thread id, which .NET 11's CoreLib reads where .NET 10 asks the VM.
-    let managedThreadId : string =
-        "On .NET 11, `Environment.CurrentManagedThreadId` and `System.Threading.Lock`'s owner check read the thread-static `ManagedThreadId.t_currentManagedThreadId` (ManagedThreadId.CoreCLR.cs:14), which CoreCLR fills when a thread starts. PawPrint does not seed it, so every thread reads 0, which `Lock` takes to mean no thread: a thread holding a `Lock` is told it does not. Un-park when thread creation seeds it."
-
     /// `IntrinsicBody` does not classify .NET 11's new intrinsics.
     let newIntrinsics : string =
         "On .NET 11, `Interlocked.CompareExchange(int*, int, int)` is a new `[Intrinsic]` whose body calls itself, which `IntrinsicBody` does not recognise as a JIT expansion, and `RuntimeHelpers.SetNextCallGenericContext` and `SetNextCallAsyncContinuation` are new placeholders that `IntrinsicBody` classifies as VM substitutions although the pinned VM source substitutes neither. Un-park when `IntrinsicBody` classifies .NET 11's new intrinsics."
