@@ -259,6 +259,7 @@ module TestPureCases =
                     "InterfaceDispatch.cs"
                     "InterlockedAndOrContended.cs"
                     "InterlockedAndOrNullRef.cs"
+                    "InterlockedCompareExchangePointer.cs"
                     "InterlockedNullRefLocations.cs"
                     "LastErrorIsPerThread.cs"
                     "LdelemTokenFaults.cs"

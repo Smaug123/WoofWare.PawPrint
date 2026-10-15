@@ -318,6 +318,7 @@
     <Compile Include="TestProcessPath.fs" />
     <Compile Include="TestCpuPlacement.fs" />
     <Compile Include="TestOsThreadId.fs" />
+    <Compile Include="TestPointerCompareExchange.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />

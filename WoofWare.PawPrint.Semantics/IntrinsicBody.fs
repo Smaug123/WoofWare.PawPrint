@@ -47,8 +47,9 @@ type SelfCallExpansion =
 /// `[Intrinsic]` permits the JIT to replace a call with code of its own, and it usually does so
 /// only as an optimisation. Under MinOpts it expands nothing it is not obliged to
 /// (`impIntrinsic`, importercalls.cpp), and otherwise emits an ordinary call to the method's IL;
-/// so for most intrinsics the IL is a complete implementation. There are two exceptions: IL with a
-/// call to itself that must not run as a call, and a body the VM replaces outright.
+/// so for most intrinsics the IL is a complete implementation. There are three exceptions: IL with
+/// a call to itself that must not run as a call, a body the VM replaces outright, and a method the
+/// JIT replaces at every call to it.
 [<RequireQualifiedAccess>]
 type IntrinsicBody =
     /// The method's own IL is its semantics.
@@ -64,6 +65,12 @@ type IntrinsicBody =
     /// the one the runtime supplies. `VmSubstitution` transcribes that IL where it is the same for
     /// every instantiation.
     | VmSubstitution
+    /// A CoreLib method the JIT replaces at every call to it, whatever it is optimising for: one of
+    /// the named intrinsics `impIntrinsic` (importercalls.cpp) expands before it tests whether to
+    /// optimise. What replaces the call is not the method's IL, which throws
+    /// `UnreachableException`. Only code the runtime generates calls these (IL stubs, the async
+    /// resumption stub, runtime-async methods).
+    | CallSiteExpansion
     /// The method has no IL: an InternalCall, a P/Invoke, a runtime-provided or an abstract body.
     | NoIl
 
@@ -81,6 +88,25 @@ module IntrinsicBody =
                 "System.Runtime.CompilerServices", "RuntimeHelpers"
                 "System.Threading", "Interlocked"
                 "System", "Activator"
+            ]
+
+    /// The methods `IntrinsicBody.CallSiteExpansion` names, by namespace, class and name, in every
+    /// runtime PawPrint supports: .NET 10's `StubHelpers.AsyncCallContinuation` is .NET 11's
+    /// `AsyncHelpers.AsyncCallContinuation`. Of the other named intrinsics `impIntrinsic` handles
+    /// before its optimisation test, `RuntimeHelpers.IsRuntimeAsync` becomes whether the method
+    /// calling it is runtime-async, as its IL answers for a method that is not, and the JIT
+    /// declines to expand the rest (`AsyncHelpers.Await` and the like), so a call runs their IL.
+    let private callSiteExpansions : Set<string * string * string> =
+        Set.ofList
+            [
+                "System.StubHelpers", "StubHelpers", "GetStubContext"
+                "System.StubHelpers", "StubHelpers", "NextCallReturnAddress"
+                "System.StubHelpers", "StubHelpers", "AsyncCallContinuation"
+                "System.Runtime.CompilerServices", "AsyncHelpers", "AsyncCallContinuation"
+                "System.Runtime.CompilerServices", "AsyncHelpers", "AsyncSuspend"
+                "System.Runtime.CompilerServices", "AsyncHelpers", "TailAwait"
+                "System.Runtime.CompilerServices", "RuntimeHelpers", "SetNextCallGenericContext"
+                "System.Runtime.CompilerServices", "RuntimeHelpers", "SetNextCallAsyncContinuation"
             ]
 
     let private getMemberRefParentType (assembly : DumpedAssembly) (handle : MemberReferenceHandle) : TypeRef =
@@ -272,6 +298,17 @@ module IntrinsicBody =
     let classify (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : IntrinsicBody =
         let definition = assembly.Methods.[method]
 
+        let declaringType =
+            assembly.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
+
+        if
+            assembly.ThisAssemblyDefinition.Name.Name = corelib
+            && not declaringType.IsNested
+            && callSiteExpansions.Contains (declaringType.Namespace, declaringType.Name, definition.Name)
+        then
+            IntrinsicBody.CallSiteExpansion
+        else
+
         match definition.Body with
         | MethodBody.InternalCall
         | MethodBody.PInvoke
@@ -280,12 +317,7 @@ module IntrinsicBody =
         | MethodBody.Il body ->
             if callsItself assembly method body then
                 IntrinsicBody.JitExpansion (expansionOf assembly method)
-            else
-
-            let declaringType =
-                assembly.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
-
-            if
+            else if
                 assembly.ThisAssemblyDefinition.Name.Name = corelib
                 && vmSubstitutingClasses.Contains (declaringType.Namespace, declaringType.Name)
                 && not (canReturn body)
@@ -385,6 +417,7 @@ module IntrinsicBody =
             match classify assembly method with
             | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method
             | IntrinsicBody.JitExpansion _
+            | IntrinsicBody.CallSiteExpansion
             | IntrinsicBody.OwnIl
             | IntrinsicBody.NoIl -> None
         else

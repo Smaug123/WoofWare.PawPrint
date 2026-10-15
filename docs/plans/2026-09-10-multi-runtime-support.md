@@ -766,6 +766,12 @@ mutation-testing skill applies to each table/classifier they introduce.
    * the guest cases whose real .NET 11 ending differs from .NET 10's, recorded in
      `TestPureCases.endingsOnNet11` (delegate equality, `Delegate.Method`'s declaring type,
      `GetCallingAssembly` from `Main`, and the private reflection several cases lean on);
+   * **(landed)** the new intrinsics `IntrinsicBody` did not classify:
+     `Interlocked.CompareExchange(int*, int, int)`, the thin lock's compare-exchange on an
+     object's header, is the `ref int` overload's primitive with its location given by a pointer
+     (`AtomicLocation.Pointer`); and `RuntimeHelpers.SetNextCallGenericContext` and
+     `SetNextCallAsyncContinuation`, which the JIT replaces at every call, join the other such
+     intrinsics as `IntrinsicBody.CallSiteExpansion`, whose list a test holds to the pinned JIT;
    * the other new QCalls, and the vtable slots;
    * any placeholders among the `Half` and `SZArrayHelper` type-level `[Intrinsic]`s and the
      other newly-`[Intrinsic]` bodies;

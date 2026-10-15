@@ -19,9 +19,10 @@ type AuditedCoreLib =
     | PinnedLinuxX64
 
 /// `IntrinsicBody` says what CoreCLR runs for an `[Intrinsic]` method: its own IL, a JIT
-/// expansion (the IL calls itself), a VM-substituted body (CoreLib's IL cannot return), or no IL
-/// at all. The interpreter runs `OwnIl` as it stands and refuses the two placeholders unless
-/// `Intrinsics.call` implements them.
+/// expansion (the IL calls itself), a VM-substituted body (CoreLib's IL cannot return), code the
+/// JIT puts in place of every call, or no IL at all. The interpreter runs `OwnIl` as it stands,
+/// refuses the two placeholders unless `Intrinsics.call` implements them, and refuses a call
+/// replaced at every call site.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestIntrinsicBody =
@@ -302,8 +303,6 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``VmSubstitution is exactly the VM's substitutions whose IL is a placeholder`` (which : AuditedCoreLib) : unit =
-        Net11Frontier.park Net11Frontier.newIntrinsics
-
         let corelib = coreLib which
         let methods = methodsOf corelib
 
@@ -332,6 +331,152 @@ module TestIntrinsicBody =
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
+
+    /// What CoreCLR does with a call to each of the named intrinsics its JIT handles before testing
+    /// whether to optimise (`impIntrinsic`, importercalls.cpp, from `GetStubContext` up to
+    /// `betterToExpand`), by the `NI_` name the JIT gives it, across the supported runtimes.
+    type private EveryCallSite =
+        /// The JIT replaces every call with code of its own: `IntrinsicBody.CallSiteExpansion`.
+        | Replaced
+        /// Read and judged by hand: what runs is the method's IL, for this reason.
+        | RunsIl of reason : string
+
+    let private everyCallSite : (string * Named * EveryCallSite) list =
+        let named (ns : string) (cls : string) (name : string) : Named =
+            {
+                Namespace = ns
+                Class = cls
+                Method = name
+                Parameters = None
+            }
+
+        let stubHelpers = named "System.StubHelpers" "StubHelpers"
+        let asyncHelpers = named "System.Runtime.CompilerServices" "AsyncHelpers"
+        let runtimeHelpers = named "System.Runtime.CompilerServices" "RuntimeHelpers"
+
+        let declined =
+            EveryCallSite.RunsIl
+                "the JIT records the name for its own pattern matching and declines to expand the call (it returns null), so the call runs the IL"
+
+        [
+            "NI_System_StubHelpers_GetStubContext", stubHelpers "GetStubContext", EveryCallSite.Replaced
+            "NI_System_StubHelpers_NextCallReturnAddress", stubHelpers "NextCallReturnAddress", EveryCallSite.Replaced
+            "NI_System_StubHelpers_AsyncCallContinuation", stubHelpers "AsyncCallContinuation", EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_AsyncCallContinuation",
+            asyncHelpers "AsyncCallContinuation",
+            EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_AsyncSuspend",
+            asyncHelpers "AsyncSuspend",
+            EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_TailAwait",
+            asyncHelpers "TailAwait",
+            EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_RuntimeHelpers_SetNextCallGenericContext",
+            runtimeHelpers "SetNextCallGenericContext",
+            EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_RuntimeHelpers_SetNextCallAsyncContinuation",
+            runtimeHelpers "SetNextCallAsyncContinuation",
+            EveryCallSite.Replaced
+            "NI_System_Runtime_CompilerServices_RuntimeHelpers_IsRuntimeAsync",
+            runtimeHelpers "IsRuntimeAsync",
+            EveryCallSite.RunsIl
+                "the JIT replaces the call with whether the method being compiled is runtime-async (`compIsAsync`), and PawPrint runs no method as runtime-async, which is what the IL's `false` answers"
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_Await", asyncHelpers "Await", declined
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_AwaitAwaiter", asyncHelpers "AwaitAwaiter", declined
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_UnsafeAwaitAwaiter",
+            asyncHelpers "UnsafeAwaitAwaiter",
+            declined
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_Suspend", asyncHelpers "Suspend", declined
+            "NI_System_Runtime_CompilerServices_AsyncHelpers_TransparentSuspend",
+            asyncHelpers "TransparentSuspend",
+            declined
+        ]
+
+    [<Test>]
+    let ``the JIT expands at every call site no named intrinsic the transcription lacks`` () : unit =
+        let importer =
+            File.ReadAllLines (
+                Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr", "jit", "importercalls.cpp")
+            )
+
+        let start =
+            importer
+            |> Array.findIndex (fun line -> line.Trim () = "if (ni == NI_System_StubHelpers_GetStubContext)")
+
+        let finish =
+            importer
+            |> Array.skip start
+            |> Array.findIndex (fun line -> line.Trim () = "bool betterToExpand = false;")
+
+        let named =
+            importer
+            |> Array.skip start
+            |> Array.take finish
+            |> Array.collect (fun line ->
+                System.Text.RegularExpressions.Regex.Matches (line, "NI_[A-Za-z0-9_]+")
+                |> Seq.map (fun m -> m.Value)
+                |> Array.ofSeq
+            )
+            |> Set.ofArray
+
+        // A truncated or misplaced window would pass vacuously.
+        named
+        |> Set.contains "NI_System_StubHelpers_NextCallReturnAddress"
+        |> shouldEqual true
+
+        let transcribed = everyCallSite |> List.map (fun (ni, _, _) -> ni) |> Set.ofList
+        Set.difference named transcribed |> Set.toList |> shouldEqual []
+
+    [<Test>]
+    let ``every intrinsic the every-call-site transcription names is one a supported CoreLib defines`` () : unit =
+        let corelibs =
+            EmulatedRuntime.supported
+            |> List.map (fun runtime ->
+                let corelib = readCoreLib (FrameworkUnderTest.requireCoreLibPathOf runtime)
+                corelib, methodsOf corelib
+            )
+
+        let unnamed =
+            everyCallSite
+            |> List.filter (fun (_, named, _) ->
+                corelibs
+                |> List.exists (fun (corelib, methods) ->
+                    methods
+                    |> List.exists (fun m -> names named m && IntrinsicBody.isIntrinsic corelib m.Handle)
+                )
+                |> not
+            )
+            |> List.map (fun (ni, _, _) -> ni)
+
+        unnamed |> shouldEqual []
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``CallSiteExpansion is exactly the intrinsics the JIT replaces at every call`` (which : AuditedCoreLib) : unit =
+        let corelib = coreLib which
+
+        let replaced =
+            everyCallSite
+            |> List.choose (fun (_, named, kind) ->
+                match kind with
+                | EveryCallSite.Replaced -> Some named
+                | EveryCallSite.RunsIl _ -> None
+            )
+
+        let failures =
+            [
+                for m in methodsOf corelib do
+                    if IntrinsicBody.isIntrinsic corelib m.Handle then
+                        let onList = replaced |> List.exists (fun named -> names named m)
+
+                        match IntrinsicBody.classify corelib m.Handle, onList with
+                        | IntrinsicBody.CallSiteExpansion, false ->
+                            yield $"%s{describe m}: CallSiteExpansion, but the JIT does not replace every call to it"
+                        | other, true when other <> IntrinsicBody.CallSiteExpansion ->
+                            yield $"%s{describe m}: the JIT replaces every call to it, yet it classifies as %A{other}"
+                        | _ -> ()
+            ]
+
+        failures |> shouldEqual []
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``VmSubstitution has a stub for exactly the Unsafe methods corelib.h binds`` (which : AuditedCoreLib) : unit =
@@ -488,8 +633,6 @@ module TestIntrinsicBody =
         (which : AuditedCoreLib)
         : unit
         =
-        Net11Frontier.park Net11Frontier.newIntrinsics
-
         let corelib = coreLib which
         let expansions = expansionsOf corelib
 
@@ -528,8 +671,6 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``a placeholder's self-call follows the profile`` (which : AuditedCoreLib) : unit =
-        Net11Frontier.park Net11Frontier.newIntrinsics
-
         let corelib = coreLib which
 
         let supporting (c : IntrinsicClass) =
@@ -595,9 +736,9 @@ module TestIntrinsicBody =
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
-    /// The JIT expansions on the pinned linux-x64 CoreLib that are not hardware intrinsics, each
-    /// with the operation CoreCLR's JIT emits for it.
-    let private linuxPrimitives : (string * IntrinsicPrimitive) list =
+    /// The JIT expansions on every runtime's pinned linux-x64 CoreLib that are not hardware
+    /// intrinsics, each with the operation CoreCLR's JIT emits for it.
+    let private linuxPrimitivesEverywhere : (string * IntrinsicPrimitive) list =
         [
             "System.Double::ConvertToIntegerNative(float64)",
             IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Double
@@ -618,13 +759,13 @@ module TestIntrinsicBody =
             "System.Single::MultiplyAddEstimate(single, single, single)",
             IntrinsicPrimitive.MultiplyAddEstimate FloatWidth.Single
             "System.Threading.Interlocked::CompareExchange(ref int32, int32, int32)",
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int32
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Byref)
             "System.Threading.Interlocked::CompareExchange(ref int64, int64, int64)",
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int64
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int64, AtomicLocation.Byref)
             "System.Threading.Interlocked::CompareExchange(ref uint16, uint16, uint16)",
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt16
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt16, AtomicLocation.Byref)
             "System.Threading.Interlocked::CompareExchange(ref uint8, uint8, uint8)",
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt8
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt8, AtomicLocation.Byref)
             "System.Threading.Interlocked::Exchange(ref int32, int32)",
             IntrinsicPrimitive.AtomicExchange AtomicOperand.Int32
             "System.Threading.Interlocked::Exchange(ref int64, int64)",
@@ -643,6 +784,18 @@ module TestIntrinsicBody =
             "System.Threading.Volatile::WriteBarrier()", IntrinsicPrimitive.WriteBarrier
         ]
 
+    /// The JIT expansions on `runtime`'s pinned linux-x64 CoreLib that are not hardware
+    /// intrinsics, each with the operation CoreCLR's JIT emits for it.
+    let private linuxPrimitives (runtime : EmulatedRuntime) : (string * IntrinsicPrimitive) list =
+        match runtime with
+        | EmulatedRuntime.Net10 -> linuxPrimitivesEverywhere
+        | EmulatedRuntime.Net11 ->
+            linuxPrimitivesEverywhere
+            @ [
+                "System.Threading.Interlocked::CompareExchange(ptr[int32], int32, int32)",
+                IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Pointer)
+            ]
+
     [<Test>]
     let ``the linux-x64 CoreLib's primitive JIT expansions are the JIT's own operations`` () : unit =
         let corelib = coreLib AuditedCoreLib.PinnedLinuxX64
@@ -656,7 +809,7 @@ module TestIntrinsicBody =
             )
             |> Set.ofList
 
-        let expected = Set.ofList linuxPrimitives
+        let expected = Set.ofList (linuxPrimitives (FrameworkUnderTest.runtime ()))
         let unexpected = Set.difference found expected
         let missing = Set.difference expected found
 
@@ -668,8 +821,6 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every JIT expansion in CoreLib is recognised`` (which : AuditedCoreLib) : unit =
-        Net11Frontier.park Net11Frontier.newIntrinsics
-
         let corelib = coreLib which
 
         let unrecognised =

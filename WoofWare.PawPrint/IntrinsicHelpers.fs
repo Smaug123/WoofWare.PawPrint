@@ -761,6 +761,15 @@ module internal IntrinsicHelpers =
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
         | other -> failwith $"%s{operation}: expected managed byref argument, got %O{other}"
 
+    let popPointerLocationArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> ManagedPointerSource.Byref ptr
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) -> ManagedPointerSource.Null
+        // A pointer stored to a local or argument slot is held as a managed pointer, and loads back
+        // as one: the form it reaches the self-call in, through the method's own `ldarg.0`.
+        | EvalStackValue.ManagedPointer ptr -> ptr
+        | other -> failwith $"%s{operation}: expected a pointer taken from a byref, or null, got %O{other}"
+
     let writePointerBackedSpanConstructor
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)

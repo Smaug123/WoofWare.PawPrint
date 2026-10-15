@@ -834,6 +834,9 @@ module IlMachineStateExecution =
                         | SelfCallExpansion.Unrecognised as expanded ->
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU that call is %A{expanded}"
+                    | IntrinsicBody.CallSiteExpansion ->
+                        failwith
+                            $"%s{Intrinsics.formatMethodKey key}: CoreCLR's JIT replaces every call to this method with code of its own, and its IL is not what runs. Only code the runtime generates calls it (IL stubs, the async resumption stub, runtime-async methods), and PawPrint runs none of those"
                     | IntrinsicBody.VmSubstitution ->
                         match VmSubstitution.unsafeStub declaringAssy handle with
                         | Some stub ->

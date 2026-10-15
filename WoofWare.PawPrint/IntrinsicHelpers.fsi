@@ -63,6 +63,12 @@ module internal IntrinsicHelpers =
     /// as PawPrint's null managed-pointer source.
     val popManagedByrefArgument : operation : string -> arg : EvalStackValue -> ManagedPointerSource
 
+    /// Interpret an eval-stack value as an unmanaged pointer argument, by the location it addresses:
+    /// a pointer taken from a byref (as `fixed` and `&local` take one), or the managed pointer such a
+    /// pointer loads back as from a local or argument slot, addresses what that byref does, and the
+    /// zero pointer is null. Any other pointer fails the run.
+    val popPointerLocationArgument : operation : string -> arg : EvalStackValue -> ManagedPointerSource
+
     /// Execute the `Span<T>(void*, int)` and `ReadOnlySpan<T>(void*, int)` constructor intrinsic,
     /// materialising the span fields from a pointer-backed source after validating element shape.
     val writePointerBackedSpanConstructor :

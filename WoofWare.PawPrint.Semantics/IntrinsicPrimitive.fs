@@ -10,6 +10,15 @@ type AtomicOperand =
     | Int32
     | Int64
 
+/// How an atomic read-modify-write is told its location, by the CoreLib overload that takes it.
+[<RequireQualifiedAccess>]
+type AtomicLocation =
+    /// A managed byref, `ref x`.
+    | Byref
+    /// An unmanaged pointer, `x*`: .NET 11's thin lock uses it on an object's header, where a
+    /// byref would be unsafe for the garbage collector.
+    | Pointer
+
 /// The operand of an atomic addition: CoreLib has one for these two widths only.
 [<RequireQualifiedAccess>]
 type AtomicAddOperand =
@@ -32,8 +41,9 @@ type IntrinsicPrimitive =
     | WriteBarrier
     /// `Thread.FastPollGC()`: a point at which the garbage collector may suspend the thread.
     | GcPoll
-    /// `Interlocked.CompareExchange(ref x, value, comparand)`, atomically.
-    | AtomicCompareExchange of AtomicOperand
+    /// `Interlocked.CompareExchange(ref x, value, comparand)`, or its overload taking a pointer to
+    /// `x`, atomically.
+    | AtomicCompareExchange of AtomicOperand * AtomicLocation
     /// `Interlocked.Exchange(ref x, value)`, atomically.
     | AtomicExchange of AtomicOperand
     /// `Interlocked.ExchangeAdd(ref x, value)`, atomically, returning the old value.
@@ -120,6 +130,7 @@ module IntrinsicPrimitive =
     type private Shape =
         | Of of PrimitiveType
         | RefOf of PrimitiveType
+        | PointerTo of PrimitiveType
         | T
         | ArrayOfT
         | Other
@@ -131,6 +142,10 @@ module IntrinsicPrimitive =
         | TypeDefn.Byref inner ->
             match shapeOf inner with
             | Shape.Of p -> Shape.RefOf p
+            | _ -> Shape.Other
+        | TypeDefn.Pointer inner ->
+            match shapeOf inner with
+            | Shape.Of p -> Shape.PointerTo p
             | _ -> Shape.Other
         | TypeDefn.GenericMethodParameter 0 -> Shape.T
         | TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.GenericMethodParameter 0) -> Shape.ArrayOfT
@@ -172,7 +187,13 @@ module IntrinsicPrimitive =
         | "System.Threading", "Interlocked", "CompareExchange", [ Shape.RefOf a ; Shape.Of b ; Shape.Of c ], 0 when
             a = b && b = c
             ->
-            atomicOperand a |> Option.map IntrinsicPrimitive.AtomicCompareExchange
+            atomicOperand a
+            |> Option.map (fun a -> IntrinsicPrimitive.AtomicCompareExchange (a, AtomicLocation.Byref))
+        | "System.Threading", "Interlocked", "CompareExchange", [ Shape.PointerTo a ; Shape.Of b ; Shape.Of c ], 0 when
+            a = b && b = c
+            ->
+            atomicOperand a
+            |> Option.map (fun a -> IntrinsicPrimitive.AtomicCompareExchange (a, AtomicLocation.Pointer))
         | "System.Threading", "Interlocked", "Exchange", [ Shape.RefOf a ; Shape.Of b ], 0 when a = b ->
             atomicOperand a |> Option.map IntrinsicPrimitive.AtomicExchange
         | "System.Threading", "Interlocked", "ExchangeAdd", [ Shape.RefOf a ; Shape.Of b ], 0 when a = b ->
@@ -254,7 +275,7 @@ module IntrinsicPrimitive =
         | IntrinsicPrimitive.GcPoll -> cannotFault ResultNullness.NotAReference
         // `gtNewAtomicNode` addresses the location directly: a null one faults at the access, and
         // so can a misaligned one, except that a byte cannot be misaligned.
-        | IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt8
+        | IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt8, _)
         | IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8 ->
             dereferencesFirstArgument ResultNullness.NotAReference
         | IntrinsicPrimitive.AtomicCompareExchange _
