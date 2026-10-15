@@ -10,7 +10,9 @@ open WoofWare.PawPrint
 
 /// `NativeContractTable` holds what CoreLib's native methods can do, read from the runtime's C++.
 /// These tests hold each row to the CoreLibs' metadata, which must declare and recognise the native
-/// it names, and to the pinned runtime source, which must define what it cites.
+/// it names, and to the pinned runtime source, which must define what it cites; every call that
+/// cited code makes must be to code the row cites too, or to code `NativeContractCallees.tsv`
+/// vouches for.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeContractTable =
@@ -474,9 +476,14 @@ module TestNativeContractTable =
             |> List.collect (fun routine -> List.ofSeq routine.Calls)
             |> List.distinct
 
-        for vouch in vouches.Force () do
-            if not (called |> List.exists (CppSource.names vouch.Symbol)) then
-                failwith $"%s{vouch.Symbol} is vouched for, and no routine a row cites calls it"
+        let unused =
+            vouches.Force ()
+            |> List.filter (fun vouch -> not (called |> List.exists (CppSource.names vouch.Symbol)))
+            |> List.map (fun vouch -> vouch.Symbol)
+            |> String.concat ", "
+
+        if unused <> "" then
+            failwith $"No routine a row cites calls these, which are vouched for: %s{unused}"
 
     [<Test>]
     let ``the table's reader refuses a malformed row`` () : unit =

@@ -1,5 +1,6 @@
 # What CoreLib's native methods can do to their callers, read from the pinned runtime source.
 # Every native a row names runs no managed code but the methods its row says it calls, and the parameterless constructor of each exception it raises, which CoreCLR runs to make it.
+# TestNativeContractTable holds that to the C++: every call that a function a row cites makes is to one the row cites too, or to one NativeContractCallees.tsv vouches for.
 # Eight tab-separated fields:
 #   kind     FCall (an InternalCall, named Namespace.Type::Method) or QCall (named by its entry point)
 #   name
@@ -9,7 +10,7 @@
 #   runs     the CoreLib methods it can call, whose exceptions escape it, separated by |; - for none. Each is
 #            Namespace.Type::Method(arguments), the only method of that name its type declares, with one
 #            argument per parameter, this first, separated by commas: ? for a value the row does not name
-#   sources  path:symbol under src/coreclr, separated by |, the function it is bound to first
+#   sources  path:symbol under src/coreclr, each a function or assembly routine the file defines, separated by |, the function it is bound to first
 #   reason   why, in a sentence
 FCall	System.Environment::get_CurrentManagedThreadId	-	returns	none	-	vm/jithelpers.cpp:JIT_GetCurrentManagedThreadId	Reads the current thread's managed ID.
 FCall	System.Runtime.InteropServices.Marshal::GetLastPInvokeError	-	returns	none	-	vm/marshalnative.cpp:MarshalNative::GetLastPInvokeError	Reads a thread-local integer.
@@ -18,7 +19,6 @@ FCall	System.String::FastAllocateString	System.OutOfMemoryException|System.Overf
 QCall	TypeHandle_GetCorElementType	-	returns	none	-	vm/comutilnative.cpp:TypeHandle_GetCorElementType	Reads the element type from the type handle.
 QCall	Buffer_Clear	-	returns	none	-	vm/comutilnative.cpp:Buffer_Clear	Zeroes memory; an invalid address faults in native code, which ends the process.
 QCall	ThreadNative_GetCurrentThread	System.OutOfMemoryException	returns	none	-	vm/comsynchronizable.cpp:ThreadNative_GetCurrentThread|vm/threads.cpp:Thread::GetExposedObject|vm/comsynchronizable.cpp:ThreadBaseObject::InitExisting	Allocates the current thread's Thread object on first use, initialising its fields without running a constructor.
-QCall	RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow	System.OutOfMemoryException	returns	none	-	vm/runtimehandles.cpp:RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow|vm/typehandle.cpp:TypeHandle::AllocateManagedClassObject	Allocates the type's RuntimeType object on first use, setting its fields without running a constructor.
 QCall	GetTypeLoadExceptionMessage	System.OutOfMemoryException	returns	none	-	vm/excep.cpp:GetTypeLoadExceptionMessage|vm/excep.cpp:GetManagedFormatStringForResourceID	Loads the resource string for the resource number, or the general one for zero, rewrites its printf placeholders as String.Format ones, and allocates it; a resource that does not load leaves it empty.
 QCall	ExceptionNative_GetMessageFromNativeResources	System.OutOfMemoryException	returns	none	-	vm/comutilnative.cpp:ExceptionNative_GetMessageFromNativeResources	Loads a resource string, falling back to a constant one, and allocates it.
 FCall	System.RuntimeTypeHandle::GetModuleIfExists	-	returns	maybenull	-	vm/runtimehandles.cpp:RuntimeTypeHandle::GetModuleIfExists|vm/ceeload.cpp:Module::GetExposedObjectIfExists	Reads the module's RuntimeModule object from its loader handle, or null where none has been made yet or the type is null.

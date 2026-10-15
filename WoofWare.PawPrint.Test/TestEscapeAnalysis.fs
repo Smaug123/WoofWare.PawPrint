@@ -66,8 +66,9 @@ public static class Natives
     // A QCall the contract table describes, which allocates the thread's object on first use.
     public static System.Threading.Thread Current() => System.Threading.Thread.CurrentThread;
 
-    // An object's RuntimeType, which a QCall the contract table describes allocates on first use;
-    // a null object raises before that.
+    // An object's RuntimeType, which a QCall allocates on first use; a null object raises before
+    // that. The contract table cannot describe the QCall, which finishes loading a type whose load
+    // failed, and loading can run an AssemblyLoadContext's managed resolution.
     public static Type TypeOf(object o) => o.GetType();
 
     // A type's module, which CoreLib reads through an FCall the contract table describes, or makes
@@ -733,6 +734,11 @@ public static class SR
         let synchronizationContextWait =
             "System.Threading.SynchronizationContext::InvokeWaitMethodHelper IL VirtualCall System.Threading.SynchronizationContext::Wait"
 
+        // Making a type's RuntimeType on first use can finish loading the type, which no contract
+        // describes.
+        let runtimeTypeFromHandle =
+            "System.RuntimeTypeHandle::GetRuntimeTypeFromHandleSlow entry NativeBody"
+
         [
             { expect "Fixture.Cases" "ThrowsDirectly" with
                 Contains = [ ioe ]
@@ -765,7 +771,8 @@ public static class SR
                 // Its monitor is its type's, never null.
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
-                Sources = Some [ synchronizationContextWait ]
+                // The JIT may look up its monitor, its type's RuntimeType, which it makes on first use.
+                Sources = Some [ runtimeTypeFromHandle ; synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -960,8 +967,9 @@ public static class SR
                 Unknown = Some false
             }
             { expect "Fixture.Natives" "TypeOf" with
-                Contains = [ "=System.OutOfMemoryException" ; "=System.NullReferenceException" ]
-                Unknown = Some false
+                Contains = [ "=System.NullReferenceException" ]
+                Unknown = Some true
+                Sources = Some [ runtimeTypeFromHandle ]
             }
             { expect "Fixture.Natives" "ModuleOf" with
                 Unknown = Some false

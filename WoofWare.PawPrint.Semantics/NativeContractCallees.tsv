@@ -125,17 +125,7 @@ vm/object.h:ReflectModuleBaseObject::SetModule	nothing	Writes the RuntimeModule'
 vm/object.h:ReflectModuleBaseObject::SetAssembly	nothing	Writes the RuntimeModule's RuntimeAssembly.
 vm/object.h:AssemblyBaseObject::SetSyncRoot	nothing	Writes the RuntimeAssembly's keep-alive reference to its loader allocator.
 vm/appdomain.hpp:AppDomain::GetCurrentDomain	nothing	Reads the global AppDomain.
-vm/loaderallocator.cpp:AssemblyLoaderAllocator::CanUnload	nothing	Returns a constant.
-vm/loaderallocator.cpp:GlobalLoaderAllocator::CanUnload	nothing	Returns a constant.
-vm/crst.h:CrstBase::CrstHolder::CrstHolder	nothing	Takes a native lock for the scope, waiting for it in preemptive mode if the lock allows that.
-vm/methodtable.h:MethodTable::GetBaseSize	nothing	Reads the method table's base size.
 vm/loaderallocator.inl:LoaderAllocator::GetExposedObject	nothing	Reads the object the loader allocator's handle holds.
-vm/appdomain.hpp:AppDomain::GetMethodTableExposedClassObjectLock	nothing	Returns a lock.
-vm/loaderallocator.cpp:LoaderAllocator::InsertObjectIntoFieldWithLifetimeOfCollectibleLoaderAllocator	exception	Keeps an object alive with a collectible loader allocator, by AllocateHandle, a weak interior GC handle and a native lock, throwing OutOfMemoryException as AllocateHandle does.
-vm/object.h:ReflectClassBaseObject::SetKeepAlive	nothing	Writes the RuntimeType's keep-alive reference.
-vm/object.h:ReflectClassBaseObject::SetType	nothing	Writes the RuntimeType's type handle.
-inc/volatile.h:VolatileLoad	nothing	A load with acquire semantics.
-inc/volatile.h:VolatileStore	nothing	A store with release semantics.
 inc/sstring.inl:SString::Append	exception	Appends to a native string, growing its buffer, which can throw the C++ out-of-memory exception that becomes OutOfMemoryException.
 inc/sstring.inl:SString::Begin	nothing	Returns an iterator over a native string.
 utilcode/sstring_com.cpp:SString::LoadResource	nothing	Loads a string from the runtime's native resources by LoadResourceAndReturnHR, catching any failure.
