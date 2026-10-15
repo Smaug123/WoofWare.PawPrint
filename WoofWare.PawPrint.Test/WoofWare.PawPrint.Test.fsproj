@@ -385,6 +385,8 @@
     <Compile Include="TestHardwareInstruction.fs" />
     <Compile Include="TestIntrinsicContracts.fs" />
     <Compile Include="TestNativeMethod.fs" />
+    <Compile Include="CppSource.fs" />
+    <Compile Include="TestCppSource.fs" />
     <Compile Include="TestNativeContractTable.fs" />
     <Compile Include="TestAssumption.fs" />
     <Compile Include="TestExceptionMaking.fs" />
@@ -467,6 +469,7 @@
          holds the composition to it; the kernel's own sweep, in raw numbers,
          is the `socketSyscall` sweep in WoofWare.PosixKernel's own suite. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
+    <EmbeddedResource Include="..\WoofWare.PawPrint.Semantics\NativeContractCallees.tsv" LogicalName="WoofWare.PawPrint.Test.NativeContractCallees.tsv" />
     <!-- What System.Native's `SystemNative_StrErrorR` answered for every number
          and buffer size its probe sweeps, against glibc and Darwin's libc.
          `TestStrErrorR` regenerates every row from the model. -->

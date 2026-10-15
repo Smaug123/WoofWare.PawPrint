@@ -1,0 +1,6 @@
+# What the code NativeContractTable.tsv cites calls, where its row does not cite that too: each a function or macro vouched for, by reading it, as running no managed code.
+# TestNativeContractTable holds every call that a routine a row cites makes, as the text spells it, to a routine the row cites or one vouched for here, matching by name.
+# Three tab-separated fields:
+#   callee   path:symbol under src/coreclr, as the contract table cites one; or -:symbol for a function of the C library or the operating system
+#   runs     nothing (it runs no managed code); or exception (it runs no managed code but the constructor of the exception it throws, which the row must raise)
+#   reason   why, in a sentence
