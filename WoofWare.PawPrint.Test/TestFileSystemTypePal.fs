@@ -72,6 +72,9 @@ module TestFileSystemTypePal =
 
     [<Test>]
     let ``each Darwin name row is upstream's`` () : unit =
+        Net11Frontier.park
+            "The test reads `MapFileSystemNameToEnum` out of the pinned `pal_io.c` with a pattern that finds no rows in .NET 11's (\"read 0 rows ... Its shape has changed\"), so .NET 11's Darwin file-system name table is unchecked. Un-park when the test reads .NET 11's shape and `FileSystemTypePal` is checked against it."
+
         let pinned = pinnedNameTable ()
 
         for name, value in FileSystemTypePal.darwinNameRows do

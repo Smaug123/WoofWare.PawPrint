@@ -116,7 +116,7 @@ public static class Program
 
     let private aspNetCoreGuest () : ConcurrentGuest =
         let reference =
-            Path.Combine (FrameworkUnderTest.aspNetCoreFrameworkDirectory (), "Microsoft.AspNetCore.dll")
+            Path.Combine (HostImage.aspNetCoreFrameworkDirectory, "Microsoft.AspNetCore.dll")
             |> MetadataReference.CreateFromFile
 
         guest "UsesAspNetCore" aspNetCoreSource [ reference ]

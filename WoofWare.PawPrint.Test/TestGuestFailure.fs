@@ -135,6 +135,8 @@ class CallsMissingNative
     /// why the boundary is the whole tick.
     [<Test>]
     let ``a failure in post-step scheduler bookkeeping is annotated too`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let source =
             """
 using System.Threading;

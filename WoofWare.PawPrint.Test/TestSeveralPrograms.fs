@@ -297,6 +297,8 @@ public static class Program
 
     [<Test>]
     let ``the clock does not jump to a sleeper's deadline while another program is runnable`` () : unit =
+        Net11Frontier.park Net11Frontier.waitSleepJoin
+
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -363,6 +365,8 @@ public static class Program
 
     [<Test>]
     let ``both programs blocked forever is one deadlock naming both`` () : unit =
+        Net11Frontier.park Net11Frontier.waitSleepJoin
+
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -426,6 +430,8 @@ public static class Program
 
     [<Test>]
     let ``one program's Environment.Exit, or its unhandled exception, leaves the others running`` () : unit =
+        Net11Frontier.park Net11Frontier.waitSleepJoin
+
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -664,10 +670,14 @@ public static class Program
 
     [<Test>]
     let ``a listener and a connector, as two processes on one machine, both exit 0`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         listenerAndConnector (FrameworkUnderTest.runtimeDirs ())
 
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         listenerAndConnector (runtimeDirsPreferringLinux (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 
     /// Reads its processor from the shim five times, writing each answer.

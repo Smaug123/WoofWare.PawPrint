@@ -276,6 +276,8 @@ class Program
 
     [<Test>]
     let ``SIGPIPE, which the runtime ignores from startup, is discarded under either flavour`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match run platform 13 with
             | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
@@ -283,10 +285,14 @@ class Program
 
     [<Test>]
     let ``30 is Darwin's SIGUSR1, the runtime's activation signal, and is refused there`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         refused SimulatedUnixPlatform.macOsArm64 30 "runs CoreCLR's PAL's thread-activation handler for SIGUSR1"
 
     [<Test>]
     let ``Linux's SIGTRAP and activation signal, which the runtime catches, are refused there`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         refused SimulatedUnixPlatform.linuxX64 5 "runs CoreCLR's PAL's SIGTRAP handler"
         refused SimulatedUnixPlatform.linuxX64 34 "runs CoreCLR's PAL's thread-activation handler"
 
@@ -302,6 +308,8 @@ class Program
         ()
         : unit
         =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The second SIGILL is fatal: `TestSignalTerminatedCases` holds that.
         survived SimulatedUnixPlatform.macOsArm64 11
 
@@ -310,6 +318,8 @@ class Program
 
     [<Test>]
     let ``8 is SIGFPE, refused on x86-64 Linux, whose division needs its handler, and survived on arm64`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         refused
             SimulatedUnixPlatform.linuxX64
             8
@@ -320,6 +330,8 @@ class Program
 
     [<Test>]
     let ``SIGILL and SIGABRT are survived on every platform`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         for platform in
             [
                 SimulatedUnixPlatform.linuxX64
@@ -331,6 +343,8 @@ class Program
 
     [<Test>]
     let ``a fault signal sent from a thread other than the main thread is refused`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let exn =
             Assert.Catch<exn> (fun () ->
                 runSource fromWorkerGuest SimulatedUnixPlatform.macOsArm64 4
@@ -342,16 +356,22 @@ class Program
 
     [<Test>]
     let ``33 is glibc's SIGSETXID, which glibc catches, and is refused under Linux`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         refused SimulatedUnixPlatform.linuxX64 33 "runs glibc's own SIGSETXID handler"
 
     [<Test>]
     let ``30 is Linux's SIGPWR, which terminates a real process, and PawPrint's`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         match run SimulatedUnixPlatform.linuxX64 30 with
         | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual Signal.SIGPWR
         | other -> failwith $"expected termination by signal 30, got %O{other}"
 
     [<Test>]
     let ``SIGCONT with no handler is consumed, and the process carries on, under either flavour`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // SIGCONT is 18 under Linux's numbering and 19 under Darwin's. The
         // worker's is taken by the main thread, waiting in Join.
         for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do
@@ -363,6 +383,8 @@ class Program
         ()
         : unit
         =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The main thread does not block it, so the kernel discards it as it
         // is sent, as Linux and Darwin do, and the read is not disturbed.
         for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do
@@ -383,6 +405,8 @@ class Program
 
     [<Test>]
     let ``SIGCONT sent after a stop signal the native handler has already taken is answered`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The stop signal is in System.Native's pipe by the time SIGCONT is
         // generated, so the kernel's discard of pending stop signals does not
         // reach it, and both handlers run, as on the real runtime. SIGTSTP and
@@ -392,6 +416,8 @@ class Program
 
     [<Test>]
     let ``unregistering a signal the native handler has already taken is answered`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The SIGCHLD is in System.Native's pipe; whether the dispatcher reads
         // it before or after the registration goes, the process carries on:
         // the callback or the loop's non-cancelled handling, which for SIGCHLD
@@ -401,6 +427,8 @@ class Program
 
     [<Test>]
     let ``two signals sent while the dispatcher is busy are answered in either order`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The dispatcher reads them in the order the native handler wrote
         // them, whichever order the kernel would take them in.
         runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "15" ; "2" ]

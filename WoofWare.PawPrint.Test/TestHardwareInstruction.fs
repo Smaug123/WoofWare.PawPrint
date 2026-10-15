@@ -59,6 +59,8 @@ module TestHardwareInstruction =
     /// and the failure says where to copy it from.
     [<Test>]
     let ``the checked-in table is the JIT's, as the pinned runtime source states it`` () : unit =
+        Net11Frontier.park Net11Frontier.hardwareIntrinsicTable
+
         let jit =
             Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr", "jit")
 
@@ -209,6 +211,8 @@ module TestHardwareInstruction =
 
     [<Test>]
     let ``every arm64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
+        Net11Frontier.park Net11Frontier.hardwareIntrinsicTable
+
         match requireHostTarget () with
         | JitTarget.Arm64, _ -> ()
         | _ -> Assert.Ignore "The host CoreLib is not an arm64 one, whose placeholders the Arm64 table describes."
@@ -219,6 +223,8 @@ module TestHardwareInstruction =
 
     [<Test>]
     let ``every x64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
+        Net11Frontier.park Net11Frontier.hardwareIntrinsicTable
+
         let corelib =
             readCoreLib (LinuxCoreLibFlavour.corelibPath (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 

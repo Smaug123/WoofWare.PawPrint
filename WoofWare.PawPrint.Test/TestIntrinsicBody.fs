@@ -302,6 +302,8 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``VmSubstitution is exactly the VM's substitutions whose IL is a placeholder`` (which : AuditedCoreLib) : unit =
+        Net11Frontier.park Net11Frontier.newIntrinsics
+
         let corelib = coreLib which
         let methods = methodsOf corelib
 
@@ -486,6 +488,8 @@ module TestIntrinsicBody =
         (which : AuditedCoreLib)
         : unit
         =
+        Net11Frontier.park Net11Frontier.newIntrinsics
+
         let corelib = coreLib which
         let expansions = expansionsOf corelib
 
@@ -524,6 +528,8 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``a placeholder's self-call follows the profile`` (which : AuditedCoreLib) : unit =
+        Net11Frontier.park Net11Frontier.newIntrinsics
+
         let corelib = coreLib which
 
         let supporting (c : IntrinsicClass) =
@@ -662,6 +668,8 @@ module TestIntrinsicBody =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every JIT expansion in CoreLib is recognised`` (which : AuditedCoreLib) : unit =
+        Net11Frontier.park Net11Frontier.newIntrinsics
+
         let corelib = coreLib which
 
         let unrecognised =

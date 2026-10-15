@@ -50,8 +50,6 @@ module TestPureCases =
             """`RuntimeHelpers.Box` of a struct holding a reference — the one shape whose box CoreCLR fills with `Buffer.BulkMoveWithWriteBarrier` rather than `SpanHelpers.Memmove` (RuntimeType.BoxCache.cs:91). Nothing here is about `ReflectionInvocation_GetBoxInfo`, which serves this type fine: the guest never reaches `Box` at all. It dies one step earlier, in its own `Unsafe.As<WithRef, byte>(ref r)`, which is `Intrinsics.call` (Intrinsics.fs:1672) taking a byte view over a *local* — measured as "refusing byte view over value type containing object references in single-cell byref `<variable 0 …> as System.Byte`", from `validateByteAddressableCell` (IlMachineManagedByref.fs:595). That is the same "a reference-containing value type has no byte image" gap as `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`, and it forecloses *every* route a guest has to a `ref byte` over such a struct, which is why the reference-free half of this coverage lives in the active `RuntimeHelpersBox.cs` instead. The file is not satisfiable the wrong way: it checks both fields (so moving only the reference, or only the trailing int, still fails) and re-reads the box after mutating the source (so handing back a view onto the source rather than a copy fails). Un-park when a reference-containing value type can be byte-addressed."""
             "DelegateBindOpenGenericDefinitionDefaultMethod.cs",
             """`CreateDelegate` over a default interface method of an open variant interface definition, closed over a receiver implementing it by variance through `IChild : IContra<object>`, which overrides the default. The binding virtualises onto the receiver, and real .NET resolves the slot for the typical instantiation to the definition's own default body (11), although the closed `IContra<object>` dispatches to the override (22). PawPrint resolves through the closed instantiation, so it refuses any virtualisation that lands on a default body rather than bind the override: "TODO: Delegate_BindToMethodInfo must virtualise M of the open generic definition ... which implements it with a default interface method" (measured). Un-park when CoreCLR's default-method search for a typical instantiation is modelled. Verified to exit 0 on real .NET."""
-            "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
-            """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET."""
             "PointerFieldAliasedWidthStore.cs",
             """Storing into a pointer-typed field through a byref aliased as `long*`/`double*` rather than `void**`. A pointer slot is a `CliType.RuntimePointer` cell with no byte image, so the byte-scatter writer refuses it; the sibling `PointerFieldIndirectStore.cs` fixes that for the pointer-shaped payloads by replacing the whole cell instead. That route is deliberately *not* taken here, because whole-cell replacement restamps the cell with the payload's shape: on a 64-bit runtime `stind.i8`/`stind.r8` are exact-width stores into a `void*` slot too, and taking them would leave the field holding `Numeric Int64`/`Float64`, so the next read pushes the wrong evaluation-stack kind and fails downstream (measured: `bad ceq: Int64 vs NativeInt(0)`) with a message naming neither the field nor the store. Un-parking needs a pointer cell that can hold a non-pointer bit pattern while still reading back as a pointer — i.e. the same "materialise bits late" question as the rest of the provenance model — not a wider routing predicate."""
             "MethodHandleGetFunctionPointerSharedCode.cs",
@@ -82,21 +80,501 @@ module TestPureCases =
             "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", GuestEnding.ExitCode 5
             "BackgroundWorkerJoinsMainThread.cs", GuestEnding.ExitCode 4
             "EntryThreadIsBackgroundAfterMainReturns.cs", GuestEnding.ExitCode 11
-            "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11
             "EntryThreadReforegroundedThenBackgroundAgain.cs", GuestEnding.ExitCode 3
             "MainBackgroundBeforeStartingForegroundWorker.cs", GuestEnding.ExitCode 3
             "MainBackgroundThenForegroundAgainBeforeWorker.cs", GuestEnding.ExitCode 3
         ]
         |> Map.ofList
 
+    /// The cases parked on .NET 10 alone, each with why it is parked there, what would un-park it,
+    /// and how it was verified to behave on real .NET 10.
+    let parkedOnNet10 : Map<string, string> =
+        [
+            "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
+            """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET."""
+        ]
+        |> Map.ofList
+
+    /// The cases parked on .NET 11 alone, each with why it is parked there, what would un-park it,
+    /// and how it was verified to behave on real .NET 11.
+    let parkedOnNet11 : Map<string, string> =
+        [
+            yield!
+                [
+                    "AssemblyGetType.cs"
+                    "AssemblyGetTypeUnloadedBaseAssembly.cs"
+                    "CustomAttributeTypeArg.cs"
+                    "CustomAttributeTypeArgArrayType.cs"
+                    "InitializeArrayBadFieldOrArray.cs"
+                    "InitializeArrayBoxedFieldHandle.cs"
+                    "ReflectionGetMethodFromCanonicalUnshared.cs"
+                    "StringEqualsComparison.cs"
+                    "StringStartsWithComparison.cs"
+                    "UnsafeAccessorFrameInTrace.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.bitCast)
+            yield!
+                [ "GCGetMemoryInfo.cs" ; "GCMemoryInfoSpanProperties.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
+            yield!
+                [
+                    "AdvancedStructLayout.cs"
+                    "MarshalEnumField.cs"
+                    "MarshalPtrToStructure.cs"
+                    "MarshalPtrToStructureCopiedFields.cs"
+                    "MarshalPtrToStructureDateTimeField.cs"
+                    "MarshalStructureToPtrBoolField.cs"
+                    "MarshalStructureToPtrDateTimeField.cs"
+                    "MarshalStructureToPtrDateTimeFields.cs"
+                    "MarshalStructureToPtrDateTimeOverlapping.cs"
+                    "MarshalStructureToPtrDateTimeWithPointer.cs"
+                    "MarshalStructureToPtrDecimalField.cs"
+                    "MarshalStructureToPtrDecimalFieldBytes.cs"
+                    "MarshalStructureToPtrIntPtrField.cs"
+                    "MarshalStructureToPtrNoLayoutThrows.cs"
+                    "MarshalStructureToPtrStaticCtorDormant.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.marshalHasLayout)
+            "EnvironmentCurrentManagedThreadId.cs", Net11Frontier.managedThreadId
+            "LockHeldByOtherThread.cs", Net11Frontier.managedThreadId
+            "ConvFloatSaturating.cs",
+            """On .NET 11, an unchecked conversion from floating point to an integer narrower than 32 bits saturates to that integer's own range, where .NET 10 takes the low bits of the saturated `int32` conversion. Measured on RC1 against .NET 10: `(byte)300.0` is 255 (44), `(sbyte)-1e20` is -128 (0), `(short)70000.7` is 32767 (4464), `(char)70000.7` is 65535 (4464), and `(byte)-1.5` is 0 (255). The guest asserts .NET 10's rule, so real RC1 exits 40 at its first narrow check, and PawPrint converts by .NET 10's rule on every runtime. Un-park when the conversion opcodes take the runtime's rule and this case states .NET 11's results."""
+            "ReflectionIsCollectible.cs",
+            """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered. Verified to exit 0 on real .NET 11."""
+            "DelegateMethodInfo.cs",
+            """On .NET 11, `Delegate.Method` asks the `Delegate_CreateMethodInfo` QCall, which PawPrint does not implement: "Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)". Un-park when it is answered and the case states each runtime's answer: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1."""
+            "ModuleGetTypes.cs",
+            """On .NET 11, the `RuntimeModule_GetTypes` QCall takes a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: "Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)". Un-park when the handler takes .NET 11's signature. Verified to exit 0 on real .NET 11."""
+            yield!
+                [
+                    "AccessSeeded.cs"
+                    "ActivatorCreateInstanceNonGeneric.cs"
+                    "ActivatorCreateInstanceStructCtor.cs"
+                    "AnonymousPipeThreads.cs"
+                    "ArithmeticOperations.cs"
+                    "ArrayClear.cs"
+                    "ArrayCopyCastCheckThrows.cs"
+                    "ArrayCreateInstanceMultiDim.cs"
+                    "ArrayGetInterfacesAssignable.cs"
+                    "ArrayGetInterfacesByName.cs"
+                    "ArrayGetInterfacesCount.cs"
+                    "ArrayGetInterfacesPointerElement.cs"
+                    "ArrayGetInterfacesShape.cs"
+                    "ArrayGetLengthOutOfRangeUnhandled.cs"
+                    "ArrayInterfaceCovariance.cs"
+                    "ArrayInterfaceIndexer.cs"
+                    "ArrayInterfaceMutationThrows.cs"
+                    "ArraySetValueCastCheck.cs"
+                    "ArrayShapeQueries.cs"
+                    "ArraySortHelperDefaultInt.cs"
+                    "ArrayStoreVarianceDelegate.cs"
+                    "ArrayStoreVarianceImplicitInterfaceReject.cs"
+                    "AssemblyFullNameDisplayName.cs"
+                    "AssemblyGetExecutingAssemblyViaReflection.cs"
+                    "AssemblyGetNameSimpleName.cs"
+                    "AssemblyLoadContextDefault.cs"
+                    "AssemblyLoadEventImage.cs"
+                    "BackgroundWorkerJoinsMainThread.cs"
+                    "BasicLock.cs"
+                    "BoxHasFlagTypeMismatch.cs"
+                    "CachedCctorFailureRethrowClearsTrace.cs"
+                    "CallThroughAbstractMethodPointer.cs"
+                    "CancellationTokenRegistrationDisposeCrossThread.cs"
+                    "CancellationTokenSourceCancel.cs"
+                    "CastClassInvalid.cs"
+                    "CastclassFailures.cs"
+                    "ChModSeeded.cs"
+                    "ComplexTryCatch.cs"
+                    "ConstrainedCallvirtNullByref.cs"
+                    "ConstrainedCallvirtNullableGetType.cs"
+                    "ConstrainedCallvirtStructDefaultInterfaceMethod.cs"
+                    "ConstrainedLdftnStaticAbstract.cs"
+                    "ContendedMonitorEnter.cs"
+                    "ContendedMonitorEnterOnArray.cs"
+                    "ConvOvfI.cs"
+                    "ConvOvfIUn.cs"
+                    "ConvOvfU.cs"
+                    "ConvOvfU2.cs"
+                    "ConvOvfWideAndUnsigned.cs"
+                    "CopyFileSeeded.cs"
+                    "CopyFileUnauthorized.cs"
+                    "CreateSeeded.cs"
+                    "CustomAttributeNamedArgs.cs"
+                    "CyclicCctorAcrossThreads.cs"
+                    "DelegateBindOpenGenericDefinitionFormalSignature.cs"
+                    "DelegateBindOpenGenericDefinitionMethod.cs"
+                    "DelegateBindOpenVirtual.cs"
+                    "DelegateCombine.cs"
+                    "DelegateDynamicInvoke.cs"
+                    "DelegateFindMethodHandleOpenInstanceGeneric.cs"
+                    "DelegateMulticastInvoke.cs"
+                    "DelegateOverGenericMethodNewarr.cs"
+                    "DelegateOverNullInstanceReceiver.cs"
+                    "DelegateToAbstractMethodOverNull.cs"
+                    "DelegateToIntrinsicTypeMember.cs"
+                    "DivideByZeroExceptions.cs"
+                    "ElementTypedArrayNullFaults.cs"
+                    "EntryThreadIsBackgroundAfterMainReturns.cs"
+                    "EntryThreadReforegroundedThenBackgroundAgain.cs"
+                    "EnumArrayCastBetweenEnums.cs"
+                    "EnumArrayCastWidthMismatch.cs"
+                    "EnumHasFlagMismatchUnhandled.cs"
+                    "EnumHasFlagNullFlagUnhandled.cs"
+                    "EnumQueriesOpenGenericSharedParent.cs"
+                    "EnumerateSeeded.cs"
+                    "EnvironmentCurrentManagedThreadIdThread.cs"
+                    "EnvironmentVariableIllegalName.cs"
+                    "EnvironmentVariableUtf8RequiredSize.cs"
+                    "ExceptionDispatchInfoThrow.cs"
+                    "ExceptionHandling.cs"
+                    "ExpressionInterpreterByRefCall.cs"
+                    "ExpressionLambdaCompile.cs"
+                    "ExpressionLambdaCompileWide.cs"
+                    "FieldHandleAcquiresContextFromThis.cs"
+                    "FieldInfoGetFieldFromHandle.cs"
+                    "FieldMetadataToken.cs"
+                    "FileMetadataSeeded.cs"
+                    "FileStreamHandleSeeded.cs"
+                    "FlockContentionSeeded.cs"
+                    "ForegroundThreadExitsAfterMainReturns.cs"
+                    "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs"
+                    "ForeignRaiseFlagConsumedByRethrow.cs"
+                    "ForeignRaiseFlagNotStolenByCleanup.cs"
+                    "ForeignRaiseFlagPendingBeforeCleanup.cs"
+                    "ForeignRaiseFlagSetInFinally.cs"
+                    "ForeignRaiseFlagSetInFinallyDuringRethrow.cs"
+                    "ForeignRaiseFlagSurvivesFramelessRethrow.cs"
+                    "ForeignRaiseReadsCurrentExceptionTrace.cs"
+                    "ForeignRaiseTokenSurvivesLocalCleanup.cs"
+                    "GcAllocateArrayLengthValidation.cs"
+                    "GenericDelegateVariance.cs"
+                    "GenericEdgeCases.cs"
+                    "GenericInterfaceVarianceDirect.cs"
+                    "GetArrayDataReferenceNull.cs"
+                    "GetFieldOnOpenGenericTypeDefinition.cs"
+                    "ImmutableAgileExceptionEffects.cs"
+                    "ImmutableAgileExceptionNullArgument.cs"
+                    "IndirectCallToMethodLevelIntrinsic.cs"
+                    "InitializeArrayNullArgs.cs"
+                    "InlineArrayReflectionFieldCount.cs"
+                    "Int128Narrowing.cs"
+                    "InterfaceDispatch.cs"
+                    "InterlockedAndOrContended.cs"
+                    "InterlockedAndOrNullRef.cs"
+                    "InterlockedNullRefLocations.cs"
+                    "LastErrorIsPerThread.cs"
+                    "LdelemTokenFaults.cs"
+                    "LdelemaArrayTypeMismatch.cs"
+                    "LdtokenField.cs"
+                    "LdtokenMemberTokens.cs"
+                    "LdvirtftnNullReceiver.cs"
+                    "LibcKillIgnoredPipe.cs"
+                    "LibcKillIgnoredThenRegistered.cs"
+                    "LibcRaiseDiscardedFromThread.cs"
+                    "LinkSeeded.cs"
+                    "LinkTargetSeeded.cs"
+                    "LiteralFieldName.cs"
+                    "LiteralFieldType.cs"
+                    "LiteralFieldValue.cs"
+                    "LockOnArray.cs"
+                    "MainBackgroundBeforeStartingForegroundWorker.cs"
+                    "MainBackgroundThenForegroundAgainBeforeWorker.cs"
+                    "MakeGenericMethodConstraintSatisfied.cs"
+                    "MakeGenericMethodConstraintViolation.cs"
+                    "MakeGenericMethodOnOpenDefinition.cs"
+                    "MakeGenericTypeAllowsRefStruct.cs"
+                    "MakeGenericTypeArrayArguments.cs"
+                    "MakeGenericTypeClassConstraint.cs"
+                    "MakeGenericTypeGeneralConstraint.cs"
+                    "MakeGenericTypeMultipleArguments.cs"
+                    "MakeGenericTypeNewConstraint.cs"
+                    "MakeGenericTypeStructConstraint.cs"
+                    "MarshalOffsetOf.cs"
+                    "MarshalOffsetOfBoolCharFields.cs"
+                    "MarshalOffsetOfLayoutClass.cs"
+                    "MarshalSizeOfAutoLayoutStruct.cs"
+                    "MarshalSizeOfByValArray.cs"
+                    "MarshalSizeOfLayoutClass.cs"
+                    "MarshalSizeOfNestedIllegalField.cs"
+                    "MarshalStructureToPtrCharField.cs"
+                    "MdArrayImplicitInterfaceRejected.cs"
+                    "MdUtf8StringEqualsCaseInsensitive.cs"
+                    "MdUtf8StringEqualsCaseInsensitiveUnicode.cs"
+                    "MethodGetGenericArguments.cs"
+                    "MethodGetGenericMethodDefinition.cs"
+                    "MethodGetGenericParameterConstraints.cs"
+                    "MethodGetGenericParameterConstraintsEmbedded.cs"
+                    "MethodHandleGetFunctionPointer.cs"
+                    "MethodImplementationFlags.cs"
+                    "MethodIsGenericMethodDefinition.cs"
+                    "MethodOnClosedGenericType.cs"
+                    "MethodReflectionProbe.cs"
+                    "ModuleResolveBadToken.cs"
+                    "MonitorEnterRefBool.cs"
+                    "MonitorPulseWait.cs"
+                    "MonitorPulseWaitOnArray.cs"
+                    "MonitorTryEnterOnArray.cs"
+                    "MonitorTryEnterTimeout.cs"
+                    "MonitorTryEnterTimeoutSucceeds.cs"
+                    "MonitorWaitReentrant.cs"
+                    "MonitorWaitTimeout.cs"
+                    "MultiDimArrayFaults.cs"
+                    "MultiDimArrayNewobjFaults.cs"
+                    "MultiDimensionalArrayBoundsBlock.cs"
+                    "MultiDimensionalArrayCovariance.cs"
+                    "NativeIntArrayIndex.cs"
+                    "NativeMemoryAlignedAllocFree.cs"
+                    "NestedTypeEnumeration.cs"
+                    "NewarrLengthValidation.cs"
+                    "NewobjCctorRace.cs"
+                    "NullAddressDereference.cs"
+                    "NullDereferenceTest.cs"
+                    "NullReceiverGuards.cs"
+                    "OpenDelegateSpanClearOverReferenceLocal.cs"
+                    "OpenMissingFile.cs"
+                    "PathGetFullPathRelative.cs"
+                    "PipeBlockingThreads.cs"
+                    "PosixFAdviseSeeded.cs"
+                    "PosixSignalKillCancelled.cs"
+                    "PosixSignalKillQueued.cs"
+                    "PosixSignalPipeTakesTwoDescriptors.cs"
+                    "PosixSignalRaiseCancelled.cs"
+                    "PropertyEnumeration.cs"
+                    "ReadAllBytesSeeded.cs"
+                    "ReflectionBaseDefinitionOpenGenericBase.cs"
+                    "ReflectionConstrainedGenericOverrideSlots.cs"
+                    "ReflectionFieldGetValue.cs"
+                    "ReflectionFieldGetValueFailingCctor.cs"
+                    "ReflectionFieldGetValueGenericStatic.cs"
+                    "ReflectionFieldGetValueGenericStaticInherited.cs"
+                    "ReflectionFieldPointer.cs"
+                    "ReflectionFieldSetValue.cs"
+                    "ReflectionFieldSetValueAfterFailedCctor.cs"
+                    "ReflectionFieldSetValueFailingCctor.cs"
+                    "ReflectionFieldSetValueInitOnly.cs"
+                    "ReflectionGenericMethodDefinitionSignature.cs"
+                    "ReflectionGenericOverrideHidesBaseSlot.cs"
+                    "ReflectionGenericVirtualMethodOverrideSlots.cs"
+                    "ReflectionGetMethodFromHandleCrossInstantiation.cs"
+                    "ReflectionInvokeByRefParameter.cs"
+                    "ReflectionInvokeConstructor.cs"
+                    "ReflectionInvokeIntrinsicTarget.cs"
+                    "ReflectionInvokeIntrinsicTypeMember.cs"
+                    "ReflectionInvokeMethod.cs"
+                    "ReflectionInvokeMethodManyArguments.cs"
+                    "ReflectionInvokeMethodMultipleArguments.cs"
+                    "ReflectionInvokeNullableReturn.cs"
+                    "ReflectionInvokeOutNullSlot.cs"
+                    "ReflectionInvokePointerSignature.cs"
+                    "ReflectionInvokeStructReceiver.cs"
+                    "ReflectionInvokeVirtualMethod.cs"
+                    "ReflectionMetadataToken.cs"
+                    "ReflectionMethodAtSlot.cs"
+                    "ReflectionMethodSignature.cs"
+                    "ReflectionOpenConstructedMethods.cs"
+                    "ReflectionOpenGenericConstructors.cs"
+                    "ReflectionOpenGenericDefinitionElementTypes.cs"
+                    "ReflectionOpenGenericDefinitionMethods.cs"
+                    "ReflectionOpenGenericDefinitionParameterTypes.cs"
+                    "ReflectionOpenGenericDefinitionSharedParent.cs"
+                    "ReflectionOpenGenericNullableConstructor.cs"
+                    "ReflectionOpenGenericStructConstructors.cs"
+                    "ReflectionOverloadedIndexer.cs"
+                    "ReflectionParameterDefaultValue.cs"
+                    "ReflectionParameterInfo.cs"
+                    "ReflectionParameterMarshalAsAbsent.cs"
+                    "ReflectionParameterMarshalAsCustomMarshaler.cs"
+                    "ReflectionParameterMarshalAsPresent.cs"
+                    "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
+                    "ReflectionPropertyHiding.cs"
+                    "ReflectionPropertyHidingCrossModule.cs"
+                    "ReflectionPropertyRawConstantValue.cs"
+                    "ReflectionPropertyType.cs"
+                    "ReflectionPropertyTypeGenericDeclaringType.cs"
+                    "ReflectionResolveMethodOnGenericType.cs"
+                    "ReflectionVirtualMethodSlots.cs"
+                    "ReflectionVirtualSlotsGenericDefinitionLayout.cs"
+                    "ReflectiveIsTypicalMethodDefinition.cs"
+                    "RegexConstruction.cs"
+                    "RegexConstructionOptions.cs"
+                    "RegexConstructionRepeatedNonBacktracking.cs"
+                    "ResizeArray.cs"
+                    "RethrowStackTraceBoundary.cs"
+                    "RuntimeFieldHandleGetUtf8Name.cs"
+                    "RuntimeHelpersBox.cs"
+                    "RuntimeHelpersGetUninitializedObject.cs"
+                    "RuntimeTypeGetInterfaceByName.cs"
+                    "RuntimeTypeGetInterfacesEmpty.cs"
+                    "RuntimeTypeGetInterfacesInherited.cs"
+                    "SocketAcceptBlocking.cs"
+                    "SocketBindListen.cs"
+                    "SocketConnectManaged.cs"
+                    "SocketCreateManaged.cs"
+                    "SocketEventDelivery.cs"
+                    "SocketEventListenerWait.cs"
+                    "SocketEventWaitCountCapture.cs"
+                    "SocketEventsWaitBackgroundThread.cs"
+                    "SocketPoll.cs"
+                    "SocketPollTimeout.cs"
+                    "SpanIndexOutOfRange.cs"
+                    "StackFrameHelperUnsharedFrames.cs"
+                    "StackFrameSharedGenericFrame.cs"
+                    "StackTraceCurrentThreadFrames.cs"
+                    "StackTraceFromUnthrownException.cs"
+                    "StackTraceGenericDeclaringFrame.cs"
+                    "StandardErrorGone.cs"
+                    "StandardInputFileStream.cs"
+                    "StandardInputReadLine.cs"
+                    "StandardInputReadLineLarge.cs"
+                    "StandardInputReadToEnd.cs"
+                    "StandardOutputGone.cs"
+                    "StelemBoundsBeforeVariance.cs"
+                    "StelemRefArrayCovariance.cs"
+                    "StringContentRoundTrip.cs"
+                    "StringCtorArgumentValidation.cs"
+                    "StringEqualsComparisonCulture.cs"
+                    "StringSplitEdgeCases.cs"
+                    "SymLinkSeeded.cs"
+                    "SystemNativeHandleNonCanceledSavedDisposition.cs"
+                    "SystemNativeOSThreadId.cs"
+                    "SzArrayImplicitInterfaceCastEnum.cs"
+                    "SzArrayImplicitInterfaceCastRef.cs"
+                    "TaskAsyncVoid.cs"
+                    "TaskBasics.cs"
+                    "TaskConfigureAwaitBool.cs"
+                    "TaskConfigureAwaitOptions.cs"
+                    "TaskContinueWith.cs"
+                    "TaskDelayWait.cs"
+                    "TaskMultipleBlockingWaits.cs"
+                    "TaskMultipleContinuations.cs"
+                    "TaskRunThrowSetsFaulted.cs"
+                    "TaskWhenAll.cs"
+                    "TaskYieldAwait.cs"
+                    "ThreadCultureSetBeforeStart.cs"
+                    "ThreadGetCurrentProcessorId.cs"
+                    "ThreadJoinTimeout.cs"
+                    "ThreadJoinTimeoutSucceeds.cs"
+                    "ThreadJoinTwice.cs"
+                    "ThreadJoinZeroTimeout.cs"
+                    "ThreadParameterizedStart.cs"
+                    "ThreadStartFlowsAsyncLocal.cs"
+                    "ThreadStartJoin.cs"
+                    "ThreadStateObserved.cs"
+                    "ThreadStateOfEntryThreadAfterMain.cs"
+                    "ThreadStateOfIdlePoolWorker.cs"
+                    "ThreadStaticCctorInitialiser.cs"
+                    "ThreadStaticIsolation.cs"
+                    "ThreadUnsafeStartDoesNotFlowAsyncLocal.cs"
+                    "Threads.cs"
+                    "ThrowingCctorProperties.cs"
+                    "TruncateSeeded.cs"
+                    "TypeConversions.cs"
+                    "TypeGetArrayRank.cs"
+                    "TypeGetGenericParameterConstraintsSelfReferential.cs"
+                    "TypeGetGenericTypeDefinition.cs"
+                    "TypeIsActualEnum.cs"
+                    "TypeIsValueTypeMethodGenericParameter.cs"
+                    "TypeMakeArrayType.cs"
+                    "TypeMakeByRefType.cs"
+                    "UnboxAnyArrayAssignability.cs"
+                    "UnboxAnyArrayNegative.cs"
+                    "UnboxAnyArrayOperandRefTarget.cs"
+                    "UnboxAnyEnumUnderlyingNegative.cs"
+                    "UnboxAnyMultiDimArrayTarget.cs"
+                    "UnboxAnyNullableNegative.cs"
+                    "UnboxAnyNullableStruct.cs"
+                    "UnboxFieldAccess.cs"
+                    "UnmanagedCallersOnlyFunctionPointer.cs"
+                    "UnsafeAccessorAbstractConstructor.cs"
+                    "UnsafeAccessorArrayConstructor.cs"
+                    "UnsafeAccessorArrayConstructorShapes.cs"
+                    "UnsafeAccessorArrayMemberLookup.cs"
+                    "UnsafeAccessorBindsBeforeCctor.cs"
+                    "UnsafeAccessorDeclarationOrdering.cs"
+                    "UnsafeAccessorFailures.cs"
+                    "UnsafeAccessorGenericTarget.cs"
+                    "UnsafeAccessorIntrinsicTarget.cs"
+                    "UnsafeAccessorInvalidKind.cs"
+                    "UnsafeAccessorMethodOfGenericType.cs"
+                    "UnsafeAccessorNameIsExplicitlyNull.cs"
+                    "UnsafeAccessorNamespacedTargetName.cs"
+                    "UnsafeAccessorNoBaseClassWalk.cs"
+                    "UnsafeAccessorNullByrefReceiver.cs"
+                    "UnsafeAccessorOnGenericTypeLookup.cs"
+                    "UnsafeAccessorRefStructConstraintViolation.cs"
+                    "UnsafeAccessorRefusedTargets.cs"
+                    "UnsafeAccessorSharedGenericTarget.cs"
+                    "UnsafeAccessorStructVirtualIsAmbiguous.cs"
+                    "UnsafeAccessorVirtualTarget.cs"
+                    "UnsafeBitCast.cs"
+                    "UnsafeBitCastIdentity.cs"
+                    "UnsafeCopyBlockNullEndpoint.cs"
+                    "UnsafeInitBlock.cs"
+                    "UnsafeUnalignedNullPointer.cs"
+                    "UnsafeUnalignedNullRef.cs"
+                    "UnsafeUnbox.cs"
+                    "ValueTaskConfigureAwait.cs"
+                    "ValueTaskConfigureAwaitNonGeneric.cs"
+                    "WaitHandleTimeoutSemaphore.cs"
+                    "WaitHandleTimeoutSemaphoreSignalled.cs"
+                    "WaitHandleWaitAll.cs"
+                    "WaitHandleWaitAllBlocking.cs"
+                    "WaitHandleWaitAllDuplicate.cs"
+                    "WaitHandleWaitAny.cs"
+                    "WaitHandleWaitAnyBlocking.cs"
+                    "WriteSeeded.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.thinLock)
+            yield!
+                [ "ThreadJoinSelfTimeout.cs" ; "ThreadSleep.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.waitSleepJoin)
+            "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
+            """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Real .NET 11 refuses the bind with `InvalidOperationException` ("Could not execute the method because either the method itself or the containing type is not fully instantiated"), measured on RC1, where .NET 10 binds it. PawPrint refuses it on every runtime, as a `TODO`: "Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when the bind raises what RC1 raises. Verified to end in that unhandled exception on real .NET 11."""
+            "DelegateOpenInstanceRepresentation.cs",
+            """Parked behind the thin lock (`Net11Frontier.thinLock`). The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when the thin lock lands and the case states each runtime's answer."""
+            "DelegateBindToMetadataMethod.cs",
+            """Parked behind the thin lock (`Net11Frontier.thinLock`). The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when the thin lock lands and the case states each runtime's answer."""
+            "AssemblyGetCallingAssemblyFromEntryPoint.cs",
+            """Parked behind the thin lock (`Net11Frontier.thinLock`). The case also asserts .NET 10's behaviour: real .NET 11 exits 2: `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, as it is on .NET 10. Measured on RC1. Un-park when the thin lock lands and the case states each runtime's answer."""
+            "ReflectionStripMethodInstantiationOpenDefinition.cs",
+            """Parked behind the thin lock (`Net11Frontier.thinLock`). The case also asserts .NET 10's behaviour: real .NET 11 dies of a `NullReferenceException`: the non-public `RuntimeMethodHandle` member the guest looks up by reflection (line 29) is not there to call. Measured on RC1. Un-park when the thin lock lands and the case states each runtime's answer."""
+            "DelegateBindStaticAbstractInterfaceMethod.cs",
+            """Parked behind the thin lock (`Net11Frontier.thinLock`). The case also asserts .NET 10's behaviour: real .NET 11 dies of a `BadImageFormatException` from `CreateDelegate` over the static abstract method, which .NET 10 binds. Measured on RC1. Un-park when the thin lock lands and the case states each runtime's answer."""
+        ]
+        |> Map.ofList
+
+    /// How each case ends on .NET 10 alone, when that is not a normal exit with code 0.
+    let endingsOnNet10 : Map<string, GuestEnding> =
+        [ "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11 ]
+        |> Map.ofList
+
+    /// How each case ends on .NET 11 alone, when that is not a normal exit with code 0.
+    let endingsOnNet11 : Map<string, GuestEnding> =
+        [
+            "ConvFloatSaturating.cs", GuestEnding.ExitCode 40
+            "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 12
+            "AssemblyGetCallingAssemblyFromEntryPoint.cs", GuestEnding.ExitCode 2
+            "DelegateBindStaticAbstractInterfaceMethod.cs", GuestEnding.UnhandledException
+            "DelegateBindToMetadataMethod.cs", GuestEnding.ExitCode 18
+            "DelegateMethodInfo.cs", GuestEnding.ExitCode 120
+            "DelegateOpenInstanceRepresentation.cs", GuestEnding.ExitCode 18
+            "ReflectionStripMethodInstantiationOpenDefinition.cs", GuestEnding.UnhandledException
+            "DelegateBindOpenGenericDefinitionStaticVirtual.cs", GuestEnding.UnhandledException
+        ]
+        |> Map.ofList
+
     /// Which cases are parked on `runtime`, and how each case is expected to end there.
     let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =
         match runtime with
-        | EmulatedRuntime.Net10
+        | EmulatedRuntime.Net10 ->
+            {
+                Parked = GuestTable.fold "Net10 parks" parkedEverywhere parkedOnNet10
+                Endings = GuestTable.fold "Net10 endings" endingsEverywhere endingsOnNet10
+            }
         | EmulatedRuntime.Net11 ->
             {
-                Parked = parkedEverywhere
-                Endings = endingsEverywhere
+                Parked = GuestTable.fold "Net11 parks" parkedEverywhere parkedOnNet11
+                Endings = GuestTable.fold "Net11 endings" endingsEverywhere endingsOnNet11
             }
 
     let allPure =
@@ -558,6 +1036,35 @@ module TestPureCases =
         ]
         |> Map.ofList
 
+    /// The kernel both runtimes launch `fileName` with: its filesystem seed (with any environment
+    /// that goes with it), its environment overlay, or its standard streams, whichever it has, and
+    /// otherwise the default. Fails if it has more than one, which `runSets` would assign to more
+    /// than one test.
+    let kernelConfigOf (fileName : string) : KernelConfig =
+        match
+            Map.tryFind fileName seededCases,
+            Map.tryFind fileName environmentCases,
+            Map.tryFind fileName standardStreamsCases
+        with
+        | None, None, None -> KernelConfig.Default
+        | Some seed, None, None ->
+            { KernelConfig.Default with
+                FileSystem = seed
+                Environment =
+                    seededCaseEnvironments
+                    |> Map.tryFind fileName
+                    |> Option.defaultValue KernelConfig.Default.Environment
+            }
+        | None, Some environment, None ->
+            { KernelConfig.Default with
+                Environment = environment
+            }
+        | None, None, Some streams ->
+            { KernelConfig.Default with
+                StandardStreams = streams
+            }
+        | _ -> failwith $"%s{fileName} is more than one of a seeded, an environment-overlay and a standard-streams case"
+
     /// Assign each of `all` to the test that runs it, given which cases are `seeded`, which have
     /// an `environment` overlay, which have `standardStreams` of their own, and which are parked or
     /// end other than by exiting with 0 in `cases`. A parked case goes to `Parked` alone, whatever
@@ -766,6 +1273,8 @@ module TestPureCases =
     /// answer; see docs/divergences.md for why that one.
     [<Test>]
     let ``calli through a null function pointer throws NullReferenceException`` () =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let source =
             """
 using System;
@@ -887,6 +1396,8 @@ public class Program
     /// first to show that the difference is really there to be seen.
     [<Test>]
     let ``StripMethodInstantiation refuses a caller that could see the canonical declaring type`` () =
+        Net11Frontier.park Net11Frontier.bitCast
+
         let source =
             """
 using System;
@@ -958,6 +1469,8 @@ public class Program
     /// are `sourcesPure/ReflectionGetMethodFromCanonicalUnshared.cs`.
     [<Test>]
     let ``GetMethodFromCanonical refuses a caller that could see the canonical declaring type`` () =
+        Net11Frontier.park Net11Frontier.bitCast
+
         let source =
             """
 using System;
@@ -1037,6 +1550,8 @@ public class Program
     [<TestCase "capture.Invoke(null, new object[] { helper, false, null });">]
     [<TestCase "initializeSourceInfo.Invoke(helper, new object[] { false, null });">]
     let ``GetStackFramesInternal refuses a caller that could see a canonical frame`` (entry : string) =
+        Net11Frontier.park Net11Frontier.bitCast
+
         let source =
             """
 using System;
@@ -1133,6 +1648,8 @@ public class Program
     [<TestCase("StripMethodInstantiation")>]
     [<TestCase("GetMethodFromCanonical")>]
     let ``Canonicalising entry points refuse an open construction with a shared argument`` (entryPoint : string) =
+        Net11Frontier.park Net11Frontier.bitCast
+
         let source =
             """
 using System;
@@ -1545,14 +2062,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            KernelConfig =
-                { KernelConfig.Default with
-                    FileSystem = seededCases.[fileName]
-                    Environment =
-                        seededCaseEnvironments
-                        |> Map.tryFind fileName
-                        |> Option.defaultValue KernelConfig.Default.Environment
-                }
+            KernelConfig = kernelConfigOf fileName
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
@@ -1565,10 +2075,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            KernelConfig =
-                { KernelConfig.Default with
-                    Environment = environmentCases.[fileName]
-                }
+            KernelConfig = kernelConfigOf fileName
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
@@ -1581,10 +2088,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            KernelConfig =
-                { KernelConfig.Default with
-                    StandardStreams = standardStreamsCases.[fileName]
-                }
+            KernelConfig = kernelConfigOf fileName
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
@@ -1620,11 +2124,17 @@ class Program
 
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented tests have correct real-runtime behaviour`` (fileName : string) =
+        // Launched as the test that would run it unparked launches its oracle.
+        let config = kernelConfigOf fileName
+
+        if not (RealRuntime.canMaterialise config.FileSystem) then
+            Assert.Ignore $"%s{fileName}'s seed names Unix permission bits, which this host cannot give a real file."
+
         let source = Assembly.getEmbeddedResourceAsString fileName assy
         let image = Roslyn.compile [ source ]
         let ending = (onRuntime (FrameworkUnderTest.runtime ())).Ending fileName
 
-        RealRuntime.executeWithRealRuntime [||] image
+        RealRuntime.executeWithSeed config.FileSystem config.Environment config.StandardStreams [||] image
         |> GuestEnding.assertReal fileName ending
 
     [<TestCaseSource(nameof unimplemented)>]
@@ -1639,18 +2149,8 @@ class Program
                 | GuestEnding.ExitCode code -> code
                 // Not checked; both runtimes are expected to throw.
                 | GuestEnding.UnhandledException -> 0
-            // A parked case gets the seed and environment it would have if it ran.
-            KernelConfig =
-                { KernelConfig.Default with
-                    FileSystem =
-                        seededCases
-                        |> Map.tryFind fileName
-                        |> Option.defaultValue KernelConfig.Default.FileSystem
-                    Environment =
-                        environmentCases
-                        |> Map.tryFind fileName
-                        |> Option.defaultValue KernelConfig.Default.Environment
-                }
+            // A parked case gets the kernel it would have if it ran.
+            KernelConfig = kernelConfigOf fileName
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always
             ExpectsUnhandledException = (ending = GuestEnding.UnhandledException)
@@ -1723,6 +2223,8 @@ class Program
 
     [<Test>]
     let ``GetEnvironmentVariables reports exactly the emulated environment`` () =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // Impure in spirit — the value asserted is PawPrint's own seeded table,
         // which the real runtime cannot be an oracle for, since it would report
         // whatever environment the test host was started with. The cross-runtime
@@ -1805,6 +2307,8 @@ class Program
 
     [<Test>]
     let ``GetEnvironmentVariables releases every block it allocates`` () =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // A leaked environment block is invisible to the guest — no double free,
         // no use-after-free, and the next call simply allocates another — so the
         // only way to see whether `FreeEnvironmentStringsW` really frees is to

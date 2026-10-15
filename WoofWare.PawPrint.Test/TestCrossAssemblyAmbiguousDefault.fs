@@ -261,34 +261,63 @@ public static class Program
         |> CrossAssemblyHarness.runTestExpectingRefusal [ "Ldftn" ; "ambiguous" ; "shared" ] [] [ libraryAfter ]
 
     [<Test>]
-    let ``an ambiguous interface call throws AmbiguousImplementationException`` () : unit = agrees "CaseInterfaceCall"
+    let ``an ambiguous interface call throws AmbiguousImplementationException`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseInterfaceCall"
 
     [<Test>]
-    let ``an ambiguous constrained call on a class throws`` () : unit = agrees "CaseConstrainedOnClass"
+    let ``an ambiguous constrained call on a class throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseConstrainedOnClass"
 
     [<Test>]
-    let ``an ambiguous constrained call on a value type throws`` () : unit = agrees "CaseConstrainedOnValueType"
+    let ``an ambiguous constrained call on a value type throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseConstrainedOnValueType"
 
     [<Test>]
-    let ``an ambiguous interface call on a boxed value type throws`` () : unit = agrees "CaseBoxedValueType"
+    let ``an ambiguous interface call on a boxed value type throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseBoxedValueType"
 
     [<Test>]
-    let ``an ambiguous static virtual call on a class throws`` () : unit = agrees "CaseStaticOnClass"
+    let ``an ambiguous static virtual call on a class throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseStaticOnClass"
 
     [<Test>]
-    let ``an ambiguous static virtual call on a value type throws`` () : unit = agrees "CaseStaticOnValueType"
+    let ``an ambiguous static virtual call on a value type throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseStaticOnValueType"
 
     [<Test>]
-    let ``ldvirtftn of an ambiguous method throws before the delegate is made`` () : unit = agrees "CaseLdvirtftn"
+    let ``ldvirtftn of an ambiguous method throws before the delegate is made`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseLdvirtftn"
 
     [<Test>]
-    let ``a delegate bound to an ambiguous method throws before it is made`` () : unit = agrees "CaseCreateDelegate"
+    let ``a delegate bound to an ambiguous method throws before it is made`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseCreateDelegate"
 
     [<Test>]
-    let ``an open delegate invoked on a receiver whose slot is ambiguous throws`` () : unit = agrees "CaseOpenDelegate"
+    let ``an open delegate invoked on a receiver whose slot is ambiguous throws`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
+        agrees "CaseOpenDelegate"
 
     [<Test>]
     let ``a pointer to an ambiguous static virtual in exact code throws at the ldftn`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         agrees "CaseStaticPointerOnValueType"
 
     [<Test>]

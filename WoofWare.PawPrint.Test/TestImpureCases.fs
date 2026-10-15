@@ -1649,8 +1649,9 @@ module TestImpureCases =
                 )
         }
 
-    /// The cases that run on every runtime. `onRuntime` folds these into every runtime's runs.
-    let runEverywhere : EndToEndTestCase list =
+    /// The cases registered on every runtime, each with its expected ending there. On each runtime
+    /// `onRuntime` runs every one that runtime does not park.
+    let registeredEverywhere : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
             // overflows the 256 bytes `Interop.Sys.GetCwd()` stackallocs, so
@@ -5124,14 +5125,151 @@ module TestImpureCases =
             Parked : (EndToEndTestCase * string) list
         }
 
+    /// The cases of `registeredEverywhere` parked on .NET 11, by file name, each with why it is parked
+    /// there and what would un-park it.
+    let parkedOnNet11 : Map<string, string> =
+        [
+            yield!
+                [ "GCMemoryInfoAllZero.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
+            yield!
+                [
+                    "AppContextConfigProperties.cs"
+                    "AppContextSeededBeforeCctor.cs"
+                    "AssemblyLocationEmpty.cs"
+                    "CloseEndsSleepingAccept.cs"
+                    "CloseEndsSleepingPipeTransfer.cs"
+                    "CopyFileWiringDarwinSeeded.cs"
+                    "CopyFileWiringLinuxSeeded.cs"
+                    "CurrentDirectoryConfigured.cs"
+                    "DelegateInvokeHandlePerInstantiation.cs"
+                    "DelegateMethodOnDynamicMethod.cs"
+                    "DynamicAssemblyHosting.cs"
+                    "DynamicCodeSupportedOverride.cs"
+                    "DynamicCodeUnsupportedByDefault.cs"
+                    "DynamicMethodDelegateBinding.cs"
+                    "DynamicMethodDelegateIdentity.cs"
+                    "DynamicMethodExceptionRegions.cs"
+                    "DynamicMethodFieldToken.cs"
+                    "DynamicMethodInitLocals.cs"
+                    "DynamicMethodInvalidCatchClause.cs"
+                    "DynamicMethodInvoke.cs"
+                    "DynamicMethodLdtoken.cs"
+                    "DynamicMethodMethodToken.cs"
+                    "DynamicMethodMintOnDemand.cs"
+                    "DynamicMethodNominalSignature.cs"
+                    "DynamicMethodPrimitiveBackingField.cs"
+                    "DynamicMethodReflectedCalls.cs"
+                    "DynamicMethodStackTrace.cs"
+                    "DynamicMethodStringLiteral.cs"
+                    "DynamicMethodStubFromModule.cs"
+                    "DynamicMethodTypeToken.cs"
+                    "DynamicModuleVersionIdEntropy.cs"
+                    "DynamicScopeRewrittenEntries.cs"
+                    "EventSourceDisabled.cs"
+                    "ExitFromWorker.cs"
+                    "FcntlDescriptorFlags.cs"
+                    "FileSystemTypeNfs.cs"
+                    "ForeignOwnedSeed.cs"
+                    "KqueueRegistrationDarwin.cs"
+                    "KqueueWaitDarwin.cs"
+                    "LibcRaiseDarwin.cs"
+                    "LibcSignalMaskDarwin.cs"
+                    "LibcSignalMaskLinux.cs"
+                    "LibcSigsuspendDarwin.cs"
+                    "LibcSigsuspendLinux.cs"
+                    "MinipalUrandomDescriptorLinux.cs"
+                    "NetworkStreamAsync.cs"
+                    "NewarrNegativeLengthMessage.cs"
+                    "PipeBrokenRaw.cs"
+                    "PipeReaderLeavesDuringWrite.cs"
+                    "ProcessPathConfigured.cs"
+                    "ProcessorIdAfterPark.cs"
+                    "ProcessorIdWithinMachine.cs"
+                    "SchedGetCpuDarwin.cs"
+                    "SchedGetCpuPlacement.cs"
+                    "SignalEndsPartPipeWrite.cs"
+                    "SignalInterruptsSocketEventWait.cs"
+                    "SignalRestartsPipeRead.cs"
+                    "SignalRetryKeepsShimCopies.cs"
+                    "SignalRetrySocketWaitCountLinux.cs"
+                    "SocketAbortiveClose.cs"
+                    "SocketAsyncAcceptDarwin.cs"
+                    "SocketAsyncConnectDarwin.cs"
+                    "SocketAsyncSendReceiveDarwin.cs"
+                    "SocketBindGroupAddressDarwin.cs"
+                    "SocketConnectDestinations.cs"
+                    "SocketConnectPortZero.cs"
+                    "SocketDualMode.cs"
+                    "SocketEventWaitSurvivesCloseLinux.cs"
+                    "SocketOptions.cs"
+                    "SocketPeerName.cs"
+                    "SocketPollDarwin.cs"
+                    "SocketSendReceive.cs"
+                    "SocketShutdown.cs"
+                    "SocketUnconnectedTransfer.cs"
+                    "StrErrorDarwin.cs"
+                    "StrErrorLinux.cs"
+                    "ThreadIdsFollowStartOrder.cs"
+                    "ThreadStaticByrefAcrossThreads.cs"
+                    "TruncateWiringDarwinSeeded.cs"
+                    "TruncateWiringLinuxSeeded.cs"
+                    "WriteLine.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.thinLock)
+            yield!
+                [
+                    "SocketConnectDarwin.cs"
+                    "SocketConnectLinux.cs"
+                    "SocketErrorOptionDarwin.cs"
+                    "SocketErrorOptionLinux.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.waitSleepJoin)
+        ]
+        |> Map.ofList
+
+    /// The cases of `registeredEverywhere` parked on .NET 11 only in their registration for a Linux
+    /// kernel, by file name: each Darwin registration ends before it reaches the blocker.
+    let parkedOnNet11OnLinux : Map<string, string> =
+        [ "InotifyRaw.cs", Net11Frontier.thinLock ] |> Map.ofList
+
+    /// Why `case` is parked on .NET 11, if it is.
+    let private net11Park (case : EndToEndTestCase) : string option =
+        match Map.tryFind case.FileName parkedOnNet11 with
+        | Some reason -> Some reason
+        | None ->
+            match SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> Map.tryFind case.FileName parkedOnNet11OnLinux
+            | SimulatedUnixFlavour.Darwin -> None
+
     /// Which cases run on `runtime`, and which are parked there.
     let onRuntime (runtime : EmulatedRuntime) : ImpureCasesOnRuntime =
         match runtime with
-        | EmulatedRuntime.Net10
-        | EmulatedRuntime.Net11 ->
+        | EmulatedRuntime.Net10 ->
             {
-                Run = runEverywhere
+                Run = registeredEverywhere
                 Parked = parkedEverywhere
+            }
+        | EmulatedRuntime.Net11 ->
+            let unparked =
+                Seq.append (Map.keys parkedOnNet11) (Map.keys parkedOnNet11OnLinux)
+                |> Seq.filter (fun name ->
+                    not (
+                        registeredEverywhere
+                        |> List.exists (fun case -> case.FileName = name && (net11Park case).IsSome)
+                    )
+                )
+                |> List.ofSeq
+
+            if not unparked.IsEmpty then
+                failwith $"Net11 parks name cases that park no registration in registeredEverywhere: %A{unparked}"
+
+            {
+                Run = registeredEverywhere |> List.filter (fun case -> (net11Park case).IsNone)
+                Parked =
+                    parkedEverywhere
+                    @ (registeredEverywhere
+                       |> List.choose (fun case -> net11Park case |> Option.map (fun reason -> case, reason)))
             }
 
     /// The cases that run on the runtime under test.
@@ -5256,6 +5394,8 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Darwin guest that asks for its groups stops, naming the unmeasured list`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // The same guest on a Darwin kernel reaches `File.GetAttributes` of a
         // root-owned file in a group that is not its effective one, so CoreLib
         // asks `GetGroups`; which list Darwin reports has not been measured, and
@@ -5294,6 +5434,8 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // An overwrite onto a link reaches SystemNative_CopyFile whichever
         // CoreLib runs it (see the guest), and on a Darwin kernel that shim is
         // fcopyfile(COPYFILE_ALL), which PawPrint refuses rather than copy
@@ -5375,6 +5517,8 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // `SupportsCopyFileRange` reads the release's major and minor numbers
         // and uses copy_file_range only from 5.3; below that the shim copies
         // with sendfile, which the kernel does not model. Releases either side
@@ -5445,6 +5589,8 @@ module TestImpureCases =
 
     [<Test>]
     let ``the Linux File.Copy wiring guest answers the same on the pinned linux-x64 CoreLib`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // On a macOS host the registered case runs a Darwin CoreLib, whose
         // File.Copy first asks clonefile and is told ENOTSUP; this runs the
         // CoreLib CI and production run, which goes straight to
@@ -5493,6 +5639,8 @@ module TestImpureCases =
 
     [<Test>]
     let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // On a macOS host the framework under test is a Darwin CoreLib, whose
         // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.
         let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()

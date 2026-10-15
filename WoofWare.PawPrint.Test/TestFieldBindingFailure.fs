@@ -516,8 +516,8 @@ module TestFieldBindingFailure =
 
     [<Test>]
     let ``every answer PawPrint gives for a field reference that binds nothing is the real runtime's`` () : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =

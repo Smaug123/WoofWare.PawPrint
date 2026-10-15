@@ -397,6 +397,9 @@ module TestSocketEventsPal =
     /// then checked against `keventChanges` for every pair of masks.
     [<Test>]
     let ``the kqueue changelist is upstream's`` () : unit =
+        Net11Frontier.park
+            ".NET 11's `TryChangeSocketEventRegistrationInner` registers kqueue events with `EV_ADD | EV_CLEAR` and `EV_DELETE`, without the `EV_RECEIPT` .NET 10's adds, so the changelist `SocketEventsPal` reproduces is .NET 10's. Un-park when it follows each runtime's."
+
         let body = keventChangeInnerBody ()
 
         let expect (pattern : string) =

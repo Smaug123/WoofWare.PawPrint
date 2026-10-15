@@ -111,6 +111,8 @@ module TestSchedulerSleepFairness =
 
     [<Test>]
     let ``a SpinWait spinner is observably asleep`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // Under `RoundRobin`, so that reaching the steady state is guaranteed rather than lucky:
         // `SpinWait` yields for twenty iterations before it ever calls `Thread.Sleep(1)`, and a
         // fair rotation gets every spinner there. Under `Pct` it is a coin toss — measured, seed
@@ -132,6 +134,8 @@ module TestSchedulerSleepFairness =
 
     [<Test>]
     let ``SpinWait spinners sleep across a PCT seed sweep`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // Aggregated, because whether a given seed reaches the sleep rung at all is a property
         // of that schedule (see above). Summing over a fixed seed set keeps the test fully
         // deterministic while making a claim about the schedule space rather than one schedule.

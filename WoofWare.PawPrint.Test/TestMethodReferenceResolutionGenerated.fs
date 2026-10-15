@@ -993,8 +993,8 @@ module TestMethodReferenceResolutionGenerated =
 
     [<Test>]
     let ``MemberRefs in generated worlds resolve where the real runtime binds them`` () : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =
@@ -1169,8 +1169,8 @@ module TestMethodReferenceResolutionGenerated =
     /// outright, both must be that answer.
     [<Test>]
     let ``a reference whose target depends on the instantiation says so`` () : unit =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =

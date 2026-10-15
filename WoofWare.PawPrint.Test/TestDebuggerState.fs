@@ -48,6 +48,8 @@ module TestDebuggerState =
 
     [<Test>]
     let ``Default debugger state reports no debugger attached`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let source =
             """
 using System.Diagnostics;

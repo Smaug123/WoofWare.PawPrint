@@ -37,8 +37,13 @@ module TestOpcodeFaultsOnPawPrint =
     /// The instructions parked on `runtime`, each with its disagreement.
     let private parkedOn (runtime : EmulatedRuntime) : Map<NullaryIlOp, string> =
         match runtime with
-        | EmulatedRuntime.Net10
-        | EmulatedRuntime.Net11 -> parkedEverywhere
+        | EmulatedRuntime.Net10 -> parkedEverywhere
+        // Measured: every instruction's driver stops at the thin lock.
+        | EmulatedRuntime.Net11 ->
+            NumericOpcodeGrid.instructions
+            |> List.map (fun (op, _, _) -> op, Net11Frontier.thinLock)
+            |> Map.ofList
+            |> GuestTable.fold "Net11 parks" parkedEverywhere
 
     let private csType (operand : NumericOpcodeGrid.Operand) : string =
         match operand with

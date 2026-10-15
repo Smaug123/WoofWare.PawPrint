@@ -710,7 +710,15 @@ mutation-testing skill applies to each table/classifier they introduce.
        every supported runtime's image on every leg. CI keeps the net10 leg alone, and the
        `Guest` tables give `Net11` net10's parks until P6e-2 measures its own.
      * **P6e-2, the leg.** The CI matrix leg, and every residual net11 failure parked through P4,
-       one reason per cause.
+       one reason per cause: the shared ones in `Net11Frontier` (the thin lock alone parks about
+       800 tests), with `Net11Frontier.park` for a test outside the `Guest` tables. Parking
+       exercised parts of the harness that net10 never had: a parked seeded, environment or
+       standard-streams case now has its real run launched with its own kernel
+       (`TestPureCases.kernelConfigOf`); an impure case registered on every runtime may be parked
+       on one (`registeredEverywhere`); the MemberRef oracles, which compare against host
+       reflection, read `HostImage` as same-image oracles must; and ASP.NET Core guests compile
+       against the host's ASP.NET Core like every other guest. Real .NET 11 ends nine guest cases
+       differently from .NET 10, recorded in `endingsOnNet11`.
 
      The `AppContext_TryGetHostPropertyValue` QCall (RC1 declares
      `AppContext.TryGetHostPropertyValue(string, StringHandleOnStack)`) is not in either: RC1's
@@ -729,17 +737,38 @@ mutation-testing skill applies to each table/classifier they introduce.
      past it reaches;
    * the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`;
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
-     and `RuntimeModule_GetTypes`'s three-argument shape (`SystemNative_AlignedAlloc`, which
-     net10 reaches too, lands on net10 ahead of the leg);
+     `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
+     (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * the managed `WaitSubsystem` that RC1 waits through on Unix, starting at
      `ThreadNative_SetWaitSleepJoinState`;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
-   * the thread-static seed, and the `LockHeldByOtherThread.cs` mismatch;
+   * the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which RC1's
+     `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read, so it accounts
+     for the `LockHeldByOtherThread.cs` mismatch too;
+   * the narrow float-to-integer conversions, which RC1 saturates to the target's own range
+     (`(byte)300.0` is 255, where net10 gives 44): the first behaviour fact of the opcode set
+     itself to differ, so a runtime-keyed rule for `conv.i1`/`u1`/`i2`/`u2` and `char`, with
+     `ConvFloatSaturating.cs` stating each runtime's results;
+   * `ExceptionMaking` per runtime: on real RC1 an exception escaping the making of a fault's or
+     a failed bind's exception aborts the process, and a failed message lookup no longer
+     replaces a `TypeInitializationException`;
+   * the tables read from one runtime's source, kept per runtime: `HardwareIntrinsicTable.tsv`
+     (a changed row shape in `hwintrinsiclistarm64.h`, and new ISAs), `NativeContractTable.tsv`
+     (the `get_CurrentManagedThreadId` FCall and the four `Monitor` natives, which RC1 dropped), and the escape analysis's
+     resource-lookup assumption (`Environment.GetResourceStringLocal` is gone);
+   * the escape analysis's helpers around a synchronized method, per runtime: RC1's JIT calls
+     `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
+     `Monitor.ExitIfLockTaken`;
+   * the guest cases whose real .NET 11 ending differs from .NET 10's, recorded in
+     `TestPureCases.endingsOnNet11` (delegate equality, `Delegate.Method`'s declaring type,
+     `GetCallingAssembly` from `Main`, and the private reflection several cases lean on);
    * the other new QCalls, and the vtable slots;
    * any placeholders among the `Half` and `SZArrayHelper` type-level `[Intrinsic]`s and the
      other newly-`[Intrinsic]` bodies;
-   * the two PAL facts, with their out-of-process net11 probes.
+   * the two PAL facts, with their out-of-process net11 probes, and the four PAL deltas the
+     net11 leg found: kqueue registration without `EV_RECEIPT`, `PAL_O_NONBLOCK_READ`/`_WRITE`,
+     the `NotifyEvents` set, and `MapFileSystemNameToEnum`'s shape.
 
    Each PR un-parks its cases
    (guest or non-guest) on the net11 leg, exactly the incremental discipline `AGENTS.md`

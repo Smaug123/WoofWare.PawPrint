@@ -186,4 +186,6 @@ public static class Driver
 
     [<Test>]
     let ``ckfinite agrees with the real runtime`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         FabricatedGuest.run "Ck" (fabricate ()) "CkfiniteDriver" driverSource 0

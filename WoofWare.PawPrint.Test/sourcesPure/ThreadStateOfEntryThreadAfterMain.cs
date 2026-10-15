@@ -4,8 +4,9 @@ using System.Threading;
 // Once Main has returned, `ThreadStore::WaitForOtherThreads` makes the entry thread background,
 // marks it `TS_ReportDead` (which `GetSnapshotState` reports as dead) and waits alertably, so a
 // worker holding its `Thread` object reads Background | Stopped | WaitSleepJoin. The wait is
-// entered last, so once WaitSleepJoin is visible the whole snapshot is. Measured on real
-// .NET 10: exit code 11.
+// entered last, so the worker waits for Stopped and then gives WaitSleepJoin a bounded number of
+// polls to appear. Measured on real .NET 10: exit code 11. Real .NET 11 (11.0.0-rc.1) reports
+// Background | Stopped and never WaitSleepJoin, measured: exit code 12.
 //
 // The worker reports through `Environment.ExitCode`, and Main is `void`, for the reasons given
 // in ForegroundThreadExitsAfterMainReturns.cs.
@@ -18,14 +19,24 @@ class ThreadStateOfEntryThreadAfterMain
         new Thread(() =>
         {
             ThreadState s = main.ThreadState;
-            while ((s & ThreadState.WaitSleepJoin) == 0)
+            while ((s & ThreadState.Stopped) == 0)
             {
                 Thread.Sleep(1);
                 s = main.ThreadState;
             }
 
-            Environment.ExitCode =
-                s == (ThreadState.Background | ThreadState.Stopped | ThreadState.WaitSleepJoin) ? 11 : 1;
+            for (int i = 0; i < 1000 && (s & ThreadState.WaitSleepJoin) == 0; i++)
+            {
+                Thread.Sleep(1);
+                s = main.ThreadState;
+            }
+
+            if (s == (ThreadState.Background | ThreadState.Stopped | ThreadState.WaitSleepJoin))
+                Environment.ExitCode = 11;
+            else if (s == (ThreadState.Background | ThreadState.Stopped))
+                Environment.ExitCode = 12;
+            else
+                Environment.ExitCode = 1;
         }).Start();
     }
 }

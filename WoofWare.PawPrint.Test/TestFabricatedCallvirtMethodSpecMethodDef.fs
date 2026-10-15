@@ -387,6 +387,9 @@ public static class Driver
 
     [<Test>]
     let ``callvirt of a MethodSpec over a MethodDef on a generic type agrees with the real runtime`` () : unit =
+        Net11Frontier.park
+            "Measured on real .NET 11: the fabricated driver dies of `InvalidProgramException` (\"Common Language Runtime detected an invalid program\"), where .NET 10 runs it, so the real runtime no longer agrees with the outcome the test expects of both. Un-park when the test states each runtime's outcome."
+
         let image = fabricate ()
         assertMethodSpecsWrapMethodDefs image
         FabricatedGuest.run "Gv" image "CallvirtMethodSpecMethodDefDriver" driverSource 0

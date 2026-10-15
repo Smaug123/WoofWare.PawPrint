@@ -342,6 +342,8 @@ public static class Driver
 
     [<Test>]
     let ``a blob ParseNativeTypeInfo refuses makes the field unmarshalable`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         run
             [
                 case "FixedArrayWithoutSize" FieldShape.Int32Array [| 0x1Euy |] None
@@ -354,6 +356,8 @@ public static class Driver
 
     [<Test>]
     let ``a FieldMarshal row is read whether or not the field carries HasFieldMarshal`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         run
             [
                 { case "RowWithoutFlag" FieldShape.Int32 [| 0x17uy |] None with

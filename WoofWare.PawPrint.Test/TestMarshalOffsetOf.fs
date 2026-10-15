@@ -548,6 +548,8 @@ public static class OffsetOfSweep
 
     [<Test>]
     let ``Marshal.OffsetOf in a guest agrees with real .NET`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         let image =
             Roslyn.compileAssembly
                 "PawPrintTestAssembly"

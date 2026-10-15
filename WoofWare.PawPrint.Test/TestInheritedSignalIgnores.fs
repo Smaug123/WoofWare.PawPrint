@@ -141,6 +141,8 @@ class Program
 
     [<Test>]
     let ``a guest started with signals ignored survives them on both runtimes`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         HostPlatform.onUnixHost (fun flavour ->
             let platform = HostPlatform.platformOf flavour
             let numbering = SimulatedUnixPlatform.signalNumbering platform
@@ -157,6 +159,8 @@ class Program
 
     [<Test>]
     let ``without the ignores the same guest dies of SIGUSR2 on both runtimes`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         HostPlatform.onUnixHost (fun flavour ->
             let platform = HostPlatform.platformOf flavour
             let numbering = SimulatedUnixPlatform.signalNumbering platform
@@ -175,6 +179,8 @@ class Program
 
     [<Test>]
     let ``the shim's handling of an inherited-ignored SIGINT leaves it ignored on both runtimes`` () : unit =
+        Net11Frontier.park Net11Frontier.thinLock
+
         // SIGINT is 2 on both flavours. Initialising the shim saves the
         // inherited ignore, and its non-cancelled handling then does nothing.
         // Without the ignore, both die of SIGINT.
@@ -199,6 +205,8 @@ class Program
 
     [<Test>]
     let ``an inherited-ignored SIGILL aborts the process at the first on both runtimes`` () : unit =
+        Net11Frontier.park Net11Frontier.waitSleepJoin
+
         // SIGILL is 4 on both flavours. The runtime's handler replaces the
         // ignore, and, sent the signal, aborts the process because what it
         // replaced was an ignore. Without the ignore, both survive the first.

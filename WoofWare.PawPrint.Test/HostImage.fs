@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open System.IO
 
 /// The test host's own CoreLib, as an image for PawPrint to read in a test.
@@ -29,3 +30,22 @@ module HostImage =
         match Path.GetDirectoryName coreLibPath with
         | null -> failwith $"The test host's CoreLib path %s{coreLibPath} has no directory"
         | dir -> dir
+
+    /// The `DotnetRuntimeDirs` along which to resolve framework assemblies alongside `coreLibPath`,
+    /// for a same-image oracle: the test host's shared framework directory alone.
+    let runtimeDirs : ImmutableArray<string> = ImmutableArray.Create frameworkDirectory
+
+    /// The test host's `Microsoft.AspNetCore.App` shared framework directory, which a guest that
+    /// uses ASP.NET Core is compiled against, as every guest is compiled against the test host's
+    /// framework. It runs on `FrameworkUnderTest.aspNetCoreFrameworkDirectory`.
+    let aspNetCoreFrameworkDirectory : string =
+        let location = typeof<Microsoft.AspNetCore.Builder.WebApplication>.Assembly.Location
+
+        match location with
+        | null
+        | "" ->
+            failwith "The test host's ASP.NET Core has no file location, so there is no image of it to compile against"
+        | path ->
+            match Path.GetDirectoryName path with
+            | null -> failwith $"The test host's ASP.NET Core path %s{path} has no directory"
+            | dir -> dir

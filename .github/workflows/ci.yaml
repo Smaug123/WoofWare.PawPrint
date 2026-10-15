@@ -15,8 +15,17 @@ env:
   DOTNET_MULTILEVEL_LOOKUP: 0
 
 jobs:
+  # `build` and `test-guest` each run once per supported runtime: `PAWPRINT_TEST_RUNTIME` selects
+  # the framework the suite runs its guests on (see `FrameworkUnderTest.fs`). The test host itself
+  # runs on the oldest supported runtime on every leg.
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [ Net10, Net11 ]
+    env:
+      PAWPRINT_TEST_RUNTIME: ${{ matrix.runtime }}
 
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -52,7 +61,7 @@ jobs:
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: test-results
+        name: test-results-${{ matrix.runtime }}
         path: TestResults/*.trx
 
   # The guest-running fixtures, which take longer than the rest of the suite put
@@ -60,6 +69,12 @@ jobs:
   # build is under two minutes, and this way neither job waits for the other.
   test-guest:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [ Net10, Net11 ]
+    env:
+      PAWPRINT_TEST_RUNTIME: ${{ matrix.runtime }}
 
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -80,7 +95,7 @@ jobs:
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: test-results-guest
+        name: test-results-guest-${{ matrix.runtime }}
         path: TestResults/*.trx
 
   build-nix:
