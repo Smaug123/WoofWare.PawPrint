@@ -135,6 +135,7 @@ SyncBlock::SyncBlock(DWORD index) : m_monitor(Make(index)), m_link()
             """
 .macro NEW_FAST
         INLINE_GET_CONTEXT x3
+        push_nonvol_reg rbx
         bhi         C_FUNC(Slow)
 .endm
 
@@ -154,15 +155,18 @@ LOCAL_LABEL(Fail):
         |> List.map (fun routine -> routine.Name, List.ofSeq routine.Calls)
         |> shouldEqual
             [
-                "NEW_FAST", [ "INLINE_GET_CONTEXT" ; "Slow" ]
+                "NEW_FAST", [ "INLINE_GET_CONTEXT" ; "Slow" ; "push_nonvol_reg" ]
                 "Fast", [ "Failed" ; "NEW_FAST" ]
                 "Indirect", [ "<indirect>" ; "Named" ]
             ]
 
     [<Test>]
-    let ``a symbol names a call spelled with its last qualifiers`` () : unit =
+    let ``a symbol names a call spelled with its last qualifiers, and a type names its constructor`` () : unit =
         CppSource.names "A::B::F" "B::F" |> shouldEqual true
         CppSource.names "A::B::F" "F" |> shouldEqual true
         CppSource.names "A::F" "B::F" |> shouldEqual false
         CppSource.names "AF" "F" |> shouldEqual false
         CppSource.names "F" "A::F" |> shouldEqual false
+        CppSource.names "A::Holder::Holder" "A::Holder" |> shouldEqual true
+        CppSource.names "A::Holder::Holder" "Holder" |> shouldEqual true
+        CppSource.names "A::Holder::Other" "A::Holder" |> shouldEqual false

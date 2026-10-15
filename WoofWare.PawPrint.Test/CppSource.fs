@@ -446,8 +446,9 @@ module CppSource =
     let private indirectCall : Regex =
         Regex @"(?:^|\s)(?:blr|br)\s|\b(?:call|jmp)\s+(?:\*|\[|qword\b|r[a-z0-9]+\b|e[a-z]{2}\b)"
 
-    /// A macro the line invokes: an upper-case word that starts it.
-    let private macroUse : Regex = Regex @"^\s*([A-Z][A-Z0-9_]+)\b"
+    /// A macro the line invokes: the word that starts it, if upper-case or spelled with an
+    /// underscore, which no instruction of x64 or arm64 is, and not a label.
+    let private macroUse : Regex = Regex @"^\s*([A-Z][A-Z0-9_]+|[a-z]\w*_\w*)\b(?!\s*:)"
 
     /// The routines and macros a GNU assembler file (`.S`) defines, after `strip`. A routine
     /// calls each routine it branches to by name, and each macro it invokes; a branch through a
@@ -514,6 +515,11 @@ module CppSource =
         ]
 
     /// Whether a symbol, as the contract table cites one, names what a call spells: the call's
-    /// name with its qualifier, or the symbol qualified further.
+    /// name with its qualifier, or the symbol qualified further. A call spelling a type, as a
+    /// declaration with arguments does, is also named by that type's constructor.
     let names (symbol : string) (called : string) : bool =
-        symbol = called || symbol.EndsWith ("::" + called, StringComparison.Ordinal)
+        let named (spelled : string) : bool =
+            symbol = spelled || symbol.EndsWith ("::" + spelled, StringComparison.Ordinal)
+
+        let typeName = called.Substring (called.LastIndexOf ':' + 1)
+        named called || named (called + "::" + typeName)

@@ -210,6 +210,28 @@ module TestNativeContractTable =
                     failwith
                         $"%A{row.Native} cites no source that calls %s{call.DeclaringType}::%s{call.Method} by %A{binderIds}"
 
+    let private routinesByPath =
+        Collections.Concurrent.ConcurrentDictionary<string, Lazy<SourceRoutine list>> ()
+
+    /// Each routine the file at `path` under `src/coreclr` defines.
+    let private routinesOf (path : string) : SourceRoutine list =
+        routinesByPath
+            .GetOrAdd(
+                path,
+                fun path ->
+                    lazy
+                        (let text = File.ReadAllText (Path.Combine (coreclr (), path))
+
+                         if
+                             path.EndsWith (".S", StringComparison.Ordinal)
+                             || path.EndsWith (".inc", StringComparison.Ordinal)
+                         then
+                             CppSource.assemblyRoutines text
+                         else
+                             CppSource.definitions text)
+            )
+            .Force ()
+
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
         Net11Frontier.park Net11Frontier.nativeContractTable
@@ -228,8 +250,13 @@ module TestNativeContractTable =
                 if not (File.Exists (Path.Combine (coreclr, source.Path))) then
                     failwith $"%A{row.Native} cites %s{source.Path}, which the pinned source lacks"
 
-                if not ((read source.Path).Contains source.Symbol) then
-                    failwith $"%A{row.Native} cites %s{source.Symbol} in %s{source.Path}, which does not mention it"
+                if
+                    not (
+                        routinesOf source.Path
+                        |> List.exists (fun routine -> CppSource.names routine.Name source.Symbol)
+                    )
+                then
+                    failwith $"%A{row.Native} cites %s{source.Symbol} in %s{source.Path}, which does not define it"
 
             let bound = (List.head row.Sources).Symbol
 
@@ -255,6 +282,8 @@ module TestNativeContractTable =
         | Nothing
         /// No managed code but the constructor of the exception it throws.
         | Exception
+        /// Whatever it likes: the cited code calls it only on a path the native never takes.
+        | Unreached
 
     /// A row of `NativeContractCallees.tsv`.
     type private Vouch =
@@ -263,6 +292,9 @@ module TestNativeContractTable =
             /// operating system.
             Path : string option
             Symbol : string
+            /// The text by which the file defines it, where a macro pastes its name together, as
+            /// `_GETFLD(GenericParam,Flags)` defines `getFlagsOfGenericParam`.
+            SpelledAs : string option
             Runs : VouchedRuns
         }
 
@@ -285,10 +317,19 @@ module TestNativeContractTable =
                              if colon <= 0 || colon = callee.Length - 1 then
                                  failwith $"A vouch names %s{callee}, which is not path:symbol"
 
+                             let symbol, spelledAs =
+                                 match callee.Substring(colon + 1).Split ('=', 2) with
+                                 | [| symbol ; spelling |] when symbol <> "" && spelling <> "" -> symbol, Some spelling
+                                 | [| symbol |] -> symbol, None
+                                 | _ ->
+                                     failwith
+                                         $"A vouch names %s{callee}, which is not path:symbol or path:symbol=spelling"
+
                              let runs =
                                  match runs with
                                  | "nothing" -> VouchedRuns.Nothing
                                  | "exception" -> VouchedRuns.Exception
+                                 | "unreached" -> VouchedRuns.Unreached
                                  | other -> failwith $"%s{callee} is vouched to run %s{other}"
 
                              yield
@@ -297,30 +338,12 @@ module TestNativeContractTable =
                                          match callee.Substring (0, colon) with
                                          | "-" -> None
                                          | path -> Some path
-                                     Symbol = callee.Substring (colon + 1)
+                                     Symbol = symbol
+                                     SpelledAs = spelledAs
                                      Runs = runs
                                  }
                          | _ -> failwith $"Malformed vouch: %s{line}"
              ])
-
-    let private routinesByPath =
-        Collections.Concurrent.ConcurrentDictionary<string, Lazy<SourceRoutine list>> ()
-
-    /// Each routine the file at `path` under `src/coreclr` defines.
-    let private routinesOf (path : string) : SourceRoutine list =
-        routinesByPath
-            .GetOrAdd(
-                path,
-                fun path ->
-                    lazy
-                        (let text = File.ReadAllText (Path.Combine (coreclr (), path))
-
-                         if path.EndsWith (".S", StringComparison.Ordinal) then
-                             CppSource.assemblyRoutines text
-                         else
-                             CppSource.definitions text)
-            )
-            .Force ()
 
     /// The routines a row cites, each with the citation naming it.
     let private citedRoutines (row : NativeContractRow) : (NativeSource * SourceRoutine) list =
@@ -408,19 +431,38 @@ module TestNativeContractTable =
     let ``every vouch names code the pinned source defines, which makes no managed call itself`` () : unit =
         Net11Frontier.park Net11Frontier.nativeContractTable
 
-        for vouch in vouches.Force () do
-            match vouch.Path with
-            | None -> ()
-            | Some path ->
-                if not (File.Exists (Path.Combine (coreclr (), path))) then
-                    failwith $"%s{vouch.Symbol} is vouched for in %s{path}, which the pinned source lacks"
+        let problems =
+            [
+                for vouch in vouches.Force () do
+                    match vouch.Path with
+                    | None -> ()
+                    | Some path when not (File.Exists (Path.Combine (coreclr (), path))) ->
+                        yield $"%s{vouch.Symbol} is vouched for in %s{path}, which the pinned source lacks"
+                    | Some path ->
+                        let text = File.ReadAllText (Path.Combine (coreclr (), path))
 
-                if not ((File.ReadAllText (Path.Combine (coreclr (), path))).Contains vouch.Symbol) then
-                    failwith $"%s{vouch.Symbol} is vouched for in %s{path}, which does not mention it"
+                        let mentioned =
+                            match vouch.SpelledAs with
+                            | Some spelling -> text.Contains spelling
+                            | None ->
+                                text.Contains vouch.Symbol
+                                || routinesOf path
+                                   |> List.exists (fun routine -> CppSource.names routine.Name vouch.Symbol)
 
-                for routine in routinesOf path do
-                    if CppSource.names routine.Name vouch.Symbol && managedCall.IsMatch routine.Text then
-                        failwith $"%s{path}:%s{routine.Name} is vouched for, and calls managed code"
+                        if not mentioned then
+                            yield $"%s{vouch.Symbol} is vouched for in %s{path}, which neither defines nor mentions it"
+
+                        for routine in routinesOf path do
+                            if
+                                vouch.Runs <> VouchedRuns.Unreached
+                                && CppSource.names routine.Name vouch.Symbol
+                                && managedCall.IsMatch routine.Text
+                            then
+                                yield $"%s{path}:%s{routine.Name} is vouched for, and calls managed code"
+            ]
+
+        if not problems.IsEmpty then
+            failwith (String.concat "\n" problems)
 
     [<Test>]
     let ``every vouch is for a call that a routine a row cites makes`` () : unit =

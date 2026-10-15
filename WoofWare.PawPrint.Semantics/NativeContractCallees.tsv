@@ -1,6 +1,243 @@
 # What the code NativeContractTable.tsv cites calls, where its row does not cite that too: each a function or macro vouched for, by reading it, as running no managed code.
 # TestNativeContractTable holds every call that a routine a row cites makes, as the text spells it, to a routine the row cites or one vouched for here, matching by name.
 # Three tab-separated fields:
-#   callee   path:symbol under src/coreclr, as the contract table cites one; or -:symbol for a function of the C library or the operating system
-#   runs     nothing (it runs no managed code); or exception (it runs no managed code but the constructor of the exception it throws, which the row must raise)
+#   callee   path:symbol under src/coreclr (a path may climb out of it, as ../native/minipal does), as the contract table cites one, with =spelling after it where a macro pastes the name together, giving the text that defines it; or -:symbol for a function of the C library or the operating system
+#   runs     nothing (it runs no managed code); exception (it runs no managed code but the constructor of the exception it throws); or unreached (it may run anything, and the cited code calls it only on a path the native never takes)
 #   reason   why, in a sentence
+inc/debugmacros.h:_ASSERT	nothing	A debug build's assertion, which ends the process if it fails; a release build compiles it to nothing.
+inc/debugmacros.h:_ASSERTE	nothing	A debug build's assertion, which ends the process if it fails; a release build compiles it to nothing.
+vm/gchelpers.cpp:Alloc	nothing	Allocates from the GC heap, collecting garbage if it must, which waits for the collection but runs no finalizer on this thread, and may send an allocation-sampling event, which EventPipe hands to listeners on its own thread.
+vm/gchelpers.cpp:AllocateObject	exception	Allocates an object by Alloc and PublishObjectAndNotify; for a COM type it throws NotSupportedException, InvalidComObjectException or PlatformNotSupportedException instead.
+vm/gchelpers.cpp:AllocateSzArray	exception	Allocates an array by Alloc and PublishObjectAndNotify, throwing OverflowException for a negative length and OutOfMemoryException for one too long.
+vm/exceptmacros.h:COMPlusThrow	exception	Throws the managed exception of the kind it names, constructing it (or for OutOfMemoryException, taking the preallocated one).
+vm/threads.h:Thread::DisableStressHeap	nothing	Sets a debug build's flag on the thread.
+vm/frames.cpp:DynamicHelperFrame::DynamicHelperFrame	nothing	Initialises a transition frame over the caller's registers.
+pal/inc/unixasmmacrosarm64.inc:EPILOG_RETURN	nothing	A ret instruction.
+inc/ex.h:EX_THROW	exception	Throws a C++ exception, which the unwind-and-continue handler around it converts to the managed exception it describes.
+vm/eeconfig.h:EEConfig::FastGCStressLevel	nothing	Reads a configuration value.
+vm/gcheaputilities.h:GCHeapUtilities::GetGCHeap	nothing	Reads the GC heap's global pointer.
+vm/object.h:StringObject::GetBuffer	nothing	Returns a pointer to the string's characters.
+gc/gc.cpp:GCHeap::GetLOHThreshold	nothing	Reads the GC's large-object threshold.
+vm/threads.inl:GetThread	nothing	Reads the current thread's Thread from thread-local storage.
+vm/methodtable.h:MethodTable::HasComponentSize	nothing	Reads the method table's flags.
+pal/inc/unixasmmacrosamd64.inc:INLINE_GET_ALLOC_CONTEXT_BASE	nothing	Reads the thread's allocation context from thread-local storage, through __tls_get_addr or the Apple TLV getter, or GetThreadEEAllocContext under emulated TLS.
+pal/inc/unixasmmacrosarm64.inc:INLINE_GET_ALLOC_CONTEXT_BASE	nothing	Reads the thread's allocation context from thread-local storage, through the TLS descriptor or the Apple TLV getter, or GetThreadEEAllocContext under emulated TLS.
+vm/methodtable.h:MethodTable::IsArray	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::IsFullyLoaded	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::IsMultiDimArray	nothing	Reads the method table's flags.
+vm/common.h:MAKE_CURRENT_THREAD_AVAILABLE	nothing	Declares a local holding GetThread's result.
+vm/vars.hpp:OBJECTREFToObject	nothing	A cast.
+vm/vars.hpp:ObjectToSTRINGREF	nothing	A cast.
+vm/frames.cpp:Frame::Pop	nothing	Unlinks a frame from the thread's frame chain.
+pal/inc/unixasmmacrosamd64.inc:POP_COOP_PINVOKE_FRAME	nothing	Frees the transition block's stack and restores the callee-saved registers.
+pal/inc/unixasmmacrosarm64.inc:POP_COOP_PINVOKE_FRAME	nothing	Restores the callee-saved registers and the frame pointer from the transition block.
+pal/inc/unixasmmacrosamd64.inc:pop_nonvol_reg	nothing	A pop instruction with its unwind directives.
+vm/object.h:PtrAlign	nothing	Rounds a size up to a pointer's alignment.
+vm/gchelpers.cpp:PublishObjectAndNotify	nothing	Publishes a new object to the GC and reports its allocation to a native profiler and to ETW, whose listeners EventPipe calls on its own thread.
+vm/frames.cpp:Frame::Push	nothing	Links a frame into the thread's frame chain.
+pal/inc/unixasmmacrosamd64.inc:PUSH_COOP_PINVOKE_FRAME	nothing	Saves the callee-saved registers and reserves a transition block on the stack.
+pal/inc/unixasmmacrosarm64.inc:PUSH_COOP_PINVOKE_FRAME	nothing	Saves the frame pointer and callee-saved registers as a transition block on the stack.
+pal/inc/unixasmmacrosamd64.inc:push_nonvol_reg	nothing	A push instruction with its unwind directives.
+vm/object.h:Object::SetMethodTable	nothing	Writes the object's method table pointer.
+vm/object.h:StringObject::SetStringLength	nothing	Writes the string's length.
+vm/threads.h:SetTypeHandleOnThreadForAlloc	nothing	Records, for a debugger or profiler, the type the thread is allocating.
+vm/eeconfig.h:EEConfig::ShouldInjectFault	nothing	Reads a configuration value.
+vm/object.inl:StringObject::GetSize	nothing	Computes a string's size from its length.
+vm/appdomain.hpp:SystemDomain::GetFrozenObjectHeapManager	nothing	Returns the frozen-object heap's manager, creating it with new the first time.
+utilcode/ex.cpp:ThrowOutOfMemory	exception	Throws the C++ out-of-memory exception, which becomes the preallocated OutOfMemoryException.
+vm/frozenobjectheap.cpp:FrozenObjectHeapManager::TryAllocateObject	nothing	Allocates in a frozen segment under its lock in preemptive mode, reserving and committing memory as it must, runs its caller's native initialiser, and publishes the object by PublishObjectAndNotify; it returns null when it cannot.
+vm/typehandle.h:TypeHandle::TypeHandle	nothing	Wraps a pointer.
+pal/inc/pal.h:W	nothing	Makes a wide string literal; not a call.
+inc/palclr.h:W	nothing	Makes a wide string literal; not a call.
+vm/threads.h:Thread::GetThreadId	nothing	Reads the thread's managed ID.
+vm/typehandle.cpp:TypeHandle::GetSignatureCorElementType	nothing	Reads the element type from the type desc or the method table's flags and class.
+vm/typehandle.h:TypeHandle::FromPtr	nothing	Wraps a pointer.
+inc/stdmacros.h:ALIGN_DOWN	nothing	Arithmetic.
+inc/stdmacros.h:ALIGN_UP	nothing	Arithmetic.
+-:memset	nothing	The C library's.
+vm/typehandle.inl:TypeHandle::AsGenericVariable	nothing	A cast.
+vm/typehandle.inl:TypeHandle::AsMethodTable	nothing	A cast.
+vm/typehandle.inl:TypeHandle::GetCl	nothing	Reads the method table's token.
+vm/typehandle.cpp:TypeHandle::IsGenericVariable	nothing	Reads the type desc's element type.
+vm/typehandle.h:TypeHandle::IsTypeDesc	nothing	Tests the pointer's tag bit.
+vm/object.h:ReflectClassBaseObject::GetType	nothing	Reads the RuntimeType's type handle.
+inc/corhdr.h:IsNilToken	nothing	Arithmetic on a token.
+inc/corhdr.h:RidFromToken	nothing	Arithmetic on a token.
+inc/corhdr.h:TypeFromToken	nothing	Arithmetic on a token.
+vm/vars.hpp:ObjectToOBJECTREF	nothing	A cast.
+vm/fcall.h:FC_RETURN_BOOL	nothing	Returns a Boolean.
+vm/ceeload.h:Module::GetMDImport	nothing	Reads the module's metadata importer.
+vm/object.h:ReflectModuleBaseObject::GetModule	nothing	Reads the RuntimeModule's Module.
+vm/typehandle.cpp:TypeHandle::GetModule	nothing	Reads the module from the method table, or from the type desc, its type parameter's or its type variable's.
+vm/loaderallocator.hpp:GET_LOADERHANDLE_VALUE_FAST	nothing	Reads a loader allocator's handle, by LoaderAllocator::GetHandleValueFast or GetHandleValueFastPhase2, neither of which allocates or takes a lock.
+vm/ceeload.h:ModuleBase::GetLoaderAllocator	nothing	Reads the module's loader allocator.
+md/inc/metamodel.h:CMiniMdTemplate::SupportsGenerics	nothing	Compares the metadata's schema version.
+md/inc/metamodel.h:getFlagsOfGenericParam=_GETFLD(GenericParam,Flags)	nothing	Reads a column of a metadata record.
+md/inc/metamodel.h:getNumberOfGenericParam=_GETFLD(GenericParam,Number)	nothing	Reads a column of a metadata record.
+md/inc/metamodel.h:getOwnerOfGenericParam=_GETCDTKN(GenericParam,Owner,mdtTypeOrMethodDef)	nothing	Reads and decodes a coded-token column of a metadata record.
+md/inc/metamodel.h:getNameOfGenericParam=_GETSTR(GenericParam,Name)	nothing	Reads a string column of a metadata record from the string heap.
+inc/metamodelpub.h:GetGenericParamRecord=MiniMdTable(GenericParam)	nothing	Reads a row of the metadata's GenericParam table, by the MiniMdTable getter metamodel.h defines for each table.
+inc/corhlpr.h:IfFailGo	nothing	Jumps to ErrExit on a failing HRESULT.
+md/inc/rwutil.h:LOCKREADIFFAILRET	nothing	Takes the metadata's native reader lock, returning the HRESULT if that fails.
+vm/threads.h:Thread::CatchAtSafePoint	nothing	Reads the thread's state flags.
+vm/syncblk.inl:ObjHeader::EnterObjMonitorHelper	nothing	Takes the thin lock or the sync block's lock by compare-and-swap if it is free or this thread's, without waiting; its contract is GC_NOTRIGGER.
+vm/syncblk.cpp:ObjHeader::EnterObjMonitorHelperSpin	nothing	Spins a bounded number of times trying to take the thin lock or the sync block's lock, without waiting; its contract is GC_NOTRIGGER.
+vm/syncblk.inl:AwareLock::LeaveHelper	nothing	Releases the sync block's lock if this thread holds it, reporting whether a waiter needs signalling; its contract is GC_NOTRIGGER.
+inc/volatile.h:Volatile::LoadWithoutBarrier	nothing	A load.
+vm/util.hpp:FastInterlockedCompareExchangeRelease	nothing	A compare-and-swap.
+pal/inc/pal.h:InterlockedCompareExchangeRelease	nothing	A compare-and-swap.
+vm/object.cpp:ThreadBaseObject::ClearInternal	nothing	Clears the managed Thread's pointer to its Thread and removes the memory pressure SetInternal added, which can only reschedule the GC.
+vm/object.cpp:ThreadBaseObject::SetInternal	nothing	Sets the managed Thread's pointer to its Thread and adds its size as memory pressure, which can collect garbage, running no finalizer on this thread.
+vm/frames.h:GCPROTECT_BEGIN	nothing	Pushes a frame reporting a local object reference to the GC.
+vm/frames.h:GCPROTECT_END	nothing	Pops the frame GCPROTECT_BEGIN pushed.
+vm/util.hpp:GCX_COOP	nothing	Switches the thread to cooperative mode for the scope, waiting for a GC or a debugger suspension in progress, and back to preemptive mode at its end.
+vm/util.hpp:GCX_PREEMP	nothing	Switches the thread to preemptive mode for the scope, and back to cooperative mode at its end, waiting for a GC or a debugger suspension in progress.
+vm/object.h:ThreadBaseObject::GetInternal	nothing	Reads the managed Thread's pointer to its Thread.
+vm/threads.inl:GetThreadNULLOk	nothing	Reads the current thread's Thread from thread-local storage.
+vm/threads.cpp:Thread::GetThreadPriority	nothing	Asks the operating system for the thread's priority.
+pal/inc/pal.h:InterlockedIncrement	nothing	An atomic increment.
+vm/vars.hpp:IsAtProcessExit	nothing	Reads a global flag.
+vm/gchandleutilities.h:ObjectFromHandle	nothing	Reads the object a GC handle holds.
+vm/gchandleutilities.h:ObjectInHandleHolder	nothing	A holder that clears a GC handle at the end of its scope unless released.
+vm/threads.h:Thread::PreemptiveGCDisabled	nothing	Reads the thread's GC mode.
+vm/qcall.h:QCall::ObjectHandleOnStack::Set	nothing	Writes an object to the caller's stack slot.
+vm/object.h:ThreadBaseObject::SetManagedThreadId	nothing	Writes the managed Thread's ID.
+vm/gchandleutilities.h:StoreObjectInHandle	nothing	Stores an object in a GC handle, through the GC's handle manager.
+inc/holder.h:BaseHolder::SuppressRelease	nothing	Marks a holder as not to release what it holds.
+vm/threads.h:ThreadStore::HoldingThreadStore	nothing	Compares the thread store's holder with a thread.
+vm/threads.h:ThreadStoreLockHolder	nothing	A holder that takes the thread store's lock, by ThreadSuspend::LockThreadStore, which waits for it in preemptive mode, and releases it at the end of its scope.
+vm/threads.h:TRIGGERSGC	nothing	A debug build's check that the thread may trigger a GC, which under GC stress triggers one.
+vm/loaderallocator.cpp:LoaderAllocator::AllocateHandle	exception	Allocates a slot in the loader allocator's handle table, growing the table by AllocateObjectArray under its lock, and throws OutOfMemoryException when the table is full.
+vm/loaderallocator.cpp:LoaderAllocator::CompareExchangeValueInHandle	nothing	Compares and exchanges the object in a loader allocator handle, under the handle table's lock.
+vm/exceptmacros.h:COMPlusThrowOM	exception	Throws the preallocated OutOfMemoryException.
+inc/contract.h:CONTRACT	nothing	A debug build's contract checks; a release build compiles it to nothing.
+vm/binder.h:CoreLibBinder::GetClass	nothing	Returns a CoreLib class the binder names, loading it the first time; CoreLib binds no other assembly, so loading it runs no assembly resolution, and loading a type runs no constructor.
+vm/qcall.h:QCall::ObjectHandleOnStack::Get	nothing	Reads an object from the caller's stack slot.
+vm/ceeload.inl:Module::GetAssembly	nothing	Reads the module's assembly.
+vm/loaderallocator.cpp:LoaderAllocator::GetHandleValue	nothing	Reads the object in a loader allocator handle; its contract is GC_NOTRIGGER.
+inc/contract.h:INJECT_FAULT	nothing	A debug build's fault injection, running the statement it is given (here a throw of OutOfMemoryException) when injecting; a release build compiles it to nothing.
+inc/utilcode.h:InterlockedCompareExchangeT	nothing	A compare-and-swap.
+vm/loaderallocator.hpp:LoaderAllocator::IsCollectible	nothing	Reads a flag.
+vm/loaderallocator.hpp:LoaderAllocator::IsManagedScoutAlive	nothing	Reads a flag.
+inc/contract.h:POSTCONDITION	nothing	A debug build's contract check; a release build compiles it to nothing.
+vm/object.h:AssemblyBaseObject::SetAssembly	nothing	Writes the RuntimeAssembly's Assembly.
+vm/object.h:ReflectModuleBaseObject::SetModule	nothing	Writes the RuntimeModule's Module.
+vm/object.h:ReflectModuleBaseObject::SetAssembly	nothing	Writes the RuntimeModule's RuntimeAssembly.
+vm/object.h:AssemblyBaseObject::SetSyncRoot	nothing	Writes the RuntimeAssembly's keep-alive reference to its loader allocator.
+vm/appdomain.hpp:AppDomain::GetCurrentDomain	nothing	Reads the global AppDomain.
+vm/loaderallocator.cpp:AssemblyLoaderAllocator::CanUnload	nothing	Returns a constant.
+vm/loaderallocator.cpp:GlobalLoaderAllocator::CanUnload	nothing	Returns a constant.
+vm/crst.h:CrstBase::CrstHolder::CrstHolder	nothing	Takes a native lock for the scope, waiting for it in preemptive mode if the lock allows that.
+vm/methodtable.h:MethodTable::GetBaseSize	nothing	Reads the method table's base size.
+vm/loaderallocator.inl:LoaderAllocator::GetExposedObject	nothing	Reads the object the loader allocator's handle holds.
+vm/appdomain.hpp:AppDomain::GetMethodTableExposedClassObjectLock	nothing	Returns a lock.
+vm/loaderallocator.cpp:LoaderAllocator::InsertObjectIntoFieldWithLifetimeOfCollectibleLoaderAllocator	exception	Keeps an object alive with a collectible loader allocator, by AllocateHandle, a weak interior GC handle and a native lock, throwing OutOfMemoryException as AllocateHandle does.
+vm/object.h:ReflectClassBaseObject::SetKeepAlive	nothing	Writes the RuntimeType's keep-alive reference.
+vm/object.h:ReflectClassBaseObject::SetType	nothing	Writes the RuntimeType's type handle.
+inc/volatile.h:VolatileLoad	nothing	A load with acquire semantics.
+inc/volatile.h:VolatileStore	nothing	A store with release semantics.
+inc/sstring.inl:SString::Append	exception	Appends to a native string, growing its buffer, which can throw the C++ out-of-memory exception that becomes OutOfMemoryException.
+inc/sstring.inl:SString::Begin	nothing	Returns an iterator over a native string.
+utilcode/sstring_com.cpp:SString::LoadResource	nothing	Loads a string from the runtime's native resources by LoadResourceAndReturnHR, catching any failure.
+utilcode/sstring_com.cpp:SString::LoadResourceAndReturnHR	nothing	Loads a string from the runtime's native resources, catching any failure as an HRESULT; its contract is NOTHROW.
+pal/inc/pal.h:FAILED	nothing	Tests an HRESULT.
+inc/stresslog.h:STRESS_LOG1	nothing	Writes to the runtime's native stress log.
+vm/qcall.cpp:QCall::StringHandleOnStack::Set	nothing	Allocates a managed string from native text, in cooperative mode, and writes it to the caller's stack slot.
+vm/hosting.cpp:__SwitchToThread	nothing	Yields the processor or sleeps; its contract is GC_NOTRIGGER.
+vm/syncblk.h:ObjHeader::GetBaseObject	nothing	Computes the object from its header's address.
+vm/object.h:Object::GetHeader	nothing	Computes the object's header's address.
+vm/syncblk.inl:ObjHeader::LeaveObjMonitorHelper	nothing	Releases the thin lock or the sync block's lock if this thread holds it, reporting what its caller is to do; its contract is GC_NOTRIGGER.
+vm/syncblk.h:ObjHeader::PassiveGetSyncBlock	nothing	Reads the object's sync block, if it has one.
+vm/object.h:Object::PassiveGetSyncBlock	nothing	Reads the object's sync block, if it has one.
+vm/syncblk.h:SyncBlock::QuickGetMonitor	nothing	Returns the sync block's lock.
+vm/syncblk.h:AwareLock::Signal	nothing	Sets the lock's event, by CLREventBase::SetMonitorEvent, whose contract is GC_NOTRIGGER, waking a waiter.
+inc/yieldprocessornormalized.h:YieldProcessorNormalized	nothing	Pause instructions.
+vm/gchelpers.cpp:AllocatePrimitiveArray	exception	Allocates an array of a primitive element type, loading CoreLib's array type, by AllocateSzArray.
+vm/syncblk.cpp:AwareLock::AllocLockSemEvent	exception	Creates the lock's native event in preemptive mode, throwing OutOfMemoryException if it cannot.
+vm/object.h:BoolToArgSlot	nothing	A conversion.
+vm/object.h:ObjToArgSlot	nothing	A conversion.
+vm/exceptmacros.h:CANNOTTHROWCOMPLUSEXCEPTION	nothing	A debug build's check; a release build compiles it to nothing.
+inc/check.h:CheckPointer	nothing	A debug build's check of a pointer.
+vm/threads.cpp:CheckForDuplicateHandles	nothing	Compares handles.
+vm/synch.cpp:CLREventWaitHelper	nothing	Waits on a native handle by the PAL, catching any native fault as a failed wait.
+vm/exceptmacros.h:COMPlusThrowHR	exception	Throws the managed exception an HRESULT maps to.
+vm/syncblk.cpp:ComputeElapsedTimeInNanosecond	nothing	Arithmetic.
+vm/threads.cpp:dbgOnly_IsSpecialEEThread	nothing	A debug build's check of the thread's kind.
+vm/syncblk.h:AwareLock::DecrementTransientPrecious	nothing	An atomic decrement.
+vm/syncblk.h:AwareLock::IncrementTransientPrecious	nothing	An atomic increment.
+inc/contract.h:DISABLED	nothing	Disables a contract check; not a call.
+vm/threads.h:Thread::DisablePreemptiveGC	nothing	Switches the thread to cooperative mode, waiting for a GC or a debugger suspension in progress by Thread::RareDisablePreemptiveGC, which runs no managed code.
+vm/threads.h:Thread::EnablePreemptiveGC	nothing	Switches the thread to preemptive mode.
+vm/threads.cpp:Thread::DoAppropriateAptStateWait	nothing	Waits by WaitForMultipleObjectsEx; the message-pumping wait of a single-threaded COM apartment is compiled only on Windows.
+vm/threads.cpp:Thread::DoAppropriateWaitWorkerAlertableHelper	exception	Marks the thread interruptible, then raises a pending interrupt by HandleThreadInterrupt.
+vm/threads.cpp:Thread::HandleThreadInterrupt	exception	Throws ThreadInterruptedException for a pending Thread.Interrupt, or ThreadAbortException by HandleThreadAbort for an abort the runtime itself requested.
+vm/syncblk.h:ENTER_SPIN_LOCK	nothing	Takes the object header's spin lock, by ObjHeader::EnterSpinLock, which spins and yields.
+vm/syncblk.h:LEAVE_SPIN_LOCK	nothing	Releases the object header's spin lock.
+vm/threads.cpp:Dbg_TrackSyncStack::EnterSync	nothing	A debug build's record of a lock taken.
+inc/eventtracebase.h:ETW_TRACING_CATEGORY_ENABLED	nothing	Tests whether an event is enabled.
+inc/contract.h:FAULT_FORBID	nothing	A debug build's fault-injection guard.
+vm/ClrEtwAll.man:FireEtwContentionLockCreated=symbol="ContentionLockCreated"	nothing	Sends a runtime event, generated from the event manifest; EventPipe hands it to listeners on its own thread.
+vm/ClrEtwAll.man:FireEtwContentionStart_V2=symbol="ContentionStart_V2"	nothing	Sends a runtime event, generated from the event manifest; EventPipe hands it to listeners on its own thread.
+vm/ClrEtwAll.man:FireEtwContentionStop_V1=symbol="ContentionStop_V1"	nothing	Sends a runtime event, generated from the event manifest; EventPipe hands it to listeners on its own thread.
+vm/ClrEtwAll.man:FireEtwWaitHandleWaitStart=symbol="WaitHandleWaitStart"	nothing	Sends a runtime event, generated from the event manifest; EventPipe hands it to listeners on its own thread.
+vm/ClrEtwAll.man:FireEtwWaitHandleWaitStop=symbol="WaitHandleWaitStop"	nothing	Sends a runtime event, generated from the event manifest; EventPipe hands it to listeners on its own thread.
+vm/syncblk.h:ObjHeader::GetBits	nothing	Reads the object header.
+inc/eventtracebase.h:GetClrInstanceId	nothing	Reads a global.
+vm/object.h:ArrayBase::GetDataPtr	nothing	Computes the array's data address.
+vm/threads.h:Thread::GetFrame	nothing	Reads the thread's top frame.
+vm/syncblk.h:ObjHeader::GetHeaderSyncBlockIndex	nothing	Reads the object header.
+pal/inc/pal.h:GetLastError	nothing	The PAL's last error.
+vm/syncblk.cpp:SyncBlockCache::GetNextFreeSyncBlock	exception	Takes a sync block from the free list or a new native block array, throwing OutOfMemoryException if it cannot allocate one.
+vm/threads.h:Thread::GetOSThreadId64	nothing	Reads the thread's operating-system ID.
+vm/syncblk.inl:AwareLock::GetOwningObject	nothing	Reads the object the sync table entry holds.
+vm/frames.h:Frame::GetReturnAddress	nothing	Reads a frame's return address.
+vm/threads.h:Thread::GetSynchronizationContext	nothing	Reads the managed Thread's SynchronizationContext field.
+vm/threads.h:Thread::HasThreadStateNC	nothing	Reads the thread's state flags.
+pal/inc/pal.h:HRESULT_FROM_WIN32	nothing	Arithmetic on an error code.
+vm/threads.h:IdDispenser::IdToThreadWithValidation	nothing	Looks up a thread by its ID.
+vm/syncblk.h:SyncBlock::InitState	nothing	Initialises the sync block's lock as held by a thread.
+vm/syncblk.inl:AwareLock::LockState::InterlockedObserveWakeSignal_Try_LockAndUnregisterWaiter	nothing	A compare-and-swap loop on the lock's state.
+vm/syncblk.inl:AwareLock::LockState::InterlockedTry_LockAndUnregisterWaiterAndObserveWakeSignal	nothing	A compare-and-swap loop on the lock's state.
+vm/syncblk.inl:AwareLock::LockState::InterlockedTryLock_Or_RegisterWaiter	nothing	A compare-and-swap loop on the lock's state.
+vm/syncblk.inl:AwareLock::LockState::InterlockedUnregisterWaiter	nothing	A compare-and-swap loop on the lock's state.
+vm/syncblk.h:AwareLock::LockState::IsLocked	nothing	Reads the lock's state.
+vm/syncblk.h:AwareLock::LockState::VolatileLoadWithoutBarrier	nothing	Reads the lock's state.
+vm/synch.h:CLREventBase::IsMonitorEventAllocated	nothing	Reads the event's flags.
+vm/synch.h:CLREventBase::IsOSEvent	nothing	Reads the event's flags.
+vm/frames.cpp:IsProtectedByGCFrame	nothing	A debug build's check that a reference is reported to the GC.
+vm/object.h:SynchronizationContextObject::IsWaitNotificationRequired	nothing	Reads the SynchronizationContext's flag.
+vm/syncblk.cpp:LogContention	nothing	Writes to a debug build's log.
+vm/syncblk.cpp:UnregisterWaiterHolder	nothing	A class local to AwareLock::EnterEpilogHelper, whose destructor unregisters the waiter by InterlockedUnregisterWaiter; with the member it initialises (m_pLockState) and the variable it declares (unregisterWaiterHolder), not a call.
+vm/syncblk.cpp:m_pLockState	nothing	A member UnregisterWaiterHolder's constructor initialises; not a call.
+vm/syncblk.cpp:unregisterWaiterHolder	nothing	A variable of the class UnregisterWaiterHolder, declared with its definition; not a call.
+vm/common.h:memcpyNoGCRefs	nothing	A memcpy.
+-:memmove	nothing	The C library's.
+-:min	nothing	The C++ library's.
+../native/minipal/time.c:minipal_hires_ticks	nothing	Reads a clock.
+../native/minipal/time.c:minipal_lowres_ticks	nothing	Reads a clock.
+vm/appdomain.inl:AppDomain::MustForceTrivialWaitOperations	nothing	Reads a flag.
+vm/syncblk.cpp:SyncBlockCache::NewSyncBlockSlot	exception	Takes a free slot in the sync table, growing the native table if it must, throwing OutOfMemoryException if it cannot; its contract is GC_NOTRIGGER.
+inc/contract.h:PRECONDITION	nothing	A debug build's contract check; a release build compiles it to nothing.
+vm/syncblk.h:PTR_SyncTableEntry	nothing	A pointer type's cast; not a call.
+vm/syncblk.h:SyncBlock::SetHashCode	nothing	Records the object's hash code in its sync block by compare-and-swap.
+vm/syncblk.h:ObjHeader::SetIndex	nothing	Records the sync block's index in the object header by compare-and-swap; its contract is GC_NOTRIGGER.
+vm/syncblk.h:SyncBlock::SetPrecious	nothing	Marks the sync block as not to be reclaimed.
+vm/syncblk.inl:AwareLock::SpinWait	nothing	Pause instructions.
+inc/holder.h:StateHolder	nothing	A holder that calls a function on construction and another at the end of its scope; here MarkOSAlertableWait and UnMarkOSAlertableWait, which set and clear a thread state flag.
+vm/syncblk.h:SyncBlock::SyncBlock	nothing	Initialises a sync block's fields.
+vm/syncblk.cpp:SyncBlockCache::GetSyncBlockCache	nothing	Reads a global.
+vm/syncblk.h:SyncBlockCache::LockHolder::LockHolder	nothing	Takes the sync block cache's native lock for the scope.
+vm/syncblk.cpp:SyncBlockMemoryHolder	nothing	A holder returning a sync block to the cache at the end of its scope unless released.
+vm/syncblk.cpp:SyncTableEntry::GetSyncTableEntry	nothing	Reads a global.
+vm/threads.h:Thread::Debug_AllowCallout	nothing	A debug build's check.
+vm/threads.h:Thread::IncrementMonitorLockContentionCount	nothing	An atomic increment of a counter.
+vm/threads.h:ThreadStateHolder	nothing	A holder that clears thread state flags at the end of its scope.
+vm/threads.h:ThreadStateNCStackHolder	nothing	A holder that sets a thread state flag for its scope.
+vm/exceptmacros.h:ThrowWin32	exception	Throws the managed exception a Win32 error maps to.
+pal/inc/pal.h:WaitForSingleObject	nothing	The PAL's wait on a native handle.
+vm/exceptmacros.h:EE_TRY_FOR_FINALLY	nothing	Runs a block with a native finally block after it; not a call.
+vm/exceptmacros.h:GOT_EXCEPTION	nothing	Reads whether EE_TRY_FOR_FINALLY's block threw.
+inc/debugmacrosext.h:INDEBUG	nothing	Compiles its argument in a debug build only.
+vm/threads.cpp:PendingSync::Restore	unreached	Re-enters the monitors a Monitor.Wait released, which can wait as Monitor_Enter_Slowpath does; Thread::DoAppropriateWait calls it only with Monitor.Wait's sync state, which CLREventBase::Wait is passed by Monitor.Wait alone.
+vm/syncblk.cpp:DebugBlockingItemHolder	nothing	A holder that records, for a debugger, what the thread is blocked on.
+vm/appdomain.hpp:SystemDomain::GetCurrentDomain	nothing	Reads the global AppDomain.
