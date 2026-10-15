@@ -429,6 +429,6 @@ module TestConcurrencyBugs =
 
     [<TestCaseSource(nameof scenarios)>]
     let ``PCT exhibits the bad interleaving`` (scenario : Scenario) : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         demonstrate scenario

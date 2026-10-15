@@ -727,7 +727,7 @@ public static class Entry
 
     [<Test>]
     let ``a disabled run and a zero-probability run are the same run`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The no-regression claim. `EagerDeadlines` at probability zero still
         // walks the candidate list on every tick, so this also asserts that
@@ -751,7 +751,7 @@ public static class Entry
 
     [<Test>]
     let ``jitter drives the guest onto a timeout it would never otherwise reach`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Without this the feature is untestable from outside: every property
         // above would hold of a `chooseJump` the driver never called.
@@ -774,7 +774,7 @@ public static class Entry
 
     [<Test>]
     let ``a script is keyed on the same tick numbering the wakeup strategies use`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The driver's preamble applies the two spurious-wakeup strategies at
         // the *pre*-increment `StepCounter` and then advances it, so jitter must
@@ -798,7 +798,7 @@ public static class Entry
 
     [<Test>]
     let ``one jitter seed reproduces its run exactly`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Determinism under replay is the property the whole interpreter
         // exists to provide, and a fuzzing dial that broke it would be worse

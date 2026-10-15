@@ -595,9 +595,13 @@ module TestManagedHeap =
             let withSyncBlocks = HeapObserver.syncBlockAddresses heap
 
             live = withSyncBlocks
+            && live = HeapObserver.headerWordAddresses heap
             && live.Count = ops.Length
             && live
-               |> Set.forall (fun addr -> ManagedHeap.getSyncBlock addr heap = SyncBlock.Empty)
+               |> Set.forall (fun addr ->
+                   ManagedHeap.getSyncBlock addr heap = SyncBlock.Empty
+                   && ManagedHeap.getHeaderWord addr heap = 0
+               )
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,

@@ -64,8 +64,6 @@ public class Program
 
     [<Test>]
     let ``a collectible dynamic assembly is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let exc =
             runRefused
                 "DynamicAssemblyRunAndCollect.cs"
@@ -75,8 +73,6 @@ public class Program
 
     [<Test>]
     let ``a dynamic assembly with a public key is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let exc =
             runRefused
                 "DynamicAssemblyPublicKey.cs"
@@ -89,8 +85,6 @@ public class Program
 
     [<Test>]
     let ``a dynamic assembly with flags above bit fifteen is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // Real .NET stores all thirty-two bits: `GetName().Flags` reports -3825, the masked -1.
         let exc =
             runRefused
@@ -103,8 +97,6 @@ public class Program
 
     [<Test>]
     let ``two dynamic assemblies of one name are refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let exc =
             runRefused
                 "DynamicAssemblyTwins.cs"
@@ -118,8 +110,6 @@ public class Program
 
     [<Test>]
     let ``a dynamic assembly named like a loaded one is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // The guest's own assembly is loaded under the name Roslyn gives it; naming a dynamic
         // assembly after it collides with an image rather than with another dynamic assembly.
         let exc =

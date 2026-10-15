@@ -111,7 +111,7 @@ module TestSchedulerSleepFairness =
 
     [<Test>]
     let ``a SpinWait spinner is observably asleep`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Under `RoundRobin`, so that reaching the steady state is guaranteed rather than lucky:
         // `SpinWait` yields for twenty iterations before it ever calls `Thread.Sleep(1)`, and a
@@ -134,7 +134,7 @@ module TestSchedulerSleepFairness =
 
     [<Test>]
     let ``SpinWait spinners sleep across a PCT seed sweep`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Aggregated, because whether a given seed reaches the sleep rung at all is a property
         // of that schedule (see above). Summing over a fixed seed set keeps the test fully

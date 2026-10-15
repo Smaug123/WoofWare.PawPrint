@@ -19,7 +19,7 @@ module TestFloatWidthJoin =
 
     [<Test>]
     let ``a float32 arriving at a join another arm reaches with a double is widened`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
 
         let source = Assembly.getEmbeddedResourceAsString "FloatWidthJoin.cs" assy
         let image = Roslyn.compile [ source ]

@@ -256,8 +256,6 @@ module TestOraclePolicy =
 
     [<Test>]
     let ``a divergent case registered as compared is caught`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // The wiring, not the decision: proof that `TestImpureCases.runTest` really does
         // consult the policy and really does run the oracle when it says so.
         //
@@ -292,8 +290,6 @@ module TestOraclePolicy =
 
     [<Test>]
     let ``the two runtimes' own answers are compared, not just the declared one`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // The other half of `compareOutcomes`. Above, the real runtime disagreed with
         // the number the case wrote down; here it *agrees* with it, and PawPrint is the
         // one that differs. Nothing in the corpus can exercise this while the suite is

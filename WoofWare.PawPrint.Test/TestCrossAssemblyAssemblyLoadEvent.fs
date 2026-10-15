@@ -79,8 +79,6 @@ class Program
     /// the initialising thread, and read 0.
     [<Test>]
     let ``a handler reading a static of the loaded assembly sees it initialised`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         {
             Assemblies =
                 [
@@ -96,8 +94,6 @@ class Program
     /// it does on CoreCLR, where the load happens while the JIT compiles `Read`.
     [<Test>]
     let ``the handler runs before the initialiser the loading instruction triggers`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         {
             Assemblies =
                 [
@@ -148,8 +144,6 @@ public class Derived : AssemblyLoadEventBase.Base
     /// it is loaded (and announced, inside the first handler) only when that call is compiled.
     [<Test>]
     let ``code a handler runs in another assembly is announced before it runs`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         {
             Assemblies =
                 [

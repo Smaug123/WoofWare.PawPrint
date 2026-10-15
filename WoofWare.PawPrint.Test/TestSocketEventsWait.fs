@@ -349,7 +349,7 @@ class TwoWaitersOnOnePort
     /// the second waiter alone; waking both would give 13, and waking the first-parked 11.
     [<Test>]
     let ``an edge arriving with two waiters parked on one port wakes the one that parked last`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let image = Roslyn.compile [ twoWaitersSource ]
 
@@ -517,7 +517,7 @@ class TwoPortsOneEdge
     /// parked, or whose edge never arrived, would pass while covering nothing.
     [<Test>]
     let ``a waiter is woken by its own port, not by any port`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let image = Roslyn.compile [ twoPortsSource ]
 
@@ -653,7 +653,7 @@ class ClosesAParkedPort
     /// as it would on Linux, with its background waiter still asleep.
     [<Test>]
     let ``closing the last descriptor of a parked-on port leaves the waiter asleep on it`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let image = Roslyn.compile [ closesParkedPortSource ]
 
@@ -790,7 +790,7 @@ class QuietParkedWaiter
     /// must grind through the join's two million virtual-clock ticks step by step).
     [<Test>]
     let ``a parked waiter with nothing deliverable costs no steps`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let image = Roslyn.compile [ quietWaiterSource ]
 

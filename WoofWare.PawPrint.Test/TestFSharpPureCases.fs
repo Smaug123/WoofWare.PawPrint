@@ -196,7 +196,7 @@ module TestFSharpPureCases =
             "UnionReflection"
             "UnionVirtualSlots"
         ]
-        |> List.map (fun case -> case, Net11Frontier.thinLock)
+        |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
         |> Map.ofList
 
     /// Which F# cases are parked on `runtime`, and how each case is expected to end there.

@@ -202,7 +202,7 @@ class SpinsUnattributed
     /// frame. Without the outward walk this message names a framework method and stops.
     [<Test>]
     let ``a guest blocked inside the BCL is located at its own call site`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.waitSleepJoin
 
         let source =
             """
@@ -317,7 +317,7 @@ class BlocksInDirectNativeCall
     /// formats.
     [<Test>]
     let ``the thread summary is not printed twice`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.waitSleepJoin
 
         let source =
             """

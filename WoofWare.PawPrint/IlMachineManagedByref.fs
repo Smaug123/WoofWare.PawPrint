@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Buffers.Binary
 open System.Collections.Immutable
 open System.Reflection.Metadata
 
@@ -1568,6 +1569,100 @@ module IlMachineManagedByref =
         =
         walkProjectionView templateFor rootTemplate projs |> fst
 
+    /// The object whose header word (`ManagedHeap.getHeaderWord`) an access at `src` is, with the
+    /// template the access reads it as, or `ValueNone` when the access does not touch a header
+    /// word. The access is `accessAs` when the caller's operation fixes its width, as `ldind` and
+    /// `stind` do, and otherwise the type `src` itself views its target as. Raises for an access
+    /// that covers part of a word, or a word and the bytes beside it.
+    ///
+    /// The word is placed by its byte coordinate in the object's container
+    /// (`ObjectHeaderWord`), so every spelling of its address reaches it: a byte view of raw
+    /// data displaced 12 bytes down, or an SZ array's element root at a negative index that
+    /// `ManagedPointerSource`'s normalisation folded the displacement into.
+    let private tryHeaderWordOf
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : AddressedByref)
+        (accessAs : CliType voption)
+        : (ManagedHeapAddress * CliType) voption
+        =
+        // Only pointer arithmetic reaches below an object's raw data, and it leaves either a
+        // negative element index or a `ByteOffset` behind; any other byref skips the walk.
+        let displaced =
+            match src.Root with
+            | ByrefRoot.ArrayElement (_, index) when index < 0 -> true
+            | _ ->
+                src.Projections
+                |> List.exists (fun projection ->
+                    match projection with
+                    | ByrefProjection.ByteOffset _ -> true
+                    | ByrefProjection.Field _
+                    | ByrefProjection.ReinterpretAs _ -> false
+                )
+
+        let wordStart : (ManagedHeapAddress * int64) voption =
+            if not displaced then
+                ValueNone
+            else
+                match src.Root with
+                | ByrefRoot.HeapValue addr
+                | ByrefRoot.HeapObjectField (addr, _) -> ValueSome (addr, ObjectHeaderWord.nonArrayStart)
+                | ByrefRoot.ArrayElement (arr, _) ->
+                    match (ManagedHeap.getArrayShape arr state.ManagedHeap).ConcreteType with
+                    | ConcreteTypeHandle.OneDimArrayZero _ -> ValueSome (arr, ObjectHeaderWord.szArrayStart)
+                    // A multi-dimensional array's raw data is refused (`RuntimeFieldProjection`), so
+                    // no pointer is built below its bounds block.
+                    | _ -> ValueNone
+                | ByrefRoot.LocalVariable _
+                | ByrefRoot.Argument _
+                | ByrefRoot.StackMemoryByte _
+                | ByrefRoot.NativeMemoryByte _
+                | ByrefRoot.PeByteRange _
+                | ByrefRoot.StaticField _
+                | ByrefRoot.StringCharAt _
+                | ByrefRoot.ExposedClassObject _ -> ValueNone
+
+        match wordStart with
+        | ValueNone -> ValueNone
+        | ValueSome (addr, wordStart) ->
+            let rootOffset =
+                match ByrefContainer.tryOfRoot state.ManagedHeap src.Root with
+                | Some (_, rootOffset) -> rootOffset
+                | None -> failwith $"tryHeaderWordOf: heap root %O{src.Root} has no byte container"
+
+            // An element root at a negative index has no cell to read, so its template is its
+            // element type's.
+            let rootTemplate () : CliType =
+                match src.Root with
+                | ByrefRoot.ArrayElement (arr, index) when index < 0 ->
+                    ManagedHeap.getArrayShape arr state.ManagedHeap
+                    |> ArrayElementType.ofShape
+                    |> zeroOfHandleWithoutLoading baseClassTypes state
+                | root -> readRootValue state root
+
+            let projectionOffset, viewTemplate =
+                walkProjectionView (zeroOfHandleWithoutLoading baseClassTypes state) rootTemplate src.Projections
+
+            let start = rootOffset + projectionOffset
+
+            let access =
+                match accessAs with
+                | ValueSome template -> template
+                | ValueNone -> viewTemplate ()
+
+            let width = CliType.sizeOf access
+
+            match ObjectHeaderWord.classify wordStart start width with
+            | HeaderWordAccess.Word -> ValueSome (addr, access)
+            | HeaderWordAccess.Clear -> ValueNone
+            | HeaderWordAccess.Straddles -> ObjectHeaderWord.refuseStraddle addr start width
+
+    /// The header word `value`, read as `targetTemplate`, which is `ObjectHeaderWord.size` bytes.
+    let private headerWordAs (targetTemplate : CliType) (value : int32) : CliType =
+        let bytes = Array.zeroCreate<byte> ObjectHeaderWord.size
+        BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (), value)
+        CliType.ofBytesLike targetTemplate bytes
+
     /// Narrow a byte coordinate produced by `walkProjectionByteOffset` to the in-container `int`
     /// offset the byte read/write paths index with.
     ///
@@ -1817,6 +1912,10 @@ module IlMachineManagedByref =
         =
         let src = anchorRawRootFieldPrefix state src
 
+        match tryHeaderWordOf baseClassTypes state src (ValueSome targetTemplate) with
+        | ValueSome (addr, access) -> headerWordAs access (ManagedHeap.getHeaderWord addr state.ManagedHeap)
+        | ValueNone ->
+
         match src with
         | {
               Root = ByrefRoot.HeapValue addr
@@ -2052,6 +2151,10 @@ module IlMachineManagedByref =
         : CliType
         =
         let src = anchorRawRootFieldPrefix state src
+
+        match tryHeaderWordOf baseClassTypes state src ValueNone with
+        | ValueSome (addr, access) -> headerWordAs access (ManagedHeap.getHeaderWord addr state.ManagedHeap)
+        | ValueNone ->
 
         let {
                 Root = root
@@ -4050,6 +4153,17 @@ module IlMachineManagedByref =
         : IlMachineState
         =
         let src = anchorRawRootFieldPrefix state src
+
+        match tryHeaderWordOf baseClassTypes state src (ValueSome newValue) with
+        | ValueSome (addr, _) ->
+            { state with
+                ManagedHeap =
+                    ManagedHeap.setHeaderWord
+                        addr
+                        (BinaryPrimitives.ReadInt32LittleEndian (ReadOnlySpan (CliType.ToBytes newValue)))
+                        state.ManagedHeap
+            }
+        | ValueNone ->
 
         match src with
         // `StackMemoryByte` and `NativeMemoryByte` byrefs use the same whole-cell test as

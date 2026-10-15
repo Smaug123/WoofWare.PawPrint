@@ -9,9 +9,29 @@ open WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Net11Frontier =
 
-    /// .NET 11's `Monitor.Enter` takes CoreLib's managed thin lock.
-    let thinLock : string =
-        "On .NET 11, `Monitor.Enter` (and so every `lock`, including the one `AppContext.GetData` takes over its store) runs CoreLib's managed thin lock, `ObjectHeader.AcquireThinLock`, which reads the object header in front of the locked object's `RawData.Data`. PawPrint's heap objects have no header, so the read stops at a byte-view refusal that names whichever type is locked. .NET 10 enters through the `Monitor.TryEnter_FastPath` InternalCall instead. Un-park when an object's header can be addressed."
+    /// .NET 11's `Thread.StartInternal` has a new signature.
+    let threadStart : string =
+        "On .NET 11, `Thread.StartInternal` is the `ThreadNative_Start` QCall `(ThreadHandle, int, int, BOOL, char*, ObjectHandleOnStack) -> BOOL`, which PawPrint's handler, matching .NET 10's `void` signature, does not recognise: \"Unimplemented native method (PInvokeImpl QCall!ThreadNative_Start)\". Un-park when the handler takes .NET 11's signature."
+
+    /// .NET 11 reads a method's handle from any `IRuntimeMethodInfo` at one field offset.
+    let runtimeMethodInfoValue : string =
+        "On .NET 11, `IRuntimeMethodInfo.GetValue` reads the method handle of any `IRuntimeMethodInfo` as `Unsafe.As<RuntimeMethodInfoStub>(method).m_value` (RuntimeHandles.cs:980), relying on every implementation keeping its handle at that field's offset. PawPrint resolves the field by identity, so on a `RuntimeMethodInfo`, whose handle is `m_handle`, the read stops: \"CliValueType.FindFieldById: field '...::m_value' not found\". Reflection over methods, `MethodBase.Invoke` and F#'s printf all reach it. Un-park when that read is answered."
+
+    /// .NET 11's `Delegate_BindToMethodInfo` has a new signature.
+    let delegateBindToMethodInfo : string =
+        "On .NET 11, `Delegate.BindToMethodInfo` calls the `Delegate_BindToMethodInfo` QCall with a new signature, `(MethodTable*, MethodTable*, RuntimeMethodHandleInternal, QCallTypeHandle, DelegateBindingFlags, ObjectHandleOnStack, BindToMethodDetails*) -> int`, which PawPrint's handler, matching .NET 10's, does not recognise: \"Unimplemented native method (PInvokeImpl QCall!Delegate_BindToMethodInfo)\". `DynamicMethod.CreateDelegate` reaches it. Un-park when the handler takes .NET 11's signature."
+
+    /// .NET 11's `FileStream` asks whether the filesystem supports locking.
+    let fileSystemSupportsLocking : string =
+        "On .NET 11, opening a file through `SafeFileHandle` asks `Interop.Sys.FileSystemSupportsLocking` (SafeFileHandle.Unix.cs:528), the `SystemNative_FileSystemSupportsLocking` P/Invoke, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_FileSystemSupportsLocking)\". Un-park when the emulated kernel answers it."
+
+    /// .NET 11's thin lock falls back to a fat `Lock` through an unimplemented InternalCall.
+    let fatLock : string =
+        "On .NET 11, a `lock` still held by another thread once the thin lock has spun, `Monitor.Wait` and `Monitor.Pulse` go to the object's fat `Lock` through `ObjectHeader.GetLockObject`, whose `GetLockHandleIfExists` InternalCall PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.Threading.ObjectHeader::GetLockHandleIfExists\". The uncontended thin lock runs. Un-park when the fat lock runs."
+
+    /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
+    let inlineArrayOfReferences : string =
+        "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."
 
     /// `MemoryExtensions.MinMaxInteger` bit-casts a value type holding runtime pointers.
     let bitCast : string =

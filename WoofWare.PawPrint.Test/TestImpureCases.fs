@@ -5134,19 +5134,7 @@ module TestImpureCases =
                 |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
             yield!
                 [
-                    "AppContextConfigProperties.cs"
-                    "AppContextSeededBeforeCctor.cs"
-                    "AssemblyLocationEmpty.cs"
-                    "CloseEndsSleepingAccept.cs"
-                    "CloseEndsSleepingPipeTransfer.cs"
-                    "CopyFileWiringDarwinSeeded.cs"
-                    "CopyFileWiringLinuxSeeded.cs"
-                    "CurrentDirectoryConfigured.cs"
-                    "DelegateInvokeHandlePerInstantiation.cs"
                     "DelegateMethodOnDynamicMethod.cs"
-                    "DynamicAssemblyHosting.cs"
-                    "DynamicCodeSupportedOverride.cs"
-                    "DynamicCodeUnsupportedByDefault.cs"
                     "DynamicMethodDelegateBinding.cs"
                     "DynamicMethodDelegateIdentity.cs"
                     "DynamicMethodExceptionRegions.cs"
@@ -5159,31 +5147,40 @@ module TestImpureCases =
                     "DynamicMethodMintOnDemand.cs"
                     "DynamicMethodNominalSignature.cs"
                     "DynamicMethodPrimitiveBackingField.cs"
-                    "DynamicMethodReflectedCalls.cs"
                     "DynamicMethodStackTrace.cs"
                     "DynamicMethodStringLiteral.cs"
-                    "DynamicMethodStubFromModule.cs"
                     "DynamicMethodTypeToken.cs"
-                    "DynamicModuleVersionIdEntropy.cs"
                     "DynamicScopeRewrittenEntries.cs"
-                    "EventSourceDisabled.cs"
-                    "ExitFromWorker.cs"
-                    "FcntlDescriptorFlags.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
+            yield!
+                [ "LibcSigsuspendDarwin.cs" ; "LibcSigsuspendLinux.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.fatLock)
+            yield!
+                [
+                    "CopyFileWiringDarwinSeeded.cs"
+                    "CopyFileWiringLinuxSeeded.cs"
                     "FileSystemTypeNfs.cs"
                     "ForeignOwnedSeed.cs"
+                    "TruncateWiringDarwinSeeded.cs"
+                    "TruncateWiringLinuxSeeded.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.fileSystemSupportsLocking)
+            yield!
+                [ "DelegateInvokeHandlePerInstantiation.cs" ; "DynamicMethodReflectedCalls.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
+            yield!
+                [
+                    "CloseEndsSleepingAccept.cs"
+                    "CloseEndsSleepingPipeTransfer.cs"
+                    "ExitFromWorker.cs"
+                    "FcntlDescriptorFlags.cs"
                     "KqueueRegistrationDarwin.cs"
                     "KqueueWaitDarwin.cs"
                     "LibcRaiseDarwin.cs"
-                    "LibcSignalMaskDarwin.cs"
-                    "LibcSignalMaskLinux.cs"
-                    "LibcSigsuspendDarwin.cs"
-                    "LibcSigsuspendLinux.cs"
-                    "MinipalUrandomDescriptorLinux.cs"
                     "NetworkStreamAsync.cs"
-                    "NewarrNegativeLengthMessage.cs"
                     "PipeBrokenRaw.cs"
                     "PipeReaderLeavesDuringWrite.cs"
-                    "ProcessPathConfigured.cs"
                     "ProcessorIdAfterPark.cs"
                     "ProcessorIdWithinMachine.cs"
                     "SchedGetCpuDarwin.cs"
@@ -5208,30 +5205,31 @@ module TestImpureCases =
                     "SocketSendReceive.cs"
                     "SocketShutdown.cs"
                     "SocketUnconnectedTransfer.cs"
-                    "StrErrorDarwin.cs"
-                    "StrErrorLinux.cs"
                     "ThreadIdsFollowStartOrder.cs"
                     "ThreadStaticByrefAcrossThreads.cs"
-                    "TruncateWiringDarwinSeeded.cs"
-                    "TruncateWiringLinuxSeeded.cs"
-                    "WriteLine.cs"
                 ]
-                |> List.map (fun case -> case, Net11Frontier.thinLock)
+                |> List.map (fun case -> case, Net11Frontier.threadStart)
             yield!
                 [
+                    "LibcSignalMaskDarwin.cs"
+                    "LibcSignalMaskLinux.cs"
                     "SocketConnectDarwin.cs"
                     "SocketConnectLinux.cs"
                     "SocketErrorOptionDarwin.cs"
                     "SocketErrorOptionLinux.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.waitSleepJoin)
+            "DynamicAssemblyHosting.cs",
+            """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
+            "EventSourceDisabled.cs",
+            """On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: "refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...> as type 8> and <<byte 72 of <stack memory block #0> ...> as type 8>". Un-park when those byrefs are ordered by their byte coordinates."""
         ]
         |> Map.ofList
 
     /// The cases of `registeredEverywhere` parked on .NET 11 only in their registration for a Linux
     /// kernel, by file name: each Darwin registration ends before it reaches the blocker.
     let parkedOnNet11OnLinux : Map<string, string> =
-        [ "InotifyRaw.cs", Net11Frontier.thinLock ] |> Map.ofList
+        [ "InotifyRaw.cs", Net11Frontier.threadStart ] |> Map.ofList
 
     /// Why `case` is parked on .NET 11, if it is.
     let private net11Park (case : EndToEndTestCase) : string option =
@@ -5394,7 +5392,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Darwin guest that asks for its groups stops, naming the unmeasured list`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
 
         // The same guest on a Darwin kernel reaches `File.GetAttributes` of a
         // root-owned file in a group that is not its effective one, so CoreLib
@@ -5434,7 +5432,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
 
         // An overwrite onto a link reaches SystemNative_CopyFile whichever
         // CoreLib runs it (see the guest), and on a Darwin kernel that shim is
@@ -5517,7 +5515,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
 
         // `SupportsCopyFileRange` reads the release's major and minor numbers
         // and uses copy_file_range only from 5.3; below that the shim copies
@@ -5589,7 +5587,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``the Linux File.Copy wiring guest answers the same on the pinned linux-x64 CoreLib`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
 
         // On a macOS host the registered case runs a Darwin CoreLib, whose
         // File.Copy first asks clonefile and is told ENOTSUP; this runs the
@@ -5639,7 +5637,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // On a macOS host the framework under test is a Darwin CoreLib, whose
         // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.

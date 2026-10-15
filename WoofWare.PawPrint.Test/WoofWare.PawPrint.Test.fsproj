@@ -319,6 +319,7 @@
     <Compile Include="TestCpuPlacement.fs" />
     <Compile Include="TestOsThreadId.fs" />
     <Compile Include="TestPointerCompareExchange.fs" />
+    <Compile Include="TestObjectHeaderWord.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
