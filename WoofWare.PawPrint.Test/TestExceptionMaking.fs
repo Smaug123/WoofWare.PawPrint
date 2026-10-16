@@ -22,7 +22,7 @@ module TestExceptionMaking =
     /// place. Exits 1 if the exception its third argument names escaped the fault, 2 if the culture's
     /// did, 3 if another did, and 0 if none did. Given "twice" instead, triggers the fault twice and
     /// exits 1 if the same exception escaped both times, 4 if two distinct ones did, 3 if another
-    /// did, and 0 if none did.
+    /// did, and 0 if none did. The "fault" `Wrap` throws a string, which the runtime wraps.
     let private guest : string =
         """
 using System;
@@ -91,6 +91,18 @@ static class Program
     // to `int[,]`'s.
     static Func<int, int, int, int, object> bounds;
 
+    // C# throws only exceptions, so this emits a throw of its argument.
+    static Action<object> wrap;
+
+    static Action<object> Wrap()
+    {
+        var method = new DynamicMethod("Wrap", typeof(void), new[] { typeof(object) });
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Throw);
+        return method.CreateDelegate<Action<object>>();
+    }
+
     static Func<int, int, int, int, object> Bounds()
     {
         var parameters = new[] { typeof(int), typeof(int), typeof(int), typeof(int) };
@@ -122,6 +134,7 @@ static class Program
             case "Extent": Extent(0x10000); break;
             case "Negative": Negative(-1); break;
             case "Bounds": bounds(int.MaxValue, 2, 0, 1); break;
+            case "Wrap": wrap("a string"); break;
             default: throw new ArgumentException(fault);
         }
     }
@@ -143,6 +156,7 @@ static class Program
     {
         string fault = args[0], mode = args[1], expected = args[2];
         bounds = Bounds();
+        wrap = Wrap();
 
         if (mode == "twice")
         {
@@ -430,6 +444,25 @@ static class Program
             expect "nameless" "the exception itself" (RealRuntimeResult.NormalExit 1)
         | ExceptionMaking.InitializerFailure -> failwith $"%s{fault}: no case here raises a TypeInitializationException"
         | ExceptionMaking.TypeLoadConstructor -> failwith $"%s{fault}: no case here raises a TypeLoadException"
+
+    [<Test>]
+    let ``a thrown object that is not an exception is wrapped by running RuntimeWrappedException's constructor``
+        ()
+        : unit
+        =
+        let run (mode : string) : RealRuntimeResult =
+            RealRuntime.executeWithRealRuntime
+                [| "Wrap" ; mode ; "System.Runtime.CompilerServices.RuntimeWrappedException" |]
+                image.Value
+
+        // The guest's `catch` is in a C# assembly, which sees the object wrapped.
+        run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
+        run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
+
+        Net11Frontier.park Net11Frontier.nonExceptionWrapping
+
+        // The constructor looks up its message, and what that raises is thrown in the wrapper's place.
+        run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
 
     /// The provider a binding guest is compiled against: it declares a field and a method, an
     /// interface method one of two interfaces overrides, an interface method with a default body, and

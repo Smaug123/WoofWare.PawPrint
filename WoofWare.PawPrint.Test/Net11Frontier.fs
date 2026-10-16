@@ -65,6 +65,10 @@ module Net11Frontier =
     let exceptionMaking : string =
         "Measured on real .NET 11: when the parameterless constructor the runtime runs to make a fault's or a failed bind's exception raises an exception of its own (here, from the culture's resource lookup), the process aborts (SIGABRT, exit 134), where .NET 10 delivers the constructor's exception in place of the one being made, as `ExceptionMaking` describes. `ExceptionMaking` describes .NET 10's making. Un-park when it describes each runtime's."
 
+    /// Real .NET 11 ends the process when wrapping a thrown non-exception raises.
+    let nonExceptionWrapping : string =
+        "Measured on real .NET 11: when `RuntimeWrappedException(object)`, which the runtime runs to wrap a thrown object that is not an exception, raises an exception of its own (here, from the culture's resource lookup), the process overflows its stack through `Exception.InternalPreserveStackTrace` and aborts (exit 134), where .NET 10 throws the constructor's exception in the wrapper's place, as the escape analysis describes. The analysis describes .NET 10's wrapping. Un-park when it describes each runtime's."
+
     /// Park the calling test on .NET 11 alone, for `reason`: `ParkedOn.check` on that runtime.
     let park (reason : string) : unit =
         ParkedOn.check [ EmulatedRuntime.Net11 ] reason
