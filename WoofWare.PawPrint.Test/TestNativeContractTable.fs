@@ -10,7 +10,9 @@ open WoofWare.PawPrint
 
 /// `NativeContractTable` holds what CoreLib's native methods can do, read from the runtime's C++.
 /// These tests hold each row to the CoreLibs' metadata, which must declare and recognise the native
-/// it names, and to the pinned runtime source, which must define what it cites.
+/// it names, and to the pinned runtime source, which must define what it cites; every call that
+/// cited code makes must be to code the row cites too, or to code `NativeContractCallees.tsv`
+/// vouches for.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeContractTable =
@@ -141,17 +143,14 @@ module TestNativeContractTable =
 
         definitions |> Map.map (fun name _ -> expand name)
 
-    /// CoreCLR calls a CoreLib method from native code through its binder, which names the methods
-    /// it can call in `vm/corelib.h`, each by an ID `METHOD__<class>__<method>`.
-    [<Test>]
-    let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+    /// The pinned runtime source's `src/coreclr`.
+    let private coreclr () : string =
+        Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
 
-        let coreclr =
-            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
-
+    /// The IDs by which the runtime's binder, in `vm/corelib.h`, names the method a row runs.
+    let private binderIds (call : ManagedCall) : string list =
         let read (path : string) : string =
-            File.ReadAllText (Path.Combine (coreclr, path))
+            File.ReadAllText (Path.Combine (coreclr (), path))
 
         let corelibHeader = read "vm/corelib.h"
         let namespaces = bindersNamespaces (read "vm/namespace.h")
@@ -180,16 +179,26 @@ module TestNativeContractTable =
         classes.Length |> shouldBeGreaterThan 0
         methods.Length |> shouldBeGreaterThan 0
 
+        [
+            for fullName, classId in classes do
+                if fullName = call.DeclaringType then
+                    for (ofClass, name), methodId in methods do
+                        if ofClass = classId && name = call.Method then
+                            yield $"METHOD__%s{classId}__%s{methodId}"
+        ]
+
+    /// CoreCLR calls a CoreLib method from native code through its binder, which names the methods
+    /// it can call in `vm/corelib.h`, each by an ID `METHOD__<class>__<method>`.
+    [<Test>]
+    let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let read (path : string) : string =
+            File.ReadAllText (Path.Combine (coreclr (), path))
+
         for row in rows do
             for call in row.Contract.Runs do
-                let binderIds =
-                    [
-                        for fullName, classId in classes do
-                            if fullName = call.DeclaringType then
-                                for (ofClass, name), methodId in methods do
-                                    if ofClass = classId && name = call.Method then
-                                        yield $"METHOD__%s{classId}__%s{methodId}"
-                    ]
+                let binderIds = binderIds call
 
                 if binderIds.IsEmpty then
                     failwith
@@ -202,6 +211,28 @@ module TestNativeContractTable =
                 if not cited then
                     failwith
                         $"%A{row.Native} cites no source that calls %s{call.DeclaringType}::%s{call.Method} by %A{binderIds}"
+
+    let private routinesByPath =
+        Collections.Concurrent.ConcurrentDictionary<string, Lazy<SourceRoutine list>> ()
+
+    /// Each routine the file at `path` under `src/coreclr` defines.
+    let private routinesOf (path : string) : SourceRoutine list =
+        routinesByPath
+            .GetOrAdd(
+                path,
+                fun path ->
+                    lazy
+                        (let text = File.ReadAllText (Path.Combine (coreclr (), path))
+
+                         if
+                             path.EndsWith (".S", StringComparison.Ordinal)
+                             || path.EndsWith (".inc", StringComparison.Ordinal)
+                         then
+                             CppSource.assemblyRoutines text
+                         else
+                             CppSource.definitions text)
+            )
+            .Force ()
 
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
@@ -221,8 +252,13 @@ module TestNativeContractTable =
                 if not (File.Exists (Path.Combine (coreclr, source.Path))) then
                     failwith $"%A{row.Native} cites %s{source.Path}, which the pinned source lacks"
 
-                if not ((read source.Path).Contains source.Symbol) then
-                    failwith $"%A{row.Native} cites %s{source.Symbol} in %s{source.Path}, which does not mention it"
+                if
+                    not (
+                        routinesOf source.Path
+                        |> List.exists (fun routine -> CppSource.names routine.Name source.Symbol)
+                    )
+                then
+                    failwith $"%A{row.Native} cites %s{source.Symbol} in %s{source.Path}, which does not define it"
 
             let bound = (List.head row.Sources).Symbol
 
@@ -240,6 +276,214 @@ module TestNativeContractTable =
 
                 if not (qcallEntryPoints.Contains $"DllImportEntry(%s{entryPoint})") then
                     failwith $"vm/qcallentrypoints.cpp lists no %s{entryPoint}"
+
+    /// What a C++ function or macro that `NativeContractCallees.tsv` vouches for can run.
+    [<RequireQualifiedAccess>]
+    type private VouchedRuns =
+        /// No managed code.
+        | Nothing
+        /// No managed code but the constructor of the exception it throws.
+        | Exception
+        /// Whatever it likes: the cited code calls it only on a path the native never takes.
+        | Unreached
+
+    /// A row of `NativeContractCallees.tsv`.
+    type private Vouch =
+        {
+            /// The file under `src/coreclr` that defines it, or None for the C library or the
+            /// operating system.
+            Path : string option
+            Symbol : string
+            /// The text by which the file defines it, where a macro pastes its name together, as
+            /// `_GETFLD(GenericParam,Flags)` defines `getFlagsOfGenericParam`.
+            SpelledAs : string option
+            Runs : VouchedRuns
+        }
+
+    let private vouches : Lazy<Vouch list> =
+        lazy
+            (let assembly = typeof<Vouch>.Assembly
+
+             use stream =
+                 assembly.GetManifestResourceStream "WoofWare.PawPrint.Test.NativeContractCallees.tsv"
+
+             use reader = new StreamReader (stream)
+
+             [
+                 for line in reader.ReadToEnd().Split '\n' do
+                     if line.Trim () <> "" && not (line.StartsWith '#') then
+                         match line.Split '\t' with
+                         | [| callee ; runs ; reason |] when reason.Trim () <> "" ->
+                             let colon = callee.IndexOf ':'
+
+                             if colon <= 0 || colon = callee.Length - 1 then
+                                 failwith $"A vouch names %s{callee}, which is not path:symbol"
+
+                             let symbol, spelledAs =
+                                 match callee.Substring(colon + 1).Split ('=', 2) with
+                                 | [| symbol ; spelling |] when symbol <> "" && spelling <> "" -> symbol, Some spelling
+                                 | [| symbol |] -> symbol, None
+                                 | _ ->
+                                     failwith
+                                         $"A vouch names %s{callee}, which is not path:symbol or path:symbol=spelling"
+
+                             let runs =
+                                 match runs with
+                                 | "nothing" -> VouchedRuns.Nothing
+                                 | "exception" -> VouchedRuns.Exception
+                                 | "unreached" -> VouchedRuns.Unreached
+                                 | other -> failwith $"%s{callee} is vouched to run %s{other}"
+
+                             yield
+                                 {
+                                     Path =
+                                         match callee.Substring (0, colon) with
+                                         | "-" -> None
+                                         | path -> Some path
+                                     Symbol = symbol
+                                     SpelledAs = spelledAs
+                                     Runs = runs
+                                 }
+                         | _ -> failwith $"Malformed vouch: %s{line}"
+             ])
+
+    /// The routines a row cites, each with the citation naming it.
+    let private citedRoutines (row : NativeContractRow) : (NativeSource * SourceRoutine) list =
+        [
+            for source in row.Sources do
+                match
+                    routinesOf source.Path
+                    |> List.filter (fun routine -> CppSource.names routine.Name source.Symbol)
+                with
+                | [] -> failwith $"%A{row.Native} cites %s{source.Symbol}, which %s{source.Path} does not define"
+                | routines ->
+                    for routine in routines do
+                        yield source, routine
+        ]
+
+    /// What runs managed code from the VM: a call site of the runtime's binder, or the routine
+    /// every such call goes through.
+    let private managedCall : Text.RegularExpressions.Regex =
+        Text.RegularExpressions.Regex
+            @"\b(?:MethodDescCallSite\s+\w+|PREPARE_NONVIRTUAL_CALLSITE\w*|PREPARE_VIRTUAL_CALLSITE\w*|UnmanagedCallersOnlyCaller\s+\w+)\s*\(|\bCallDescrWorker\w*"
+
+    /// The names a routine spells a managed call with, which the binder ID it passes says the
+    /// target of, rather than the name.
+    let private managedCallNames : Text.RegularExpressions.Regex =
+        Text.RegularExpressions.Regex
+            @"^(?:MethodDescCallSite|UnmanagedCallersOnlyCaller|PREPARE_\w*CALLSITE\w*|CALL_MANAGED_METHOD\w*|Call(?:_Ret\w+)?)$"
+
+    [<Test>]
+    let ``every call a routine a row cites makes is to one the row cites or one vouched for`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let vouched = vouches.Force () |> List.map (fun vouch -> vouch.Symbol)
+
+        let uncovered =
+            [
+                for row in rows do
+                    let cited = row.Sources |> List.map (fun source -> source.Symbol)
+
+                    for source, routine in citedRoutines row do
+                        for called in routine.Calls do
+                            // The next test holds each managed call to the methods the row runs.
+                            let covered =
+                                (managedCall.IsMatch routine.Text && managedCallNames.IsMatch called)
+                                || cited @ vouched |> List.exists (fun symbol -> CppSource.names symbol called)
+
+                            if not covered then
+                                yield $"%A{row.Native}: %s{source.Path}:%s{routine.Name} calls %s{called}"
+            ]
+            |> List.distinct
+
+        if not uncovered.IsEmpty then
+            failwith (
+                $"%d{uncovered.Length} calls are to routines neither cited nor vouched for:\n"
+                + String.concat "\n" uncovered
+            )
+
+    [<Test>]
+    let ``every managed call a routine a row cites makes is of a method the row runs`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        for row in rows do
+            let runs = row.Contract.Runs |> List.collect binderIds |> Set.ofList
+
+            for source, routine in citedRoutines row do
+                for site in managedCall.Matches routine.Text do
+                    let arguments =
+                        let start = site.Index + site.Length
+                        let finish = routine.Text.IndexOf (')', start)
+
+                        if finish < 0 then
+                            ""
+                        else
+                            routine.Text.Substring (start, finish - start)
+
+                    let ids =
+                        Text.RegularExpressions.Regex.Matches (arguments, @"\bMETHOD__\w+")
+                        |> Seq.map (fun id -> id.Value)
+                        |> List.ofSeq
+
+                    if ids.IsEmpty || ids |> List.exists (fun id -> not (runs.Contains id)) then
+                        failwith
+                            $"%A{row.Native} cites %s{source.Path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}"
+
+    [<Test>]
+    let ``every vouch names code the pinned source defines, which makes no managed call itself`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let problems =
+            [
+                for vouch in vouches.Force () do
+                    match vouch.Path with
+                    | None -> ()
+                    | Some path when not (File.Exists (Path.Combine (coreclr (), path))) ->
+                        yield $"%s{vouch.Symbol} is vouched for in %s{path}, which the pinned source lacks"
+                    | Some path ->
+                        let text = File.ReadAllText (Path.Combine (coreclr (), path))
+
+                        let mentioned =
+                            match vouch.SpelledAs with
+                            | Some spelling -> text.Contains spelling
+                            | None ->
+                                text.Contains vouch.Symbol
+                                || routinesOf path
+                                   |> List.exists (fun routine -> CppSource.names routine.Name vouch.Symbol)
+
+                        if not mentioned then
+                            yield $"%s{vouch.Symbol} is vouched for in %s{path}, which neither defines nor mentions it"
+
+                        for routine in routinesOf path do
+                            if
+                                vouch.Runs <> VouchedRuns.Unreached
+                                && CppSource.names routine.Name vouch.Symbol
+                                && managedCall.IsMatch routine.Text
+                            then
+                                yield $"%s{path}:%s{routine.Name} is vouched for, and calls managed code"
+            ]
+
+        if not problems.IsEmpty then
+            failwith (String.concat "\n" problems)
+
+    [<Test>]
+    let ``every vouch is for a call that a routine a row cites makes`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let called =
+            rows
+            |> List.collect (fun row -> citedRoutines row |> List.map snd)
+            |> List.collect (fun routine -> List.ofSeq routine.Calls)
+            |> List.distinct
+
+        let unused =
+            vouches.Force ()
+            |> List.filter (fun vouch -> not (called |> List.exists (CppSource.names vouch.Symbol)))
+            |> List.map (fun vouch -> vouch.Symbol)
+            |> String.concat ", "
+
+        if unused <> "" then
+            failwith $"No routine a row cites calls these, which are vouched for: %s{unused}"
 
     [<Test>]
     let ``the table's reader refuses a malformed row`` () : unit =
