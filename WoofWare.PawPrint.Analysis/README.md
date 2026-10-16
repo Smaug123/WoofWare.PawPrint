@@ -90,7 +90,9 @@ method) may add more:
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
 * an object thrown that is not an exception is named as itself; a `catch` sees it as a
   `RuntimeWrappedException` if its method's assembly wraps such throws (C# and Visual Basic
-  assemblies do, F# ones do not), and as itself if not;
+  assemblies do, F# ones do not), and as itself if not. Either way the runtime wraps it where it is
+  thrown, allocating the `RuntimeWrappedException` and running its `(object)` constructor, and
+  throws in the wrapper's place what either raises, so the answer has that too;
 * a type initializer runs where CoreCLR's `CEEInfo::initClass` runs it: at an access to a static
   field of its type, other than from that type's own initializer, and at a call to a method of its
   type that is static, a constructor, or an instance method of a value type or an interface, unless
