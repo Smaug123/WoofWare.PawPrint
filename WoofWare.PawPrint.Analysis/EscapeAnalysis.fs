@@ -4665,3 +4665,21 @@ module EscapeAnalysis =
             walk state (onward @ rest) (visited.Add next) (Set.union sources (Set.ofList sites))
 
         walk state [ UnnamedAt.Escaping (rootOf state method) ] Set.empty Set.empty
+
+    /// The definition of every method that `escapes` follows from `method`, whether the method calls
+    /// it or the runtime runs it, `method` among them.
+    let internal reachable (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Set<MethodKey> =
+        let state, _ = escapes state method
+
+        let rec walk (pending : MethodInstance list) (visited : Set<MethodInstance>) : Set<MethodInstance> =
+            match pending with
+            | [] -> visited
+            | key :: rest when visited.Contains key -> walk rest visited
+            | key :: rest ->
+                match state.InstanceCalls.TryFind key with
+                | Some calls -> walk ((calls.Callees |> List.map snd) @ calls.Outside @ rest) (visited.Add key)
+                | None ->
+                    failwith
+                        $"BUG: %O{key.Definition} is reachable from %O{method}, which escapes summarised, but its calls are not recorded"
+
+        state, walk [ rootOf state method ] Set.empty |> Set.map (fun key -> key.Definition)

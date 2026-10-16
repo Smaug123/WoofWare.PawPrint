@@ -4098,7 +4098,9 @@ public static class Runners
         | Clause.Catch (_, name) -> $"%A{raise}_%s{name}%s{handled}"
 
     /// An assembly `W.Throws` with one static method per case, plus the helpers `Make`,
-    /// `MakeException`, `Throw` and `MakeWrapper`, carrying one `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
+    /// `MakeException`, `Throw` and `MakeWrapper`, and `ThrowObject(object)` and
+    /// `ThrowException(Exception)`, each of which throws its argument, carrying one
+    /// `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
     let private emitThrows (attributes : byte[] list) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -4228,7 +4230,8 @@ public static class Runners
             |> ignore<CustomAttributeHandle>
 
         // Method definitions are numbered in the order they are added: `Make`, `MakeException`,
-        // `Throw`, `MakeWrapper`, then the cases in the order of `raises` and `clauses`.
+        // `Throw`, `MakeWrapper`, `ThrowObject`, `ThrowException`, then the cases in the order of
+        // `raises` and `clauses`.
         let make = MetadataTokens.MethodDefinitionHandle 1
         let makeException = MetadataTokens.MethodDefinitionHandle 2
         let throw = MetadataTokens.MethodDefinitionHandle 3
@@ -4347,6 +4350,35 @@ public static class Runners
             MetadataTokens.ParameterHandle 1
         )
         |> ignore<MethodDefinitionHandle>
+
+        // `ldarg.0; throw`, taking an argument of this type.
+        let addThrowArgument (name : string) (argument : SignatureTypeEncoder -> unit) : unit =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters -> argument (parameters.AddParameter().Type ()))
+                )
+
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadArgument 0
+            code.OpCode ILOpCode.Throw
+
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                metadata.GetOrAddBlob blob,
+                bodies.AddMethodBody code,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        addThrowArgument "ThrowObject" (fun ty -> ty.Object ())
+        addThrowArgument "ThrowException" (fun ty -> ty.Type (exceptionRef, false))
 
         for raise, clause, handling in emittedCases do
             let body =
@@ -4553,6 +4585,81 @@ public static class Runners
                         || (exact && analysisEscapes <> runtime.[name])
                     then
                         failwith $"%s{describe ()}; the runtime lets it escape: %b{runtime.[name]}"
+
+    [<Test>]
+    let ``a thrown object that may not be an exception is wrapped, and what wrapping it raises escapes in its place``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Throws.dll") (new MemoryStream (emitThrows []))
+
+        let analysis = analysisOver [ assembly ] id
+
+        // CoreCLR allocates a `RuntimeWrappedException` and runs its `(object)` constructor on it
+        // (`WrapNonCompliantException`), and throws whatever either raises instead.
+        let wrapperConstructor =
+            let corelib = hostCoreLib ()
+
+            match corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException" with
+            | None -> failwith "CoreLib defines no System.Runtime.CompilerServices.RuntimeWrappedException"
+            | Some ty ->
+                ty.Methods
+                |> Seq.filter (fun m ->
+                    m.Name = ".ctor"
+                    && not m.IsStatic
+                    && m.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Object ]
+                )
+                |> Seq.exactlyOne
+                |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+
+        let analysis, wrapping = EscapeAnalysis.escapes analysis wrapperConstructor
+
+        let analysis, wrappingSources =
+            EscapeAnalysis.unknownSources analysis wrapperConstructor
+
+        let wrapped = Set.add "=System.OutOfMemoryException" (render analysis wrapping)
+
+        // `object`, which may be an exception or not; `object` exactly, which is not; and an object
+        // the analysis cannot name.
+        let analysis =
+            (analysis, [ "ThrowObject" ; "Throw" ; "Untyped" ])
+            ||> List.fold (fun analysis methodName ->
+                let key = methodNamed assembly "W.Throws" methodName
+                let analysis, reached = EscapeAnalysis.reachable analysis key
+
+                if not (reached.Contains wrapperConstructor) then
+                    failwith $"%s{methodName} does not reach RuntimeWrappedException(object)"
+
+                let analysis, escapes = EscapeAnalysis.escapes analysis key
+                let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+                Set.difference wrapped (render analysis escapes) |> shouldEqual Set.empty
+                Set.isSubset wrapping.Assumes escapes.Assumes |> shouldEqual true
+
+                if wrapping.Unknown then
+                    escapes.Unknown |> shouldEqual true
+
+                Set.isSubset wrappingSources sources |> shouldEqual true
+                analysis
+            )
+
+        // An exception is thrown as itself, and null raises `NullReferenceException`, which the
+        // runtime makes by its parameterless constructor.
+        let analysis, reached =
+            EscapeAnalysis.reachable analysis (methodNamed assembly "W.Throws" "ThrowException")
+
+        reached.Contains wrapperConstructor |> shouldEqual false
+
+        let analysis, throwsException =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "W.Throws" "ThrowException")
+
+        let analysis, nullThrown = making analysis "System.NullReferenceException"
+
+        render analysis throwsException
+        |> shouldEqual (Set.union nullThrown (Set.ofList [ "<:System.Exception" ; "=System.NullReferenceException" ]))
 
     /// What the analysis must say of a call that dispatches on a receiver of this kind.
     [<RequireQualifiedAccess>]
