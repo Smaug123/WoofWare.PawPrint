@@ -18,7 +18,7 @@ module TestFloatWidthUntypedBlock =
 
     [<Test>]
     let ``a float32 entering an untyped block is refused where CoreCLR runs it`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
 
         let source = Assembly.getEmbeddedResourceAsString "FloatWidthUntypedBlock.cs" assy
         let image = Roslyn.compile [ source ]

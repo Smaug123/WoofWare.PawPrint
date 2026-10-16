@@ -79,6 +79,4 @@ public static class Driver
 
     [<Test>]
     let ``a null object reference passed as a byref faults in the callee`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run "NullByref" (fabricate ()) "NullByrefDriver" driver 0

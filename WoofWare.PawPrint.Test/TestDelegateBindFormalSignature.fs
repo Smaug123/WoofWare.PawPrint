@@ -272,7 +272,7 @@ public static class FormalSignatureSweep
 
     [<Test>]
     let ``a binding refused by arity never loads the target's parameter types`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         // CoreCLR compares the arities first, from the signature's argument count alone, and loads
         // a parameter's type only when it comes to compare it. So a method of an open definition
@@ -329,7 +329,7 @@ public static class Program
 
     [<Test>]
     let ``a binding that reaches the return comparison loads the target's return type`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         // CoreCLR loads the target's return type whenever it comes to compare the returns, even
         // against a delegate returning void, so a missing assembly surfaces there as real .NET's
@@ -381,7 +381,7 @@ public static class Program
 
     [<Test>]
     let ``virtualising onto a default interface method is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         // Real .NET binds the definition's own default body here, where dispatching through the
         // closed instantiation finds `IChild`'s override: see
@@ -431,7 +431,7 @@ public static class Program
 
     [<Test>]
     let ``CreateDelegate over open generic definitions agrees with real .NET`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         let image =
             Roslyn.compileAssembly

@@ -727,8 +727,6 @@ public static class LayoutClassSweep
 
     [<Test>]
     let ``Marshal.SizeOf and OffsetOf of classes in a guest agree with real .NET`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let image =
             Roslyn.compileAssembly
                 "PawPrintTestAssembly"

@@ -9,8 +9,9 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// `Interlocked.CompareExchange(int*, int, int)`, .NET 11's compare-exchange on an object's header,
-/// performed by `Intrinsics.performPrimitive` directly. A guest cannot reach the overload yet: it is
-/// internal, so a guest finds it by reflection, which on .NET 11 stops at the thin lock.
+/// performed by `Intrinsics.performPrimitive` directly. Every guest `lock` on .NET 11 reaches it
+/// through `ObjectHeader`; `InterlockedCompareExchangePointer.cs`, which calls it on other storage,
+/// finds the internal overload by reflection, which stops first (`Net11Frontier.runtimeMethodInfoValue`).
 ///
 /// The pointer's provenance never decides the access's width: an `int*` taken from a byte buffer
 /// addresses four bytes, as `ldind.i4` and `stind.i4` through the same pointer do. And the pointer
@@ -40,6 +41,9 @@ module TestPointerCompareExchange =
         | Bytes
         /// An element of an `int[]`.
         | Int32Cell
+        /// The header word of an `int[]`, as `ObjectHeader.GetHeaderPtr` addresses it: 20 bytes
+        /// below element 0 of an SZ array.
+        | Header
 
     /// A machine with its entry thread, and the method `performPrimitive` is told it performs:
     /// the host CoreLib's `ref int` overload, which has the pointer overload's arity, since
@@ -86,8 +90,21 @@ module TestPointerCompareExchange =
             ImmutableArray.Empty
             ImmutableArray.Empty
 
-    /// Store `initial` in `storage`: the array whose element 0 a pointer to it addresses.
-    let private place loggerFactory (storage : Storage) (initial : int32) (state : IlMachineState) =
+    /// Store `initial` in `storage`: the array that holds it, and the location a pointer to it
+    /// addresses.
+    let private place
+        loggerFactory
+        (storage : Storage)
+        (initial : int32)
+        (state : IlMachineState)
+        : ManagedHeapAddress * AddressedByref * IlMachineState
+        =
+        let elementZero (array : ManagedHeapAddress) : AddressedByref =
+            {
+                Root = ByrefRoot.ArrayElement (array, 0)
+                Projections = []
+            }
+
         match storage with
         | Storage.Bytes ->
             let state, byteType = concretise loggerFactory baseClassTypes.Byte state
@@ -103,7 +120,7 @@ module TestPointerCompareExchange =
                 (state, BitConverter.GetBytes initial |> Array.indexed)
                 ||> Array.fold (fun state (i, b) -> IlMachineState.setArrayValue array (byteValue b) i state)
 
-            array, state
+            array, elementZero array, state
         | Storage.Int32Cell ->
             let state, intType = concretise loggerFactory baseClassTypes.Int32 state
 
@@ -114,7 +131,33 @@ module TestPointerCompareExchange =
                     1
                     state
 
-            array, IlMachineState.setArrayValue array (CliType.Numeric (CliNumericType.Int32 initial)) 0 state
+            array,
+            elementZero array,
+            IlMachineState.setArrayValue array (CliType.Numeric (CliNumericType.Int32 initial)) 0 state
+        | Storage.Header ->
+            let state, byteType = concretise loggerFactory baseClassTypes.Byte state
+            let state, intType = concretise loggerFactory baseClassTypes.Int32 state
+
+            let array, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero intType)
+                    (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                    1
+                    state
+
+            let header =
+                ManagedPointerSource.Byref (elementZero array)
+                |> ManagedPointerByteView.addByteOffset state byteType -20
+                |> ManagedPointerSource.requireAddressed
+
+            let state =
+                IlMachineState.writeIndirectPrimitiveStore
+                    baseClassTypes
+                    state
+                    header
+                    (CliType.Numeric (CliNumericType.Int32 initial))
+
+            array, header, state
 
     /// The `int32` now in `storage` at `array`.
     let private read (storage : Storage) (array : ManagedHeapAddress) (state : IlMachineState) : int32 =
@@ -131,6 +174,7 @@ module TestPointerCompareExchange =
             match IlMachineState.getArrayValue array 0 state with
             | CliType.Numeric (CliNumericType.Int32 i) -> i
             | other -> failwith $"the int cell is %O{other}"
+        | Storage.Header -> ManagedHeap.getHeaderWord array state.ManagedHeap
 
     let private pointer (form : PointerForm) (location : AddressedByref) : EvalStackValue =
         match form with
@@ -147,19 +191,13 @@ module TestPointerCompareExchange =
                 let! comparand = Gen.oneof [ Gen.constant initial ; ArbMap.defaults |> ArbMap.generate<int32> ]
 
                 let! form = Gen.elements [ PointerForm.NativeInt ; PointerForm.Reloaded ]
-                let! storage = Gen.elements [ Storage.Bytes ; Storage.Int32Cell ]
+                let! storage = Gen.elements [ Storage.Bytes ; Storage.Int32Cell ; Storage.Header ]
                 return initial, value, comparand, form, storage
             }
 
         let property (initial, value, comparand, form, storage) =
             let loggerFactory, state, thread, methodToCall = machine ()
-            let array, state = place loggerFactory storage initial state
-
-            let location : AddressedByref =
-                {
-                    Root = ByrefRoot.ArrayElement (array, 0)
-                    Projections = []
-                }
+            let array, location, state = place loggerFactory storage initial state
 
             let state =
                 state

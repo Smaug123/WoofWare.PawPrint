@@ -157,8 +157,6 @@ public class Program
 
     [<Test>]
     let ``SHA256 through the EVP digest natives agrees with the host on the linux-x64 CoreLib`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let terminalState =

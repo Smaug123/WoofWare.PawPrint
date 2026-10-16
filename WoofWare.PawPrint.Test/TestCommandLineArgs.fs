@@ -181,8 +181,6 @@ class EchoArgv0
 
     [<Test>]
     let ``A host-named assembly path reaches the guest verbatim`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // Not resolved against anything, and deliberately absent from the emulated filesystem:
         // CoreCLR forwards `pwzAssemblyPath` to `InitializeCommandLineArgs` without consulting
         // the disk, so what the host says is what the guest reads.
@@ -194,8 +192,6 @@ class EchoArgv0
 
     [<Test>]
     let ``An unnamed assembly falls back to the name stamped into the image`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // `Roslyn.compile` builds every guest as `PawPrintTestAssembly` with
         // `OutputKind.ConsoleApplication`, so the Module row records `.exe` — measured, not
         // assumed, and worth pinning: the extension comes from the image rather than from any

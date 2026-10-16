@@ -1017,20 +1017,6 @@ public static class Driver
 
     [<TestCaseSource(nameof caseNames)>]
     let ``a field MemberRef binds as the real runtime binds it`` (name : string) : unit =
-        if
-            List.contains
-                name
-                [
-                    "CoreLibInstantiationAbsent"
-                    "NestedParentAbsent"
-                    "ParentAbsent"
-                    "ParentElementAbsent"
-                    "StringEmptyAsClass"
-                    "VectorLength"
-                ]
-        then
-            Net11Frontier.park Net11Frontier.thinLock
-
         let unexpected = "\"<no exception expected>\""
 
         let missingFieldMessage, typeLoadMessage, typeName, exitCode =

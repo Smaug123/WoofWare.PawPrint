@@ -373,6 +373,6 @@ public static class Driver
 
     [<Test>]
     let ``calling an abstract method without dispatch agrees with the real runtime`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         FabricatedGuest.run "AbstractCall" (fabricate ()) "AbstractCallDriver" driverSource 0

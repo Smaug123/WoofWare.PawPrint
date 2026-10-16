@@ -733,8 +733,24 @@ mutation-testing skill applies to each table/classifier they introduce.
    lock is past startup, and by the 2026-10-13 measurement P6e parks most of the net11 Guest cases
    on it; that is the first thing stage 7 walks.
 7. **Walk the net11 blockers one at a time**, in the measured frontier order where known:
-   * thin-lock addressing, and the `AppContext_TryGetHostPropertyValue` handler the first guest
-     past it reaches;
+   * **(landed)** thin-lock addressing. Every heap object has a header word, an `int32` beside its
+     `SyncBlock` (`ManagedHeap.getHeaderWord`) that PawPrint gives no meaning; .NET 10's monitor
+     never touches it. A byref reaches it at its byte coordinate below the object's raw data, 12
+     bytes for a non-array object and 20 below element 0 of an SZ array (`ObjectHeaderWord`), which
+     is where `ObjectHeader.GetHeaderPtr` lands, and an access that is not exactly the word is
+     refused. The uncontended thin lock runs, recursion included. Past it, the net11 leg measured
+     these frontiers, each now a `Net11Frontier` reason: `ThreadNative_Start`'s new signature
+     (`threadStart`); `IRuntimeMethodInfo.GetValue`'s read of `m_value` at
+     `RuntimeMethodInfoStub`'s offset on any method info (`runtimeMethodInfoValue`), which most
+     reflection reaches; `Delegate_BindToMethodInfo`'s new signature
+     (`delegateBindToMethodInfo`); `SystemNative_FileSystemSupportsLocking`
+     (`fileSystemSupportsLocking`); the fat lock, reached by contention, `Monitor.Wait` and
+     `Pulse` through `GetLockHandleIfExists` (`fatLock`); and inline arrays of references
+     indexed through Roslyn's helpers (`inlineArrayOfReferences`). Single cases stop at a
+     multi-dimensional array's `RawData::Data` (`LockOnArray.cs`), at .NET 11's new
+     `PosixSignal.SIGKILL` (`KillSelf.cs`), and at a `clt.un` between two byte views of one
+     stackalloc block (`EventSourceDisabled.cs`). No guest reaches the
+     `AppContext_TryGetHostPropertyValue` QCall yet, so its handler still waits for one;
    * the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`;
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
@@ -747,8 +763,8 @@ mutation-testing skill applies to each table/classifier they introduce.
      RC1's `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read. PawPrint
      writes each thread's managed id into its own slot when the thread starts, as RC1's VM does
      (`InitializeCurrentThreadsStaticData`), so every reader of the slot sees it. It accounted for
-     the `LockHeldByOtherThread.cs` mismatch too, which now stops at the thin lock when it starts
-     its worker;
+     the `LockHeldByOtherThread.cs` mismatch too, which now stops at `ThreadNative_Start` when it
+     starts its worker;
    * the narrow float-to-integer conversions, which RC1 saturates to the target's own range
      (`(byte)300.0` is 255, where net10 gives 44): the first behaviour fact of the opcode set
      itself to differ, so a runtime-keyed rule for `conv.i1`/`u1`/`i2`/`u2` and `char`, with

@@ -670,13 +670,13 @@ public static class Program
 
     [<Test>]
     let ``a listener and a connector, as two processes on one machine, both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         listenerAndConnector (FrameworkUnderTest.runtimeDirs ())
 
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         listenerAndConnector (runtimeDirsPreferringLinux (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 

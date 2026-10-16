@@ -34,6 +34,16 @@ module ManagedHeap =
     /// not a live allocation rather than conjuring a header for it.
     val setSyncBlock : addr : ManagedHeapAddress -> syncValue : SyncBlock -> heap : ManagedHeap -> ManagedHeap
 
+    /// The header word of the object at `addr`: the `int32` CoreCLR keeps 4 bytes before the
+    /// object's method-table pointer, which .NET 11's managed thin lock reads and
+    /// compare-exchanges. PawPrint gives its bits no meaning. A fresh allocation's is 0; fails
+    /// for an address that is not a live allocation.
+    val getHeaderWord : addr : ManagedHeapAddress -> heap : ManagedHeap -> int32
+
+    /// Overwrite the header word of the object at `addr`. Fails for an address that is not a
+    /// live allocation.
+    val setHeaderWord : addr : ManagedHeapAddress -> value : int32 -> heap : ManagedHeap -> ManagedHeap
+
     /// Every object whose monitor is currently `Held` by `thread`, with the ownership
     /// state, in ascending address order.
     val syncBlocksHeldBy : thread : ThreadId -> heap : ManagedHeap -> (ManagedHeapAddress * LockedSyncBlock) list
@@ -233,6 +243,10 @@ module HeapObserver =
     /// Whether `addr` has an object header. Computed from the header table alone; see
     /// `syncBlockAddresses`.
     val hasSyncBlock : addr : ManagedHeapAddress -> heap : ManagedHeap -> bool
+
+    /// The addresses that have a header word. Computed from the header words alone, so that a
+    /// test can compare it with `liveAddresses`.
+    val headerWordAddresses : heap : ManagedHeap -> Set<ManagedHeapAddress>
 
     /// Every object header, keyed by address.
     val syncBlocks : heap : ManagedHeap -> Map<ManagedHeapAddress, SyncBlock>

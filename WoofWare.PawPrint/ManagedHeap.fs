@@ -37,6 +37,15 @@ type ManagedHeap =
         /// `Arrays` key sets. `allocateNonArray` / `allocateArray` are the only ways to
         /// mint an address and both register an `Empty` entry here.
         SyncBlocks : Map<ManagedHeapAddress, SyncBlock>
+        /// Each object's header word: the `int32` CoreCLR keeps 4 bytes before the object's
+        /// method-table pointer (`ObjHeader::m_SyncBlockValue`), which .NET 11's managed thin
+        /// lock reads and compare-exchanges. PawPrint gives the bits no meaning; the guest code
+        /// that writes them owns it. Kept apart from `SyncBlocks`, which is the monitor .NET 10
+        /// drives through `Monitor`'s InternalCalls and never touches this word.
+        ///
+        /// Invariant: the key set is that of `SyncBlocks`, for the same reason, and every
+        /// allocation starts at 0, as CoreCLR's does.
+        HeaderWords : Map<ManagedHeapAddress, int32>
     }
 
 [<RequireQualifiedAccess>]
@@ -50,6 +59,7 @@ module ManagedHeap =
             StringContents = ImmutableDictionary.Empty
             StringDataOffsets = ImmutableDictionary.Empty
             SyncBlocks = Map.empty
+            HeaderWords = Map.empty
         }
 
     /// The object header of the object at `addr`. Every live heap object has one,
@@ -68,6 +78,19 @@ module ManagedHeap =
 
         { heap with
             SyncBlocks = heap.SyncBlocks |> Map.add addr syncValue
+        }
+
+    let getHeaderWord (addr : ManagedHeapAddress) (heap : ManagedHeap) : int32 =
+        match heap.HeaderWords.TryGetValue addr with
+        | false, _ -> failwith $"getHeaderWord: %O{addr} is not a live managed heap allocation, so has no header word"
+        | true, v -> v
+
+    let setHeaderWord (addr : ManagedHeapAddress) (value : int32) (heap : ManagedHeap) : ManagedHeap =
+        if not (heap.HeaderWords.ContainsKey addr) then
+            failwith $"setHeaderWord: %O{addr} is not a live managed heap allocation, so has no header word"
+
+        { heap with
+            HeaderWords = heap.HeaderWords |> Map.add addr value
         }
 
     /// Every object whose monitor is currently `Held` by `thread`, with the ownership
@@ -173,6 +196,7 @@ module ManagedHeap =
                 FirstAvailableAddress = heap.FirstAvailableAddress + 1
                 Arrays = heap.Arrays |> Map.add (ManagedHeapAddress addr) ty
                 SyncBlocks = heap.SyncBlocks |> Map.add (ManagedHeapAddress addr) SyncBlock.Empty
+                HeaderWords = heap.HeaderWords |> Map.add (ManagedHeapAddress addr) 0
             }
 
         ManagedHeapAddress addr, heap
@@ -223,6 +247,7 @@ module ManagedHeap =
                 FirstAvailableAddress = addr + 1
                 NonArrayObjects = heap.NonArrayObjects |> Map.add (ManagedHeapAddress addr) ty
                 SyncBlocks = heap.SyncBlocks |> Map.add (ManagedHeapAddress addr) SyncBlock.Empty
+                HeaderWords = heap.HeaderWords |> Map.add (ManagedHeapAddress addr) 0
             }
 
         ManagedHeapAddress addr, heap
@@ -606,6 +631,11 @@ module HeapObserver =
     /// Whether `addr` has an object header. Computed from `SyncBlocks` alone; see
     /// `liveAddresses`.
     let hasSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool = heap.SyncBlocks.ContainsKey addr
+
+    /// The addresses that have a header word, computed from `HeaderWords` alone; see
+    /// `liveAddresses`.
+    let headerWordAddresses (heap : ManagedHeap) : Set<ManagedHeapAddress> =
+        heap.HeaderWords |> Map.keys |> Set.ofSeq
 
     /// Every object header, keyed by address. Exposed as a whole so that a test can
     /// compare monitor state across two machine states in one equality.

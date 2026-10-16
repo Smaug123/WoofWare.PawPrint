@@ -235,6 +235,4 @@ public static class Driver
 
     [<Test>]
     let ``an integer argument is converted to its parameter's width at the call`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run "Coercion" (fabricate ()) "CoercionDriver" driver 0

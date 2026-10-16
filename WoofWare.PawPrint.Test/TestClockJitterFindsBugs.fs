@@ -174,7 +174,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``no schedule reaches the buffer bug without jitter`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The load-bearing half of this fixture. Whenever `Join(200)` returns
         // having *succeeded*, the worker has terminated and the buffer is
@@ -187,7 +187,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``no schedule reaches the lease bug without jitter`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Same argument, and for the lease guest it is even more clearly not a
         // matter of luck: `Main` is parked in `Join` for the whole window, so
@@ -200,7 +200,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``jitter reaches the buffer bug`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // At probability 1.0 the first tick that sees the join deadline
         // outstanding jumps straight to it, so the worker has barely started
@@ -211,7 +211,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``a small jitter probability still finds the buffer bug within a seed sweep`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Probability 1.0 is a demonstration, not a usable setting: it expires
         // every wait the instant it is posted, which explores one timing rather
@@ -255,7 +255,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``a non-zero overshoot bound reaches the lease bug`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         if Option.isNone firstLeaseFinding.Value then
             failwith
@@ -263,7 +263,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``a zero overshoot bound cannot reach the lease bug`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The measurement that motivated the parameter. A jump landing exactly
         // on the join's deadline means precisely 50 ms elapsed, so the 100 ms
@@ -286,7 +286,7 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``an explicit script reaches the buffer bug without any seed`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // `Scripted` drives the same bug with no randomness anywhere, which is
         // the property a recorded repro needs: it survives without the seed

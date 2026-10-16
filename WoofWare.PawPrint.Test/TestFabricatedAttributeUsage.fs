@@ -123,6 +123,4 @@ public static class Driver
 
     [<Test>]
     let ``a malformed AttributeUsage blob throws CustomAttributeFormatException`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run "RawUsage" (fabricate ()) "RawUsageDriver" driver 0

@@ -263,7 +263,7 @@ class TwoAccepters
 
     [<Test>]
     let ``a connection with two accepters parked wakes the one that parked first`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         run "TwoAccepters.cs" twoAcceptersSource |> exitCodeOf |> shouldEqual 11
 
@@ -317,7 +317,7 @@ class RewrittenLength
 
     [<Test>]
     let ``a woken accept writes the address through the length the shim copied before sleeping`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         run "RewrittenLength.cs" rewrittenLengthSource |> exitCodeOf |> shouldEqual 0
 
@@ -353,6 +353,6 @@ class UnreadOutPointer
 
     [<Test>]
     let ``a sleeping accept does not touch its out-pointer`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         run "UnreadOutPointer.cs" unreadOutPointerSource |> exitCodeOf |> shouldEqual 7

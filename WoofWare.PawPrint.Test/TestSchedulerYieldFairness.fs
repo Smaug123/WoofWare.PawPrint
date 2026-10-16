@@ -122,7 +122,7 @@ module TestSchedulerYieldFairness =
     /// around is free to pass, and only losing the fairness effect itself fails.
     [<Test>]
     let ``yielding spinners do not starve the worker under Pct`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let seeds = [ 1UL .. 20UL ]
 

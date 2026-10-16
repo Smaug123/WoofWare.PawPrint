@@ -381,7 +381,7 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``PCT runs with the same seed produce identical observable outcomes`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The core invariant of PCT: schedule is a deterministic function of
         // the seed plus the program. Run a schedule-sensitive guest twice with
@@ -406,8 +406,6 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``a run that never forks consumes no randomness at all`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // The forced-decision property at whole-run scale, and the premise the fork-point
         // sharing feature is built on: a guest that never has two Runnable threads leaves the
         // policy state exactly where `withPctSeed` put it — startup's ~3300 class-initialiser
@@ -425,7 +423,7 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``a run that forks does consume randomness`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The other half of the iff. Without it, a policy that never drew anything would pass
         // the test above, and PCT would have silently degenerated into RoundRobin — which the
@@ -439,7 +437,7 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``PCT runs without a seed default to RoundRobin parity`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // A `None` seed must select the legacy RoundRobin policy: two `None`
         // runs are identical, and they must also match the RoundRobin trace
