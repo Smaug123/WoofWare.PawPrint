@@ -12,10 +12,18 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestIntrinsicContracts =
 
-    /// For each primitive, a C# statement that performs it. An argument the contract names in a
-    /// `FaultCondition.ArgumentNull` is null; `CoreLib`'s internal methods are reached by
-    /// reflection, which reports a fault as the inner exception of a `TargetInvocationException`.
-    let private calls : (IntrinsicPrimitive * string) list =
+    /// CoreLib's internal `Interlocked.CompareExchange(int*, int, int)`, which .NET 11 adds, on the
+    /// pointer `location`: reached by reflection, which takes a pointer argument boxed by
+    /// `Pointer.Box`. A CoreLib without it raises `MissingMethodException`, which no case expects.
+    let private pointerCompareExchange (location : string) : string =
+        "(typeof(Interlocked).GetMethod(\"CompareExchange\", BindingFlags.NonPublic | BindingFlags.Static, new[] { typeof(int*), typeof(int), typeof(int) }) ?? throw new MissingMethodException())"
+        + $".Invoke(null, new object[] {{ Pointer.Box(%s{location}, typeof(int*)), 1, 0 }});"
+
+    /// For each primitive every supported CoreLib performs, a C# statement that performs it. An
+    /// argument the contract names in a `FaultCondition.ArgumentNull` is null; `CoreLib`'s internal
+    /// methods are reached by reflection, which reports a fault as the inner exception of a
+    /// `TargetInvocationException`.
+    let private callsEverywhere : (IntrinsicPrimitive * string) list =
         let internalStatic (ty : string) (name : string) (generic : string option) (args : string) =
             let method =
                 $"typeof(%s{ty}).GetMethod(\"%s{name}\", BindingFlags.NonPublic | BindingFlags.Static)"
@@ -32,13 +40,13 @@ module TestIntrinsicContracts =
             IntrinsicPrimitive.ReadBarrier, "Volatile.ReadBarrier();"
             IntrinsicPrimitive.WriteBarrier, "Volatile.WriteBarrier();"
             IntrinsicPrimitive.GcPoll, internalStatic "Thread" "FastPollGC" None "null"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt8,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt8, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.NullRef<byte>(), (byte)1, (byte)0);"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt16,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt16, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.NullRef<ushort>(), (ushort)1, (ushort)0);"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int32,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.NullRef<int>(), 1, 0);"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int64,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int64, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.NullRef<long>(), 1L, 0L);"
             IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8,
             "Interlocked.Exchange(ref Unsafe.NullRef<byte>(), (byte)1);"
@@ -68,6 +76,17 @@ module TestIntrinsicContracts =
             IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Single, "float.ConvertToIntegerNative<long>(1e30f);"
         ]
 
+    /// `callsEverywhere`, and the primitives only the runtime under test's CoreLib performs.
+    let private calls : (IntrinsicPrimitive * string) list =
+        match FrameworkUnderTest.runtime () with
+        | EmulatedRuntime.Net10 -> callsEverywhere
+        | EmulatedRuntime.Net11 ->
+            callsEverywhere
+            @ [
+                IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Pointer),
+                pointerCompareExchange "null"
+            ]
+
     /// Primitives no statement here can perform with the argument its contract names null.
     /// `VolatileReadAsByref` takes a `ref nint`, and reflection passes a byref argument as a
     /// fresh box, never as a null byref.
@@ -82,13 +101,13 @@ module TestIntrinsicContracts =
     /// that performs it on a location at an address one below a multiple of 16, which `at`
     /// holds, so that any access wider than a byte crosses a 16-byte boundary. Arm64 CPUs with
     /// FEAT_LSE2 fault on exactly that; those without it, on any misalignment; x64 never.
-    let private misalignedCalls : (IntrinsicPrimitive * string) list =
+    let private misalignedCallsEverywhere : (IntrinsicPrimitive * string) list =
         [
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt16,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.UInt16, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.AsRef<ushort>(at), (ushort)1, (ushort)0);"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int32,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.AsRef<int>(at), 1, 0);"
-            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int64,
+            IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int64, AtomicLocation.Byref),
             "Interlocked.CompareExchange(ref Unsafe.AsRef<long>(at), 1L, 0L);"
             IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt16,
             "Interlocked.Exchange(ref Unsafe.AsRef<ushort>(at), (ushort)1);"
@@ -98,6 +117,18 @@ module TestIntrinsicContracts =
             IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32, "Interlocked.Add(ref Unsafe.AsRef<int>(at), 1);"
             IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64, "Interlocked.Add(ref Unsafe.AsRef<long>(at), 1L);"
         ]
+
+    /// `misalignedCallsEverywhere`, and the misaligned cases of the primitives only the runtime
+    /// under test's CoreLib performs.
+    let private misalignedCalls : (IntrinsicPrimitive * string) list =
+        match FrameworkUnderTest.runtime () with
+        | EmulatedRuntime.Net10 -> misalignedCallsEverywhere
+        | EmulatedRuntime.Net11 ->
+            misalignedCallsEverywhere
+            @ [
+                IntrinsicPrimitive.AtomicCompareExchange (AtomicOperand.Int32, AtomicLocation.Pointer),
+                pointerCompareExchange "at"
+            ]
 
     [<Test>]
     let ``the misalignment cases are exactly the primitives whose contracts name misalignment`` () : unit =
@@ -184,6 +215,10 @@ module TestIntrinsicContracts =
                 if (arm64) return %d{misalignedBase + 2 * i + 1};
             }}
             catch (DataMisalignedException)
+            {{
+                if (!arm64) return %d{misalignedBase + 2 * i + 2};
+            }}
+            catch (TargetInvocationException e) when (e.InnerException is DataMisalignedException)
             {{
                 if (!arm64) return %d{misalignedBase + 2 * i + 2};
             }}

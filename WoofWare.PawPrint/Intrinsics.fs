@@ -219,6 +219,58 @@ module Intrinsics =
             |> site.AdvanceCaller
             |> IntrinsicResult.Completed
 
+    /// The zero of `operand`, whose width sizes an access to a location of that operand.
+    let private atomicOperandZero (operand : AtomicOperand) : CliType =
+        match operand with
+        | AtomicOperand.UInt8 -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
+        | AtomicOperand.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
+        | AtomicOperand.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
+        | AtomicOperand.Int64 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+    /// `Interlocked.CompareExchange` through a pointer to an `operand`, whose arguments are on the
+    /// evaluation stack. The access is `operand`'s width wherever the pointer points, as `ldind`
+    /// and `stind` through it are: a pointer keeps the provenance of the storage it was taken from,
+    /// so an `int*` into a byte buffer addresses four of its bytes.
+    let private compareExchangeThroughPointer
+        (site : CallSite)
+        (operation : string)
+        (operand : AtomicOperand)
+        (state : IlMachineState)
+        : IntrinsicResult
+        =
+        let comparand, state = IlMachineState.popEvalStack site.Thread state
+        let value, state = IlMachineState.popEvalStack site.Thread state
+        let pointerArg, state = IlMachineState.popEvalStack site.Thread state
+
+        match popPointerLocationArgument operation pointerArg with
+        | ManagedPointerSource.Null -> nullLocation site state
+        | location ->
+            let location = ManagedPointerSource.requireAddressed location
+            let zero = atomicOperandZero operand
+
+            let currentValue =
+                IlMachineState.readManagedByrefBytesAs site.BaseClassTypes state location zero
+
+            let valueCli = EvalStackValue.toCliTypeCoerced zero value
+            let comparandCli = EvalStackValue.toCliTypeCoerced zero comparand
+
+            let state =
+                if
+                    EvalStackValueComparisons.ceqDeferred
+                        state.PointerHashState
+                        (EvalStackValue.ofCliType currentValue)
+                        (EvalStackValue.ofCliType comparandCli)
+                    |> StorageLocation.resolveCeq site.BaseClassTypes state
+                then
+                    IlMachineState.writeIndirectPrimitiveStore site.BaseClassTypes state location valueCli
+                else
+                    state
+
+            state
+            |> IlMachineState.pushToEvalStack currentValue site.Thread
+            |> site.AdvanceCaller
+            |> IntrinsicResult.Completed
+
     /// `Interlocked.Exchange` on a location holding a scalar integer, a Boolean or a Char: its
     /// arguments are on the evaluation stack, and `operation` names it in a refusal.
     let private exchangeScalar (site : CallSite) (operation : string) (state : IlMachineState) : IntrinsicResult =
@@ -618,8 +670,10 @@ module Intrinsics =
             | IntrinsicPrimitive.ReadBarrier
             | IntrinsicPrimitive.WriteBarrier
             | IntrinsicPrimitive.GcPoll -> state |> site.AdvanceCaller |> IntrinsicResult.Completed
-            | IntrinsicPrimitive.AtomicCompareExchange _ ->
+            | IntrinsicPrimitive.AtomicCompareExchange (_, AtomicLocation.Byref) ->
                 compareExchangeScalar site "Interlocked.CompareExchange" state
+            | IntrinsicPrimitive.AtomicCompareExchange (operand, AtomicLocation.Pointer) ->
+                compareExchangeThroughPointer site "Interlocked.CompareExchange" operand state
             | IntrinsicPrimitive.AtomicExchange _ -> exchangeScalar site "Interlocked.Exchange" state
             | IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32 -> addInt32 site "Interlocked.ExchangeAdd" true state
             | IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64 -> addInt64 site "Interlocked.ExchangeAdd" true state

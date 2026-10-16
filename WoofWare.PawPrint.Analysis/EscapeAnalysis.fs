@@ -29,7 +29,8 @@ type Opacity =
     /// Something CoreCLR runs for an <c>[Intrinsic]</c> in place of its IL that the analysis does not
     /// model: the JIT's expansion of the method's call to itself where the JIT's tables do not say
     /// what the instruction raises (<c>HardwareInstruction.contract</c>) or the expansion is not
-    /// recognised, or a body the VM substitutes that is not transcribed.
+    /// recognised, a body the VM substitutes that is not transcribed, or a method the JIT replaces at
+    /// every call to it (<c>IntrinsicBody.CallSiteExpansion</c>).
     | IntrinsicExpansion
     /// A MemberRef whose target turns on how a type variable of this method is instantiated.
     | DependsOnInstantiation
@@ -2275,6 +2276,8 @@ module EscapeAnalysis =
             match IntrinsicPrimitive.recognise assembly key.Method.Get with
             | Some primitive -> Runs.Primitive primitive
             | None -> Runs.Opaque Opacity.IntrinsicExpansion
+        // The JIT replaces every call with code of its own, which no IL here describes.
+        | None, Some IntrinsicBody.CallSiteExpansion -> Runs.Opaque Opacity.IntrinsicExpansion
         | None, Some (IntrinsicBody.JitExpansion expansion) ->
             match method.Body with
             | MethodBody.Il body -> Runs.Il (body, Some expansion)

@@ -29,10 +29,6 @@ module Net11Frontier =
     let gcMemoryInfo : string =
         "On .NET 11, `System.GCMemoryInfoData` has no `_generationInfo0` field, which `GC.GetMemoryInfo`'s native filler writes: \"System.GCMemoryInfoData does not declare expected instance field '_generationInfo0'\". Un-park when the native filler writes .NET 11's layout."
 
-    /// `IntrinsicBody` does not classify .NET 11's new intrinsics.
-    let newIntrinsics : string =
-        "On .NET 11, `Interlocked.CompareExchange(int*, int, int)` is a new `[Intrinsic]` whose body calls itself, which `IntrinsicBody` does not recognise as a JIT expansion, and `RuntimeHelpers.SetNextCallGenericContext` and `SetNextCallAsyncContinuation` are new placeholders that `IntrinsicBody` classifies as VM substitutions although the pinned VM source substitutes neither. Un-park when `IntrinsicBody` classifies .NET 11's new intrinsics."
-
     /// The checked-in hardware-intrinsic table is .NET 10's.
     let hardwareIntrinsicTable : string =
         "`HardwareIntrinsicTable.tsv` reproduces .NET 10's JIT tables. .NET 11's `hwintrinsiclistarm64.h` has rows of a shape the reader does not parse, and .NET 11 adds instruction sets no row covers (Arm `Sha3`, x64 `Avx512Bmm`, `AvxVnni.V512`, `X86Base.X64.BigMul`). Un-park when the table is kept per runtime."
