@@ -237,7 +237,4 @@ public static class Driver
         FabricatedGuest.run "Blk" (fabricate ()) "InitblkDriver" driverSource expectedOnHost
 
     [<Test>]
-    let ``initblk agrees with the real runtime on operands C# cannot spell`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
-        runFabricated 0
+    let ``initblk agrees with the real runtime on operands C# cannot spell`` () : unit = runFabricated 0

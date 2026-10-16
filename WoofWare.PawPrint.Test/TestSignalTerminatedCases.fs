@@ -90,19 +90,22 @@ module TestSignalTerminatedCases =
 
     [<TestCaseSource(nameof cases)>]
     let ``A guest killed by a signal dies of it on both runtimes`` (case : SignalTerminatedCase) : unit =
-        if
-            List.contains
+        match
+            Map.tryFind
                 case.FileName
-                [
-                    "KillSelf.cs"
-                    "LibcRaiseTerminatesFromThread.cs"
-                    "PosixSignalKillNotCancelled.cs"
-                    "PosixSignalRaiseNotCancelled.cs"
-                    "PosixSignalReenabledAfterFaultRestore.cs"
-                    "PosixSignalRegisteredFaultSignal.cs"
-                ]
-        then
-            Net11Frontier.park Net11Frontier.thinLock
+                (Map.ofList
+                    [
+                        "KillSelf.cs",
+                        "On .NET 11, `Process.Kill` signals `PosixSignal.SIGKILL` (-11), a value .NET 10's enum lacks, and `Process.SignalCore` raises `PlatformNotSupportedException` when `SystemNative_GetPlatformSignalNumber` answers 0 for it, as PawPrint's does. Un-park when PawPrint maps .NET 11's `PosixSignal` values."
+                        "LibcRaiseTerminatesFromThread.cs", Net11Frontier.threadStart
+                        "PosixSignalKillNotCancelled.cs", Net11Frontier.waitSleepJoin
+                        "PosixSignalRaiseNotCancelled.cs", Net11Frontier.waitSleepJoin
+                        "PosixSignalReenabledAfterFaultRestore.cs", Net11Frontier.fatLock
+                        "PosixSignalRegisteredFaultSignal.cs", Net11Frontier.fatLock
+                    ])
+        with
+        | Some reason -> Net11Frontier.park reason
+        | None -> ()
 
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
@@ -132,6 +135,9 @@ module TestSignalTerminatedCases =
         | RunOutcome.SignalTerminated (state, signal, _) ->
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
             Signal.toRawSignoUnder numbering signal |> shouldEqual case.Signo
+        | RunOutcome.GuestUnhandledException (state, _, exn, _) ->
+            failwith
+                $"%s{case.FileName}: expected PawPrint to report a signal termination, but the guest threw:\n%s{UnhandledExceptionReport.describe state exn}"
         | other -> failwith $"%s{case.FileName}: expected PawPrint to report a signal termination, got %O{other}"
 
         match realResult with

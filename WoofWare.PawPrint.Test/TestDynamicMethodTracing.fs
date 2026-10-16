@@ -55,7 +55,7 @@ module TestDynamicMethodTracing =
 
     [<Test>]
     let ``a dynamic method executes with trace logging enabled`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
 
         // The same guest the end-to-end case runs, so this cannot drift away from what it covers.
         let source = Assembly.getEmbeddedResourceAsString "DynamicMethodInvoke.cs" assy

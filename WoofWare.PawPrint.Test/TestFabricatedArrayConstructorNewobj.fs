@@ -117,6 +117,4 @@ public static class Driver
 
     [<Test>]
     let ``newobj of an array's constructors agrees with the real runtime`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run "NewArr" (fabricate ()) "NewArrDriver" driverSource 0

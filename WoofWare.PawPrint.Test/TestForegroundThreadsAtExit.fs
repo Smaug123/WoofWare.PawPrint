@@ -40,7 +40,7 @@ module TestForegroundThreadsAtExit =
     /// The guest from the issue: measured on real .NET 10, this prints `worker ran` and exits 3.
     [<Test>]
     let ``a foreground worker still runs after Main has returned, and Main's exit code survives it`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """
@@ -80,7 +80,7 @@ class WorkerAfterMain
     /// silently dropping a thread the real runtime waits for.
     [<Test>]
     let ``a foreground worker that never finishes keeps the process alive: reported as a deadlock`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """
@@ -112,7 +112,7 @@ class ForegroundWorkerStuck
     /// in `sourcesPure` is the other half: a background joiner is simply outlived.
     [<Test>]
     let ``a foreground worker joining the entry thread after Main returns is a deadlock`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """
@@ -144,7 +144,7 @@ class ForegroundWorkerJoinsMain
     /// process open is the entry thread itself.
     [<Test>]
     let ``a worker re-foregrounding the entry thread after Main returns makes the process wait for ever`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """
@@ -182,7 +182,7 @@ class ReforegroundsMain
     /// itself a shutdown signal.
     [<Test>]
     let ``Main going background after a foreground worker exists does not abandon the worker`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """
@@ -213,7 +213,7 @@ class WorkerThenMainBackground
     /// and its output is the record of what it did.
     [<Test>]
     let ``a foreground worker's output after Main returns is all delivered`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         let source =
             """

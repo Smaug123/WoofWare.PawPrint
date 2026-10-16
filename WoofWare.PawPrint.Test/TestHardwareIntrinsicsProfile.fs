@@ -159,8 +159,6 @@ class Program
         (flavour : string)
         : unit
         =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // Each instruction is reached both by a direct call and through a delegate: CoreCLR's JIT
         // expands the placeholder into the throw in either case, because the call through the
         // delegate compiles the method's own body, whose self-call is the must-expand site.
@@ -210,8 +208,6 @@ class Program
     /// architectures' CoreLibs carry a twin that throws `PlatformNotSupportedException` first.)
     [<Test>]
     let ``Scalar-only profile runs a placeholder's own IL up to its self-call`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let source =
             """
 using System;
@@ -266,7 +262,7 @@ unsafe class Program
     /// are compared here.
     [<Test>]
     let ``Scalar-only profile raises PlatformNotSupportedException from CoreCLR's throw helper`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         let source =
             """

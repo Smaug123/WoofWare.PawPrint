@@ -783,7 +783,7 @@ class Program
 
     [<Test>]
     let ``replaying a trace reconstructs what single-stepping observes at every step`` () : Task =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         task {
             use tracedServer = startServerWith Roslyn.compileWithSymbols contendedLockSource
@@ -835,7 +835,7 @@ class Program
 
     [<Test>]
     let ``a trace records what discovering a deadlock changed`` () : Task =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         task {
             use tracedServer = startServerWith Roslyn.compile timedWaitDeadlockSource
@@ -873,7 +873,7 @@ class Program
 
     [<Test>]
     let ``a trace without values is the trace with values, less the values`` () : Task =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         task {
             use server = startServerWith Roslyn.compile contendedLockSource
@@ -905,7 +905,7 @@ class Program
 
     [<Test>]
     let ``pages concatenate to the same run whatever their sizes`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         use server = startServerWith Roslyn.compile contendedLockSource
         use client = client server

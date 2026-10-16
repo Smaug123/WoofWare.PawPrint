@@ -253,6 +253,4 @@ public static class Driver
 
     [<Test>]
     let ``cpblk agrees with the real runtime on operands C# cannot spell`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run "Cp" (fabricate ()) "CpblkDriver" driverSource 0

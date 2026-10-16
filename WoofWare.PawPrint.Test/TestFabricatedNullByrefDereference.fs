@@ -392,8 +392,6 @@ public static class Driver
 
     [<TestCaseSource(nameof caseNames)>]
     let ``a null byref dereference raises a catchable NullReferenceException`` (name : string) : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         FabricatedGuest.run
             "NullByrefDereference"
             (fabricate ())

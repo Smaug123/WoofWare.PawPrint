@@ -64,8 +64,6 @@ module TestLinuxCoreLibFlavour =
     /// unimplemented primitive would surface.
     [<Test>]
     let ``a guest runs against the pinned linux-x64 CoreLib`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         let frameworkDir = FrameworkUnderTest.requireLinuxFrameworkDirectory ()
 
         let source =

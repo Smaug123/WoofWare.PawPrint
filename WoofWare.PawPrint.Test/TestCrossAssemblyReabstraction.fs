@@ -324,55 +324,39 @@ public static class Program
 
     [<Test>]
     let ``an interface call landing on a reabstraction throws EntryPointNotFoundException`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseInterfaceCall" 0
 
     [<Test>]
     let ``a constrained call on a value type landing on a reabstraction throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseConstrainedOnValueType" 0
 
     [<Test>]
     let ``a constrained call on a class landing on a reabstraction throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseConstrainedOnClass" 0
 
     [<Test>]
     let ``an interface call on a boxed value type landing on a reabstraction throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseBoxedValueType" 0
 
     [<Test>]
-    let ``a static virtual call on a class landing on a reabstraction throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
-        agrees "CaseStaticOnClass" 0
+    let ``a static virtual call on a class landing on a reabstraction throws`` () : unit = agrees "CaseStaticOnClass" 0
 
     [<Test>]
     let ``a static virtual call on a value type landing on a reabstraction throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseStaticOnValueType" 0
 
     [<Test>]
-    let ``ldvirtftn of a reabstracted method throws before the delegate is made`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
-        agrees "CaseLdvirtftn" 0
+    let ``ldvirtftn of a reabstracted method throws before the delegate is made`` () : unit = agrees "CaseLdvirtftn" 0
 
     [<Test>]
     let ``a delegate bound to a reabstracted method throws before it is made`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         agrees "CaseCreateDelegate" 0
 
     [<Test>]
     let ``an open delegate invoked on a receiver whose slot is reabstracted throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
 
         agrees "CaseOpenDelegate" 0
 
@@ -385,15 +369,10 @@ public static class Program
         agrees "CaseClassImplementationFromBase" 105
 
     [<Test>]
-    let ``a reabstraction through variance throws`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
-        agrees "CaseVariantReabstraction" 0
+    let ``a reabstraction through variance throws`` () : unit = agrees "CaseVariantReabstraction" 0
 
     [<Test>]
     let ``a reabstraction in the exact pass hides a body the variance pass would find`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseExactReabstractionBeforeVariance" 0
 
     [<Test>]
@@ -402,15 +381,10 @@ public static class Program
 
     /// The reabstraction and `IQux`'s body are equally specific, so the call is ambiguous.
     [<Test>]
-    let ``a reabstraction as specific as a body is ambiguous`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
-        agrees "CaseDiamond" 0
+    let ``a reabstraction as specific as a body is ambiguous`` () : unit = agrees "CaseDiamond" 0
 
     [<Test>]
     let ``a pointer to a reabstracted static virtual in exact code throws at the ldftn`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         agrees "CaseStaticPointerOnValueType" 0
 
     [<Test>]

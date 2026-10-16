@@ -149,7 +149,7 @@ module TestRaces =
 
     [<Test>]
     let ``ReadWriteRace under PCT covers every legal outcome`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The headline schedule-fuzzing claim: PCT, swept across a fixed
         // seed range, must enumerate *exactly* the legal outcome set —
@@ -227,7 +227,7 @@ module TestRaces =
 
     [<Test>]
     let ``NewobjCctorRace under PCT covers every legal outcome`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Unlike the ReadWriteRace sweep this is a single-element set, so the
         // equality is really "no seed ever sees a partially-initialised type".
@@ -247,7 +247,7 @@ module TestRaces =
 
     [<Test>]
     let ``NewobjCctorRace really does contend on the type initialiser`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Guards the tests above against silently ceasing to test anything.
         // Every assertion they make is also satisfied by a schedule in which
@@ -284,7 +284,7 @@ module TestRaces =
 
     [<Test>]
     let ``CyclicCctorAcrossThreads under PCT covers every legal outcome`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The sweep is what turns "does not deadlock under round-robin" into "does not deadlock
         // under any interleaving PCT reaches": which thread closes the wait cycle, and whether
@@ -301,7 +301,7 @@ module TestRaces =
 
     [<Test>]
     let ``CyclicCctorAcrossThreads really does close a wait cycle`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.threadStart
 
         // Each thread's `.cctor` touches the other type only from inside its own initialiser,
         // so a thread that blocks does so while holding its own type's lock, and the holder it

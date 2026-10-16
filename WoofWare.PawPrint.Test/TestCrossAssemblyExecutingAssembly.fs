@@ -83,8 +83,6 @@ class Program
 
     [<Test>]
     let ``GetCallingAssembly steps one frame further out than GetExecutingAssembly`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         {
             Assemblies =
                 [
@@ -143,8 +141,6 @@ class Program
 
     [<Test>]
     let ``a crawl out of a class initialiser names the frame that triggered it`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // Reading the static triggers the library's `.cctor` straight from `Main`, so the frame
         // outside the `.cctor` belongs to a different assembly than the `.cctor` itself — which is
         // what makes this case say anything about how a crawl crosses initialisation.
@@ -209,8 +205,6 @@ class Program
 
     [<Test>]
     let ``a class initialiser triggered through a delegate is crawled the same way`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
-
         // As above, but the `.cctor` is triggered by a call through a delegate, which is the one
         // shape where PawPrint keeps a synthetic frame for a delegate's `Invoke` alive across
         // initialisation. Here the `.cctor` is triggered by the target's own prologue, after that

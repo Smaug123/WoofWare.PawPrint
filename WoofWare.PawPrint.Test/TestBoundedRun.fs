@@ -63,7 +63,7 @@ class SpinsForEver
     /// possible — and must also be a test failure rather than an escaping host exception.
     [<Test>]
     let ``a deadlocked guest is reported, not raised out of the interpreter`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.waitSleepJoin
 
         let source =
             """
@@ -291,7 +291,7 @@ class CompletesButNotCheaply
     /// failure legible. The assertions below are on detail `prepare` does not produce.
     [<Test>]
     let ``a guest that deadlocks in a static initialiser is reported with the guest's state`` () : unit =
-        Net11Frontier.park Net11Frontier.thinLock
+        Net11Frontier.park Net11Frontier.waitSleepJoin
 
         let source =
             """
