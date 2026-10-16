@@ -29,8 +29,8 @@ module TestManagedThreadState =
 
     [<Test>]
     let ``Every status obeys CoreCLR's snapshot laws`` () : unit =
-        let property (status : ThreadStatus, isBackground : bool) : unit =
-            let s = ThreadStatus.managedThreadState isBackground status
+        let property (status : ThreadStatus, isBackground : bool, inWaitSleepJoin : bool) : unit =
+            let s = ThreadStatus.managedThreadState isBackground inWaitSleepJoin status
 
             let allReported =
                 reported
@@ -60,7 +60,8 @@ module TestManagedThreadState =
             |> shouldEqual (isBackground && status <> ThreadStatus.Terminated)
 
             // The flag decides the Background bit and nothing else.
-            let other = ThreadStatus.managedThreadState (not isBackground) status
+            let other =
+                ThreadStatus.managedThreadState (not isBackground) inWaitSleepJoin status
 
             s &&& ~~~System.Threading.ThreadState.Background
             |> shouldEqual (other &&& ~~~System.Threading.ThreadState.Background)
@@ -68,10 +69,21 @@ module TestManagedThreadState =
             if has System.Threading.ThreadState.Unstarted s then
                 has System.Threading.ThreadState.WaitSleepJoin s |> shouldEqual false
 
+            // .NET 11's managed wait subsystem's flag always shows through, and sets nothing else;
+            // without it, the status alone decides.
+            if inWaitSleepJoin then
+                has System.Threading.ThreadState.WaitSleepJoin s |> shouldEqual true
+
+                s &&& ~~~System.Threading.ThreadState.WaitSleepJoin
+                |> shouldEqual (
+                    ThreadStatus.managedThreadState isBackground false status
+                    &&& ~~~System.Threading.ThreadState.WaitSleepJoin
+                )
+
             // A wait-handle wait reports WaitSleepJoin exactly when CoreCLR would make it
             // alertably.
             match status with
-            | ThreadStatus.BlockedOnWaitHandle (_, _, alertability) ->
+            | ThreadStatus.BlockedOnWaitHandle (_, _, alertability) when not inWaitSleepJoin ->
                 has System.Threading.ThreadState.WaitSleepJoin s
                 |> shouldEqual (alertability = WaitAlertability.Alertable)
             | _ -> ()
@@ -80,7 +92,15 @@ module TestManagedThreadState =
             gen {
                 let! status = statusGen
                 let! isBackground = ArbMap.defaults |> ArbMap.generate<bool>
-                return status, isBackground
+
+                // Only a started, live thread can be inside a managed wait.
+                let! inWaitSleepJoin =
+                    match status with
+                    | ThreadStatus.NotStarted _
+                    | ThreadStatus.Terminated -> Gen.constant false
+                    | _ -> ArbMap.defaults |> ArbMap.generate<bool>
+
+                return status, isBackground, inWaitSleepJoin
             }
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
@@ -103,8 +123,8 @@ module TestManagedThreadState =
                 ThreadStatus.BlockedOnWaitHandle (WaitHandleId 0, None, WaitAlertability.NonAlertable)
                 ThreadStatus.Parked
             ] do
-            ThreadStatus.managedThreadState false status
+            ThreadStatus.managedThreadState false false status
             |> shouldEqual System.Threading.ThreadState.Running
 
-            ThreadStatus.managedThreadState true status
+            ThreadStatus.managedThreadState true false status
             |> shouldEqual System.Threading.ThreadState.Background

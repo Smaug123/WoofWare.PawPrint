@@ -24,6 +24,7 @@ module TestClassInitWaitChain =
             Status = status
             IsBackground = false
             IsRaisingForeignException = false
+            InWaitSleepJoin = false
             Name = None
         }
 

@@ -297,8 +297,6 @@ public static class Program
 
     [<Test>]
     let ``the clock does not jump to a sleeper's deadline while another program is runnable`` () : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -365,8 +363,6 @@ public static class Program
 
     [<Test>]
     let ``both programs blocked forever is one deadlock naming both`` () : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
@@ -387,8 +383,15 @@ public static class Program
         | Error stuck ->
             stuck |> List.map fst |> shouldEqual launched
 
+            // .NET 10 sleeps in a native wait; .NET 11 sleeps through its managed
+            // `WaitSubsystem`, which blocks on a `LowLevelMonitor`.
+            let sleeping =
+                match FrameworkUnderTest.runtime () with
+                | EmulatedRuntime.Net10 -> "BlockedOnSleep"
+                | EmulatedRuntime.Net11 -> "BlockedOnMonitorWait"
+
             for _, threads in stuck do
-                threads |> shouldContainText "BlockedOnSleep"
+                threads |> shouldContainText sleeping
 
     let private exitsThreeSource : string =
         """
@@ -430,8 +433,6 @@ public static class Program
 
     [<Test>]
     let ``one program's Environment.Exit, or its unhandled exception, leaves the others running`` () : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 

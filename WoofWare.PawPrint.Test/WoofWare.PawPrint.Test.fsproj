@@ -326,6 +326,7 @@
     <Compile Include="TestNativeThreadYield.fs" />
     <Compile Include="TestNativeWaitOneCore.fs" />
     <Compile Include="TestNativeThreadSpinWait.fs" />
+    <Compile Include="TestNativeWaitSleepJoinState.fs" />
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestClassInitWaitChain.fs" />

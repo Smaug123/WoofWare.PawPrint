@@ -242,10 +242,7 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming a fork point reproduces the from-scratch run exactly`` (sourceName : string) : unit =
-        if sourceName = "ForkAfterSoloSleep.cs" then
-            Net11Frontier.park Net11Frontier.waitSleepJoin
-        else
-            Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.threadStart
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
@@ -302,10 +299,7 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming with no seed reproduces the round-robin run`` (sourceName : string) : unit =
-        if sourceName = "ForkAfterSoloSleep.cs" then
-            Net11Frontier.park Net11Frontier.waitSleepJoin
-        else
-            Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.threadStart
 
         // The degenerate case, and the one that checks `LastRan` survived the snapshot: round
         // robin's whole choice is "lowest id above `LastRan`", so a snapshot that dropped it
@@ -397,8 +391,6 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof wedgingGuests)>]
     let ``a guest that wedges before forking is reported as deadlocked, not as a fork`` (sourceName : string) : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         // `DeadlockedBeforeFork` is as seed-independent as `NeverForked` — nothing chose anything,
         // so every seed wedges identically — and it is the arm most likely to rot, because a
         // whole-program `Program.run` turns deadlock into a host `failwith` and so cannot cover

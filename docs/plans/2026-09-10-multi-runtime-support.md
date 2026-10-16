@@ -755,8 +755,12 @@ mutation-testing skill applies to each table/classifier they introduce.
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
-   * the managed `WaitSubsystem` that RC1 waits through on Unix, starting at
-     `ThreadNative_SetWaitSleepJoinState`;
+   * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
+     It blocks on `LowLevelMonitor`, which PawPrint already models, and brackets each wait with
+     the `ThreadNative_SetWaitSleepJoinState` and `ThreadNative_ClearWaitSleepJoinState` QCalls,
+     which set and clear `TS_WaitSleepJoin` (`ThreadState.InWaitSleepJoin`); RC1's
+     `Thread.ThreadState` reports `WaitSleepJoin` exactly when that bit is set. The fat lock
+     waits through it too, so it comes first;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which

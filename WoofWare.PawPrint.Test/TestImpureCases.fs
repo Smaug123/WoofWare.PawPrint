@@ -5178,6 +5178,8 @@ module TestImpureCases =
                     "KqueueRegistrationDarwin.cs"
                     "KqueueWaitDarwin.cs"
                     "LibcRaiseDarwin.cs"
+                    "LibcSignalMaskDarwin.cs"
+                    "LibcSignalMaskLinux.cs"
                     "NetworkStreamAsync.cs"
                     "PipeBrokenRaw.cs"
                     "PipeReaderLeavesDuringWrite.cs"
@@ -5209,16 +5211,6 @@ module TestImpureCases =
                     "ThreadStaticByrefAcrossThreads.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.threadStart)
-            yield!
-                [
-                    "LibcSignalMaskDarwin.cs"
-                    "LibcSignalMaskLinux.cs"
-                    "SocketConnectDarwin.cs"
-                    "SocketConnectLinux.cs"
-                    "SocketErrorOptionDarwin.cs"
-                    "SocketErrorOptionLinux.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.waitSleepJoin)
             "DynamicAssemblyHosting.cs",
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
             "EventSourceDisabled.cs",
