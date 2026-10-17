@@ -91,15 +91,18 @@ module ExceptionDispatching =
 
             state, handle
 
-    /// Check if an exception type matches a catch handler type.
-    let private isExceptionAssignableTo
+    /// Whether a `catch (T)` clause catches an exception it matches by `matchType`: whether `T` is
+    /// `matchType` or one of its base classes. Never an interface `matchType` implements, nor
+    /// anything array covariance or generic variance would make it assignable to: CoreCLR walks the
+    /// parent method tables alone (`ShouldTypedClauseCatchThisException`, `ExceptionHandling.cs`).
+    let private typedClauseCatches
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (exceptionType : ConcreteTypeHandle)
+        (matchType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         (catchType : ExceptionCatchType)
         : IlMachineState * bool
@@ -107,7 +110,15 @@ module ExceptionDispatching =
         let state, catchTypeHandle =
             catchClauseType loggerFactory baseClassTypes state activeAssy typeGenerics methodGenerics method catchType
 
-        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
+        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            if current = catchTypeHandle then
+                state, true
+            else
+                match IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state current with
+                | state, None -> state, false
+                | state, Some parent -> walk state parent
+
+        walk state matchType
 
     let private exceptionFilterRegion (filterOffset : int) (handlerOffset : ExceptionOffset) : ExceptionFilterRegion =
         {
@@ -269,8 +280,9 @@ module ExceptionDispatching =
     /// that could return one would be answering a different question from the one its callers
     /// ask (issue #865 is the failure mode).
     ///
-    /// When several clauses cover `currentPC`, the innermost wins: smallest `try`, then metadata
-    /// order, which ECMA-335 II.25.4.6 requires to list more deeply nested clauses first.
+    /// When several clauses cover `currentPC`, they are offered the exception innermost first
+    /// (smallest `try`, then metadata order, which ECMA-335 II.25.4.6 requires to list more deeply
+    /// nested clauses first), and the first to accept it is the answer.
     let private findAcceptingClause
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -288,52 +300,49 @@ module ExceptionDispatching =
 
         let activeAssy = assemblyOfMethod state method
 
-        let matchType =
-            lazy (typedClauseMatchType baseClassTypes state activeAssy exceptionObject exceptionType)
-
         let covers (offset : ExceptionOffset) =
             currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
 
-        let state, matches =
-            ((state, []), instructions.ExceptionRegions |> Seq.indexed)
-            ||> Seq.fold (fun (state, acc) (regionIndex, region) ->
+        // The clauses are offered the exception one at a time, and the first to accept it takes
+        // it: a later `catch`'s type is never resolved, nor matched, once an earlier clause has
+        // accepted.
+        let candidates =
+            instructions.ExceptionRegions
+            |> Seq.indexed
+            |> Seq.filter (fun (_, region) ->
                 match region with
-                | ExceptionRegion.Catch (catchType, offset) ->
-                    if covers offset then
-                        let state, matches =
-                            isExceptionAssignableTo
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                activeAssy
-                                method.DeclaringTypeGenerics
-                                method.Generics
-                                matchType.Value
-                                method
-                                catchType
-
-                        if matches then
-                            state, (regionIndex, region) :: acc
-                        else
-                            state, acc
-                    else
-                        state, acc
+                | ExceptionRegion.Catch (_, offset) -> covers offset
                 | ExceptionRegion.Filter (filterOffset, offset) ->
-                    if covers offset && not (isSkippedFilter skippedFilters filterOffset offset) then
-                        state, (regionIndex, region) :: acc
-                    else
-                        state, acc
+                    covers offset && not (isSkippedFilter skippedFilters filterOffset offset)
                 | ExceptionRegion.Finally _
-                | ExceptionRegion.Fault _ -> state, acc
+                | ExceptionRegion.Fault _ -> false
             )
+            |> Seq.sortBy (fun (regionIndex, region) -> (ExceptionHandling.regionOffset region).TryLength, regionIndex)
+            |> List.ofSeq
 
-        let result =
-            matches
-            |> List.sortBy (fun (regionIndex, region) -> (ExceptionHandling.regionOffset region).TryLength, regionIndex)
-            |> List.tryHead
-            |> Option.map snd
+        let rec offer (state : IlMachineState) candidates =
+            match candidates with
+            | [] -> state, None
+            | (_, (ExceptionRegion.Filter _ as region)) :: _ -> state, Some region
+            | (_, (ExceptionRegion.Catch (catchType, _) as region)) :: rest ->
+                let state, catches =
+                    typedClauseCatches
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        method.DeclaringTypeGenerics
+                        method.Generics
+                        (typedClauseMatchType baseClassTypes state activeAssy exceptionObject exceptionType)
+                        method
+                        catchType
 
-        state, result
+                if catches then state, Some region else offer state rest
+            | (_, ((ExceptionRegion.Finally _ | ExceptionRegion.Fault _) as region)) :: _ ->
+                failwith
+                    $"Logic error: cleanup region %O{region} of %s{method.Name} was offered an exception as a candidate to accept it"
+
+        offer state candidates
 
     /// Enter a catch handler: set PC to the handler offset, clear eval stack, preserve any
     /// outer continuation frames, and push `shown`, what the clause is handed for the exception

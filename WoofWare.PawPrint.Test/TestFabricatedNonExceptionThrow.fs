@@ -36,6 +36,14 @@ module TestFabricatedNonExceptionThrow =
     ///   it is shown is a `string`; returns 1 if the handler ran.
     /// * `CatchString(Action) : object`: invokes the action inside `catch (string)` and returns what
     ///   the handler saw.
+    /// * `CatchComparable(Action) : int`, `CatchSerializable(Action) : int`: invoke the action inside
+    ///   `catch (IComparable)` and `catch (ISerializable)` respectively, returning 1 from the handler.
+    /// * `ThrowStrings()`: throws a `string[]`.
+    /// * `CatchObjects() : int`: calls `ThrowStrings` inside `catch (object[])`, returning 1 from the
+    ///   handler.
+    /// * `FilterThenCatchString(Action) : int`: invokes the action inside a `try` whose first clause
+    ///   is a `filter` accepting everything, returning 1 from its handler, and whose second is
+    ///   `catch (string)`, returning 2.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Thrower", typeof<obj>.Assembly)
@@ -139,6 +147,79 @@ module TestFabricatedNonExceptionThrow =
             il.Emit (OpCodes.Stloc, seen)
             il.EndExceptionBlock ()
             il.Emit (OpCodes.Ldloc, seen)
+            il.Emit OpCodes.Ret
+
+        let invoke =
+            typeof<Action>.GetMethod "Invoke"
+            |> Option.ofObj
+            |> Option.defaultWith (fun () -> failwith "Action has no Invoke")
+
+        let catchingInvoke (name : string) (clauseType : Type) =
+            let il =
+                thrower.DefineMethod(name, attributes, typeof<int>, [| typeof<Action> |]).GetILGenerator ()
+
+            let result = il.DeclareLocal typeof<int>
+            il.BeginExceptionBlock () |> ignore<Label>
+            il.Emit OpCodes.Ldarg_0
+            il.Emit (OpCodes.Callvirt, invoke)
+            il.BeginCatchBlock clauseType
+            il.Emit OpCodes.Pop
+            il.Emit OpCodes.Ldc_I4_1
+            il.Emit (OpCodes.Stloc, result)
+            il.EndExceptionBlock ()
+            il.Emit (OpCodes.Ldloc, result)
+            il.Emit OpCodes.Ret
+
+        catchingInvoke "CatchComparable" typeof<IComparable>
+        catchingInvoke "CatchSerializable" typeof<System.Runtime.Serialization.ISerializable>
+
+        let throwStrings =
+            thrower.DefineMethod ("ThrowStrings", attributes, typeof<Void>, [||])
+
+        do
+            let il = throwStrings.GetILGenerator ()
+            il.Emit OpCodes.Ldc_I4_0
+            il.Emit (OpCodes.Newarr, typeof<string>)
+            il.Emit OpCodes.Throw
+
+        do
+            let il =
+                thrower.DefineMethod("CatchObjects", attributes, typeof<int>, [||]).GetILGenerator ()
+
+            let result = il.DeclareLocal typeof<int>
+            il.BeginExceptionBlock () |> ignore<Label>
+            il.Emit (OpCodes.Call, throwStrings)
+            il.BeginCatchBlock typeof<obj[]>
+            il.Emit OpCodes.Pop
+            il.Emit OpCodes.Ldc_I4_1
+            il.Emit (OpCodes.Stloc, result)
+            il.EndExceptionBlock ()
+            il.Emit (OpCodes.Ldloc, result)
+            il.Emit OpCodes.Ret
+
+        do
+            let il =
+                thrower
+                    .DefineMethod("FilterThenCatchString", attributes, typeof<int>, [| typeof<Action> |])
+                    .GetILGenerator ()
+
+            let result = il.DeclareLocal typeof<int>
+            il.BeginExceptionBlock () |> ignore<Label>
+            il.Emit OpCodes.Ldarg_0
+            il.Emit (OpCodes.Callvirt, invoke)
+            il.BeginExceptFilterBlock ()
+            il.Emit OpCodes.Pop
+            il.Emit OpCodes.Ldc_I4_1
+            il.BeginCatchBlock null
+            il.Emit OpCodes.Pop
+            il.Emit OpCodes.Ldc_I4_1
+            il.Emit (OpCodes.Stloc, result)
+            il.BeginCatchBlock typeof<string>
+            il.Emit OpCodes.Pop
+            il.Emit OpCodes.Ldc_I4_2
+            il.Emit (OpCodes.Stloc, result)
+            il.EndExceptionBlock ()
+            il.Emit (OpCodes.Ldloc, result)
             il.Emit OpCodes.Ret
 
         thrower.CreateType () |> ignore<Type>
@@ -298,6 +379,41 @@ public static class Driver
         // shown what a wrapper the guest made wraps, too.
         object seenAfterAWrap = Thrower.CatchString(() => { throw made; });
         if (!ReferenceEquals(seenAfterAWrap, "made")) return 23;
+
+        // A typed clause matches a class or one of its base classes, never an interface it
+        // implements, whether the object is unwrapped ...
+        try
+        {
+            Thrower.CatchComparable(() => { throw made; });
+            return 30;
+        }
+        catch (RuntimeWrappedException)
+        {
+        }
+
+        // ... or an exception.
+        try
+        {
+            Thrower.CatchSerializable(() => { throw new InvalidOperationException(); });
+            return 31;
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        // An array's base class is System.Array, so a thrown string[] is no object[] to a clause.
+        try
+        {
+            Thrower.CatchObjects();
+            return 32;
+        }
+        catch (RuntimeWrappedException)
+        {
+        }
+
+        // Clauses are offered the exception in order, and the first to accept it takes it, so a
+        // later typed clause never examines a wrapper around null.
+        if (Thrower.FilterThenCatchString(() => { throw new RuntimeWrappedException(null); }) != 1) return 33;
 
         return 0;
     }
