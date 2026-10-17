@@ -29,8 +29,11 @@ module TestManagedThreadState =
 
     [<Test>]
     let ``Every status obeys CoreCLR's snapshot laws`` () : unit =
-        let property (status : ThreadStatus, isBackground : bool, inWaitSleepJoin : bool) : unit =
-            let s = ThreadStatus.managedThreadState isBackground inWaitSleepJoin status
+        let property
+            (runtime : EmulatedRuntime, status : ThreadStatus, isBackground : bool, inWaitSleepJoin : bool)
+            : unit
+            =
+            let s = ThreadStatus.managedThreadState runtime isBackground inWaitSleepJoin status
 
             let allReported =
                 reported
@@ -61,7 +64,7 @@ module TestManagedThreadState =
 
             // The flag decides the Background bit and nothing else.
             let other =
-                ThreadStatus.managedThreadState (not isBackground) inWaitSleepJoin status
+                ThreadStatus.managedThreadState runtime (not isBackground) inWaitSleepJoin status
 
             s &&& ~~~System.Threading.ThreadState.Background
             |> shouldEqual (other &&& ~~~System.Threading.ThreadState.Background)
@@ -69,41 +72,44 @@ module TestManagedThreadState =
             if has System.Threading.ThreadState.Unstarted s then
                 has System.Threading.ThreadState.WaitSleepJoin s |> shouldEqual false
 
-            // .NET 11's managed wait subsystem's flag always shows through, and sets nothing else;
-            // without it, the status alone decides.
-            if inWaitSleepJoin then
-                has System.Threading.ThreadState.WaitSleepJoin s |> shouldEqual true
+            match runtime with
+            | EmulatedRuntime.Net10 ->
+                // A wait-handle wait reports WaitSleepJoin exactly when CoreCLR would make it
+                // alertably.
+                match status with
+                | ThreadStatus.BlockedOnWaitHandle (_, _, alertability) ->
+                    has System.Threading.ThreadState.WaitSleepJoin s
+                    |> shouldEqual (alertability = WaitAlertability.Alertable)
+                | _ -> ()
+            | EmulatedRuntime.Net11 ->
+                // WaitSleepJoin is the managed wait subsystem's flag and nothing else; every other
+                // bit is .NET 10's.
+                has System.Threading.ThreadState.WaitSleepJoin s |> shouldEqual inWaitSleepJoin
 
                 s &&& ~~~System.Threading.ThreadState.WaitSleepJoin
                 |> shouldEqual (
-                    ThreadStatus.managedThreadState isBackground false status
+                    ThreadStatus.managedThreadState EmulatedRuntime.Net10 isBackground false status
                     &&& ~~~System.Threading.ThreadState.WaitSleepJoin
                 )
 
-            // A wait-handle wait reports WaitSleepJoin exactly when CoreCLR would make it
-            // alertably.
-            match status with
-            | ThreadStatus.BlockedOnWaitHandle (_, _, alertability) when not inWaitSleepJoin ->
-                has System.Threading.ThreadState.WaitSleepJoin s
-                |> shouldEqual (alertability = WaitAlertability.Alertable)
-            | _ -> ()
-
         let gen =
             gen {
+                let! runtime = Gen.elements EmulatedRuntime.supported
                 let! status = statusGen
                 let! isBackground = ArbMap.defaults |> ArbMap.generate<bool>
 
-                // Only a started, live thread can be inside a managed wait.
+                // Only .NET 11's CoreLib can set the flag, and only on a started, live thread.
                 let! inWaitSleepJoin =
-                    match status with
-                    | ThreadStatus.NotStarted _
-                    | ThreadStatus.Terminated -> Gen.constant false
-                    | _ -> ArbMap.defaults |> ArbMap.generate<bool>
+                    match runtime, status with
+                    | EmulatedRuntime.Net10, _
+                    | _, ThreadStatus.NotStarted _
+                    | _, ThreadStatus.Terminated -> Gen.constant false
+                    | EmulatedRuntime.Net11, _ -> ArbMap.defaults |> ArbMap.generate<bool>
 
-                return status, isBackground, inWaitSleepJoin
+                return runtime, status, isBackground, inWaitSleepJoin
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen gen) property)
 
     /// No guest can reach these: a `LowLevelMonitor` and a trivial-wait `Lock` are internal to
     /// CoreLib, the parking syscalls run on threads the guest does not hold, and the signal
@@ -123,8 +129,9 @@ module TestManagedThreadState =
                 ThreadStatus.BlockedOnWaitHandle (WaitHandleId 0, None, WaitAlertability.NonAlertable)
                 ThreadStatus.Parked
             ] do
-            ThreadStatus.managedThreadState false false status
-            |> shouldEqual System.Threading.ThreadState.Running
+            for runtime in EmulatedRuntime.supported do
+                ThreadStatus.managedThreadState runtime false false status
+                |> shouldEqual System.Threading.ThreadState.Running
 
-            ThreadStatus.managedThreadState true false status
-            |> shouldEqual System.Threading.ThreadState.Background
+                ThreadStatus.managedThreadState runtime true false status
+                |> shouldEqual System.Threading.ThreadState.Background

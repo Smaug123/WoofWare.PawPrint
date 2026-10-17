@@ -759,16 +759,26 @@ mutation-testing skill applies to each table/classifier they introduce.
      It blocks on `LowLevelMonitor`, which PawPrint already models, and brackets each wait with
      the `ThreadNative_SetWaitSleepJoinState` and `ThreadNative_ClearWaitSleepJoinState` QCalls,
      which set and clear `TS_WaitSleepJoin` (`ThreadState.InWaitSleepJoin`); RC1's
-     `Thread.ThreadState` reports `WaitSleepJoin` exactly when that bit is set. The fat lock
-     waits through it too, so it comes first;
+     `Thread.ThreadState` reports `WaitSleepJoin` exactly when that bit is set, and no native
+     wait sets it, so the entry thread waiting for foreground threads reads `Background |
+     Stopped` alone (`ThreadStateOfEntryThreadAfterMain.cs`). The fat lock waits through it too,
+     so it comes first;
+   * **(landed)** thread start: `ThreadNative_Start` returns whether the OS thread was created,
+     with an out-slot for the `ThreadStartException`'s inner exception, and the VM enters a
+     started thread through `[UnmanagedCallersOnly] static Thread.StartCallback(Thread*)`, which
+     ends the thread in managed code (`OnThreadExited`, the managed join handle).
+     `StartCallbackShape` classifies CoreLib's signature as `AppContextSeed` does `Setup`'s, and
+     the `Thread*` is a pointer to a VM local holding the thread. Past it the net11 leg measured
+     the fat lock (`fatLock`), which most threaded guests and every `Task` wait reach, and a
+     `clt.un` between two byte views of one stackalloc block in `UnicodeEncoding.GetBytes`
+     (`stackallocByteOrder`), which sockets, pipes and `EventSource` reach;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
      RC1's `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read. PawPrint
      writes each thread's managed id into its own slot when the thread starts, as RC1's VM does
      (`InitializeCurrentThreadsStaticData`), so every reader of the slot sees it. It accounted for
-     the `LockHeldByOtherThread.cs` mismatch too, which now stops at `ThreadNative_Start` when it
-     starts its worker;
+     the `LockHeldByOtherThread.cs` mismatch too;
    * the narrow float-to-integer conversions, which RC1 saturates to the target's own range
      (`(byte)300.0` is 255, where net10 gives 44): the first behaviour fact of the opcode set
      itself to differ, so a runtime-keyed rule for `conv.i1`/`u1`/`i2`/`u2` and `char`, with

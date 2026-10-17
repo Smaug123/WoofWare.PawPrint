@@ -5154,6 +5154,25 @@ module TestImpureCases =
                 ]
                 |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
             yield!
+                [
+                    "EventSourceDisabled.cs"
+                    "FcntlDescriptorFlags.cs"
+                    "KqueueRegistrationDarwin.cs"
+                    "NetworkStreamAsync.cs"
+                    "SocketAbortiveClose.cs"
+                    "SocketAsyncAcceptDarwin.cs"
+                    "SocketAsyncConnectDarwin.cs"
+                    "SocketAsyncSendReceiveDarwin.cs"
+                    "SocketConnectDestinations.cs"
+                    "SocketConnectPortZero.cs"
+                    "SocketDualMode.cs"
+                    "SocketOptions.cs"
+                    "SocketPeerName.cs"
+                    "SocketSendReceive.cs"
+                    "SocketShutdown.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
+            yield!
                 [ "LibcSigsuspendDarwin.cs" ; "LibcSigsuspendLinux.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.fatLock)
             yield!
@@ -5169,59 +5188,14 @@ module TestImpureCases =
             yield!
                 [ "DelegateInvokeHandlePerInstantiation.cs" ; "DynamicMethodReflectedCalls.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
-            yield!
-                [
-                    "CloseEndsSleepingAccept.cs"
-                    "CloseEndsSleepingPipeTransfer.cs"
-                    "ExitFromWorker.cs"
-                    "FcntlDescriptorFlags.cs"
-                    "KqueueRegistrationDarwin.cs"
-                    "KqueueWaitDarwin.cs"
-                    "LibcRaiseDarwin.cs"
-                    "LibcSignalMaskDarwin.cs"
-                    "LibcSignalMaskLinux.cs"
-                    "NetworkStreamAsync.cs"
-                    "PipeBrokenRaw.cs"
-                    "PipeReaderLeavesDuringWrite.cs"
-                    "ProcessorIdAfterPark.cs"
-                    "ProcessorIdWithinMachine.cs"
-                    "SchedGetCpuDarwin.cs"
-                    "SchedGetCpuPlacement.cs"
-                    "SignalEndsPartPipeWrite.cs"
-                    "SignalInterruptsSocketEventWait.cs"
-                    "SignalRestartsPipeRead.cs"
-                    "SignalRetryKeepsShimCopies.cs"
-                    "SignalRetrySocketWaitCountLinux.cs"
-                    "SocketAbortiveClose.cs"
-                    "SocketAsyncAcceptDarwin.cs"
-                    "SocketAsyncConnectDarwin.cs"
-                    "SocketAsyncSendReceiveDarwin.cs"
-                    "SocketBindGroupAddressDarwin.cs"
-                    "SocketConnectDestinations.cs"
-                    "SocketConnectPortZero.cs"
-                    "SocketDualMode.cs"
-                    "SocketEventWaitSurvivesCloseLinux.cs"
-                    "SocketOptions.cs"
-                    "SocketPeerName.cs"
-                    "SocketPollDarwin.cs"
-                    "SocketSendReceive.cs"
-                    "SocketShutdown.cs"
-                    "SocketUnconnectedTransfer.cs"
-                    "ThreadIdsFollowStartOrder.cs"
-                    "ThreadStaticByrefAcrossThreads.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.threadStart)
             "DynamicAssemblyHosting.cs",
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
-            "EventSourceDisabled.cs",
-            """On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: "refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...> as type 8> and <<byte 72 of <stack memory block #0> ...> as type 8>". Un-park when those byrefs are ordered by their byte coordinates."""
         ]
         |> Map.ofList
 
     /// The cases of `registeredEverywhere` parked on .NET 11 only in their registration for a Linux
     /// kernel, by file name: each Darwin registration ends before it reaches the blocker.
-    let parkedOnNet11OnLinux : Map<string, string> =
-        [ "InotifyRaw.cs", Net11Frontier.threadStart ] |> Map.ofList
+    let parkedOnNet11OnLinux : Map<string, string> = Map.empty
 
     /// Why `case` is parked on .NET 11, if it is.
     let private net11Park (case : EndToEndTestCase) : string option =
@@ -5629,7 +5603,7 @@ module TestImpureCases =
 
     [<Test>]
     let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.fatLock
 
         // On a macOS host the framework under test is a Darwin CoreLib, whose
         // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.

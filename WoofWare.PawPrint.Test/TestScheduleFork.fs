@@ -242,8 +242,6 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming a fork point reproduces the from-scratch run exactly`` (sourceName : string) : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
 
@@ -299,8 +297,6 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming with no seed reproduces the round-robin run`` (sourceName : string) : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The degenerate case, and the one that checks `LastRan` survived the snapshot: round
         // robin's whole choice is "lowest id above `LastRan`", so a snapshot that dropped it
         // would pick a different thread at the fork and diverge immediately.
@@ -325,8 +321,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``a snapshot may be resumed concurrently`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The sweeps this feature exists for run their seeds through `Array.Parallel`, so one
         // snapshot gets stepped by several threads at once. Everything reachable from it is
         // persistent F# data or `ImmutableDictionary` — except the `MetadataReader`-backed
@@ -412,8 +406,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``forking inside a class initialiser is refused, not mistaken for a forced prefix`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // `runToFirstFork` probes startup with the same predicate it uses for `Main`. Without
         // that probe this guest would look like a forced prefix all the way to `Main`, and every
         // seed resumed from the resulting snapshot would silently explore a schedule space
@@ -434,8 +426,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``contention created inside a tick's preamble is a fork point`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The detector probes *after* the tick preamble — clock advance, deadline firing, signal
         // dispatch, deadline jump — because any of those can turn a forced tick into a contended
         // one. Nothing in the guest corpus above reaches that: for a *first* fork, the second
@@ -503,8 +493,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``the shared prefix is most of the run`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // Not a correctness property — a guard on the premise. If the fork point ever moved to
         // the very end of a run, every test above would still pass while the feature saved
         // nothing at all, and nobody would notice. Measured at ~93% when this was written.

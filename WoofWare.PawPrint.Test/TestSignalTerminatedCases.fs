@@ -97,9 +97,6 @@ module TestSignalTerminatedCases =
                     [
                         "KillSelf.cs",
                         "On .NET 11, `Process.Kill` signals `PosixSignal.SIGKILL` (-11), a value .NET 10's enum lacks, and `Process.SignalCore` raises `PlatformNotSupportedException` when `SystemNative_GetPlatformSignalNumber` answers 0 for it, as PawPrint's does. Un-park when PawPrint maps .NET 11's `PosixSignal` values."
-                        "LibcRaiseTerminatesFromThread.cs", Net11Frontier.threadStart
-                        "PosixSignalKillNotCancelled.cs", Net11Frontier.threadStart
-                        "PosixSignalRaiseNotCancelled.cs", Net11Frontier.threadStart
                         "PosixSignalReenabledAfterFaultRestore.cs", Net11Frontier.fatLock
                         "PosixSignalRegisteredFaultSignal.cs", Net11Frontier.fatLock
                     ])

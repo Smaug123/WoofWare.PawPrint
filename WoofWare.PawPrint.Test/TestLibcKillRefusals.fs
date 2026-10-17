@@ -331,8 +331,6 @@ class Program
 
     [<Test>]
     let ``a fault signal sent from a thread other than the main thread is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let exn =
             Assert.Catch<exn> (fun () ->
                 runSource fromWorkerGuest SimulatedUnixPlatform.macOsArm64 4
@@ -354,8 +352,6 @@ class Program
 
     [<Test>]
     let ``SIGCONT with no handler is consumed, and the process carries on, under either flavour`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // SIGCONT is 18 under Linux's numbering and 19 under Darwin's. The
         // worker's is taken by the main thread, waiting in Join.
         for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do
@@ -367,8 +363,6 @@ class Program
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The main thread does not block it, so the kernel discards it as it
         // is sent, as Linux and Darwin do, and the read is not disturbed.
         for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do

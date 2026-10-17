@@ -119,12 +119,17 @@ module HostStartupCall =
 
         ptr, IlMachineState.setNativeMemoryPool pool state
 
-    /// A fresh `ExceptionSlot` holding null, as the VM's protected local does before the call.
+    /// A fresh native block of one object-reference cell holding `contents`: a protected local
+    /// of the VM's, whose address it passes to a CoreLib entry point as a `T*`.
     ///
-    /// The slot is a native block of one object-reference cell. The null is written rather than
-    /// left to the zeroed block, because a typed read of a native block finds only the cells
-    /// written into it; the callee's `stind.ref` then replaces a cell of the type it stores.
-    let allocateExceptionSlot (state : IlMachineState) : ExceptionSlot * IlMachineState =
+    /// The cell is written rather than left to the zeroed block, because a typed read of a
+    /// native block finds only the cells written into it; a callee's `stind.ref` then replaces a
+    /// cell of the type it stores.
+    let private allocateReferenceCell
+        (contents : ManagedHeapAddress option)
+        (state : IlMachineState)
+        : NativeMemoryBlockId * IlMachineState
+        =
         let ptr, state =
             IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized PointerSize state
 
@@ -140,12 +145,33 @@ module HostStartupCall =
 
         let pool =
             IlMachineState.getNativeMemoryPool state
-            |> NativeMemoryPool.writeCell block 0 (CliType.ObjectRef None)
+            |> NativeMemoryPool.writeCell block 0 (CliType.ObjectRef contents)
+
+        block, IlMachineState.setNativeMemoryPool pool state
+
+    /// A pointer to a fresh VM local holding the object at `addr`, as the VM passes a `Thread*`.
+    let allocateReferenceLocal
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let block, state = allocateReferenceCell (Some addr) state
+
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (block, 0)
+                Projections = []
+            },
+        state
+
+    /// A fresh `ExceptionSlot` holding null, as the VM's protected local does before the call.
+    let allocateExceptionSlot (state : IlMachineState) : ExceptionSlot * IlMachineState =
+        let block, state = allocateReferenceCell None state
 
         {
             Block = block
         },
-        IlMachineState.setNativeMemoryPool pool state
+        state
 
     /// What the callee stored in `slot`: `None` if it left it null. Fails if the slot holds
     /// anything but an object reference, which no CoreLib entry point stores there.

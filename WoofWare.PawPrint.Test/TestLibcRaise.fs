@@ -107,8 +107,6 @@ class Program
 
     [<Test>]
     let ``a signal the process discards is answered from either thread under either flavour`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // 28 is SIGWINCH on both, discarded by default; 13 is SIGPIPE, which
         // the runtime ignores from startup.
         for platform in everyPlatform do
@@ -118,8 +116,6 @@ class Program
 
     [<Test>]
     let ``a number raise cannot send is EINVAL from either thread under either flavour`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // 32 and 33 are signals on Linux, which glibc keeps for itself, and
         // past Darwin's last.
         for platform in everyPlatform do
@@ -129,8 +125,6 @@ class Program
 
     [<Test>]
     let ``SIGTERM at its default kills the process from either thread`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         for platform in everyPlatform do
             for thread in [ "main" ; "worker" ] do
                 match run platform [ thread ; "15" ; "none" ] with
@@ -146,8 +140,6 @@ class Program
 
     [<Test>]
     let ``a caught signal raised on another thread is refused, being left pending there`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // System.Native's handler, and the runtime's hardware-fault handler for
         // SIGILL (4 on both).
         for platform in everyPlatform do
