@@ -574,3 +574,182 @@ public static class Driver
             | FabricatedOutcome.Failed e -> e.ToString () |> shouldContainText "RuntimeWrappedException"
             | FabricatedOutcome.Exited code ->
                 failwith $"PawPrint ran on past a raising wrapper constructor on .NET 11, exiting %d{code}"
+
+    /// Throws a string while the current UI culture's name throws a `TimeZoneNotFoundException` on
+    /// its first read alone, so that the wrapper's constructor raises and nothing after it does.
+    /// Returns 0 if what the caller caught is that exception, with the trace and `Source` the
+    /// runtime's handling gave it, and its filter and `finally` clauses ran in the runtime's order;
+    /// the row's code otherwise.
+    ///
+    /// On .NET 11 the runtime catches the constructor's exception in
+    /// `Exception.CreateRuntimeWrappedException` and `COMPlusThrow`s it, which first runs
+    /// `Exception.InternalPreserveStackTrace` on it: that fixes `Source` at the faulting frame,
+    /// moves the rendered trace (ending at the catching helper) into `_remoteStackTraceString` with
+    /// a newline, and clears the trace, so the `throw`'s raise begins a fresh one after that prefix.
+    let private oneShotCultureDriverSource : string =
+        """
+using System;
+using System.Globalization;
+using System.Reflection;
+
+sealed class OneShotThrowingCulture : CultureInfo
+{
+    public OneShotThrowingCulture() : base("") { }
+    public int Throws;
+    public override string Name
+    {
+        get
+        {
+            if (Throws > 0)
+            {
+                Throws--;
+                try
+                {
+                    throw new TimeZoneNotFoundException("a culture's name");
+                }
+                finally
+                {
+                    Driver.Order = Driver.Order + "name finally;";
+                }
+            }
+            return base.Name;
+        }
+    }
+}
+
+public static class Driver
+{
+    public static string Order = "";
+
+    static int IndexOf(string haystack, string needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool matches = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    static bool IsPrefix(string prefix, string s)
+    {
+        if (prefix.Length > s.Length) return false;
+        for (int i = 0; i < prefix.Length; i++)
+        {
+            if (prefix[i] != s[i]) return false;
+        }
+        return true;
+    }
+
+    static bool Observe()
+    {
+        Order = Order + "filter;";
+        return true;
+    }
+
+    public static int Main(string[] args)
+    {
+        var culture = new OneShotThrowingCulture();
+        CultureInfo.CurrentUICulture = culture;
+        culture.Throws = 1;
+
+        Exception caught = null;
+        try
+        {
+            try
+            {
+                Thrower.Throw();
+                return 1;
+            }
+            finally
+            {
+                Order = Order + "finally;";
+            }
+        }
+        catch (Exception e) when (Observe())
+        {
+            Order = Order + "catch;";
+            caught = e;
+        }
+
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+
+        if (culture.Throws != 0) return 5;
+        if (!(caught is TimeZoneNotFoundException)) return 2;
+        // The raise inside the constructor ends where the runtime called it, so its cleanup runs
+        // before the first pass of the raise from the `throw` reaches any filter.
+        if (Order != "name finally;filter;finally;catch;") return 6;
+
+        string source = (string)typeof(Exception).GetField("_source", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(caught);
+        string remote = (string)typeof(Exception).GetField("_remoteStackTraceString", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(caught);
+        string trace = caught.StackTrace;
+        if (Environment.Version.Major == 10)
+        {
+            // .NET 10 lets the constructor's exception escape the `throw` with its trace unbroken.
+            if (remote != null) return 20;
+            if (source != null) return 26;
+            int name10 = IndexOf(trace, "OneShotThrowingCulture.get_Name");
+            int ctor10 = IndexOf(trace, "RuntimeWrappedException..ctor");
+            int throw10 = IndexOf(trace, "Thrower.Throw");
+            if (name10 < 0) return 21;
+            if (ctor10 < name10) return 22;
+            if (throw10 < ctor10) return 23;
+            if (IndexOf(trace, "Driver.Main") < throw10) return 24;
+            if (IndexOf(trace, "CreateRuntimeWrappedException") >= 0) return 25;
+            return 0;
+        }
+
+        // `Source` was read while the trace still began at the culture, whose assembly this is.
+        if (source != "OneShotCultureWrapperConstructorDriver") return 7;
+
+        if (remote == null) return 8;
+        if (remote.Length == 0 || remote[remote.Length - 1] != '\n') return 9;
+
+        // The preserved trace runs from the culture's getter to the helper that caught it, and
+        // stops there.
+        int name = IndexOf(remote, "OneShotThrowingCulture.get_Name");
+        int ctor = IndexOf(remote, "RuntimeWrappedException..ctor");
+        int helper = IndexOf(remote, "Exception.CreateRuntimeWrappedException");
+        if (name < 0) return 10;
+        if (ctor < name) return 11;
+        if (helper < ctor) return 12;
+        if (IndexOf(remote, "Thrower.Throw") >= 0) return 13;
+        if (IndexOf(remote, "Driver.Main") >= 0) return 14;
+
+        // The trace a reader sees is that prefix and then the `throw`'s raise, begun afresh.
+        if (trace == null || !IsPrefix(remote, trace)) return 15;
+        string fresh = trace.Substring(remote.Length);
+        if (!IsPrefix("   at Thrower.Throw()", fresh)) return 16;
+        if (IndexOf(fresh, "Driver.Main") < 0) return 17;
+        if (IndexOf(fresh, "get_Name") >= 0) return 18;
+        if (IndexOf(fresh, "CreateRuntimeWrappedException") >= 0) return 19;
+
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``what wrapping a thrown non-exception raises once is thrown from the throw with its trace preserved, as the real runtime does``
+        ()
+        : unit
+        =
+        FabricatedGuest.run
+            "Thrower"
+            (fabricate ())
+            "OneShotCultureWrapperConstructorDriver"
+            oneShotCultureDriverSource
+            0
