@@ -322,6 +322,7 @@
     <Compile Include="TestOsThreadId.fs" />
     <Compile Include="TestPointerCompareExchange.fs" />
     <Compile Include="TestObjectHeaderWord.fs" />
+    <Compile Include="TestObjectHeaderInflation.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
@@ -329,6 +330,7 @@
     <Compile Include="TestNativeWaitOneCore.fs" />
     <Compile Include="TestNativeThreadSpinWait.fs" />
     <Compile Include="TestNativeWaitSleepJoinState.fs" />
+    <Compile Include="TestNativeObjectHeader.fs" />
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestClassInitWaitChain.fs" />

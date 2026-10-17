@@ -186,6 +186,10 @@ module AbstractMachine =
                 // the caller's program counter still names the call, and the thread's next step
                 // runs the handler again from the top.
                 ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
+            | NativeHandlerResult.YieldedRetainingFrame (state, effect) ->
+                // As `ReenterRetainingFrame`, but the step was a yield: no return value was left
+                // for the Scheduler to rewrite, so `reportsSwitch` is false.
+                ExecutionResult.Stepped (state, WhatWeDid.VoluntaryYield false, effect)
             | NativeHandlerResult.BlockedRetainingFrame (state, effect) ->
                 // The handler parked its own thread and wants re-entering from the top when it
                 // wakes, so the native frame stays on the stack and the caller's program

@@ -104,6 +104,8 @@ module NativeQCall =
             "ThreadNative_Sleep", NativeThreading.tryExecuteQCall "ThreadNative_Sleep"
             "ThreadNative_SpinWait", NativeThreading.tryExecuteQCall "ThreadNative_SpinWait"
             "Monitor_Wait", NativeMonitor.tryExecuteQCall "Monitor_Wait"
+            "ObjectHeader_GetOrCreateLockObject",
+            NativeObjectHeader.tryExecuteQCall "ObjectHeader_GetOrCreateLockObject"
             "Monitor_Pulse", NativeMonitor.tryExecuteQCall "Monitor_Pulse"
             "Monitor_PulseAll", NativeMonitor.tryExecuteQCall "Monitor_PulseAll"
             "Monitor_TryEnter_Slowpath", NativeMonitor.tryExecuteQCall "Monitor_TryEnter_Slowpath"

@@ -12,6 +12,9 @@ type GcHandleKind =
 type GcHandleOwner =
     | TypeAssociated of RuntimeTypeHandleTarget
     | GuestAllocated
+    /// The handle .NET 11's sync block for the object at this address keeps to its `Lock`
+    /// (`SyncBlock::m_Lock`), which `ObjectHeader_GetOrCreateLockObject` creates.
+    | MonitorLock of ManagedHeapAddress
 
 type GcHandleCell =
     {

@@ -121,9 +121,6 @@ module TestPureCases =
                 ]
                 |> List.map (fun case -> case, Net11Frontier.bitCast)
             yield!
-                [ "GCGetMemoryInfo.cs" ; "GCMemoryInfoSpanProperties.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
-            yield!
                 [
                     "AdvancedStructLayout.cs"
                     "MarshalEnumField.cs"
@@ -164,37 +161,33 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
             yield!
                 [
-                    "CancellationTokenRegistrationDisposeCrossThread.cs"
-                    "ThreadStartFlowsAsyncLocal.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
-            yield!
-                [
-                    "MonitorPulseWait.cs"
-                    "MonitorPulseWaitOnArray.cs"
-                    "MonitorTryEnterTimeout.cs"
-                    "MonitorTryEnterTimeoutSucceeds.cs"
-                    "MonitorWaitReentrant.cs"
+                    "GCGetMemoryInfo.cs"
+                    "GCMemoryInfoSpanProperties.cs"
                     "TaskBasics.cs"
                     "TaskConfigureAwaitBool.cs"
                     "TaskConfigureAwaitOptions.cs"
                     "TaskContinueWith.cs"
-                    "TaskDelayWait.cs"
                     "TaskMultipleBlockingWaits.cs"
                     "TaskMultipleContinuations.cs"
                     "TaskRunThrowSetsFaulted.cs"
                     "TaskWhenAll.cs"
-                    "TaskYieldAwait.cs"
-                    "ThreadJoinTimeout.cs"
-                    "ThreadStateObserved.cs"
                     "ThreadStateOfIdlePoolWorker.cs"
                     "Threads.cs"
                     "ValueTaskConfigureAwait.cs"
                 ]
-                |> List.map (fun case -> case, Net11Frontier.fatLock)
+                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
             yield!
-                [ "LibcKillIgnoredThenRegistered.cs" ; "MonitorWaitTimeout.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.fatLock)
+                [ "LibcKillIgnoredThenRegistered.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.signalDispatcherThreadId)
+            yield!
+                [
+                    "CancellationTokenRegistrationDisposeCrossThread.cs"
+                    "MonitorInflationContended.cs"
+                    "TaskDelayWait.cs"
+                    "ThreadStartFlowsAsyncLocal.cs"
+                    "ThreadStateObserved.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             yield!
                 [
                     "AccessSeeded.cs"

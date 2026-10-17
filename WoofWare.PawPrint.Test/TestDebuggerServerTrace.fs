@@ -784,7 +784,7 @@ class Program
     [<Test>]
     let ``replaying a trace reconstructs what single-stepping observes at every step`` () : Task =
         Net11Frontier.park (
-            "On .NET 11 the guest's contention for its lock is settled inside the thin lock's spin, so no step shows a thread blocked on the lock, which this test's check of what the run exercised requires (measured on 11.0.0-rc.1). Un-park when the fat lock runs, and re-measure."
+            "On .NET 11 the guest's contention for its lock is settled inside the thin lock's spin, so no step shows a thread blocked on the lock, which this test's check of what the run exercised requires (measured on 11.0.0-rc.1, with the fat lock running). Un-park with a guest whose contention outlasts the spin."
         )
 
         task {
@@ -837,7 +837,9 @@ class Program
 
     [<Test>]
     let ``a trace records what discovering a deadlock changed`` () : Task =
-        Net11Frontier.park Net11Frontier.fatLock
+        Net11Frontier.park (
+            "This test looks for .NET 10's monitor statuses, `BlockedOnSyncBlockWait` before the deadlock and `BlockedOnSyncBlockAcquire` once discovering it wakes `Main`; on .NET 11 `Monitor.Wait`'s timeout and the reacquire are a managed `Lock`'s waits on a `LowLevelMonitor`, so neither status arises (measured on 11.0.0-rc.1). Un-park with the statuses .NET 11 shows."
+        )
 
         task {
             use tracedServer = startServerWith Roslyn.compile timedWaitDeadlockSource
