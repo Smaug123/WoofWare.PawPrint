@@ -877,9 +877,10 @@ module TypeConcretization =
         | None -> createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
     /// Does this signature type carry an ECMA-335 custom modifier (`modreq`/`modopt`) anywhere
-    /// inside it? Used only to refuse the one position where dropping a modifier is unrecoverable:
-    /// see `concretizeGenericInstantiation`.
-    let rec private carriesCustomModifier (typeDefn : TypeDefn) : bool =
+    /// inside it? Concretisation refuses a generic instantiation with a type argument that does,
+    /// the one position where dropping a modifier is unrecoverable (see
+    /// `concretizeGenericInstantiation`), so a caller that must not fail can ask this first.
+    let rec carriesCustomModifier (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.Modified _ -> true
         | TypeDefn.Array (element, _)
@@ -1113,10 +1114,11 @@ module TypeConcretization =
         // compares the substituted blob and does see it (`MetaSig::CompareElementType`), so
         // conflating the two would let a derived `M(int)` take over a slot it does not override.
         //
-        // Refuse instead. This is unreachable from any real compiler: measured over the linux-x64
-        // runtime pack, FSharp.Core, the Roslyn assemblies and this repo's own test binaries -- 208
-        // assemblies -- not one generic instantiation carries a modified type argument, nested or
-        // otherwise. It takes C++/CLI or hand-written IL to produce one.
+        // Refuse instead. Measured over the linux-x64 runtime pack, FSharp.Core, the Roslyn
+        // assemblies and this repo's own test binaries -- 208 assemblies -- not one generic
+        // instantiation carries a modified type argument, nested or otherwise. C# does write one,
+        // though, for a function pointer type in a type argument whose signature carries a modifier:
+        // `List<delegate*<out int, void>[]>`, whose `out` parameter is `modreq(OutAttribute)`.
         args
         |> Seq.iter (fun arg ->
             if carriesCustomModifier arg then

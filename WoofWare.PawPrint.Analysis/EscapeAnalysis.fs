@@ -1437,7 +1437,9 @@ module EscapeAnalysis =
 
     /// Does every type reference that instantiating a spelling reads name a type? As
     /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
-    /// TypeSystem instantiates although the JIT binds none of them.
+    /// TypeSystem instantiates although the JIT binds none of them. False too where a type
+    /// argument carries a custom modifier, which TypeSystem cannot instantiate
+    /// (`TypeConcretization.carriesCustomModifier`).
     let rec private concretizable
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -1455,6 +1457,10 @@ module EscapeAnalysis =
 
         match spelling with
         | TypeDefn.FunctionPointer signature -> all state (signatureTypes signature)
+        | TypeDefn.GenericInstantiation (_, arguments) when
+            Seq.exists TypeConcretization.carriesCustomModifier arguments
+            ->
+            state, false
         | TypeDefn.GenericInstantiation (root, arguments) -> all state (Seq.append [ root ] arguments)
         | TypeDefn.Array (element, _)
         | TypeDefn.OneDimensionalArrayLowerBoundZero element
@@ -3876,16 +3882,20 @@ module EscapeAnalysis =
         let concretized (state : EscapeAnalysisState) (spelled : SpelledType) =
             concretizeIn state instance.Arguments spelled.Type spelled.SpelledIn
 
-        // Two handles built of `Concrete` ones are the same handle exactly where they are the same
-        // type. Two function pointer types are left undecided: which parts of their signatures
-        // CoreCLR's type identity tells apart is not modelled here.
-        let rec named (handle : ConcreteTypeHandle) : bool =
+        // Two handles with no function pointer type in them, type arguments included, are the same
+        // handle exactly where they are the same type. Types with one are left undecided: which
+        // parts of a function pointer's signature CoreCLR's type identity tells apart is not
+        // modelled here.
+        let rec named (state : EscapeAnalysisState) (handle : ConcreteTypeHandle) : bool =
             match handle with
-            | ConcreteTypeHandle.Concrete _ -> true
+            | ConcreteTypeHandle.Concrete _ ->
+                match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+                | Some (concrete, _) -> Seq.forall (named state) concrete.Generics
+                | None -> failwith $"Concrete type handle %O{handle} is not registered"
             | ConcreteTypeHandle.Byref inner
             | ConcreteTypeHandle.Pointer inner
             | ConcreteTypeHandle.OneDimArrayZero inner
-            | ConcreteTypeHandle.Array (inner, _) -> named inner
+            | ConcreteTypeHandle.Array (inner, _) -> named state inner
             | ConcreteTypeHandle.FunctionPointer _ -> false
 
         match query with
@@ -3902,7 +3912,7 @@ module EscapeAnalysis =
             let state, second = concretized state second
 
             match first, second with
-            | Some first, Some second when List.forall named [ first ; second ] ->
+            | Some first, Some second when List.forall (named state) [ first ; second ] ->
                 state, Some ((first = second) = equality)
             | _ -> state, None
 
