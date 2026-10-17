@@ -3876,8 +3876,9 @@ module EscapeAnalysis =
         let concretized (state : EscapeAnalysisState) (spelled : SpelledType) =
             concretizeIn state instance.Arguments spelled.Type spelled.SpelledIn
 
-        // Two of these handles are the same handle exactly where they are the same type. That is
-        // not so of a function pointer's, whose signature's custom modifiers are part of its type.
+        // Two handles built of `Concrete` ones are the same handle exactly where they are the same
+        // type. Two function pointer types are left undecided: which parts of their signatures
+        // CoreCLR's type identity tells apart is not modelled here.
         let rec named (handle : ConcreteTypeHandle) : bool =
             match handle with
             | ConcreteTypeHandle.Concrete _ -> true

@@ -2553,6 +2553,20 @@ public static class Cases
         if ((flag ? typeof(int) : typeof(string)) == typeof(int)) throw new Same();
         throw new Different();
     }
+
+    // Function pointer types, which the analysis does not tell apart.
+    public static unsafe void FunctionPointers()
+    {
+        if (typeof(delegate*<int>) == typeof(delegate*<int>)) throw new Same();
+        throw new Different();
+    }
+
+    // Two typeofs passed to an intrinsic of `Type` that is not a comparison of them.
+    public static void Assignable()
+    {
+        if (typeof(int).IsAssignableTo(typeof(object))) throw new Same();
+        throw new Different();
+    }
 }
 """
 
@@ -2581,6 +2595,7 @@ public static class Cases
             folded "Constructed" [ same ; different ] []
             folded "WithList" [ same ] [ different ]
             folded "WithListOfLong" [ different ] [ same ]
+            folded "FunctionPointers" [ same ; different ] []
             { expect "TypeEquality.Cases" "Compared" with
                 Excludes = [ same ; different ]
                 Unknown = Some false
@@ -2652,6 +2667,11 @@ public static class Cases
         typeEqualityExpectations
         |> List.map (fun expectation -> snd expectation.Method)
         |> comparesTypesByCalling false analysis fixture
+
+        let analysis, assignable =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "TypeEquality.Cases" "Assignable")
+
+        assignable.Assumes.Contains Assumption.JitOptimises |> shouldEqual false
 
         // A method marked `NoOptimization` makes the calls, as does one in which the comparison's
         // operand is not the `GetTypeFromHandle` straight before it.
