@@ -483,7 +483,11 @@ module NativeThreading =
                 )
 
             let result =
-                ThreadStatus.managedThreadState targetState.IsBackground targetState.InWaitSleepJoin targetState.Status
+                ThreadStatus.managedThreadState
+                    (EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib)
+                    targetState.IsBackground
+                    targetState.InWaitSleepJoin
+                    targetState.Status
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (int result))) ctx.Thread state
@@ -884,8 +888,11 @@ module NativeThreading =
 
             let state, _newThreadId = initializeThreadObject threadAddr state
             NativeHandlerResult.completed state |> Some
-        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
-            // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
+        | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, returnType ->
+            // .NET 10: StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
+            // .NET 11 adds `ObjectHandleOnStack exception` and returns Interop.BOOL: FALSE, with the
+            // exception for a `ThreadStartException` in the handle, when the OS thread could not be
+            // created. Creating one never fails here, so it returns TRUE and leaves the handle alone.
             // Stack size, priority, thread-pool membership and the native thread name are not
             // modelled; only the Thread heap object is recovered from the handle.
             //
@@ -910,27 +917,21 @@ module NativeThreading =
             // `startUnstartedThread` surfaces the same condition via its status
             // assert. When exception synthesis lands, replace that loud failure
             // with the ThreadStateException raise.
+            let reportsSuccess =
+                match returnType, instruction.Arguments.Length with
+                | MethodReturnType.Void, 5 -> false
+                | MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)), 6 when
+                    boolGenerics.IsEmpty
+                    ->
+                    true
+                | _ ->
+                    failwith
+                        $"Thread.StartInternal: expected .NET 10's five-argument void signature or .NET 11's six-argument Interop.BOOL one, got %d{instruction.Arguments.Length} arguments returning %O{returnType}"
+
             let newThreadId = threadIdFromThreadAddr state "Thread.StartInternal" threadAddr
 
-            let purpose = "enter a thread the guest has just started"
-
-            let startCallback =
-                HostStartupCall.findCorelibInstanceMethod
-                    ctx.BaseClassTypes
-                    "System.Threading"
-                    "Thread"
-                    "StartCallback"
-                    0
-                    purpose
-
             let state, newMethodState, threadType =
-                HostStartupCall.buildFrame
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    startCallback
-                    (System.Collections.Immutable.ImmutableArray.Create (CliType.ObjectRef (Some threadAddr)))
-                    purpose
-                    state
+                ThreadStartCallback.buildFrame ctx.LoggerFactory ctx.BaseClassTypes threadAddr state
 
             // The ThreadId slot was minted at `Thread.Initialize` time and bound to
             // `threadAddr` in `ManagedThreadObjects`; promote it from `NotStarted`
@@ -989,6 +990,12 @@ module NativeThreading =
             | WhatWeDid.ThrowingTypeInitializationException ->
 
             let state = Scheduler.onWorkerSpawned newThreadId workerInitOutcome state
+
+            let state =
+                if reportsSuccess then
+                    IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
+                else
+                    state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",

@@ -40,7 +40,8 @@ module TestSchedulerSleepFairness =
         |> Roslyn.compile
 
     /// What one run of the guest tells us. The assertions rest on `ParkedTicks`: the count of
-    /// driver steps at which *some* thread was observably in `BlockedOnSleep`. It is zero for
+    /// driver steps at which *some* thread was observably inside a `Sleep(1)`
+    /// (`SleepAndJoinStatus.isInFiniteSleep`). It is zero for
     /// any rate at which a `Sleep(1)` deadline expires before the next scheduling decision,
     /// however many times the guest sleeps.
     type private RunMeasurement =
@@ -96,11 +97,7 @@ module TestSchedulerSleepFairness =
 
                     let anyParked =
                         p.State.ThreadState
-                        |> Map.exists (fun _ ts ->
-                            match ts.Status with
-                            | ThreadStatus.BlockedOnSleep _ -> true
-                            | _ -> false
-                        )
+                        |> Map.exists (fun _ ts -> SleepAndJoinStatus.isInFiniteSleep ts.Status)
 
                     if anyParked then
                         parkedTicks <- parkedTicks + 1L
@@ -111,8 +108,6 @@ module TestSchedulerSleepFairness =
 
     [<Test>]
     let ``a SpinWait spinner is observably asleep`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // Under `RoundRobin`, so that reaching the steady state is guaranteed rather than lucky:
         // `SpinWait` yields for twenty iterations before it ever calls `Thread.Sleep(1)`, and a
         // fair rotation gets every spinner there. Under `Pct` it is a coin toss — measured, seed
@@ -130,12 +125,10 @@ module TestSchedulerSleepFairness =
         // And not merely once: a sleeping thread should dominate the run.
         if r.ParkedTicks * 2L < r.TotalTicks then
             failwith
-                $"only %d{r.ParkedTicks} of %d{r.TotalTicks} ticks had a thread parked in BlockedOnSleep; the spinners are awake for most of the run despite spending every iteration in Sleep(1)."
+                $"only %d{r.ParkedTicks} of %d{r.TotalTicks} ticks had a thread parked in Sleep(1); the spinners are awake for most of the run despite spending every iteration in Sleep(1)."
 
     [<Test>]
     let ``SpinWait spinners sleep across a PCT seed sweep`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // Aggregated, because whether a given seed reaches the sleep rung at all is a property
         // of that schedule (see above). Summing over a fixed seed set keeps the test fully
         // deterministic while making a claim about the schedule space rather than one schedule.
@@ -157,4 +150,4 @@ module TestSchedulerSleepFairness =
                 |> String.concat " "
 
             failwith
-                $"only %d{parked} of %d{total} ticks across the sweep had a thread parked in BlockedOnSleep. Per seed: %s{perSeed}"
+                $"only %d{parked} of %d{total} ticks across the sweep had a thread parked in Sleep(1). Per seed: %s{perSeed}"

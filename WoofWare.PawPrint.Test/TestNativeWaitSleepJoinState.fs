@@ -11,10 +11,9 @@ open WoofWare.PawPrint
 
 /// Direct calls of .NET 11's `ThreadNative_SetWaitSleepJoinState` and
 /// `ThreadNative_ClearWaitSleepJoinState`, read back through `ThreadNative_GetThreadState`, the
-/// QCall behind `Thread.ThreadState`. A guest sees another thread's `ThreadState` only from a
-/// thread it started, and on .NET 11 `Thread.Start` is `Net11Frontier.threadStart`, so these are
-/// called directly; `ThreadStateObserved.cs` checks the same bit against real .NET 11 from a
-/// guest.
+/// QCall behind `Thread.ThreadState`. Called directly, the pair can be driven through any
+/// sequence, which a guest's waits never produce; `ThreadStateObserved.cs` checks the bit against
+/// real .NET 11 from a guest that watches another thread wait.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeWaitSleepJoinState =

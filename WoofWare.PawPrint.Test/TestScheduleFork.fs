@@ -240,9 +240,23 @@ module TestScheduleFork =
             0x5555555555555555UL
         ]
 
+    /// Why each forking guest is parked on .NET 11, if it is.
+    let private forkingParkedOnNet11 : Map<string, string> =
+        [
+            "ForkAfterSoloSleep.cs", Net11Frontier.linuxFutex
+            "ForkAfterSoloYield.cs", Net11Frontier.linuxFutex
+            "InvertedMonitorDeadlock.cs", Net11Frontier.fatLock
+            "JustABoolNotAMutex.cs", Net11Frontier.linuxFutex
+            "LostUpdate.cs", Net11Frontier.linuxFutex
+            "QueueIsNotThreadSafe.cs", Net11Frontier.linuxFutex
+            "SimultaneousCounter.cs", Net11Frontier.linuxFutex
+            "TwoCountersSeparated.cs", Net11Frontier.linuxFutex
+        ]
+        |> Map.ofList
+
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming a fork point reproduces the from-scratch run exactly`` (sourceName : string) : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
@@ -299,7 +313,10 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming with no seed reproduces the round-robin run`` (sourceName : string) : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        // Round robin reaches the futex in `InvertedMonitorDeadlock.cs` before the fat lock.
+        match sourceName with
+        | "InvertedMonitorDeadlock.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
+        | _ -> forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
 
         // The degenerate case, and the one that checks `LastRan` survived the snapshot: round
         // robin's whole choice is "lowest id above `LastRan`", so a snapshot that dropped it
@@ -325,8 +342,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``a snapshot may be resumed concurrently`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The sweeps this feature exists for run their seeds through `Array.Parallel`, so one
         // snapshot gets stepped by several threads at once. Everything reachable from it is
         // persistent F# data or `ImmutableDictionary` — except the `MetadataReader`-backed
@@ -412,8 +427,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``forking inside a class initialiser is refused, not mistaken for a forced prefix`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // `runToFirstFork` probes startup with the same predicate it uses for `Main`. Without
         // that probe this guest would look like a forced prefix all the way to `Main`, and every
         // seed resumed from the resulting snapshot would silently explore a schedule space
@@ -434,8 +447,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``contention created inside a tick's preamble is a fork point`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The detector probes *after* the tick preamble — clock advance, deadline firing, signal
         // dispatch, deadline jump — because any of those can turn a forced tick into a contended
         // one. Nothing in the guest corpus above reaches that: for a *first* fork, the second
@@ -503,8 +514,6 @@ module TestScheduleFork =
 
     [<Test>]
     let ``the shared prefix is most of the run`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // Not a correctness property — a guard on the premise. If the fork point ever moved to
         // the very end of a run, every test above would still pass while the feature saved
         // nothing at all, and nobody would notice. Measured at ~93% when this was written.

@@ -783,7 +783,9 @@ class Program
 
     [<Test>]
     let ``replaying a trace reconstructs what single-stepping observes at every step`` () : Task =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park (
+            "On .NET 11 the guest's contention for its lock is settled inside the thin lock's spin, so no step shows a thread blocked on the lock, which this test's check of what the run exercised requires (measured on 11.0.0-rc.1). Un-park when the fat lock runs, and re-measure."
+        )
 
         task {
             use tracedServer = startServerWith Roslyn.compileWithSymbols contendedLockSource
@@ -835,7 +837,7 @@ class Program
 
     [<Test>]
     let ``a trace records what discovering a deadlock changed`` () : Task =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.fatLock
 
         task {
             use tracedServer = startServerWith Roslyn.compile timedWaitDeadlockSource
@@ -873,8 +875,6 @@ class Program
 
     [<Test>]
     let ``a trace without values is the trace with values, less the values`` () : Task =
-        Net11Frontier.park Net11Frontier.threadStart
-
         task {
             use server = startServerWith Roslyn.compile contendedLockSource
             use client = client server
@@ -905,8 +905,6 @@ class Program
 
     [<Test>]
     let ``pages concatenate to the same run whatever their sizes`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         use server = startServerWith Roslyn.compile contendedLockSource
         use client = client server
 

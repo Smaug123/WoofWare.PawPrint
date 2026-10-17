@@ -22,6 +22,7 @@
     <Compile Include="HostImage.fs" />
     <Compile Include="ParkedOn.fs" />
     <Compile Include="Net11Frontier.fs" />
+    <Compile Include="SleepAndJoinStatus.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
@@ -381,6 +382,7 @@
     <Compile Include="TestFabricatedFieldMarshal.fs" />
     <Compile Include="TestFabricatedFieldReference.fs" />
     <Compile Include="TestSetupShape.fs" />
+    <Compile Include="TestStartCallbackShape.fs" />
     <Compile Include="TestHostExceptionSlot.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />

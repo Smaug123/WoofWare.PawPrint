@@ -122,7 +122,9 @@ module TestSchedulerYieldFairness =
     /// around is free to pass, and only losing the fairness effect itself fails.
     [<Test>]
     let ``yielding spinners do not starve the worker under Pct`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park (
+            "On .NET 11's Linux CoreLib the twenty seeds take 317804 steps, over this test's 300000 budget (seed 3 alone takes 52994), where the Darwin CoreLib stays within it; measured on CI's Linux leg on 2026-10-17, and the cause is not yet established. Un-park once the futex wait runs (`Net11Frontier.linuxFutex`), and re-measure."
+        )
 
         let seeds = [ 1UL .. 20UL ]
 
