@@ -2214,6 +2214,7 @@ public static class Cases
     let private valueTypeQuerySource =
         """
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 namespace ValueTypeQuery;
@@ -2258,6 +2259,13 @@ public static class Cases
 
     public static void WithDayOfWeek() => Generic<DayOfWeek>();
 
+    // A type argument with a custom modifier in it: the `modreq` that marks an `out` parameter.
+    public static unsafe void OfModifiedArgument()
+    {
+        if (typeof(List<delegate*<out int, void>[]>).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
     [MethodImpl(MethodImplOptions.NoOptimization)]
     public static void Unoptimized()
     {
@@ -2300,6 +2308,7 @@ public static class Cases
             folded "WithString" [ reference ] [ value ]
             folded "WithNullable" [ value ] [ reference ]
             folded "WithDayOfWeek" [ value ] [ reference ]
+            folded "OfModifiedArgument" [ value ; reference ] []
         ]
 
     /// The image of `valueTypeQuerySource`, optimized as CoreLib is unless `debug`.
@@ -2580,6 +2589,21 @@ public static class Cases
         throw new Different();
     }
 
+    // Function pointer types inside type arguments.
+    public static unsafe void NestedFunctionPointers()
+    {
+        if (typeof(List<delegate* unmanaged[Cdecl]<void>[]>) == typeof(List<delegate* unmanaged[Stdcall]<void>[]>))
+            throw new Same();
+        throw new Different();
+    }
+
+    // A type argument with a custom modifier in it: the `modreq` that marks an `out` parameter.
+    public static unsafe void ModifiedArgument()
+    {
+        if (typeof(List<delegate*<out int, void>[]>) == typeof(int)) throw new Same();
+        throw new Different();
+    }
+
     // Two typeofs passed to an intrinsic of `Type` that is not a comparison of them.
     public static void Assignable()
     {
@@ -2615,6 +2639,8 @@ public static class Cases
             folded "WithList" [ same ] [ different ]
             folded "WithListOfLong" [ different ] [ same ]
             folded "FunctionPointers" [ same ; different ] []
+            folded "NestedFunctionPointers" [ same ; different ] []
+            folded "ModifiedArgument" [ same ; different ] []
             { expect "TypeEquality.Cases" "Compared" with
                 Excludes = [ same ; different ]
                 Unknown = Some false
