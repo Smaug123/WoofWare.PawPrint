@@ -2954,8 +2954,8 @@ public static class Cases
     /// `Span...` calls `RuntimeHelpers.CreateSpan` with the handle:
     ///   - `OfMethod`, of a method, and `OfField`, of a field, which they drop;
     ///   - `SpanFolded`, `CreateSpan<int>` of a field of twelve bytes of data;
-    ///   - `SpanOfStruct`, `CreateSpan` of that field for a struct of an `int`, which is not a
-    ///     primitive type;
+    ///   - `SpanOfStruct`, `CreateSpan` of that field for a struct of an `int`, and
+    ///     `SpanOfGeneric`, for a `KeyValuePair<int, int>`, neither of which is a primitive type;
     ///   - `SpanOfPlainField`, `CreateSpan<int>` of a static field that has no data;
     ///   - `SpanTooShort`, `CreateSpan<int>` of a field of two bytes of data;
     ///   - `SpanJoined(bool)`, whose two `ldtoken`s of the twelve bytes branch to one call;
@@ -2970,11 +2970,15 @@ public static class Cases
         let pair =
             modul.DefineType (
                 "Probe.Pair",
-                TypeAttributes.Public ||| TypeAttributes.Sealed ||| TypeAttributes.SequentialLayout,
+                TypeAttributes.Public
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.SequentialLayout,
                 typeof<ValueType>
             )
 
-        pair.DefineField ("First", typeof<int>, FieldAttributes.Public) |> ignore<Emit.FieldBuilder>
+        pair.DefineField ("First", typeof<int>, FieldAttributes.Public)
+        |> ignore<Emit.FieldBuilder>
+
         let pair = pair.CreateType ()
 
         let cases =
@@ -2987,7 +2991,11 @@ public static class Cases
             )
 
         let twelve =
-            cases.DefineInitializedData ("Twelve", Array.init 12 byte, FieldAttributes.Static ||| FieldAttributes.Assembly)
+            cases.DefineInitializedData (
+                "Twelve",
+                Array.init 12 byte,
+                FieldAttributes.Static ||| FieldAttributes.Assembly
+            )
 
         let two =
             cases.DefineInitializedData ("Two", [| 1uy ; 2uy |], FieldAttributes.Static ||| FieldAttributes.Assembly)
@@ -3001,9 +3009,7 @@ public static class Cases
                 .GetMethod ("NextCallReturnAddress", BindingFlags.NonPublic ||| BindingFlags.Static)
 
         let createSpan (element : Type) : MethodInfo =
-            typeof<Runtime.CompilerServices.RuntimeHelpers>
-                .GetMethod("CreateSpan")
-                .MakeGenericMethod [| element |]
+            typeof<Runtime.CompilerServices.RuntimeHelpers>.GetMethod("CreateSpan").MakeGenericMethod [| element |]
 
         let target =
             cases.DefineMethod ("Target", MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
@@ -3026,6 +3032,7 @@ public static class Cases
             [
                 "SpanFolded", twelve, typeof<int>
                 "SpanOfStruct", twelve, pair
+                "SpanOfGeneric", twelve, typeof<Collections.Generic.KeyValuePair<int, int>>
                 "SpanOfPlainField", plain, typeof<int>
                 "SpanTooShort", two, typeof<int>
             ] do
@@ -3092,9 +3099,7 @@ public static class Cases
                 EscapeAnalysis.reachable analysis (methodNamed fixture typeName name)
 
             let names =
-                watched
-                |> List.filter (fun (_, key) -> reached.Contains key)
-                |> List.map fst
+                watched |> List.filter (fun (_, key) -> reached.Contains key) |> List.map fst
 
             analysis, Map.add name names reaches
         )
@@ -3148,11 +3153,16 @@ public static class Cases
                 [ fixture ]
                 id
 
-        let _, reaches = reachesStubs unassuming fixture "MemberStubs.Cases" [ "Span" ; "SpanOfEnum" ]
+        let _, reaches =
+            reachesStubs unassuming fixture "MemberStubs.Cases" [ "Span" ; "SpanOfEnum" ]
 
         reaches
         |> shouldEqual (
-            Map.ofList [ "Span", [ "field stub" ; "CreateSpan" ] ; "SpanOfEnum", [ "field stub" ; "CreateSpan" ] ]
+            Map.ofList
+                [
+                    "Span", [ "field stub" ; "CreateSpan" ]
+                    "SpanOfEnum", [ "field stub" ; "CreateSpan" ]
+                ]
         )
 
     [<Test>]
@@ -3170,6 +3180,7 @@ public static class Cases
                 "OfField"
                 "SpanFolded"
                 "SpanOfStruct"
+                "SpanOfGeneric"
                 "SpanOfPlainField"
                 "SpanTooShort"
                 "SpanJoined"
@@ -3187,6 +3198,7 @@ public static class Cases
                     "OfField", [ "field stub" ]
                     "SpanFolded", []
                     "SpanOfStruct", both
+                    "SpanOfGeneric", both
                     "SpanOfPlainField", both
                     "SpanTooShort", both
                     "SpanJoined", both

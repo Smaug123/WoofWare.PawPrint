@@ -481,8 +481,14 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Constrained
-        | UnaryMetadataTokenIlOp.Ldtoken
         | UnaryMetadataTokenIlOp.Sizeof -> none
+        // `ldtoken` faults on nothing itself either, but CoreCLR's JIT compiles it to a call of
+        // CoreLib (`CEE_LDTOKEN`, importer.cpp): for a method or a field, the `FromPtr` of
+        // `RuntimeMethodInfoStub` or `RuntimeFieldInfoStub`, which makes the stub its handle holds,
+        // and for a type whose `RuntimeType` the code cannot embed,
+        // `RuntimeTypeHandle.GetRuntimeTypeFromHandle`. What those raise reaches it from that
+        // callee, so it is not this table's.
+        | UnaryMetadataTokenIlOp.Ldtoken -> none
 
     let ofUnaryConst (op : UnaryConstIlOp) : OpcodeFaults =
         match op with

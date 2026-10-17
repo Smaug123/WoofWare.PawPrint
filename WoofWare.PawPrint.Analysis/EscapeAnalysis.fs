@@ -764,6 +764,83 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeTypeHandle.GetRuntimeTypeFromHandle(IntPtr), found %d{found.Length}"
 
+    /// The kind of member whose handle an `ldtoken` loads.
+    [<RequireQualifiedAccess>]
+    type private MemberHandle =
+        | Method
+        | Field
+
+    /// The kind of member whose handle `ldtoken` of `token` in `assembly` loads; `None` where it
+    /// loads a type's.
+    let private memberHandleOf (assembly : DumpedAssembly) (token : MetadataToken) : MemberHandle option =
+        match token with
+        | MetadataToken.MethodDef _
+        | MetadataToken.MethodSpecification _ -> Some MemberHandle.Method
+        | MetadataToken.FieldDefinition _ -> Some MemberHandle.Field
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.[handle].Signature with
+            | MemberSignature.Method _ -> Some MemberHandle.Method
+            | MemberSignature.Field _ -> Some MemberHandle.Field
+        | MetadataToken.TypeDefinition _
+        | MetadataToken.TypeReference _
+        | MetadataToken.TypeSpecification _ -> None
+        | other -> failwith $"An ldtoken in %s{assembly.DefinitionFullName} names %O{other}"
+
+    /// `FromPtr(IntPtr)` of `RuntimeMethodInfoStub` or `RuntimeFieldInfoStub`, which the JIT calls in
+    /// place of `ldtoken` of a method or a field to make the stub its handle holds: the methods that
+    /// `CORINFO_HELP_METHODDESC_TO_STUBRUNTIMEMETHOD` and `CORINFO_HELP_FIELDDESC_TO_STUBRUNTIMEFIELD`
+    /// are bound to (jithelpers.h).
+    let private stubMaker (state : EscapeAnalysisState) (handle : MemberHandle) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let stubType =
+            match handle with
+            | MemberHandle.Method -> "RuntimeMethodInfoStub"
+            | MemberHandle.Field -> "RuntimeFieldInfoStub"
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System" stubType
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = "FromPtr"
+                && m.IsStatic
+                && m.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.IntPtr ]
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{stubType}.FromPtr(IntPtr), found %d{found.Length}"
+
+    /// The size of a value of `primitive` for the JIT compiling for `target`, where CoreCLR takes it
+    /// to be a primitive type (`CorIsPrimitiveType` of `GetVerifierCorElementType`); `None` for a
+    /// string or an object, which it takes to be a class, and for a typed reference.
+    let private primitiveSize (target : JitTarget) (primitive : PrimitiveType) : int option =
+        match primitive with
+        | PrimitiveType.Boolean
+        | PrimitiveType.SByte
+        | PrimitiveType.Byte -> Some 1
+        | PrimitiveType.Char
+        | PrimitiveType.Int16
+        | PrimitiveType.UInt16 -> Some 2
+        | PrimitiveType.Int32
+        | PrimitiveType.UInt32
+        | PrimitiveType.Single -> Some 4
+        | PrimitiveType.Int64
+        | PrimitiveType.UInt64
+        | PrimitiveType.Double -> Some 8
+        | PrimitiveType.IntPtr
+        | PrimitiveType.UIntPtr ->
+            match target with
+            | JitTarget.Arm64
+            | JitTarget.X64 -> Some 8
+        | PrimitiveType.String
+        | PrimitiveType.Object
+        | PrimitiveType.TypedReference -> None
+
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
     /// making it as `making` says: the exception, and the methods it runs to make it, whose own
     /// raises escape there too.
@@ -962,6 +1039,62 @@ module EscapeAnalysis =
                 | state, None -> state, false
 
         go state ty Set.empty
+
+    /// The size of `spelling`, a type `assembly` spells, where CoreCLR takes it to be a primitive
+    /// type (`getTypeForPrimitiveValueClass`, jitinterface.cpp): a primitive type, or an enum, whose
+    /// size is that of its underlying type. `None` for any other type.
+    let private primitiveValueSize
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * int option
+        =
+        match TypeDefn.stripCustomModifiers spelling with
+        | TypeDefn.PrimitiveType primitive -> state, primitiveSize state.Target primitive
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _ ->
+            match nominalIdentity state assembly spelling with
+            | state, None -> state, None
+            | state, Some identity ->
+
+            match baseOf state identity with
+            | state, Some parent when parent = corelibType state "System" "Enum" ->
+                let _, ty = definitionOf state identity
+
+                match ty.Fields |> List.filter (fun field -> not field.IsStatic) with
+                | [ value ] ->
+                    match value.Signature with
+                    | TypeDefn.PrimitiveType primitive -> state, primitiveSize state.Target primitive
+                    | _ -> state, None
+                | _ -> state, None
+            | state, _ -> state, None
+        | _ -> state, None
+
+    /// The size of the data of `field`, a static field with an RVA, that `getArrayInitializationData`
+    /// (jitinterface.cpp) offers (`FieldDesc::LoadSize`): that of a primitive type, or of a struct
+    /// with an explicit size and no instance fields, which is how compilers declare a block of data.
+    /// `None` for a field of any other type, whose size is not worked out here.
+    let private fieldDataSize
+        (state : EscapeAnalysisState)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+        : EscapeAnalysisState * int option
+        =
+        match field.Signature with
+        | TypeDefn.PrimitiveType primitive -> state, primitiveSize state.Target primitive
+        | TypeDefn.FromDefinition (identity, _) ->
+            let _, ty = definitionOf state identity
+
+            match ty.Layout with
+            | Layout.Custom (size, _) when
+                size > 0
+                && ty.Generics.IsEmpty
+                && ty.Fields |> List.forall (fun field -> field.IsStatic)
+                ->
+                match baseOf state identity with
+                | state, Some parent when parent = corelibType state "System" "ValueType" -> state, Some size
+                | state, _ -> state, None
+            | _ -> state, None
+        | _ -> state, None
 
     /// The type a `catch` clause names, when it is one this analysis can compare against: a TypeDef
     /// or TypeRef. A TypeSpec names an instantiation, and deciding whether an exception is one needs
@@ -3098,11 +3231,18 @@ module EscapeAnalysis =
         // `GetTypeFromHandle`s it expanded, so where no branch lands between the instructions. By
         // the offset of the query's last call: the indices of its calls, those of its `ldtoken`s,
         // whose `RuntimeType`s it does not make, and what a branch on it tests, where the body
-        // spells its types. The JIT folds them only where it makes its
+        // spells its types.
+        // So too `RuntimeHelpers.CreateSpan<T>` of a field's handle, `ldtoken` of the field then the
+        // call, which `impCreateSpanIntrinsic` (importercalls.cpp) expands to a span over the field's
+        // data, making neither the call nor the field's stub, where no branch lands on the call, the
+        // handle is a constant (so of a field of a type that is not generic), the field has data
+        // (`IsRVA`) at least one `T` long, and `T` is a primitive type or an enum. By the index of
+        // the `ldtoken`.
+        // The JIT folds them only where it makes its
         // tier-0 optimisations: not in a method marked `NoOptimization` or one whose assembly
         // disables optimisation, nor in one that calls `StubHelpers.NextCallReturnAddress`, where
         // it expands only the intrinsics it must.
-        let state, typeQueries =
+        let state, typeQueries, createdSpans =
             let typeType = corelibType state "System" "Type"
 
             let calledMethod (index : int) : (DumpedAssembly * MethodKey) option =
@@ -3181,9 +3321,64 @@ module EscapeAnalysis =
             let landsAfter (index : int) (last : int) : bool =
                 [ index + 1 .. last ] |> List.exists (fun i -> landedOn.Contains (snd ops.[i]))
 
+            // Whether `CreateSpan<element>` of the field `handle`, at `index`, is one the JIT
+            // expands.
+            let expandsSpan
+                (state : EscapeAnalysisState)
+                (index : int)
+                (handle : FieldDefinitionHandle)
+                (element : TypeDefn)
+                : EscapeAnalysisState * bool
+                =
+                let field = assembly.Fields.[handle]
+
+                if
+                    landsAfter index (index + 1)
+                    || not field.IsStatic
+                    || field.RelativeVirtualAddress.IsNone
+                    || not field.DeclaringType.Generics.IsEmpty
+                then
+                    state, false
+                else
+                    let state, elementSize = primitiveValueSize state assembly element
+                    let state, dataSize = fieldDataSize state field
+
+                    match elementSize, dataSize with
+                    | Some elementSize, Some dataSize -> state, dataSize >= elementSize
+                    | _ -> state, false
+
             if not optimised then
-                state, Map.empty
+                state, Map.empty, Set.empty
             else
+
+            let runtimeHelpers =
+                corelibType state "System.Runtime.CompilerServices" "RuntimeHelpers"
+
+            let state, createdSpans =
+                ((state, Set.empty), [ 0 .. ops.Length - 2 ])
+                ||> List.fold (fun (state, spans) index ->
+                    match fst ops.[index], fst ops.[index + 1], calledMethod (index + 1) with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, MetadataOperand.FromMetadata field),
+                      IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata call),
+                      Some (calleeAssembly, callee) when
+                        not (unbound.Contains index)
+                        && declaringTypeOf state callee = runtimeHelpers
+                        && (snd (methodOf state callee)).Name = "CreateSpan"
+                        && IntrinsicBody.isIntrinsic calleeAssembly callee.Method.Get
+                        ->
+                        match field.Token, call.Token with
+                        | MetadataToken.FieldDefinition handle, MetadataToken.MethodSpecification spec ->
+                            match List.ofSeq assembly.MethodSpecs.[spec].Signature with
+                            | [ element ] ->
+                                match expandsSpan state index handle element with
+                                | state, true -> state, Set.add index spans
+                                | state, false -> state, spans
+                            | _ -> state, spans
+                        | _ -> state, spans
+                    | _ -> state, spans
+                )
+
+            let state, typeQueries =
                 ((state, Map.empty), [ 0 .. ops.Length - 1 ])
                 ||> List.fold (fun (state, queries) index ->
                     match typeofAt index with
@@ -3235,14 +3430,21 @@ module EscapeAnalysis =
                     | _ -> state, queries
                 )
 
+            state, typeQueries, createdSpans
+
         let folded =
-            typeQueries |> Map.values |> Seq.collect (fun query -> query.Gone) |> Set.ofSeq
+            typeQueries
+            |> Map.values
+            |> Seq.collect (fun query -> query.Gone)
+            |> Set.ofSeq
+            |> Set.union (createdSpans |> Set.map (fun index -> index + 1))
 
         let elided =
             typeQueries
             |> Map.values
             |> Seq.collect (fun query -> query.Elided)
             |> Set.ofSeq
+            |> Set.union createdSpans
 
         // What each `brtrue` or `brfalse` tests, by the offset of the instruction before it, which
         // pushes the value: integers, or objects each spelled as a reference. A branch on a value
@@ -3326,9 +3528,29 @@ module EscapeAnalysis =
                 | _ -> state, lookedUp
             )
 
+        // Where the JIT makes the stub that the handle of a method or a field holds: at every
+        // `ldtoken` of one, which it imports as a call of the stub's `FromPtr` (`CEE_LDTOKEN`,
+        // importer.cpp), in shared code as elsewhere, but for a field whose `CreateSpan` it expands.
+        // It expands `RuntimeHelpers.InitializeArray` of one too, but only where it optimises fully
+        // (`impIntrinsic`), which a method it compiles first does not.
+        let stubs =
+            [ 0 .. ops.Length - 1 ]
+            |> List.choose (fun index ->
+                match fst ops.[index] with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, MetadataOperand.FromMetadata token) when
+                    executed.Contains (snd ops.[index])
+                    && not (unbound.Contains index)
+                    && not (elided.Contains index)
+                    ->
+                    memberHandleOf assembly token.Token
+                    |> Option.map (fun handle -> snd ops.[index], runtimeRuns (stubMaker state handle), [])
+                | _ -> None
+            )
+
         let calls =
-            (lookedUp
-             |> List.map (fun (offset, _) -> offset, runtimeRuns (runtimeTypeLookup state), []))
+            stubs
+            @ (lookedUp
+               |> List.map (fun (offset, _) -> offset, runtimeRuns (runtimeTypeLookup state), []))
             @ calls
 
         let regions = List.ofSeq body.ExceptionRegions
@@ -3432,10 +3654,9 @@ module EscapeAnalysis =
         {
             Raises = List.rev raises
             Opaque = opaque
-            // Were the JIT not to fold a query, its calls would run there.
+            // Were the JIT not to fold a query, or expand a span, its calls would run there.
             Assumed =
-                typeQueries
-                |> Map.keys
+                Seq.append (typeQueries |> Map.keys) (createdSpans |> Seq.map (fun index -> snd ops.[index + 1]))
                 |> Seq.filter executed.Contains
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
                 |> List.ofSeq
