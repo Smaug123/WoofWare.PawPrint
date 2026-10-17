@@ -73,6 +73,11 @@ method) may add more:
   protected block does. Tokens in code left out are still bound, below, which for a capability
   query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
   binds what only the other way reaches;
+* where the caller allows `JitOptimises` (below), `typeof(X).IsValueType` is the constant the JIT
+  compiles it to: `ldtoken X`, then calls of `Type.GetTypeFromHandle` and `Type.get_IsValueType`
+  that no branch lands between, call neither method, and a
+  `brtrue` or `brfalse` straight after follows only the way the answer goes, where the instance
+  says what `X` is;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
@@ -209,12 +214,13 @@ initializer or into that read, so unless the caller allows `CoreLibTypeInitializ
 `StackTracePreserved` (below), constructing almost any CoreLib exception is "unknown" still.
 
 Other assumptions are the caller's to allow (`Assumption`, given to `EscapeAnalysis.create`). Each
-lets the analysis take a contract in place of a method's body, and each answer lists in
+lets the analysis take a contract in place of a method's body, or what the JIT compiles in place of
+code, and each answer lists in
 `Escapes.Assumes` those it relied on: the ones whose contract stands in for code that something
 escaping could come from, so that without them the answer could be "unknown". It may also list one
 that a handler in a method this one calls made unnecessary, since a callee's answer records only
 that it relied on the assumption. Allowed none, every answer follows from the code and the
-assumptions above. There are three so far:
+assumptions above. There are four so far:
 
 * `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
   defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
@@ -248,6 +254,17 @@ assumptions above. There are three so far:
   formed; when only CoreLib writes CoreLib's private static fields; and when each of CoreLib's
   generic types' initializers does so whatever its type arguments. The program's own type
   initializers are always followed.
+* `JitOptimises`: CoreCLR's JIT compiles each method with at least the optimisations it makes at
+  tier 0, wherever neither the method nor its assembly says otherwise. Then it compiles
+  `typeof(X).IsValueType` to a constant, and calls neither `Type.GetTypeFromHandle` nor the getter,
+  whose own code walks the type's base types through native code the analysis does not see into.
+  The method says otherwise when it is marked `MethodImplOptions.NoOptimization`, and the assembly
+  when its `DebuggableAttribute` disables optimisation, as a Debug build's does
+  (`Debuggable.allowsJitOptimisation`); the analysis follows the calls there whatever the caller
+  allows. It holds when no debugger or profiler disables optimisation, when `DOTNET_JitMinOpts` and
+  `DOTNET_JitDebuggable` are unset, and when no interpreter runs the code. Without it, about one in
+  twenty-five of CoreLib's own non-generic methods are "unknown" that are known with it, most of
+  them through `Unsafe.BitCast`, which asks whether each of its type arguments is a value type.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

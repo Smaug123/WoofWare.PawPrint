@@ -2363,10 +2363,13 @@ public static class Cases
         |> List.map (fun expectation -> snd expectation.Method)
         |> makesTheCalls (analysisOver [ fixture ] id) fixture
 
-    /// `Probe.Cases.Asks`, which branches on `typeof(int).IsValueType`, and
-    /// `Probe.Cases.AsksAfterReturnAddress`, which does so after calling
-    /// `StubHelpers.NextCallReturnAddress`, which C# cannot name.
-    let private emitReturnAddressQuery () : byte[] =
+    /// Methods of `Probe.Cases` that branch on whether a `typeof` is a value type, in IL that C#
+    /// does not write:
+    ///   - `Asks`, of `int`;
+    ///   - `AsksAfterReturnAddress`, of `int`, after calling `StubHelpers.NextCallReturnAddress`;
+    ///   - `AsksOfEither(bool)`, of `int` or `string`, whose two `ldtoken`s branch to one call of
+    ///     `GetTypeFromHandle`.
+    let private emitValueTypeQueries () : byte[] =
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "ReturnAddress", typeof<obj>.Assembly)
 
@@ -2392,9 +2395,16 @@ public static class Cases
         let isValueType = typeof<Type>.GetProperty("IsValueType").GetGetMethod ()
         let exceptionConstructor = typeof<Exception>.GetConstructor Type.EmptyTypes
 
-        for name, asksReturnAddress in [ "Asks", false ; "AsksAfterReturnAddress", true ] do
+        for name, asksReturnAddress, ofEither in
+            [
+                "Asks", false, false
+                "AsksAfterReturnAddress", true, false
+                "AsksOfEither", false, true
+            ] do
+            let parameters = if ofEither then [| typeof<bool> |] else [||]
+
             let method =
-                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, parameters)
 
             let il = method.GetILGenerator ()
             let otherwise = il.DefineLabel ()
@@ -2403,7 +2413,19 @@ public static class Cases
                 il.Emit (Emit.OpCodes.Call, nextCallReturnAddress)
                 il.Emit Emit.OpCodes.Pop
 
-            il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
+            if ofEither then
+                let ofInt = il.DefineLabel ()
+                let asked = il.DefineLabel ()
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit (Emit.OpCodes.Brtrue, ofInt)
+                il.Emit (Emit.OpCodes.Ldtoken, typeof<string>)
+                il.Emit (Emit.OpCodes.Br, asked)
+                il.MarkLabel ofInt
+                il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
+                il.MarkLabel asked
+            else
+                il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
+
             il.Emit (Emit.OpCodes.Call, getTypeFromHandle)
             il.Emit (Emit.OpCodes.Callvirt, isValueType)
             il.Emit (Emit.OpCodes.Brfalse, otherwise)
@@ -2419,14 +2441,11 @@ public static class Cases
         stream.ToArray ()
 
     [<Test>]
-    let ``asking whether a typeof is a value type makes the calls in a method that asks for the next call's return address``
-        ()
-        : unit
-        =
+    let ``asking whether a typeof is a value type makes the calls in IL the JIT does not fold`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let fixture =
-            Assembly.read loggerFactory (Some "ReturnAddress.dll") (new MemoryStream (emitReturnAddressQuery ()))
+            Assembly.read loggerFactory (Some "ReturnAddress.dll") (new MemoryStream (emitValueTypeQueries ()))
 
         let analysis = analysisOver [ fixture ] id
 
@@ -2435,10 +2454,18 @@ public static class Cases
 
         asks.Assumes.Contains Assumption.JitOptimises |> shouldEqual true
 
-        let _, asksAfter =
-            EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Cases" "AsksAfterReturnAddress")
+        // The JIT expands only the intrinsics it must in a method that asks for the next call's
+        // return address, and a call that more than one way reaches has an operand it cannot name.
+        let mutable analysis = analysis
 
-        asksAfter.Assumes.Contains Assumption.JitOptimises |> shouldEqual false
+        for name in [ "AsksAfterReturnAddress" ; "AsksOfEither" ] do
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Cases" name)
+
+            analysis <- next
+
+            if escapes.Assumes.Contains Assumption.JitOptimises then
+                failwith $"%s{name} relies on the JIT's folding the query"
 
     [<Test>]
     let ``asking whether a typeof is a value type makes the calls unless the JIT is assumed to optimise`` () : unit =
