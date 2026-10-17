@@ -781,8 +781,14 @@ module ExceptionDispatching =
                 // a fresh first pass at the caller.
                 state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.RaisedAgainAt search.Frame)
             | EmulatedRuntime.Net11 ->
+                // .NET 11 runs the constructor inside `Exception.CreateRuntimeWrappedException`, an
+                // `[UnmanagedCallersOnly]` helper that catches what it raises, and re-raises that
+                // through `COMPlusThrow`, which first runs `Exception.InternalPreserveStackTrace` on
+                // it: managed code that renders the trace (through the same resource lookup), moves
+                // it to `_remoteStackTraceString`, and is itself re-raised the same way if it
+                // throws, which overflows the stack when it always does.
                 failwith
-                    $"%s{frame.ExecutingMethod.Name}, which the runtime ran to wrap a thrown object that is not an exception in a RuntimeWrappedException, raised an exception of its own. Measured on real .NET 11, the process then overflows its stack in Exception.InternalPreserveStackTrace and aborts; PawPrint does not model that, so it refuses to continue."
+                    $"%s{frame.ExecutingMethod.Name}, which the runtime ran to wrap a thrown object that is not an exception in a RuntimeWrappedException, raised an exception of its own. .NET 11 re-raises it through Exception.CreateRuntimeWrappedException and Exception.InternalPreserveStackTrace, which PawPrint does not model, so it refuses to continue."
         | ExceptionEscape.Propagate
         | ExceptionEscape.WrapInTargetInvocation ->
 

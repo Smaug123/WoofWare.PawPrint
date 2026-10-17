@@ -510,8 +510,9 @@ public static class Driver
             // `MemoryExtensions.MinMaxInteger`.
             Net11Frontier.park Net11Frontier.bitCast
 
-            // Real .NET 11 does not survive this (`Net11Frontier.nonExceptionWrapping`), and
-            // PawPrint refuses to run on past it.
+            // Real .NET 11 does not survive this culture, which throws on every read
+            // (`Net11Frontier.nonExceptionWrapping`), and PawPrint refuses any exception the
+            // wrapper's constructor raises on .NET 11.
             let onHost, onPawPrint =
                 FabricatedGuest.runOnBoth
                     "Thrower"
