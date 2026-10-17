@@ -560,9 +560,9 @@ module ExceptionDispatching =
     /// trace from the exception object rather than from any in-flight list, which is observable: a
     /// nested throw of the *same* object from inside a catch updates the token while the outer
     /// handler's snapshot goes stale, and only the token still holds the nested boundary.
-    /// `appendCallerFrame` passes the raise's in-flight trace instead, which differs from the
-    /// object's only if guest code has thrown the same object again since this raise last
-    /// appended, and between two appends of one raise only a `filter` runs guest code.
+    /// `appendCallerFrame` passes the raise's in-flight trace instead, which is the object's: between
+    /// two appends of one raise only a `filter` runs guest code, and `resumeSearchAfterFilter`
+    /// takes up whatever trace the object holds once it returns.
     ///
     /// `traceAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
     /// fails loudly on an exception address that is not a real heap object, which is exactly what
@@ -1325,6 +1325,31 @@ module ExceptionDispatching =
         if activeFrame <> search.Frame then
             failwith
                 $"Logic error: endfilter for filter %O{continuation.CurrentFilter} resumed a search parked on frame %O{search.Frame} while the thread was executing frame %O{activeFrame}"
+
+        // CoreCLR reads the exception's `_stackTrace` afresh at every frame it appends, and the
+        // filter just run is the only guest code between two appends of one raise. Entering it
+        // projected the search's trace onto the object, so the object's trace differs from the
+        // search's only if the filter raised the same object again, as `ExceptionDispatchInfo.Throw`
+        // of a capture of it does; the search continues, or concludes with, whichever trace the
+        // object now holds, its first frame's origin included.
+        let state, exceptionAncestor =
+            IlMachineState.tryExceptionAncestor loggerFactory corelib search.ExceptionType state
+
+        let search =
+            match exceptionAncestor with
+            | None -> search
+            | Some _ ->
+                match IlMachineState.frozenStackTrace corelib search.Exception.ExceptionObject state with
+                | Some trace ->
+                    { search with
+                        Exception =
+                            { search.Exception with
+                                Trace = trace
+                            }
+                    }
+                | None ->
+                    failwith
+                        $"TODO: the filter at IL offset %d{continuation.CurrentFilter.FilterOffset} left the exception it was offered with no trace (its _stackTrace null), where entering it gave it one. CoreCLR would continue the raise from that empty trace, whose first frame is then the next one the raise passes through rather than any it was raised in; PawPrint does not model that."
 
         if accepted then
             let region =

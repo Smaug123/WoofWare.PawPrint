@@ -117,6 +117,12 @@ type ExceptionTrace = { Frames : ExceptionStackFrame<...> list ; HeadOrigin : Tr
   trace in front: if it has frames, its origin is the trace's origin, because its head is the
   trace's head; if it has none (the captured exception was never thrown), the splicing `throw`'s
   own `IlThrow` stands, because its frame is then the head, as it is in CoreCLR.
+* A filter is the only guest code that runs between two appends of one raise, and it may raise
+  the same object again (an `ExceptionDispatchInfo.Throw` of a capture of it), which changes the
+  trace the object holds. CoreCLR re-reads `_stackTrace` at every append, so after a filter
+  returns the search takes up the object's trace, frames and origin, before continuing or
+  concluding (`resumeSearchAfterFilter`). Found by the Codex review; pinned by
+  `sourcesPure/FilterSpliceContinuesRestoredTrace.cs` and two refusal cases.
 * PR #1943, when it lands on top of this, adds `RuntimeExceptionMaking.WrappedNonException`,
   whose `ret` must pass `IlThrow` (`IL_Throw` raises the wrapper from the `throw`; the match on the
   DU forces the decision), and a `RaisedAgainFromCaller` re-raise, which re-reads the token and so
