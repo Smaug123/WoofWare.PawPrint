@@ -133,6 +133,16 @@ type internal CallSite =
     /// call, so what the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
 
+/// A query of types that the JIT compiles to what the types decide, making none of its calls
+/// (`Assumption.JitOptimises`).
+[<RequireQualifiedAccess>]
+type internal TypeQuery =
+    /// Whether this type is a value type: `typeof(X).IsValueType`.
+    | IsValueType of SpelledType
+    /// Whether these two types are the same type where `equality`, and whether they are different
+    /// types otherwise: `typeof(X) == typeof(Y)`, or `!=`.
+    | Identity of SpelledType * SpelledType * equality : bool
+
 /// What a `brtrue` or `brfalse` tests of the value it pops.
 [<RequireQualifiedAccess>]
 type internal Tested =
@@ -141,9 +151,8 @@ type internal Tested =
     | References of Set<SpelledObject>
     /// Whether it is zero, for a value that is one of these integers.
     | Integers of Set<SpelledInteger>
-    /// Whether it is zero, for whether this type is a value type: what the JIT compiles
-    /// `typeof(X).IsValueType` to (`Assumption.JitOptimises`).
-    | ValueTypeQuery of SpelledType
+    /// Whether it is zero, for the answer to this query.
+    | Types of TypeQuery
 
 /// What a body's conditional branches test, from which an instance of the body works out which of
 /// its offsets a run may execute (`ControlFlow.mayExecute`).
@@ -1428,7 +1437,9 @@ module EscapeAnalysis =
 
     /// Does every type reference that instantiating a spelling reads name a type? As
     /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
-    /// TypeSystem instantiates although the JIT binds none of them.
+    /// TypeSystem instantiates although the JIT binds none of them. False too where a type
+    /// argument carries a custom modifier, which TypeSystem cannot instantiate
+    /// (`TypeConcretization.carriesCustomModifier`).
     let rec private concretizable
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -1446,6 +1457,10 @@ module EscapeAnalysis =
 
         match spelling with
         | TypeDefn.FunctionPointer signature -> all state (signatureTypes signature)
+        | TypeDefn.GenericInstantiation (_, arguments) when
+            Seq.exists TypeConcretization.carriesCustomModifier arguments
+            ->
+            state, false
         | TypeDefn.GenericInstantiation (root, arguments) -> all state (Seq.append [ root ] arguments)
         | TypeDefn.Array (element, _)
         | TypeDefn.OneDimensionalArrayLowerBoundZero element
@@ -2155,8 +2170,8 @@ module EscapeAnalysis =
             match tested with
             | Tested.References objects -> objects |> Seq.collect isObject
             | Tested.Integers integers -> integers |> Seq.collect isNonZero
-            // Only the instance's type arguments decide it (`valueTypeQueryIsKnown`).
-            | Tested.ValueTypeQuery _ -> Seq.singleton None
+            // Only the instance's type arguments decide it (`typeQueryIsKnown`).
+            | Tested.Types _ -> Seq.singleton None
 
         match known |> Seq.distinct |> List.ofSeq with
         | [ known ] -> known
@@ -3041,16 +3056,21 @@ module EscapeAnalysis =
             )
             |> Map.ofSeq
 
-        // Where the JIT compiles `typeof(X).IsValueType` to a constant (`Assumption.JitOptimises`):
-        // `ldtoken X`, then calls of `Type.GetTypeFromHandle` and `Type.get_IsValueType`, which
-        // `impIntrinsic` (importercalls.cpp) folds while the getter's operand is still the
-        // `GetTypeFromHandle` it expanded, so where no branch lands between them. Neither call is
-        // made. By the getter's offset: the indices of both calls,
-        // and X as the body spells it, where it does. The JIT folds them only where it makes its
+        // Where the JIT compiles a query of `typeof`s to what their types decide
+        // (`Assumption.JitOptimises`), and makes none of its calls:
+        //   - `typeof(X).IsValueType`, `ldtoken X` then calls of `Type.GetTypeFromHandle` and
+        //     `Type.get_IsValueType`, to a constant;
+        //   - `typeof(X) == typeof(Y)`, `ldtoken X`, a call of `GetTypeFromHandle`, `ldtoken Y`,
+        //     another, then a call of `Type.op_Equality`, or `op_Inequality` for `!=`, to a
+        //     comparison of X's and Y's handles (`gtFoldTypeCompare`, gentree.cpp).
+        // `impIntrinsic` (importercalls.cpp) folds them while the operands are still the
+        // `GetTypeFromHandle`s it expanded, so where no branch lands between the instructions. By
+        // the offset of the query's last call: the indices of its calls, and what a branch on it
+        // tests, where the body spells its types. The JIT folds them only where it makes its
         // tier-0 optimisations: not in a method marked `NoOptimization` or one whose assembly
         // disables optimisation, nor in one that calls `StubHelpers.NextCallReturnAddress`, where
         // it expands only the intrinsics it must.
-        let state, valueTypeQueries =
+        let state, typeQueries =
             let typeType = corelibType state "System" "Type"
 
             let calledMethod (index : int) : (DumpedAssembly * MethodKey) option =
@@ -3091,40 +3111,91 @@ module EscapeAnalysis =
                        | None -> true
                    )
 
-            // No protected block or handler starts or ends between the three instructions either:
-            // each falls through to the next, and CoreCLR rejects IL that falls into or out of one.
-            let landedOn = ControlFlow.landedOn body
-
-            if not optimised then
-                state, Map.empty
-            else
-                ((state, Map.empty), [ 0 .. ops.Length - 3 ])
-                ||> List.fold (fun (state, queries) index ->
+            // The type token of a `typeof`, `ldtoken` then a call of `GetTypeFromHandle`, at `index`.
+            let typeofAt (index : int) : MetadataToken option =
+                if index + 1 >= ops.Length then
+                    None
+                else
                     match fst ops.[index] with
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, MetadataOperand.FromMetadata token) when
                         not (unbound.Contains index)
                         && callsTypeIntrinsic (index + 1) "GetTypeFromHandle"
-                        && callsTypeIntrinsic (index + 2) "get_IsValueType"
-                        && not (landedOn.Contains (snd ops.[index + 1]))
-                        && not (landedOn.Contains (snd ops.[index + 2]))
                         ->
-                        let state, spelled = spelledType state assembly token.Token
+                        Some token.Token
+                    | _ -> None
 
-                        let spelled =
-                            spelled
-                            |> Option.map (fun (spelling, spelledIn) ->
-                                {
-                                    Type = spelling
-                                    SpelledIn = spelledIn
-                                    InBodyContext = true
-                                }
-                            )
+            let spelledOf
+                (state : EscapeAnalysisState)
+                (token : MetadataToken)
+                : EscapeAnalysisState * SpelledType option
+                =
+                let state, spelled = spelledType state assembly token
 
-                        state, Map.add (snd ops.[index + 2]) ([ index + 1 ; index + 2 ], spelled) queries
+                state,
+                spelled
+                |> Option.map (fun (spelling, spelledIn) ->
+                    {
+                        Type = spelling
+                        SpelledIn = spelledIn
+                        InBodyContext = true
+                    }
+                )
+
+            // No protected block or handler starts or ends between the instructions either: each
+            // falls through to the next, and CoreCLR rejects IL that falls into or out of one.
+            let landedOn = ControlFlow.landedOn body
+
+            // Whether a branch lands on any instruction after the one at `index`, up to `last`.
+            let landsAfter (index : int) (last : int) : bool =
+                [ index + 1 .. last ] |> List.exists (fun i -> landedOn.Contains (snd ops.[i]))
+
+            if not optimised then
+                state, Map.empty
+            else
+                ((state, Map.empty), [ 0 .. ops.Length - 1 ])
+                ||> List.fold (fun (state, queries) index ->
+                    match typeofAt index with
+                    | None -> state, queries
+                    | Some x ->
+
+                    if index + 2 < ops.Length && callsTypeIntrinsic (index + 2) "get_IsValueType" then
+                        if landsAfter index (index + 2) then
+                            state, queries
+                        else
+                            let state, x = spelledOf state x
+
+                            state,
+                            Map.add
+                                (snd ops.[index + 2])
+                                ([ index + 1 ; index + 2 ], Option.map (TypeQuery.IsValueType >> Tested.Types) x)
+                                queries
+                    else
+
+                    let equality =
+                        if index + 4 >= ops.Length then
+                            None
+                        elif callsTypeIntrinsic (index + 4) "op_Equality" then
+                            Some true
+                        elif callsTypeIntrinsic (index + 4) "op_Inequality" then
+                            Some false
+                        else
+                            None
+
+                    match typeofAt (index + 2), equality with
+                    | Some y, Some equality when not (landsAfter index (index + 4)) ->
+                        let state, x = spelledOf state x
+                        let state, y = spelledOf state y
+
+                        state,
+                        Map.add
+                            (snd ops.[index + 4])
+                            ([ index + 1 ; index + 3 ; index + 4 ],
+                             Option.map2 (fun x y -> Tested.Types (TypeQuery.Identity (x, y, equality))) x y)
+                            queries
                     | _ -> state, queries
                 )
 
-        let folded = valueTypeQueries |> Map.values |> Seq.collect fst |> Set.ofSeq
+        let folded = typeQueries |> Map.values |> Seq.collect fst |> Set.ofSeq
 
         // What each `brtrue` or `brfalse` tests, by the offset of the instruction before it, which
         // pushes the value: integers, or objects each spelled as a reference. A branch on a value
@@ -3137,8 +3208,8 @@ module EscapeAnalysis =
                 | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _ | UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _) when
                     not (capabilities.ContainsKey beforeOffset)
                     ->
-                    match Map.tryFind beforeOffset valueTypeQueries with
-                    | Some (_, Some spelled) -> state, Map.add beforeOffset (Tested.ValueTypeQuery spelled) tested
+                    match Map.tryFind beforeOffset typeQueries with
+                    | Some (_, Some query) -> state, Map.add beforeOffset query tested
                     | Some (_, None) -> state, tested
                     | None ->
 
@@ -3273,7 +3344,7 @@ module EscapeAnalysis =
                     match tested with
                     | Tested.References objects -> yield! ofValue (StackValue.Objects objects)
                     | Tested.Integers integers -> yield! ofValue (StackValue.Integers integers)
-                    | Tested.ValueTypeQuery _ -> ()
+                    | Tested.Types _ -> ()
             ]
             |> Set.ofList
 
@@ -3283,7 +3354,7 @@ module EscapeAnalysis =
             Opaque = opaque
             // Were the JIT not to fold a query, its calls would run there.
             Assumed =
-                valueTypeQueries
+                typeQueries
                 |> Map.keys
                 |> Seq.filter executed.Contains
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
@@ -3800,22 +3871,50 @@ module EscapeAnalysis =
             },
             facts
 
-    /// Whether the type `spelled` is a value type, which a `Tested.ValueTypeQuery` tests, in
-    /// `instance`; `None` where the instance does not decide its type, or it is not a class or
-    /// struct.
-    let private valueTypeQueryIsKnown
+    /// The answer to `query` in `instance`; `None` where the instance does not decide its types,
+    /// or where whether a type is a value type is asked of one that is not a class or struct.
+    let private typeQueryIsKnown
         (state : EscapeAnalysisState)
         (instance : MethodInstance)
-        (spelled : SpelledType)
+        (query : TypeQuery)
         : EscapeAnalysisState * bool option
         =
-        match concretizeIn state instance.Arguments spelled.Type spelled.SpelledIn with
-        | state, Some (ConcreteTypeHandle.Concrete _ as handle) ->
-            match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
-            | Some (_, ty) ->
-                state, Some (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
-            | None -> failwith $"Concrete type handle %O{handle} is not registered"
-        | state, _ -> state, None
+        let concretized (state : EscapeAnalysisState) (spelled : SpelledType) =
+            concretizeIn state instance.Arguments spelled.Type spelled.SpelledIn
+
+        // Two handles with no function pointer type in them, type arguments included, are the same
+        // handle exactly where they are the same type. Types with one are left undecided: which
+        // parts of a function pointer's signature CoreCLR's type identity tells apart is not
+        // modelled here.
+        let rec named (state : EscapeAnalysisState) (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+                | Some (concrete, _) -> Seq.forall (named state) concrete.Generics
+                | None -> failwith $"Concrete type handle %O{handle} is not registered"
+            | ConcreteTypeHandle.Byref inner
+            | ConcreteTypeHandle.Pointer inner
+            | ConcreteTypeHandle.OneDimArrayZero inner
+            | ConcreteTypeHandle.Array (inner, _) -> named state inner
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+
+        match query with
+        | TypeQuery.IsValueType spelled ->
+            match concretized state spelled with
+            | state, Some (ConcreteTypeHandle.Concrete _ as handle) ->
+                match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+                | Some (_, ty) ->
+                    state, Some (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
+                | None -> failwith $"Concrete type handle %O{handle} is not registered"
+            | state, _ -> state, None
+        | TypeQuery.Identity (first, second, equality) ->
+            let state, first = concretized state first
+            let state, second = concretized state second
+
+            match first, second with
+            | Some first, Some second when List.forall (named state) [ first ; second ] ->
+                state, Some ((first = second) = equality)
+            | _ -> state, None
 
     /// The facts of `instance`: those of its definition, less what a run of the instance cannot
     /// reach, given which of the values its callers pass are null or zero (`MethodInstance.Passed`),
@@ -3839,7 +3938,7 @@ module EscapeAnalysis =
                         ||> List.fold (fun (state, decided) (offset, tested) ->
                             let state, known =
                                 match tested with
-                                | Tested.ValueTypeQuery spelled -> valueTypeQueryIsKnown state instance spelled
+                                | Tested.Types query -> typeQueryIsKnown state instance query
                                 | Tested.References _
                                 | Tested.Integers _ -> state, testIsKnown instance.Passed tested
 

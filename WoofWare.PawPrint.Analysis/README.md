@@ -77,7 +77,11 @@ method) may add more:
   compiles it to: `ldtoken X`, then calls of `Type.GetTypeFromHandle` and `Type.get_IsValueType`
   that no branch lands between, call neither method, and a
   `brtrue` or `brfalse` straight after follows only the way the answer goes, where the instance
-  says what `X` is;
+  says what `X` is. So too `typeof(X) == typeof(Y)`, or `!=`, which the JIT compiles to a
+  comparison of the two types' handles: `ldtoken X`, a call of `GetTypeFromHandle`, `ldtoken Y`,
+  another, then a call of `Type.op_Equality` or `op_Inequality`, which no branch lands between,
+  call none of those methods, and a branch straight after follows only the way the answer goes,
+  where the instance says what both types are;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
@@ -258,6 +262,8 @@ assumptions above. There are four so far:
   tier 0, wherever neither the method nor its assembly says otherwise. Then it compiles
   `typeof(X).IsValueType` to a constant, and calls neither `Type.GetTypeFromHandle` nor the getter,
   whose own code walks the type's base types through native code the analysis does not see into.
+  Likewise the JIT compares `typeof(X) == typeof(Y)` by the two types' handles, and calls neither
+  `GetTypeFromHandle` nor the operator.
   The method says otherwise when it is marked `MethodImplOptions.NoOptimization`, and the assembly
   when its `DebuggableAttribute` disables optimisation, as a Debug build's does
   (`Debuggable.allowsJitOptimisation`); the analysis follows the calls there whatever the caller
