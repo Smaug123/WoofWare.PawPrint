@@ -31,28 +31,46 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestSignalDispatch =
 
-    let private corelib : DumpedAssembly =
-        let corelibPath = HostImage.coreLibPath
+    /// A CoreLib, and what a machine on it is built from.
+    type private CoreLibFixture =
+        {
+            CoreLib : DumpedAssembly
+            BaseClassTypes : BaseClassTypes<DumpedAssembly>
+            ConcreteTypes : AllConcreteTypes
+        }
+
+    let private fixtureOn (corelibPath : string) : CoreLibFixture =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory corelibPath
+        let corelib = Assembly.readFile loggerFactory corelibPath
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        {
+            CoreLib = corelib
+            BaseClassTypes = baseClassTypes
+            ConcreteTypes =
+                Corelib.concretizeAll (LoadedAssemblies.ofAssemblies [ corelib ]) baseClassTypes AllConcreteTypes.Empty
+        }
+
+    /// The fixture most tests here use: the test host's own CoreLib.
+    let private hostFixture : CoreLibFixture = fixtureOn HostImage.coreLibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        BaseClassTypes.ofCorelib corelib
+        hostFixture.BaseClassTypes
 
-    let private concreteTypes : AllConcreteTypes =
-        Corelib.concretizeAll (LoadedAssemblies.ofAssemblies [ corelib ]) baseClassTypes AllConcreteTypes.Empty
-
-    let private baseState () : IlMachineState =
+    let private baseStateOf (fixture : CoreLibFixture) : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+        let initialState =
+            IlMachineState.initial loggerFactory ImmutableArray.Empty fixture.CoreLib
 
         { initialState with
             TypeSystem =
                 { initialState.TypeSystem with
-                    ConcreteTypes = concreteTypes
+                    ConcreteTypes = fixture.ConcreteTypes
                 }
         }
+
+    let private baseState () : IlMachineState = baseStateOf hostFixture
 
     /// Find a static method on the given top-level corelib type by name and
     /// parameter count, then concretize it. The (name, arity) filter is
@@ -60,6 +78,7 @@ module TestSignalDispatch =
     /// many overloads, and similarly for `Math.Max(int, int)` if a future
     /// caller swaps it in. Fails loudly if zero or more than one match.
     let private concretizeStaticByArity
+        (fixture : CoreLibFixture)
         (state : IlMachineState)
         (typeNamespace : string)
         (typeName : string)
@@ -70,7 +89,7 @@ module TestSignalDispatch =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let typeDef =
-            corelib.TryGetTopLevelTypeDef typeNamespace typeName
+            fixture.CoreLib.TryGetTopLevelTypeDef typeNamespace typeName
             |> Option.defaultWith (fun () -> failwith $"%s{typeNamespace}.%s{typeName} not found in corelib")
 
         let rawMethod =
@@ -88,11 +107,11 @@ module TestSignalDispatch =
         let state, method, _declaringType =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
-                baseClassTypes
+                fixture.BaseClassTypes
                 ImmutableArray.Empty
                 rawMethod
                 None
-                corelib.DefinitionFullName
+                fixture.CoreLib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -103,17 +122,27 @@ module TestSignalDispatch =
     /// such methods in corelib; its parameter types don't match the real
     /// handler signature `(int, PosixSignal)` but the dispatch validator is
     /// deliberately loose on parameter types.
-    let private installCompareAsHandler (state : IlMachineState) : IlMachineState * SignalHandler =
-        let state, method = concretizeStaticByArity state "System" "String" "Compare" 2
+    let private installCompareAsHandler
+        (fixture : CoreLibFixture)
+        (state : IlMachineState)
+        : IlMachineState * SignalHandler
+        =
+        let state, method =
+            concretizeStaticByArity fixture state "System" "String" "Compare" 2
+
         let handler = SignalHandler.ofMethodInfo method
         state, handler
 
-    /// A fresh machine on `platform`, with System.Native's signal handling
+    /// A fresh machine on `fixture`'s CoreLib and `platform`, with System.Native's signal handling
     /// initialised as the P/Invoke does it (a signal pipe and a parked
     /// dispatcher) and a handler installed: the common preamble for the tests
     /// that deliver a signal.
-    let private preparedStateOn (platform : SimulatedUnixPlatform) : IlMachineState * ThreadId * SignalHandler =
-        let state = baseState ()
+    let private preparedStateWith
+        (fixture : CoreLibFixture)
+        (platform : SimulatedUnixPlatform)
+        : IlMachineState * ThreadId * SignalHandler
+        =
+        let state = baseStateOf fixture
 
         // The platform is fixed at construction, so the fresh state's POSIX
         // half, untouched so far, is swapped for one made on `platform` before
@@ -133,7 +162,7 @@ module TestSignalDispatch =
             PosixSignalShim.signalThread state.Kernel.PosixSignalShim
             |> Option.defaultWith (fun () -> failwith "initialisation recorded no dispatcher")
 
-        let state, handler = installCompareAsHandler state
+        let state, handler = installCompareAsHandler fixture state
 
         let state =
             state.MapKernel (fun kernel ->
@@ -143,6 +172,10 @@ module TestSignalDispatch =
             )
 
         state, dispatcher, handler
+
+    /// `preparedStateWith` on the test host's CoreLib.
+    let private preparedStateOn (platform : SimulatedUnixPlatform) : IlMachineState * ThreadId * SignalHandler =
+        preparedStateWith hostFixture platform
 
     let private preparedState () : IlMachineState * ThreadId * SignalHandler =
         preparedStateOn SimulatedUnixPlatform.linuxX64
@@ -248,11 +281,13 @@ module TestSignalDispatch =
             ThreadState = state.ThreadState |> Map.add (ThreadId 99) (stubThreadState status)
         }
 
-    let private poll (state : IlMachineState) : IlMachineState =
-        match SignalDispatch.poll baseClassTypes state with
+    let private pollOn (fixture : CoreLibFixture) (state : IlMachineState) : IlMachineState =
+        match SignalDispatch.poll (snd (LoggerFactory.makeTest ())) fixture.BaseClassTypes state with
         | SignalPoll.Continues state -> state
         | SignalPoll.ProcessKilled (_, ended) ->
             failwith $"the poll killed the process: %O{EndedProcess.termination ended}"
+
+    let private poll (state : IlMachineState) : IlMachineState = pollOn hostFixture state
 
     let private pipeOf (state : IlMachineState) : SignalPipe =
         PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
@@ -667,6 +702,97 @@ module TestSignalDispatch =
         let gen = Gen.elements registrable |> Gen.listOf |> Gen.map (List.truncate 12)
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 100, Prop.forAll (Arb.fromGen gen) property)
+
+    /// What `thread`'s own slot of .NET 11's `ManagedThreadId.t_currentManagedThreadId` holds.
+    let private currentManagedThreadIdSlot
+        (fixture : CoreLibFixture)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : CliType option
+        =
+        let managedThreadId =
+            fixture.CoreLib.TryGetTopLevelTypeDef "System.Threading" "ManagedThreadId"
+            |> Option.defaultWith (fun () -> failwith "this CoreLib declares no System.Threading.ManagedThreadId")
+
+        let field =
+            managedThreadId.Fields
+            |> List.filter (fun field -> field.Name = "t_currentManagedThreadId")
+            |> List.exactlyOne
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, declaringType =
+            LoadedTypeInfo.typeInfoToTypeDefn' fixture.BaseClassTypes state.TypeSystem._LoadedAssemblies managedThreadId
+            |> IlMachineTypeResolution.concretizeType
+                loggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.CoreLib.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        IlMachineState.getStatic
+            (StaticOwner.forField thread field)
+            declaringType
+            (ComparableFieldDefinitionHandle.Make field.Handle)
+            state
+
+    let dispatcherRuntimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof dispatcherRuntimes)>]
+    let ``the dispatcher takes a managed thread id at its first callback, and keeps it`` (runtime : EmulatedRuntime) =
+        // CoreCLR attaches the native thread that runs `SignalHandlerLoop` when it first calls
+        // the managed callback (`JIT_ReversePInvokeEnterRare` sets the thread up): only then does
+        // the thread take a managed thread id, and, on .NET 11, `t_currentManagedThreadId` hold it.
+        let fixture = fixtureOn (FrameworkUnderTest.requireCoreLibPathOf runtime)
+
+        match runtime with
+        | EmulatedRuntime.Net10 ->
+            fixture.CoreLib.TryGetTopLevelTypeDef "System.Threading" "ManagedThreadId"
+            |> Option.isNone
+            |> shouldEqual true
+        | EmulatedRuntime.Net11 -> ()
+
+        let property (sent : Signal list) =
+            let state, dispatcher, _ = preparedStateWith fixture SimulatedUnixPlatform.linuxX64
+
+            state.ManagedThreadObjects.ContainsKey dispatcher |> shouldEqual false
+            let attachedId = state.NextManagedThreadId
+
+            let state =
+                (state, List.distinct sent)
+                ||> List.fold (fun state signal -> register signal state)
+
+            let rec deliver (remaining : Signal list) (state : IlMachineState) : unit =
+                match remaining with
+                | [] -> ()
+                | signal :: remaining ->
+                    let state = state |> sendToProcess signal |> pollOn fixture
+
+                    (state.ThreadState |> Map.find dispatcher).Status
+                    |> shouldEqual ThreadStatus.Runnable
+
+                    IlMachineState.getCurrentManagedThreadId dispatcher state
+                    |> shouldEqual attachedId
+
+                    state.NextManagedThreadId |> shouldEqual (attachedId + 1)
+
+                    match runtime with
+                    | EmulatedRuntime.Net10 -> ()
+                    | EmulatedRuntime.Net11 ->
+                        currentManagedThreadIdSlot fixture dispatcher state
+                        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 attachedId)))
+
+                    match finishCallback dispatcher 1 state with
+                    | SignalPoll.Continues state -> deliver remaining (pollOn fixture state)
+                    | SignalPoll.ProcessKilled (_, ended) -> failwith $"killed: %O{EndedProcess.termination ended}"
+
+            deliver sent state
+
+        let gen =
+            Gen.elements registrable |> Gen.nonEmptyListOf |> Gen.map (List.truncate 6)
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 20, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
     let ``signals delivered at one return to user mode reach the pipe in the reverse of the order they were taken``
@@ -1321,7 +1447,7 @@ module TestSignalDispatch =
             |> unregister Signal.SIGTERM
             |> withStatus dispatcher ThreadStatus.Parked
 
-        match SignalDispatch.poll baseClassTypes written with
+        match SignalDispatch.poll (snd (LoggerFactory.makeTest ())) baseClassTypes written with
         | SignalPoll.ProcessKilled (_, ended) ->
             EndedProcess.termination ended
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGTERM, false))
@@ -1536,7 +1662,7 @@ module TestSignalDispatch =
         let state, _dispatcher, _ = preparedState ()
 
         let state, method =
-            concretizeStaticByArity state "System" "String" "IsNullOrEmpty" 1
+            concretizeStaticByArity hostFixture state "System" "String" "IsNullOrEmpty" 1
 
         let state =
             state.MapKernel (fun kernel ->
@@ -1649,7 +1775,7 @@ module TestSignalDispatch =
                 ))
             |> sendToProcess sigill
 
-        match SignalDispatch.poll baseClassTypes state with
+        match SignalDispatch.poll (snd (LoggerFactory.makeTest ())) baseClassTypes state with
         | SignalPoll.ProcessKilled (_, ended) ->
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled (signal, _) -> signal |> shouldEqual Signal.SIGABRT

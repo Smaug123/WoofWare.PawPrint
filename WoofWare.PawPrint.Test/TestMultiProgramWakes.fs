@@ -421,7 +421,7 @@ public static class Program
 
             let before = waiters driver
 
-            match MultiProgram.advance driver with
+            match MultiProgram.advance (snd (LoggerFactory.makeTest ())) driver with
             | Advanced.Settled (MultiStepOutcome.Deadlocked (_, stuck)) -> failwith $"%A{case} deadlocked: %A{stuck}"
             | Advanced.Settled other -> failwith $"%A{case}: a preamble ended a program: %A{other}"
             | Advanced.Decide (advanced, tick) ->

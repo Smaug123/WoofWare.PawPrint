@@ -784,9 +784,12 @@ mutation-testing skill applies to each table/classifier they introduce.
      that arrives while another is inflating the same object spins, yielding, as on CoreCLR's
      sync-block spin lock (`NativeHandlerResult.YieldedRetainingFrame`). Contended locks,
      `Monitor.Wait` and `Pulse` run. Past it: `Task` waits reach the thread pool's
-     `GC.GetMemoryInfo` (`gcMemoryInfo`), the linux-x64 CoreLib's `FileSystemWatcher` reaches a
-     runtime-async method, and PawPrint's signal dispatcher thread, which the VM would attach on
-     its first callback, has no `t_currentManagedThreadId` (`signalDispatcherThreadId`);
+     `GC.GetMemoryInfo` (`gcMemoryInfo`), and the linux-x64 CoreLib's `FileSystemWatcher` reaches a
+     runtime-async method;
+   * **(landed)** the signal dispatcher thread's managed id: CoreCLR attaches the native thread
+     that runs `SignalHandlerLoop` when it first calls the managed callback, giving it a managed
+     thread id and its `t_currentManagedThreadId`, and so does PawPrint. Without it the
+     dispatcher's `lock (s_registrations)` took the thin lock for no owner;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
