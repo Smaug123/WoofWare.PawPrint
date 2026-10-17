@@ -5173,6 +5173,9 @@ module TestImpureCases =
                 ]
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
             yield!
+                [ "SignalRetryKeepsShimCopies.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
+            yield!
                 [ "LibcSigsuspendDarwin.cs" ; "LibcSigsuspendLinux.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.fatLock)
             yield!

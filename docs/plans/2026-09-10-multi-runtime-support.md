@@ -771,7 +771,11 @@ mutation-testing skill applies to each table/classifier they introduce.
      the `Thread*` is a pointer to a VM local holding the thread. Past it the net11 leg measured
      the fat lock (`fatLock`), which most threaded guests and every `Task` wait reach, and a
      `clt.un` between two byte views of one stackalloc block in `UnicodeEncoding.GetBytes`
-     (`stackallocByteOrder`), which sockets, pipes and `EventSource` reach;
+     (`stackallocByteOrder`), which sockets, pipes and `EventSource` reach. On the Linux CoreLib,
+     which a macOS host does not run, `LowLevelLock` and `LowLevelLifoSemaphore` block on a futex
+     (`SystemNative_LowLevelFutex_*`, `linuxFutex`), where Darwin's block on `LowLevelMonitor`.
+     WoofWare.PosixKernel leaves futex waits to its client for now, and the plan is to model them
+     there (#1726) rather than as another wait of PawPrint's own;
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which

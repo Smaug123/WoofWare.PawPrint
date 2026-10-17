@@ -429,7 +429,12 @@ module TestConcurrencyBugs =
 
     [<TestCaseSource(nameof scenarios)>]
     let ``PCT exhibits the bad interleaving`` (scenario : Scenario) : unit =
-        if scenario.SourceName = "InvertedMonitorDeadlock.cs" then
-            Net11Frontier.park Net11Frontier.fatLock
+        match scenario.SourceName with
+        | "InvertedMonitorDeadlock.cs" -> Net11Frontier.park Net11Frontier.fatLock
+        | "QueueIsNotThreadSafe.cs"
+        | "LostUpdate.cs"
+        | "TwoCountersSeparated.cs"
+        | "JustABoolNotAMutex.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
+        | _ -> ()
 
         demonstrate scenario

@@ -164,6 +164,12 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
             yield!
                 [
+                    "CancellationTokenRegistrationDisposeCrossThread.cs"
+                    "ThreadStartFlowsAsyncLocal.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
+            yield!
+                [
                     "MonitorPulseWait.cs"
                     "MonitorPulseWaitOnArray.cs"
                     "MonitorTryEnterTimeout.cs"

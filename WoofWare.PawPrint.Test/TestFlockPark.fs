@@ -314,6 +314,8 @@ class Program
 
     [<Test>]
     let ``a release wakes every waiter, not one chosen by this interpreter`` () : unit =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
         // The decision this sweep takes *against* its socket neighbour, which refuses to wake
         // several waiters at all: epoll's wait queue is exclusive, so a real edge wakes exactly
         // one by park order, and PawPrint keeps no state to reproduce that. `flock` has no
@@ -370,6 +372,8 @@ class Program
 
     [<Test>]
     let ``two waiters through one descriptor wait for the very same lock`` () : unit =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
         // The `flock` waiters that a sweep cannot tell apart. Every other multi-waiter guest here
         // opens a description per thread, deliberately — conflicts are between descriptions, so
         // two threads sharing one would not contend with each other at all. That makes their wake

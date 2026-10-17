@@ -149,6 +149,8 @@ module TestRaces =
 
     [<Test>]
     let ``ReadWriteRace under PCT covers every legal outcome`` () : unit =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
         // The headline schedule-fuzzing claim: PCT, swept across a fixed
         // seed range, must enumerate *exactly* the legal outcome set —
         // neither missing one (we'd lose a class of real-world bugs) nor
@@ -225,6 +227,8 @@ module TestRaces =
 
     [<Test>]
     let ``NewobjCctorRace under PCT covers every legal outcome`` () : unit =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
         // Unlike the ReadWriteRace sweep this is a single-element set, so the
         // equality is really "no seed ever sees a partially-initialised type".
         // The sweep is what makes that a claim about the blocking *and* the

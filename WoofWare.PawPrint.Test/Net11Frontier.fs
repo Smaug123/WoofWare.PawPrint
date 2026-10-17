@@ -29,6 +29,10 @@ module Net11Frontier =
     let inlineArrayOfReferences : string =
         "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."
 
+    /// .NET 11's Linux CoreLib blocks on a futex.
+    let linuxFutex : string =
+        "On .NET 11's Linux CoreLib, `LowLevelLock` and `LowLevelLifoSemaphore` block through `LowLevelThreadBlocker`, which calls the `SystemNative_LowLevelFutex_WaitOnAddress` P/Invoke that PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_LowLevelFutex_WaitOnAddress)\". The Darwin CoreLib blocks on `LowLevelMonitor` there instead, so these pass on a macOS host; measured on CI's Linux leg on 2026-10-17. Un-park when the futex wait runs."
+
     /// `UnicodeEncoding.GetBytes` orders two byte views of one stackalloc block.
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
