@@ -2,11 +2,76 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
+/// A layout of `System.GCMemoryInfoData` that `GC.GetMemoryInfo`'s native filler is known to write.
+/// CoreCLR's `GCInterface::GetMemoryInfo` (comutilnative.cpp) writes every instance field of the
+/// object through a native mirror of its layout (comutilnative.h), so the managed declaration and
+/// the VM change together.
+[<RequireQualifiedAccess>]
+type GcMemoryInfoDataLayout =
+    /// .NET 10's: each generation's `GCGenerationInfo`, and each pause duration, is a field of its
+    /// own (`_generationInfo0` to `_generationInfo4`, `_pauseDuration0` and `_pauseDuration1`).
+    | SeparateFields
+    /// .NET 11's: `InlineArray5<GCGenerationInfo> _generationInfo` and
+    /// `InlineArray2<TimeSpan> _pauseDurations`.
+    | InlineArrays
+
+[<RequireQualifiedAccess>]
+module GcMemoryInfoDataLayout =
+    /// Every layout.
+    let known : GcMemoryInfoDataLayout list =
+        [ GcMemoryInfoDataLayout.SeparateFields ; GcMemoryInfoDataLayout.InlineArrays ]
+
+    let private scalarFieldNames : string list =
+        [
+            "_highMemoryLoadThresholdBytes"
+            "_totalAvailableMemoryBytes"
+            "_memoryLoadBytes"
+            "_heapSizeBytes"
+            "_fragmentedBytes"
+            "_totalCommittedBytes"
+            "_promotedBytes"
+            "_pinnedObjectsCount"
+            "_finalizationPendingCount"
+            "_index"
+            "_generation"
+            "_pauseTimePercentage"
+            "_compacted"
+            "_concurrent"
+        ]
+
+    /// The instance fields `GCMemoryInfoData` declares in `layout`, in declaration order.
+    let fieldNames (layout : GcMemoryInfoDataLayout) : string list =
+        match layout with
+        | GcMemoryInfoDataLayout.SeparateFields ->
+            scalarFieldNames
+            @ [
+                "_generationInfo0"
+                "_generationInfo1"
+                "_generationInfo2"
+                "_generationInfo3"
+                "_generationInfo4"
+                "_pauseDuration0"
+                "_pauseDuration1"
+            ]
+        | GcMemoryInfoDataLayout.InlineArrays -> scalarFieldNames @ [ "_generationInfo" ; "_pauseDurations" ]
+
+    /// The layout whose instance fields are `declared`, in declaration order, if there is one.
+    let classify (declared : string list) : GcMemoryInfoDataLayout option =
+        known |> List.tryFind (fun layout -> fieldNames layout = declared)
+
+    /// Each known layout's fields, for a refusal to name.
+    let describeKnown : string =
+        known
+        |> List.map (fun layout ->
+            let fields = String.concat ", " (fieldNames layout)
+            $"%O{layout} (%s{fields})"
+        )
+        |> String.concat "; "
+
 [<RequireQualifiedAccess>]
 module NativeGc =
-    /// Zero out a field whose declared type is itself a value type (`GCGenerationInfo`,
-    /// `TimeSpan`) rather than a primitive.
-    let private zeroStructField
+    /// Write the zero of its declared type into one of `addr`'s instance fields.
+    let private zeroField
         (ctx : NativeCallContext)
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
@@ -77,14 +142,6 @@ module NativeGc =
         | RuntimeTypeHandleTarget.FunctionPointer _ ->
             failwith $"%s{operation}: expected a closed SZ array type handle, got %O{target}"
 
-    let private zeroInt64 : CliType =
-        CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
-
-    let private zeroInt32 : CliType = CliType.Numeric (CliNumericType.Int32 0)
-
-    let private zeroByte : CliType =
-        CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
-
     /// `System.GC.GetMemoryInfo(GCMemoryInfoData data, int kind)`: the InternalCall behind
     /// the public `GC.GetGCMemoryInfo(GCKind)`. CoreCLR (comutilnative.cpp:585,
     /// GCInterface::GetMemoryInfo) takes the address of every field of `data` and hands them to
@@ -131,18 +188,9 @@ module NativeGc =
     /// If a real need materialises, add that modelling there rather than growing an ad hoc
     /// constant in this handler.
     ///
-    /// Known limitation, tracked as issue #729. The scalar fields written here are all readable,
-    /// but `GCMemoryInfo`'s two *span-valued* properties are not usable past index 0.
-    /// `GenerationInfoAsSpan`/`PauseDurationsAsSpan` are built with
-    /// `MemoryMarshal.CreateReadOnlySpan(ref _generationInfo0, 5)` — a byref to the first of a run
-    /// of sibling fields, walked forward by `sizeof(element)` on the assumption that
-    /// `[StructLayout(Sequential)]` made them contiguous. PawPrint stores each field as its own
-    /// cell, so index 1 onwards walks off the end of the first cell and fails in
-    /// `IlMachineManagedByref.resolveCell`. That is a general "sibling fields are not contiguous"
-    /// gap rather than anything GC-specific — this handler is merely the first thing to make an
-    /// instance of it reachable — so it is deliberately not worked around here; fixing it in the
-    /// byref machinery would unblock every BCL type using the same idiom.
-    /// `sourcesPure/GCMemoryInfoSpanProperties.cs` pins it in the `unimplemented` set.
+    /// The VM writes every instance field of `data`, so this does too, each with the zero of its
+    /// declared type, in whichever `GcMemoryInfoDataLayout` the CoreLib declares; it refuses any
+    /// other layout, whose VM it has not read.
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -185,38 +233,30 @@ module NativeGc =
                 failwith
                     $"%s{operation}: kind %d{kind} is outside GCKind's [Any, Background] = [0, 3] range; the managed GetGCMemoryInfo wrapper validates this before reaching the InternalCall"
 
-            let state =
-                [
-                    "_highMemoryLoadThresholdBytes", zeroInt64
-                    "_totalAvailableMemoryBytes", zeroInt64
-                    "_memoryLoadBytes", zeroInt64
-                    "_heapSizeBytes", zeroInt64
-                    "_fragmentedBytes", zeroInt64
-                    "_totalCommittedBytes", zeroInt64
-                    "_promotedBytes", zeroInt64
-                    "_pinnedObjectsCount", zeroInt64
-                    "_finalizationPendingCount", zeroInt64
-                    "_index", zeroInt64
-                    "_generation", zeroInt32
-                    "_pauseTimePercentage", zeroInt32
-                    "_compacted", zeroByte
-                    "_concurrent", zeroByte
-                ]
-                |> List.fold
-                    (fun state (fieldName, value) -> IlMachineState.setOwnInstanceField dataAddr fieldName value state)
-                    state
+            let declared =
+                let obj = ManagedHeap.get dataAddr state.ManagedHeap
+
+                let _, declaringTypeInfo =
+                    IlMachineState.tryGetConcreteTypeInfo state obj.ConcreteType
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: GCMemoryInfoData's concrete type %O{obj.ConcreteType} has no TypeDef row"
+                    )
+
+                declaringTypeInfo.Fields
+                |> List.filter (fun field -> not field.IsStatic)
+                |> List.map (fun field -> field.Name)
+
+            let layout =
+                GcMemoryInfoDataLayout.classify declared
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: this CoreLib's GCMemoryInfoData declares the instance fields %A{declared}, which is no layout PawPrint knows the VM to write. Known: %s{GcMemoryInfoDataLayout.describeKnown}"
+                )
 
             let state =
-                [
-                    "_generationInfo0"
-                    "_generationInfo1"
-                    "_generationInfo2"
-                    "_generationInfo3"
-                    "_generationInfo4"
-                    "_pauseDuration0"
-                    "_pauseDuration1"
-                ]
-                |> List.fold (fun state fieldName -> zeroStructField ctx state dataAddr fieldName) state
+                GcMemoryInfoDataLayout.fieldNames layout
+                |> List.fold (fun state fieldName -> zeroField ctx state dataAddr fieldName) state
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

@@ -790,7 +790,10 @@ mutation-testing skill applies to each table/classifier they introduce.
      that runs `SignalHandlerLoop` when it first calls the managed callback, giving it a managed
      thread id and its `t_currentManagedThreadId`, and so does PawPrint. Without it the
      dispatcher's `lock (s_registrations)` took the thin lock for no owner;
-   * the `GCMemoryInfoData` layout;
+   * **(landed)** the `GCMemoryInfoData` layout: `GC.GetMemoryInfo`'s filler writes the layout
+     the CoreLib declares (`GcMemoryInfoDataLayout`), .NET 10's separate fields or .NET 11's
+     inline arrays, and refuses any other. The `Task` guests that stopped there run on the macOS
+     CoreLib, and on the Linux one most go on to the futex (`linuxFutex`);
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
      RC1's `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read. PawPrint

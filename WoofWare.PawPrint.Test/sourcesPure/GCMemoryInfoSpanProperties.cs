@@ -2,15 +2,14 @@ using System;
 
 // GCMemoryInfo's two span-valued properties, GenerationInfo and PauseDurations.
 //
-// CoreLib implements both with MemoryMarshal.CreateReadOnlySpan(ref _generationInfo0, 5) /
-// (ref _pauseDuration0, 2) -- i.e. it takes a byref to the *first* of a run of sibling fields
+// .NET 10's CoreLib implements both with MemoryMarshal.CreateReadOnlySpan(ref _generationInfo0, 5)
+// / (ref _pauseDuration0, 2) -- i.e. it takes a byref to the *first* of a run of sibling fields
 // and walks forward by sizeof(element), relying on [StructLayout(Sequential)] having laid them
 // out contiguously. PawPrint models a heap object as named field cells rather than a byte
 // block, so every index past 0 is an access that leaves the cell its byref is rooted at: the
 // byref access path has to recognise that a class field is a *view* into its object and serve
-// the read from the object. That is issue #729; without it this guest stops at
-// GenerationInfo[1] with "byte-view read at offset 32 for 32 bytes does not fit in single
-// primitive cell of size 32". Length and index 0 work regardless.
+// the read from the object (issue #729). .NET 11's declares the two runs as inline arrays,
+// InlineArray5<GCGenerationInfo> and InlineArray2<TimeSpan>, and makes each span over one.
 //
 // Differentially safe: every assertion below is a bound that holds no matter how many real
 // GCs have happened by the time this runs. Sizes and fragmentations are byte counts, never

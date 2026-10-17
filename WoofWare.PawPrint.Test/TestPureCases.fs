@@ -161,28 +161,20 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
             yield!
                 [
-                    "GCGetMemoryInfo.cs"
-                    "GCMemoryInfoSpanProperties.cs"
-                    "TaskBasics.cs"
+                    "CancellationTokenRegistrationDisposeCrossThread.cs"
+                    "MonitorInflationContended.cs"
                     "TaskConfigureAwaitBool.cs"
                     "TaskConfigureAwaitOptions.cs"
-                    "TaskContinueWith.cs"
+                    "TaskDelayWait.cs"
                     "TaskMultipleBlockingWaits.cs"
                     "TaskMultipleContinuations.cs"
                     "TaskRunThrowSetsFaulted.cs"
                     "TaskWhenAll.cs"
+                    "ThreadStartFlowsAsyncLocal.cs"
+                    "ThreadStateObserved.cs"
                     "ThreadStateOfIdlePoolWorker.cs"
                     "Threads.cs"
                     "ValueTaskConfigureAwait.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
-            yield!
-                [
-                    "CancellationTokenRegistrationDisposeCrossThread.cs"
-                    "MonitorInflationContended.cs"
-                    "TaskDelayWait.cs"
-                    "ThreadStartFlowsAsyncLocal.cs"
-                    "ThreadStateObserved.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             yield!

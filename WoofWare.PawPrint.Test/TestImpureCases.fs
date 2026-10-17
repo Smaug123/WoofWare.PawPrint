@@ -5130,9 +5130,6 @@ module TestImpureCases =
     let parkedOnNet11 : Map<string, string> =
         [
             yield!
-                [ "GCMemoryInfoAllZero.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
-            yield!
                 [
                     "DelegateMethodOnDynamicMethod.cs"
                     "DynamicMethodDelegateBinding.cs"
