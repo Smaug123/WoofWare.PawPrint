@@ -1565,7 +1565,7 @@ module NullaryIlOp =
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ReturnFrameResult.DispatchException (state, exnAddr, exnType, making) ->
-                let state =
+                let state, origin =
                     match making with
                     | RuntimeExceptionMaking.Raised fields ->
                         // The ctor has run; now overwrite _HResult with the CLR's mapped value,
@@ -1576,11 +1576,16 @@ module NullaryIlOp =
                         // The raiser asked for specific field values, i.e. the CLR would have used a
                         // constructor overload taking them. This has to happen after the ctor, which
                         // has just written the type's default resource string into `_message`.
-                        (state, fields)
-                        ||> List.fold (fun state field ->
-                            IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
-                        )
-                    | RuntimeExceptionMaking.WrappedNonException -> state
+                        let state =
+                            (state, fields)
+                            ||> List.fold (fun state field ->
+                                IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
+                            )
+
+                        state, TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.MadeByRuntime
+                    // `IL_Throw` dispatches the wrapper from the `throw`, so the method that threw
+                    // is the first frame of its trace, as it is for a `throw` of an exception.
+                    | RuntimeExceptionMaking.WrappedNonException -> state, TraceHeadOrigin.IlThrow
 
                 match
                     ExceptionDispatching.throwExceptionObject
@@ -1588,7 +1593,7 @@ module NullaryIlOp =
                         corelib
                         state
                         currentThread
-                        (TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.MadeByRuntime)
+                        origin
                         exnAddr
                         exnType
                 with
