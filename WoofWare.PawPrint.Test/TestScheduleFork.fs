@@ -245,7 +245,7 @@ module TestScheduleFork =
         [
             "ForkAfterSoloSleep.cs", Net11Frontier.linuxFutex
             "ForkAfterSoloYield.cs", Net11Frontier.linuxFutex
-            "InvertedMonitorDeadlock.cs", Net11Frontier.fatLock
+            "InvertedMonitorDeadlock.cs", Net11Frontier.linuxFutex
             "JustABoolNotAMutex.cs", Net11Frontier.linuxFutex
             "LostUpdate.cs", Net11Frontier.linuxFutex
             "QueueIsNotThreadSafe.cs", Net11Frontier.linuxFutex
@@ -313,10 +313,7 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming with no seed reproduces the round-robin run`` (sourceName : string) : unit =
-        // Round robin reaches the futex in `InvertedMonitorDeadlock.cs` before the fat lock.
-        match sourceName with
-        | "InvertedMonitorDeadlock.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
-        | _ -> forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
+        forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
 
         // The degenerate case, and the one that checks `LastRan` survived the snapshot: round
         // robin's whole choice is "lowest id above `LastRan`", so a snapshot that dropped it

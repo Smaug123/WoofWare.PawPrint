@@ -383,8 +383,6 @@ class Program
 
     [<Test>]
     let ``SIGCONT sent after a stop signal the native handler has already taken is answered`` () : unit =
-        Net11Frontier.park Net11Frontier.fatLock
-
         // The stop signal is in System.Native's pipe by the time SIGCONT is
         // generated, so the kernel's discard of pending stop signals does not
         // reach it, and both handlers run, as on the real runtime. SIGTSTP and
@@ -394,8 +392,6 @@ class Program
 
     [<Test>]
     let ``unregistering a signal the native handler has already taken is answered`` () : unit =
-        Net11Frontier.park Net11Frontier.fatLock
-
         // The SIGCHLD is in System.Native's pipe; whether the dispatcher reads
         // it before or after the registration goes, the process carries on:
         // the callback or the loop's non-cancelled handling, which for SIGCHLD
@@ -405,8 +401,6 @@ class Program
 
     [<Test>]
     let ``two signals sent while the dispatcher is busy are answered in either order`` () : unit =
-        Net11Frontier.park Net11Frontier.fatLock
-
         // The dispatcher reads them in the order the native handler wrote
         // them, whichever order the kernel would take them in.
         runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "15" ; "2" ]

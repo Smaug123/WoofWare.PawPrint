@@ -652,6 +652,15 @@ type NativeHandlerResult =
     /// loops on: the thread returns to user mode, where the signal's handlers run between
     /// two steps, and then the wrapper issues the call again.
     | ReenterRetainingFrame of IlMachineState * StepEffect
+    /// As `ReenterRetainingFrame`, but the thread also yields: the dispatcher reports
+    /// `WhatWeDid.VoluntaryYield false`, so the Scheduler charges it yield debt as it does a
+    /// `Thread.Yield()`, and the others it was Runnable alongside run before it re-issues the
+    /// call.
+    ///
+    /// What a spin lock that gives the processor away between attempts does: CoreCLR's
+    /// sync-block spin lock (`HeaderSpinLockHolder`), for one, which a thread waiting for another
+    /// thread's inflation of the same object spins on.
+    | YieldedRetainingFrame of IlMachineState * StepEffect
     /// A sub-call's exception (typically a `TypeInitializationException` raised by a
     /// previously-failed `.cctor`) has already been dispatched into the guest and unwound
     /// past this native frame to a matching handler. The state already reflects the
@@ -852,6 +861,11 @@ module NativeHandlerResult =
     /// the relevant `Scheduler` helper; this only tells the dispatcher to keep the frame.
     let blockedRetainingFrame (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.BlockedRetainingFrame (state, StepEffect.NoEffect)
+
+    /// Native handler's call is to be issued again, from the top, on its thread's next step,
+    /// and the thread yields meanwhile. See `YieldedRetainingFrame`.
+    let yieldedRetainingFrame (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.YieldedRetainingFrame (state, StepEffect.NoEffect)
 
     /// Native handler's call is to be issued again, from the top, on its thread's next step;
     /// the thread stays Runnable. See `ReenterRetainingFrame`.

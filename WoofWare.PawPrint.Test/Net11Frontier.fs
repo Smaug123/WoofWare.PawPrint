@@ -21,9 +21,9 @@ module Net11Frontier =
     let fileSystemSupportsLocking : string =
         "On .NET 11, opening a file through `SafeFileHandle` asks `Interop.Sys.FileSystemSupportsLocking` (SafeFileHandle.Unix.cs:528), the `SystemNative_FileSystemSupportsLocking` P/Invoke, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_FileSystemSupportsLocking)\". Un-park when the emulated kernel answers it."
 
-    /// .NET 11's thin lock falls back to a fat `Lock` through an unimplemented InternalCall.
-    let fatLock : string =
-        "On .NET 11, a `lock` still held by another thread once the thin lock has spun, `Monitor.Wait` and `Monitor.Pulse` go to the object's fat `Lock` through `ObjectHeader.GetLockObject`, whose `GetLockHandleIfExists` InternalCall PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.Threading.ObjectHeader::GetLockHandleIfExists\". The uncontended thin lock runs. Un-park when the fat lock runs."
+    /// PawPrint's signal dispatcher thread has no managed thread id on .NET 11.
+    let signalDispatcherThreadId : string =
+        "On .NET 11, `ManagedThreadId.Current` reads the thread-static `t_currentManagedThreadId`, which the VM sets when it attaches the native thread that delivers signals to managed code, on its first callback; PawPrint does not, so on that thread it reads 0. The dispatcher's `lock (s_registrations)` in `PosixSignalRegistration.OnPosixSignal` then takes the thin lock for no owner, alongside `Main`'s registrations: \"Encountered infinite recursion while looking up resource 'Lock_Exit_SynchronizationLockException'\", or a livelock. Seeding it there makes these cases pass (measured on 11.0.0-rc.1). Un-park when the dispatcher thread is given its managed id."
 
     /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
     let inlineArrayOfReferences : string =

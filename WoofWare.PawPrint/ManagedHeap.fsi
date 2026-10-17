@@ -36,13 +36,32 @@ module ManagedHeap =
 
     /// The header word of the object at `addr`: the `int32` CoreCLR keeps 4 bytes before the
     /// object's method-table pointer, which .NET 11's managed thin lock reads and
-    /// compare-exchanges. PawPrint gives its bits no meaning. A fresh allocation's is 0; fails
-    /// for an address that is not a live allocation.
+    /// compare-exchanges, and which CoreCLR's VM rewrites when that lock inflates
+    /// (`ObjectHeaderInflation`). A fresh allocation's is 0; fails for an address that is not a
+    /// live allocation.
     val getHeaderWord : addr : ManagedHeapAddress -> heap : ManagedHeap -> int32
 
     /// Overwrite the header word of the object at `addr`. Fails for an address that is not a
     /// live allocation.
     val setHeaderWord : addr : ManagedHeapAddress -> value : int32 -> heap : ManagedHeap -> ManagedHeap
+
+    /// .NET 11's sync block for the object at `addr`, if its thin lock has inflated to a
+    /// `Lock`; `None` until then, and for any address that is not a live allocation.
+    val tryGetMonitorLock : addr : ManagedHeapAddress -> heap : ManagedHeap -> MonitorLock option
+
+    /// Give the object at `addr` a sync block, `MonitorLock.Inflating` on `inflater`, whose
+    /// `Lock` `handle` holds; returns the sync block's index, which is positive and differs from
+    /// every other object's. Fails if `addr` is not a live allocation or already has one.
+    val beginInflation :
+        addr : ManagedHeapAddress ->
+        inflater : ThreadId ->
+        handle : GcHandleAddress ->
+        heap : ManagedHeap ->
+            int * ManagedHeap
+
+    /// Mark the sync block that `inflater` began at `addr` `MonitorLock.Inflated`. Fails unless
+    /// `inflater` is inflating it.
+    val completeInflation : addr : ManagedHeapAddress -> inflater : ThreadId -> heap : ManagedHeap -> ManagedHeap
 
     /// Every object whose monitor is currently `Held` by `thread`, with the ownership
     /// state, in ascending address order.
