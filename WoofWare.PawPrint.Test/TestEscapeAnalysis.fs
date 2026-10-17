@@ -2798,6 +2798,12 @@ public static class Cases
     public static Type OfBoxString() => Box<string>.Of();
 
     public static Type OfBoxInt() => Box<int>.Of();
+
+    // Code that runs only on a CPU with 128-bit vectors.
+    public static Type Accelerated<T>() =>
+        System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated ? typeof(T) : null;
+
+    public static Type AcceleratedOfString() => Accelerated<string>();
 }
 
 // A type variable of the declaring type, rather than of the method.
@@ -2872,6 +2878,8 @@ public static class Box<T>
                 "IsValueOfString"
                 "SameOfString"
                 "SameReversedOfString"
+                // The analysis asks about a CPU with no vector instructions.
+                "AcceleratedOfString"
             ]
 
         // The `RuntimeType` comes from native code the analysis does not see into.
