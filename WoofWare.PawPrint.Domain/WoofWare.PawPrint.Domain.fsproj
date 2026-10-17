@@ -62,6 +62,7 @@
         <Compile Include="AttributeFormatting.fs" />
         <Compile Include="NamedAttribute.fs" />
         <Compile Include="RuntimeCompatibility.fs" />
+        <Compile Include="Debuggable.fs" />
         <Compile Include="IlDumpRendering.fs" />
         <!-- After TypeConcretisation.fs, for `SubstitutionContext`, and before IlMachineStateModel
              in the main project, which memoises the walks that produce these. -->

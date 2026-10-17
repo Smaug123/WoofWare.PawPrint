@@ -30,7 +30,11 @@ module TestAssumption =
                     | None -> ()
             ]
 
-        summarised |> List.map fst |> Set.ofList |> shouldEqual Assumption.all
+        // `JitOptimises` stands in for no method.
+        summarised
+        |> List.map fst
+        |> Set.ofList
+        |> shouldEqual (Set.remove Assumption.JitOptimises Assumption.all)
 
         // Each stands in for one method, but the one about CoreLib's type initializers, which
         // stands in for exactly those.
@@ -46,6 +50,7 @@ module TestAssumption =
             | Assumption.CoreLibTypeInitializers -> count |> shouldEqual initializers
             | Assumption.NamedTypesLoad
             | Assumption.StackTracePreserved -> count |> shouldEqual 1
+            | Assumption.JitOptimises -> count |> shouldEqual 0
 
         for assumption, method in summarised do
             let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
@@ -75,6 +80,7 @@ module TestAssumption =
             | Assumption.CoreLibTypeInitializers ->
                 method.Name |> shouldEqual ".cctor"
                 method.IsStatic |> shouldEqual true
+            | Assumption.JitOptimises -> failwith $"%A{assumption} summarises %s{name}"
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``the resource lookup's contract stands in for one method of the CoreLib, the one it names``
