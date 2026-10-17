@@ -502,13 +502,9 @@ module ExceptionDispatching =
             loggerFactory
             corelib
             cliException.ExceptionObject
-            cliException.StackTrace
+            cliException.Trace.Frames
             state
-        |> IlMachineState.recordThrownStackTrace
-            loggerFactory
-            corelib
-            cliException.ExceptionObject
-            cliException.StackTrace
+        |> IlMachineState.recordThrownStackTrace loggerFactory corelib cliException.ExceptionObject cliException.Trace
 
 
     /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
@@ -569,10 +565,9 @@ module ExceptionDispatching =
     /// the skeletal states in low-level dispatch tests use.
     let private consumeForeignExceptionRaise
         (currentThread : ThreadId)
-        (framesAlreadyPresent :
-            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (traceAlreadyPresent : unit -> ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option)
         (state : IlMachineState)
-        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
+        : IlMachineState * ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
         let threadState = state.ThreadState.[currentThread]
 
@@ -591,7 +586,15 @@ module ExceptionDispatching =
                         }
             }
 
-        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
+        let restored =
+            traceAlreadyPresent ()
+            |> Option.map (fun trace ->
+                { trace with
+                    Frames = markLastFrameAsForeign trace.Frames
+                }
+            )
+
+        state, restored
 
     /// Append the caller's frame to a raise's trace as the first pass crosses into it, consuming
     /// any pending foreign-raise flag in the process.
@@ -622,15 +625,18 @@ module ExceptionDispatching =
                 IsLastFrameFromForeignExceptionStackTrace = false
             }
 
-        let state, restoredFrames =
+        let state, restored =
             state
-            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
+            |> consumeForeignExceptionRaise currentThread (fun () -> Some cliException.Trace)
 
-        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
+        let traceBefore = restored |> Option.defaultValue cliException.Trace
 
         state,
         { cliException with
-            StackTrace = framesBefore @ [ stackFrame ]
+            Trace =
+                { traceBefore with
+                    Frames = traceBefore.Frames @ [ stackFrame ]
+                }
         }
 
     /// The innermost `filter` clause of this frame that is currently being evaluated, if any.
@@ -966,7 +972,11 @@ module ExceptionDispatching =
                         state
                         {
                             ExceptionObject = tieAddr
-                            StackTrace = []
+                            Trace =
+                                {
+                                    Frames = []
+                                    HeadOrigin = TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TypeInitializerFailed
+                                }
                         }
 
                 state, wrapped, tieType
@@ -1014,7 +1024,11 @@ module ExceptionDispatching =
                 state
                 {
                     ExceptionObject = tieAddr
-                    StackTrace = []
+                    Trace =
+                        {
+                            Frames = []
+                            HeadOrigin = TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TargetInvocationWrap
+                        }
                 }
 
         state, wrapped, tieType
@@ -1389,13 +1403,14 @@ module ExceptionDispatching =
             )
             state
 
-    /// Initiate exception dispatch for an exception object already on the heap.
-    /// Builds the initial stack trace frame and dispatches.
+    /// Initiate exception dispatch for an exception object already on the heap, raised in the
+    /// current frame as `origin` says. Builds the initial stack trace frame and dispatches.
     let throwExceptionObject
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentThread : ThreadId)
+        (origin : TraceHeadOrigin)
         (exceptionAddr : ManagedHeapAddress)
         (exceptionType : ConcreteTypeHandle)
         : ExceptionDispatchResult
@@ -1433,18 +1448,32 @@ module ExceptionDispatching =
         // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
         // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
         // frame of its own — and so carries the question forward instead.
-        let state, restoredFrames =
+        let state, restored =
             state
             |> consumeForeignExceptionRaise
                 currentThread
-                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
+                (fun () -> IlMachineState.frozenStackTrace corelib exceptionAddr state)
 
-        let restoredFrames = restoredFrames |> Option.defaultValue []
+        // Restored frames come first, so the first of them is the head, and its origin is theirs.
+        // With none (no flag, or the captured exception was never thrown, so that
+        // `RestoreDispatchState` left `_stackTrace` null), this raise's own frame is the head, as
+        // it is in CoreCLR. A trace with a token always has frames (`recordThrownStackTrace`).
+        let trace =
+            match restored with
+            | Some restored ->
+                { restored with
+                    Frames = restored.Frames @ [ stackFrame ]
+                }
+            | None ->
+                {
+                    Frames = [ stackFrame ]
+                    HeadOrigin = origin
+                }
 
         let cliException =
             {
                 ExceptionObject = exceptionAddr
-                StackTrace = restoredFrames @ [ stackFrame ]
+                Trace = trace
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType

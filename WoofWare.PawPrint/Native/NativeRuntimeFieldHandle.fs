@@ -407,6 +407,7 @@ module NativeRuntimeFieldHandle =
                         ctx.BaseClassTypes
                         state
                         ctx.Thread
+                        (TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TargetInvocationWrap)
                         wrapperAddr
                         wrapperType
                 with

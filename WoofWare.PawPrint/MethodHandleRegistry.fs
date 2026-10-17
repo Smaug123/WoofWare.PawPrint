@@ -871,6 +871,26 @@ module MethodHandleRegistry =
             (makeMethodIdentity allConcreteTypes method)
             reg
 
+    /// A *fresh* `RuntimeMethodInfoStub` naming the typical definition of `method`: CoreCLR's
+    /// `pMD->LoadTypicalMethodDefinition()->AllocateStubMethodInfo()`, with both instantiations
+    /// stripped as `typicalMethodDefinition` says.
+    let allocateFreshStubOfTypicalDefinition
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (allocState : 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : ManagedHeapAddress * MethodHandleRegistry * 'allocState
+        =
+        allocateFreshStubOfIdentity
+            baseClassTypes
+            allConcreteTypes
+            allocState
+            allocate
+            (typicalMethodDefinition allConcreteTypes (makeMethodIdentity allConcreteTypes method))
+            reg
+
     /// The address of the `RuntimeMethodInfoStub` naming this method, reusing the one this
     /// registry allocated for the same method before if there is one. Unlike `allocateFreshStub`
     /// this is *not* what CoreCLR does at any single call site; it is the F#-side dedup that lets

@@ -182,7 +182,10 @@ module UnhandledExceptionReport =
                 let frozenFrames =
                     match tryReadField fields.StackTrace obj with
                     | Some (CliType.ObjectRef (Some token)) ->
-                        state.FrozenStackTraces |> Map.tryFind token |> Option.defaultValue []
+                        state.FrozenStackTraces
+                        |> Map.tryFind token
+                        |> Option.map (fun trace -> trace.Frames)
+                        |> Option.defaultValue []
                     | _ -> []
 
                 heading, inner, frozenFrames
@@ -214,7 +217,7 @@ module UnhandledExceptionReport =
             tryExceptionType state
             |> Option.map (fun (ty, handle) -> exceptionFields ty handle)
 
-        describeObject state exceptionFields 0 exn.ExceptionObject (Some exn.StackTrace)
+        describeObject state exceptionFields 0 exn.ExceptionObject (Some exn.Trace.Frames)
         |> String.concat Environment.NewLine
 
     /// <summary>

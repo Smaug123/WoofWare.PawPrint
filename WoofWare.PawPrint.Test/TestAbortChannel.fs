@@ -45,7 +45,11 @@ module TestAbortChannel =
     let private unhandled () : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
         {
             ExceptionObject = ManagedHeapAddress 1
-            StackTrace = []
+            Trace =
+                {
+                    Frames = []
+                    HeadOrigin = TraceHeadOrigin.IlThrow
+                }
         }
 
     [<Test>]

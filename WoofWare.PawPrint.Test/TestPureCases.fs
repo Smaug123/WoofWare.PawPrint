@@ -1591,7 +1591,7 @@ class Program
             (fun _image pawPrintResult ->
                 match ExpectRun.ended pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn, _) ->
-                    match exn.StackTrace with
+                    match exn.Trace.Frames with
                     | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
                     | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
                 | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"

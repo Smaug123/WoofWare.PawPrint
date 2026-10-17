@@ -26,6 +26,47 @@ type ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar
         IsLastFrameFromForeignExceptionStackTrace : bool
     }
 
+/// Which raise put an exception's first frame there, where that was not an IL `throw`.
+[<RequireQualifiedAccess>]
+type RuntimeRaiseSite =
+    /// The runtime made the exception, running its constructor in a frame it pushed itself
+    /// (`ReturnValueDisposition.DispatchAsException`): an instruction's own check, a native, an
+    /// intrinsic.
+    | MadeByRuntime
+    /// A type initialiser raised, and the runtime raises a `TypeInitializationException` in its
+    /// place from the frame that ran it.
+    | TypeInitializerFailed
+    /// A type whose initialiser failed earlier was used again, and the runtime raises the
+    /// `TypeInitializationException` it cached then.
+    | TypeInitializerFailedEarlier
+    /// The runtime wraps what a constructor or a type initialiser it called raised in a
+    /// `TargetInvocationException`, as `Activator.CreateInstance<T>()` and the reflective field
+    /// accessors do.
+    | TargetInvocationWrap
+
+/// How the first frame of an exception's trace came to be there, which decides whether it is the
+/// frame CoreCLR's own trace of the exception begins with.
+[<RequireQualifiedAccess>]
+type TraceHeadOrigin =
+    /// An IL `throw` executing in that frame raised the exception, whether in guest code or in
+    /// CoreLib's own, such as a `ThrowHelper`. CoreCLR's `IL_Throw` is native code, so its trace
+    /// begins at the same frame.
+    | IlThrow
+    /// The runtime raised the exception on the frame's behalf. CoreCLR raises most of these from a
+    /// `[StackTraceHidden]` managed helper its JIT calls, whose frame then begins the trace, and
+    /// PawPrint runs no frame for it; which helper is the JIT's choice.
+    | RuntimeRaise of RuntimeRaiseSite
+
+/// An exception's stack trace: the frames it has left, the first being the frame it was raised
+/// in, with how that first frame came to be there.
+///
+/// One value, so that nothing can take the frames of one raise with the origin of another.
+type ExceptionTrace<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        Frames : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
+        HeadOrigin : TraceHeadOrigin
+    }
+
 /// Represents a CLI exception being propagated.
 ///
 /// Compared by reference: its frames name `MethodInfo`s, which have no structural equality, and
@@ -37,7 +78,7 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         /// The exception object allocated on the heap
         ExceptionObject : ManagedHeapAddress
         /// Stack trace built during unwinding
-        StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
+        Trace : ExceptionTrace<'typeGen, 'methodGen, 'methodVar>
     }
 
 type ExceptionFilterRegion =

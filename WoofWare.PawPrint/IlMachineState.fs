@@ -248,6 +248,7 @@ module IlMachineState =
 
     let frozenStackTraceToken = IlMachineRuntimeMetadata.frozenStackTraceToken
 
+    let frozenStackTrace = IlMachineRuntimeMetadata.frozenStackTrace
     let frozenStackTraceFrames = IlMachineRuntimeMetadata.frozenStackTraceFrames
 
     let getOrAllocateManagedThreadObject =

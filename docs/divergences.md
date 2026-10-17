@@ -755,9 +755,9 @@ out for an abstract method: measured on .NET 10, the `BadImageFormatException` t
 **PawPrint**: the delegate's synthetic `Invoke` frame is popped first and the exception is then
 raised into the *caller*, so the trace begins at whatever called `Invoke` and the target is named
 nowhere. A `calli` has no synthetic frame to pop, and raises from the `calli` instruction itself,
-with the same result. `TargetSite` is unreachable for a different reason —
-`ExceptionNative_GetMethodFromStackTrace` is unimplemented, so reading it stops the guest rather than
-answering wrongly.
+with the same result. `TargetSite` does not answer wrongly for a different reason: the runtime
+raised each of these exceptions, so `ExceptionNative_GetMethodFromStackTrace` refuses to name the
+first frame of their traces (`TraceHeadOrigin.RuntimeRaise`), and reading it stops the guest.
 
 **Spec status**: outside ECMA-335, which does not specify stack-trace contents.
 

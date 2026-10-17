@@ -438,7 +438,7 @@ module TestImpureCases =
 
         let frames =
             match state.FrozenStackTraces |> Map.tryFind token with
-            | Some frames -> frames
+            | Some trace -> trace.Frames
             | None ->
                 failwith
                     $"DispatchState.StackTrace holds @ %O{token}, which is not a token PawPrint minted; GetFrozenStackTrace must return the exception's own _stackTrace, not a fresh object"

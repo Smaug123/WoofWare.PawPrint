@@ -240,7 +240,11 @@ module TestStackFrameCapture =
                                     Exception =
                                         {
                                             ExceptionObject = ManagedHeapAddress 1
-                                            StackTrace = []
+                                            Trace =
+                                                {
+                                                    Frames = []
+                                                    HeadOrigin = TraceHeadOrigin.IlThrow
+                                                }
                                         }
                                     ExceptionType = ConcreteTypeHandle.Concrete 0
                                     StartFrame = thread.ActiveMethodState

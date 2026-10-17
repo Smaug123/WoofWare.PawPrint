@@ -130,6 +130,113 @@ module NativeException =
                     frozenTrace
 
             NativeHandlerResult.completed state |> Some
+        | "ExceptionNative_GetMethodFromStackTrace",
+          "System.Private.CoreLib",
+          "System",
+          "Exception",
+          "GetMethodFromStackTrace",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        stackTraceGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        methodGenerics) ],
+          MethodReturnType.Void when stackTraceGenerics.IsEmpty && methodGenerics.IsEmpty ->
+            // Reached from `Exception.TargetSite` (Exception.CoreCLR.cs:61-80), which `Source`
+            // reads, with the exception's `_stackTrace`, only once that is non-null. CoreCLR
+            // (comutilnative.cpp, `ExceptionNative_GetMethodFromStackTrace`) takes the method of
+            // the trace's first element, the frame the exception was raised in, and hands back
+            // `LoadTypicalMethodDefinition()->AllocateStubMethodInfo()` for it.
+            //
+            // PawPrint's first frame is CoreCLR's only where an IL `throw` raised the exception
+            // (`TraceHeadOrigin`), so that is the only case answered.
+            let operation = "ExceptionNative_GetMethodFromStackTrace"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith
+                    $"%s{operation}: expected two native arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            let stackTracePtr =
+                NativeCall.objectHandleOnStackTarget operation state "stacktrace" instruction.Arguments.[0]
+
+            let token =
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed stackTracePtr)
+                with
+                | CliType.ObjectRef (Some addr) -> addr
+                | CliType.ObjectRef None ->
+                    // `TargetSite` asks only for a non-null `_stackTrace`, and CoreCLR asserts it.
+                    failwith $"%s{operation}: ObjectHandleOnStack pointed to a null stack trace"
+                | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
+
+            let trace =
+                match state.FrozenStackTraces |> Map.tryFind token with
+                | Some trace -> trace
+                | None ->
+                    // The only non-null value a guest can hold is one `recordThrownStackTrace`
+                    // minted (see `frozenStackTraceToken`).
+                    failwith
+                        $"%s{operation}: the stack trace @ %O{token} is not a token PawPrint minted; this is an interpreter bug"
+
+            let head =
+                match trace.Frames with
+                | head :: _ -> head
+                | [] ->
+                    // CoreCLR asserts a non-empty trace; `recordThrownStackTrace` mints no token
+                    // for an empty one, so this cannot be reached.
+                    failwith $"%s{operation}: the stack trace @ %O{token} has no frames; this is an interpreter bug"
+
+            match trace.HeadOrigin with
+            | TraceHeadOrigin.RuntimeRaise site ->
+                failwith
+                    $"TODO: %s{operation} (Exception.TargetSite, which Exception.Source reads): the runtime raised this exception (RuntimeRaiseSite.%A{site}). CoreCLR raises most such exceptions from a [StackTraceHidden] managed helper its JIT calls, such as ThrowHelpers.ThrowIndexOutOfRangeException or InitHelpers.InitClassSlow, whose frame then begins the trace and is what TargetSite names; which helper is the JIT's choice, and PawPrint runs no frame for it, so it cannot say. PawPrint's first frame is %s{head.Method.Name}."
+            | TraceHeadOrigin.IlThrow ->
+
+            match head.Method.SynthesisedKind with
+            | Some (SynthesisedMethod.DynamicMethod _) ->
+                // `LoadTypicalMethodDefinition` returns a `DynamicMethodDesc` unchanged, but
+                // `RuntimeType.GetMethodBase` then asks `RuntimeMethodHandle.GetResolver` for the
+                // `DynamicMethod`, which PawPrint does not implement.
+                failwith
+                    $"TODO: %s{operation} (Exception.TargetSite): the exception was thrown in the dynamic method %s{head.Method.Name}, and naming it needs RuntimeMethodHandle.GetResolver, which PawPrint does not implement."
+            | Some other ->
+                // An IL `throw` executes only in a body with IL: a metadata method or a dynamic one.
+                failwith
+                    $"%s{operation}: an IL throw raised this exception in %O{head.Method}, a synthesised %O{other} method, which has no IL; this is an interpreter bug"
+            | None ->
+
+            let retMethodInfo =
+                NativeCall.objectHandleOnStackTarget operation state "retMethodInfo" instruction.Arguments.[1]
+
+            let stubType =
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.TypeSystem.ConcreteTypes
+                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+
+            let stub, registry, state =
+                MethodHandleRegistry.allocateFreshStubOfTypicalDefinition
+                    ctx.BaseClassTypes
+                    state.TypeSystem.ConcreteTypes
+                    state
+                    (fun fields state -> IlMachineState.allocateManagedObject stubType fields state)
+                    head.Method
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+                |> fun state ->
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed retMethodInfo)
+                        (CliType.ObjectRef (Some stub))
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
