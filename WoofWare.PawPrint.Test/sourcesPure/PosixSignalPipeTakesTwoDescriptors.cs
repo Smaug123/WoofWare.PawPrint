@@ -19,9 +19,31 @@ class Program
 
     static unsafe int Main(string[] args)
     {
+        // The comparison needs the four descriptors above `before` to be free.
+        // On the real runtime they may not be: during startup another runtime
+        // thread can briefly hold low descriptors while the main thread opens
+        // assemblies above them, leaving a hole below descriptors that stay
+        // open. A pipe made into such a hole is followed by occupied
+        // descriptors. So keep each pipe that lands in a hole open, filling it,
+        // until one is followed by four free descriptors.
+        const int maxFills = 16;
         int* before = stackalloc int[2];
-        if (Pipe(before, 0) != 0) return 1;
-        if (before[1] != before[0] + 1) return 2;
+        int* above = stackalloc int[4];
+        int fills = 0;
+        while (true)
+        {
+            if (Pipe(before, 0) != 0) return 1;
+            if (Pipe(above, 0) != 0) return 1;
+            if (Pipe(above + 2, 0) != 0) return 1;
+            bool clear = before[1] == before[0] + 1;
+            for (int i = 0; i < 4; i++)
+            {
+                if (above[i] != before[0] + 2 + i) clear = false;
+                if (Close((IntPtr)above[i]) != 0) return 2;
+            }
+            if (clear) break;
+            if (++fills == maxFills) return 10;
+        }
         if (Close((IntPtr)before[0]) != 0) return 3;
         if (Close((IntPtr)before[1]) != 0) return 4;
 
