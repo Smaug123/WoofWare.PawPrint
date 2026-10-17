@@ -119,10 +119,13 @@ type ExceptionTrace = { Frames : ExceptionStackFrame<...> list ; HeadOrigin : Tr
   own `IlThrow` stands, because its frame is then the head, as it is in CoreCLR.
 * A filter is the only guest code that runs between two appends of one raise, and it may raise
   the same object again (an `ExceptionDispatchInfo.Throw` of a capture of it), which changes the
-  trace the object holds. CoreCLR re-reads `_stackTrace` at every append, so after a filter
-  returns the search takes up the object's trace, frames and origin, before continuing or
-  concluding (`resumeSearchAfterFilter`). Found by the Codex review; pinned by
-  `sourcesPure/FilterSpliceContinuesRestoredTrace.cs` and two refusal cases.
+  trace the object holds. CoreCLR re-reads `_stackTrace` at every append, so once a filter has
+  run, whether it returned or an exception escaped it, the search takes up the object's trace,
+  frames and origin, before continuing or concluding (`takeUpTraceAfterFilter`). A search that
+  reached its filter with no frames (a rethrow, from its own frame, of an exception whose trace
+  was cleared) minted no token on entry and continues as it was. Found by the Codex reviews;
+  pinned by `sourcesPure/FilterSpliceContinuesRestoredTrace.cs`,
+  `sourcesPure/FilterOverTracelessRethrow.cs` and three refusal cases.
 * PR #1943, when it lands on top of this, adds `RuntimeExceptionMaking.WrappedNonException`,
   whose `ret` must pass `IlThrow` (`IL_Throw` raises the wrapper from the `throw`; the match on the
   DU forces the decision), and a `RaisedAgainFromCaller` re-raise, which re-reads the token and so

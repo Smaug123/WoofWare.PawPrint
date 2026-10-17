@@ -506,6 +506,49 @@ module ExceptionDispatching =
             state
         |> IlMachineState.recordThrownStackTrace loggerFactory corelib cliException.ExceptionObject cliException.Trace
 
+    /// The search parked on a filter, as it continues once the filter has run, whether the filter
+    /// returned or let an exception escape it.
+    ///
+    /// CoreCLR reads the exception's `_stackTrace` afresh at every frame it appends, and the filter
+    /// is the only guest code between two appends of one raise. Entering it projected the search's
+    /// trace onto the object, so the object's trace differs from the search's only if the filter
+    /// raised the same object again, as `ExceptionDispatchInfo.Throw` of a capture of it does; the
+    /// search continues, or concludes with, whichever trace the object now holds, its first frame's
+    /// origin included.
+    let private takeUpTraceAfterFilter
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (filter : ExceptionFilterRegion)
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState * ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let state, exceptionAncestor =
+            IlMachineState.tryExceptionAncestor loggerFactory corelib search.ExceptionType state
+
+        match exceptionAncestor with
+        | None -> state, search
+        | Some _ ->
+
+        match
+            IlMachineState.frozenStackTrace corelib search.Exception.ExceptionObject state,
+            search.Exception.Trace.Frames
+        with
+        | Some trace, _ ->
+            state,
+            { search with
+                Exception =
+                    { search.Exception with
+                        Trace = trace
+                    }
+            }
+        // No frames on entry (a rethrow, from its own frame, of an exception whose trace was
+        // cleared) minted no token, and the filter has not given it one either.
+        | None, [] -> state, search
+        | None, _ :: _ ->
+            failwith
+                $"TODO: the filter at IL offset %d{filter.FilterOffset} left the exception it was offered with no trace (its _stackTrace null), where entering it gave it one. CoreCLR would continue the raise from that empty trace, whose first frame is then the next one the raise passes through rather than any it was raised in; PawPrint does not model that."
+
 
     /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
     /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
@@ -561,8 +604,8 @@ module ExceptionDispatching =
     /// nested throw of the *same* object from inside a catch updates the token while the outer
     /// handler's snapshot goes stale, and only the token still holds the nested boundary.
     /// `appendCallerFrame` passes the raise's in-flight trace instead, which is the object's: between
-    /// two appends of one raise only a `filter` runs guest code, and `resumeSearchAfterFilter`
-    /// takes up whatever trace the object holds once it returns.
+    /// two appends of one raise only a `filter` runs guest code, and `takeUpTraceAfterFilter`
+    /// takes up whatever trace the object holds once it has run.
     ///
     /// `traceAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
     /// fails loudly on an exception address that is not a real heap object, which is exactly what
@@ -1229,7 +1272,8 @@ module ExceptionDispatching =
                     ThreadState = state.ThreadState |> Map.add currentThread threadState
                 }
 
-            let outer = continuation.Search
+            let state, outer =
+                takeUpTraceAfterFilter loggerFactory corelib state continuation.CurrentFilter continuation.Search
 
             runFirstPass
                 loggerFactory
@@ -1326,30 +1370,8 @@ module ExceptionDispatching =
             failwith
                 $"Logic error: endfilter for filter %O{continuation.CurrentFilter} resumed a search parked on frame %O{search.Frame} while the thread was executing frame %O{activeFrame}"
 
-        // CoreCLR reads the exception's `_stackTrace` afresh at every frame it appends, and the
-        // filter just run is the only guest code between two appends of one raise. Entering it
-        // projected the search's trace onto the object, so the object's trace differs from the
-        // search's only if the filter raised the same object again, as `ExceptionDispatchInfo.Throw`
-        // of a capture of it does; the search continues, or concludes with, whichever trace the
-        // object now holds, its first frame's origin included.
-        let state, exceptionAncestor =
-            IlMachineState.tryExceptionAncestor loggerFactory corelib search.ExceptionType state
-
-        let search =
-            match exceptionAncestor with
-            | None -> search
-            | Some _ ->
-                match IlMachineState.frozenStackTrace corelib search.Exception.ExceptionObject state with
-                | Some trace ->
-                    { search with
-                        Exception =
-                            { search.Exception with
-                                Trace = trace
-                            }
-                    }
-                | None ->
-                    failwith
-                        $"TODO: the filter at IL offset %d{continuation.CurrentFilter.FilterOffset} left the exception it was offered with no trace (its _stackTrace null), where entering it gave it one. CoreCLR would continue the raise from that empty trace, whose first frame is then the next one the raise passes through rather than any it was raised in; PawPrint does not model that."
+        let state, search =
+            takeUpTraceAfterFilter loggerFactory corelib state continuation.CurrentFilter search
 
         if accepted then
             let region =
