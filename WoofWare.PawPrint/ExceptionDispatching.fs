@@ -1041,7 +1041,13 @@ module ExceptionDispatching =
             // the constructor's frames into the `throw`'s.
             let raised =
                 { cliException with
-                    StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                    Trace =
+                        IlMachineState.frozenStackTrace corelib cliException.ExceptionObject state
+                        |> Option.defaultValue
+                            {
+                                Frames = []
+                                HeadOrigin = TraceHeadOrigin.IlThrow
+                            }
                 }
 
             let state, raised = seedWrapper state raised
