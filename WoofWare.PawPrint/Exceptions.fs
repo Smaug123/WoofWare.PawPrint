@@ -80,7 +80,8 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
     {
         /// The exception object allocated on the heap
         ExceptionObject : ManagedHeapAddress
-        /// Stack trace built during unwinding
+        /// The frames this raise has left so far, built during unwinding, with how the first of
+        /// them came to be there.
         Trace : ExceptionTrace<'typeGen, 'methodGen, 'methodVar>
     }
 
