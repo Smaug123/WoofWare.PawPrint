@@ -177,9 +177,6 @@ module TestPureCases =
                 ]
                 |> List.map (fun case -> case, Net11Frontier.gcMemoryInfo)
             yield!
-                [ "LibcKillIgnoredThenRegistered.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.signalDispatcherThreadId)
-            yield!
                 [
                     "CancellationTokenRegistrationDisposeCrossThread.cs"
                     "MonitorInflationContended.cs"

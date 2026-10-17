@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open Microsoft.Extensions.Logging
 open WoofWare.PosixKernel
 
 /// What the signal half of a scheduler tick did to the process.
@@ -430,12 +431,14 @@ module SignalDispatch =
         returnToUserThen SignalPoll.Continues state
 
     /// Start the managed callback for `signal` on the parked dispatcher: the
-    /// shim's `g_posixSignalHandler(signo, posixSignal)`.
+    /// shim's `g_posixSignalHandler(signo, posixSignal)`. The first callback
+    /// gives the dispatcher its managed thread id.
     ///
     /// Fails if no callback was installed by `SystemNative_SetPosixSignalHandler`:
     /// the shim asserts there is one, and the BCL installs it before it enables
     /// any signal.
     let private startCallback
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (dispatcher : ThreadId)
         (signal : Signal)
@@ -487,6 +490,19 @@ module SignalDispatch =
             | Error _ ->
                 failwith
                     $"SignalDispatch.poll: failed to build MethodState for handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner}."
+
+        // The dispatcher is a native thread until it first calls the callback, when CoreCLR's
+        // reverse P/Invoke attaches it (`JIT_ReversePInvokeEnterRare`'s `SetupThread`): it takes
+        // a managed thread id, and `SetThread` gives it its `t_currentManagedThreadId`. It stays
+        // attached through every later callback.
+        let state =
+            if state.ManagedThreadObjects.ContainsKey dispatcher then
+                state
+            else
+                let _, state =
+                    IlMachineState.getOrAllocateManagedThreadObject loggerFactory baseClassTypes dispatcher state
+
+                IlMachineState.seedManagedThreadId loggerFactory baseClassTypes dispatcher state
 
         state.MapKernel (fun kernel ->
             { kernel with
@@ -573,6 +589,7 @@ module SignalDispatch =
     /// that made the call, and this finishes the read rather than
     /// `Scheduler.wakeFromSyscall`.
     let rec private wakeDispatcher
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         : SignalPoll
@@ -671,14 +688,14 @@ module SignalDispatch =
         // it models no child process for a `waitpid` to find.
         match Signal.ofRawSignoUnder numbering signo with
         | ValueSome signal when PosixSignalShim.isRegistered signal state.Kernel.PosixSignalShim ->
-            SignalPoll.Continues (startCallback baseClassTypes dispatcher signal state)
+            SignalPoll.Continues (startCallback loggerFactory baseClassTypes dispatcher signal state)
         | ValueSome _
         | ValueNone ->
             // Handled without guest code, and the loop goes straight back to
             // its read: so does this, rather than leaving the next byte for a
             // tick that may never come if every other thread is asleep.
             match handleNonCanceledOnDispatcher dispatcher signo state with
-            | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
+            | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes state
             | killed -> killed
 
     /// System.Native's signal handling between two guest instructions: the
@@ -687,9 +704,14 @@ module SignalDispatch =
     /// once per tick by the driver's preamble (`MultiProgram.advance`), shortly
     /// before the scheduler picks its next thread, so a dispatcher it wakes can
     /// be picked on the same tick.
-    let poll (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : SignalPoll =
+    let poll
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : SignalPoll
+        =
         match deliverToLeader state with
-        | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
+        | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes state
         | killed -> killed
 
     /// Whether `poll` may do anything to `state`: a signal the leader may take on its return to
