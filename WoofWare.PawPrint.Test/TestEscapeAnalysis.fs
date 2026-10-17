@@ -2046,6 +2046,41 @@ public static class SR
 
         ()
 
+    /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
+    /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
+    [<Test>]
+    let ``a method or field handle made from a pointer reads its loader allocator by a native the analysis sees through``
+        ()
+        : unit
+        =
+        let corelib = hostCoreLib ()
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        let _ =
+            (analysis, [ "System.RuntimeMethodHandle" ; "System.RuntimeFieldHandle" ])
+            ||> List.fold (fun analysis typeName ->
+                let key = methodNamed corelib typeName "FromIntPtr"
+                let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+                sources
+                |> Seq.map (renderSite analysis)
+                |> List.ofSeq
+                |> shouldEqual []
+
+                analysis
+            )
+
+        ()
+
     /// Code a capability query guards, compiled optimized as CoreLib is, so that the query's result
     /// is branched on directly.
     let private guardedSource =
