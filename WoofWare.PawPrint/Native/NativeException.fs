@@ -191,8 +191,18 @@ module NativeException =
 
             match trace.HeadOrigin with
             | TraceHeadOrigin.RuntimeRaise site ->
+                let firstFrame =
+                    match site with
+                    | RuntimeRaiseSite.MadeByRuntime ->
+                        "CoreCLR raises most such exceptions from a [StackTraceHidden] managed helper its JIT calls, such as ThrowHelpers.ThrowIndexOutOfRangeException or CastHelpers.ChkCastAny_NoCacheLookup, and which helper, if any, is the JIT's choice"
+                    | RuntimeRaiseSite.TypeInitializerFailed
+                    | RuntimeRaiseSite.TypeInitializerFailedEarlier ->
+                        "CoreCLR raises it from InitHelpers.InitClassSlow, the managed helper that runs a type's initialiser"
+                    | RuntimeRaiseSite.TargetInvocationWrap ->
+                        "CoreCLR raises it from the managed code that called the constructor or initialiser, such as RuntimeType.CreateInstanceOfT"
+
                 failwith
-                    $"TODO: %s{operation} (Exception.TargetSite, which Exception.Source reads): the runtime raised this exception (RuntimeRaiseSite.%A{site}). CoreCLR raises most such exceptions from a [StackTraceHidden] managed helper its JIT calls, such as ThrowHelpers.ThrowIndexOutOfRangeException or InitHelpers.InitClassSlow, whose frame then begins the trace and is what TargetSite names; which helper is the JIT's choice, and PawPrint runs no frame for it, so it cannot say. PawPrint's first frame is %s{head.Method.Name}."
+                    $"TODO: %s{operation} (Exception.TargetSite, which Exception.Source reads): the runtime raised this exception (RuntimeRaiseSite.%A{site}). %s{firstFrame}; that frame begins its trace and is what TargetSite names, and PawPrint runs no frame for it. PawPrint's first frame is %s{head.Method.Name}."
             | TraceHeadOrigin.IlThrow ->
 
             match head.Method.SynthesisedKind with
@@ -205,7 +215,7 @@ module NativeException =
             | Some other ->
                 // An IL `throw` executes only in a body with IL: a metadata method or a dynamic one.
                 failwith
-                    $"%s{operation}: an IL throw raised this exception in %O{head.Method}, a synthesised %O{other} method, which has no IL; this is an interpreter bug"
+                    $"%s{operation}: an IL throw raised this exception in %s{head.Method.Name}, a synthesised %O{other} method, which has no IL; this is an interpreter bug"
             | None ->
 
             let retMethodInfo =
@@ -229,12 +239,13 @@ module NativeException =
                 { state with
                     MethodHandles = registry
                 }
-                |> fun state ->
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        (ManagedPointerSource.requireAddressed retMethodInfo)
-                        (CliType.ObjectRef (Some stub))
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed retMethodInfo)
+                    (CliType.ObjectRef (Some stub))
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

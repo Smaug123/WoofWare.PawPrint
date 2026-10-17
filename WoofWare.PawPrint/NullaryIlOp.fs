@@ -2541,8 +2541,10 @@ module NullaryIlOp =
                 // The whole trace comes from the token, origin included: the snapshot's origin
                 // belongs to the snapshot's frames, which a later raise of the same object may have
                 // replaced. A token-less exception (its `_stackTrace` written null since) has no
-                // frames to continue, so the next frame this raise appends is its first, and that
-                // raise is this IL instruction's.
+                // frames to continue, so the next frame this raise appends, at the rethrowing
+                // method's call site in its caller, is its first. CoreCLR's is the same frame: it
+                // appends none for the frame a rethrow begins in (`RH_EH_FIRST_RETHROW_FRAME`,
+                // exceptionhandling.cpp:2957).
                 let cliException =
                     { cliException with
                         Trace =

@@ -525,10 +525,11 @@ module ExceptionDispatching =
 
             List.rev (last :: earlierReversed)
 
-    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
-    /// exception already carried, with the last marked as the end of that earlier trace, so that
-    /// the frame about to be appended continues them instead of starting a new trace. `None` means
-    /// no flag was pending and the caller's own frames stand unchanged.
+    /// If `currentThread` has a pending foreign-raise flag, clear it and return the trace the
+    /// exception already carried, with its last frame marked as the end of that earlier trace, so
+    /// that the frame about to be appended continues it instead of starting a new trace. `None`
+    /// means either that no flag was pending, or that one was and `traceAlreadyPresent` had no
+    /// trace to give (the exception was never thrown); either way the caller's own trace stands.
     ///
     /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
     /// and the placement matters as much as the marking: CoreCLR consumes the flag when a frame is
@@ -555,12 +556,15 @@ module ExceptionDispatching =
     /// `docs/plans/2026-08-11-two-pass-exception-dispatch.md` records why this answer is the
     /// faithful one.
     ///
-    /// The frames come from the exception object rather than from any in-flight list, because
-    /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
-    /// *same* object from inside a catch updates the token while the outer handler's snapshot goes
-    /// stale, and only the token still holds the nested boundary.
+    /// CoreCLR re-reads `_stackTrace` at every append. `throwExceptionObject` does too, reading the
+    /// trace from the exception object rather than from any in-flight list, which is observable: a
+    /// nested throw of the *same* object from inside a catch updates the token while the outer
+    /// handler's snapshot goes stale, and only the token still holds the nested boundary.
+    /// `appendCallerFrame` passes the raise's in-flight trace instead, which differs from the
+    /// object's only if guest code has thrown the same object again since this raise last
+    /// appended, and between two appends of one raise only a `filter` runs guest code.
     ///
-    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
+    /// `traceAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
     /// fails loudly on an exception address that is not a real heap object, which is exactly what
     /// the skeletal states in low-level dispatch tests use.
     let private consumeForeignExceptionRaise

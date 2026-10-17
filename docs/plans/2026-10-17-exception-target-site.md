@@ -177,8 +177,8 @@ A test-only commit, with the failing output, comes before the implementation.
    caught, spliced by `edi.Throw()` inside the handler, then `rethrow`n.
 3. The wrapper case (`RuntimeWrappedException` around a thrown string: `TargetSite` is the method
    containing the `throw`) follows in #1943's branch, since only it wraps.
-4. On .NET 11, park 1 on `Net11Frontier.runtimeMethodInfoValue`; 2 does not reach reflection past
-   the refusal, so it runs on both.
+4. On .NET 11, park 1 on `Net11Frontier.runtimeMethodInfoValue`. 2 runs on both: its reflective
+   and `Activator` raises reach the refusal on .NET 11 too (measured).
 
 Mutation checks: flip the `throw` opcode's `IlThrow` to a `RuntimeRaise` and `Ret`'s to `IlThrow`;
 take `IlThrow` for every splice, and the captured origin for an empty one; keep the snapshot's origin

@@ -48,9 +48,12 @@ type RuntimeRaiseSite =
 /// frame CoreCLR's own trace of the exception begins with.
 [<RequireQualifiedAccess>]
 type TraceHeadOrigin =
-    /// An IL `throw` executing in that frame raised the exception, whether in guest code or in
-    /// CoreLib's own, such as a `ThrowHelper`. CoreCLR's `IL_Throw` is native code, so its trace
-    /// begins at the same frame.
+    /// The first frame is the one CoreCLR's trace begins with, because an IL instruction raised the
+    /// exception without the runtime running managed code of its own first. Usually that is a
+    /// `throw` executing in the frame, in guest code or in CoreLib's own (a `ThrowHelper`):
+    /// CoreCLR's `IL_Throw` is native code, so its trace begins at the same frame. It is also a
+    /// `rethrow` of an exception left with no trace, whose first frame is the rethrowing method's
+    /// caller in both runtimes.
     | IlThrow
     /// The runtime raised the exception on the frame's behalf. CoreCLR raises most of these from a
     /// `[StackTraceHidden]` managed helper its JIT calls, whose frame then begins the trace, and
