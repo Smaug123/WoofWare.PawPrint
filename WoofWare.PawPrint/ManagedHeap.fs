@@ -39,13 +39,22 @@ type ManagedHeap =
         SyncBlocks : Map<ManagedHeapAddress, SyncBlock>
         /// Each object's header word: the `int32` CoreCLR keeps 4 bytes before the object's
         /// method-table pointer (`ObjHeader::m_SyncBlockValue`), which .NET 11's managed thin
-        /// lock reads and compare-exchanges. PawPrint gives the bits no meaning; the guest code
-        /// that writes them owns it. Kept apart from `SyncBlocks`, which is the monitor .NET 10
-        /// drives through `Monitor`'s InternalCalls and never touches this word.
+        /// lock reads and compare-exchanges. PawPrint reads its bits only where CoreCLR's VM
+        /// does, when the thin lock inflates (`ObjectHeaderInflation`); the guest code that
+        /// writes them owns them otherwise. Kept apart from `SyncBlocks`, which is the monitor
+        /// .NET 10 drives through `Monitor`'s InternalCalls and never touches this word.
         ///
         /// Invariant: the key set is that of `SyncBlocks`, for the same reason, and every
         /// allocation starts at 0, as CoreCLR's does.
         HeaderWords : Map<ManagedHeapAddress, int32>
+        /// .NET 11's sync blocks, for the objects whose thin lock has inflated to a `Lock`. An
+        /// object has one from its first inflation on: CoreCLR keeps a sync block for the
+        /// object's lifetime once its `Lock` exists (`SyncBlock::SetPrecious`), and PawPrint
+        /// frees no object. Each one's sync block index is the number of entries once it was
+        /// added.
+        ///
+        /// Invariant: every key is a live allocation, so a key of `SyncBlocks`.
+        MonitorLocks : Map<ManagedHeapAddress, MonitorLock>
     }
 
 [<RequireQualifiedAccess>]
@@ -60,6 +69,7 @@ module ManagedHeap =
             StringDataOffsets = ImmutableDictionary.Empty
             SyncBlocks = Map.empty
             HeaderWords = Map.empty
+            MonitorLocks = Map.empty
         }
 
     /// The object header of the object at `addr`. Every live heap object has one,
@@ -92,6 +102,37 @@ module ManagedHeap =
         { heap with
             HeaderWords = heap.HeaderWords |> Map.add addr value
         }
+
+    let tryGetMonitorLock (addr : ManagedHeapAddress) (heap : ManagedHeap) : MonitorLock option =
+        heap.MonitorLocks |> Map.tryFind addr
+
+    let beginInflation
+        (addr : ManagedHeapAddress)
+        (inflater : ThreadId)
+        (handle : GcHandleAddress)
+        (heap : ManagedHeap)
+        : int * ManagedHeap
+        =
+        if not (heap.SyncBlocks.ContainsKey addr) then
+            failwith $"beginInflation: %O{addr} is not a live managed heap allocation"
+
+        match heap.MonitorLocks.TryGetValue addr with
+        | true, existing -> failwith $"beginInflation: %O{addr} already has a sync block: %O{existing}"
+        | false, _ ->
+
+        heap.MonitorLocks.Count + 1,
+        { heap with
+            MonitorLocks = heap.MonitorLocks |> Map.add addr (MonitorLock.Inflating (inflater, handle))
+        }
+
+    let completeInflation (addr : ManagedHeapAddress) (inflater : ThreadId) (heap : ManagedHeap) : ManagedHeap =
+        match heap.MonitorLocks.TryGetValue addr with
+        | true, MonitorLock.Inflating (owner, handle) when owner = inflater ->
+            { heap with
+                MonitorLocks = heap.MonitorLocks |> Map.add addr (MonitorLock.Inflated handle)
+            }
+        | true, other -> failwith $"completeInflation: %O{inflater} is not inflating %O{addr}, which is %O{other}"
+        | false, _ -> failwith $"completeInflation: %O{addr} has no sync block"
 
     /// Every object whose monitor is currently `Held` by `thread`, with the ownership
     /// state, in ascending address order.

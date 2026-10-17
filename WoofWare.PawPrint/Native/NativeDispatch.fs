@@ -51,9 +51,10 @@ module NativeDispatch =
     let private handlersFor (runtime : EmulatedRuntime) : (NativeCallContext -> NativeHandlerResult option) list =
         match runtime with
         // .NET 10's `Monitor` enters and leaves through InternalCall fast paths, which .NET 11
-        // replaced with the managed thin lock in `ObjectHeader`.
+        // replaced with the managed thin lock in `ObjectHeader`, whose fat lock is
+        // `NativeObjectHeader`'s.
         | EmulatedRuntime.Net10 -> NativeMonitor.tryExecute :: sharedNativeHandlers
-        | EmulatedRuntime.Net11 -> sharedNativeHandlers
+        | EmulatedRuntime.Net11 -> NativeObjectHeader.tryExecute :: sharedNativeHandlers
 
     /// Run the native method `ctx` is executing, using the handlers of the runtime whose CoreLib
     /// the run loaded (`ctx.BaseClassTypes.Corelib`). `None` if no handler implements it.

@@ -776,6 +776,17 @@ mutation-testing skill applies to each table/classifier they introduce.
      (`SystemNative_LowLevelFutex_*`, `linuxFutex`), where Darwin's block on `LowLevelMonitor`.
      WoofWare.PosixKernel leaves futex waits to its client for now, and the plan is to model them
      there (#1726) rather than as another wait of PawPrint's own;
+   * **(landed)** the fat lock: `ObjectHeader.GetLockHandleIfExists` answers the handle in the
+     object's sync block (`ManagedHeap.MonitorLocks`), and `ObjectHeader_GetOrCreateLockObject`
+     gives the object one as `ObjHeader::GetSyncBlock` does, rewriting its header word to the sync
+     block's index (`ObjectHeaderInflation`) and, when a thread holds the thin lock, calling
+     CoreLib's `[UnmanagedCallersOnly] Lock.InitializeForMonitor` to hand it the owner. A thread
+     that arrives while another is inflating the same object spins, yielding, as on CoreCLR's
+     sync-block spin lock (`NativeHandlerResult.YieldedRetainingFrame`). Contended locks,
+     `Monitor.Wait` and `Pulse` run. Past it: `Task` waits reach the thread pool's
+     `GC.GetMemoryInfo` (`gcMemoryInfo`), the linux-x64 CoreLib's `FileSystemWatcher` reaches a
+     runtime-async method, and PawPrint's signal dispatcher thread, which the VM would attach on
+     its first callback, has no `t_currentManagedThreadId` (`signalDispatcherThreadId`);
    * the `GCMemoryInfoData` layout;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
