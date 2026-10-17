@@ -2790,6 +2790,20 @@ public static class Cases
     public static bool Same<T>() => typeof(T) == typeof(string);
 
     public static bool SameOfString() => Same<string>();
+
+    public static bool SameReversed<T>() => typeof(string) == typeof(T);
+
+    public static bool SameReversedOfString() => SameReversed<string>();
+
+    public static Type OfBoxString() => Box<string>.Of();
+
+    public static Type OfBoxInt() => Box<int>.Of();
+}
+
+// A type variable of the declaring type, rather than of the method.
+public static class Box<T>
+{
+    public static Type Of() => typeof(T);
 }
 """
 
@@ -2831,7 +2845,18 @@ public static class Cases
         let analysis = analysisOver [ fixture ] id
 
         // The definitions stand for every instantiation, the shared ones among them.
-        looksUpRuntimeType true analysis fixture [ "Of" ; "OfString" ; "OfSharedStruct" ; "OfList" ; "OfListOfString" ]
+        looksUpRuntimeType
+            true
+            analysis
+            fixture
+            [
+                "Of"
+                "OfString"
+                "OfSharedStruct"
+                "OfList"
+                "OfListOfString"
+                "OfBoxString"
+            ]
 
         // Where the type is exact, the JIT embeds its `RuntimeType`, which it makes as it compiles.
         looksUpRuntimeType
@@ -2843,8 +2868,10 @@ public static class Cases
                 "OfListOfInt"
                 "FirstOfPartlyShared"
                 "Exact"
+                "OfBoxInt"
                 "IsValueOfString"
                 "SameOfString"
+                "SameReversedOfString"
             ]
 
         // The `RuntimeType` comes from native code the analysis does not see into.
