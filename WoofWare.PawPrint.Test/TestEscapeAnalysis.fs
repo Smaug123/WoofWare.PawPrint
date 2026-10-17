@@ -2368,7 +2368,9 @@ public static class Cases
     ///   - `Asks`, of `int`;
     ///   - `AsksAfterReturnAddress`, of `int`, after calling `StubHelpers.NextCallReturnAddress`;
     ///   - `AsksOfEither(bool)`, of `int` or `string`, whose two `ldtoken`s branch to one call of
-    ///     `GetTypeFromHandle`.
+    ///     `GetTypeFromHandle`;
+    ///   - `AsksOfOther`, of what `Other(RuntimeTypeHandle)`, which is not `GetTypeFromHandle`,
+    ///     returns for the handle of `string`: the type of `int`.
     let private emitValueTypeQueries () : byte[] =
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "ReturnAddress", typeof<obj>.Assembly)
@@ -2395,11 +2397,25 @@ public static class Cases
         let isValueType = typeof<Type>.GetProperty("IsValueType").GetGetMethod ()
         let exceptionConstructor = typeof<Exception>.GetConstructor Type.EmptyTypes
 
-        for name, asksReturnAddress, ofEither in
+        let other =
+            cases.DefineMethod (
+                "Other",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Type>,
+                [| typeof<RuntimeTypeHandle> |]
+            )
+
+        let il = other.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
+        il.Emit (Emit.OpCodes.Call, getTypeFromHandle)
+        il.Emit Emit.OpCodes.Ret
+
+        for name, asksReturnAddress, ofEither, ofOther in
             [
-                "Asks", false, false
-                "AsksAfterReturnAddress", true, false
-                "AsksOfEither", false, true
+                "Asks", false, false, false
+                "AsksAfterReturnAddress", true, false, false
+                "AsksOfEither", false, true, false
+                "AsksOfOther", false, false, true
             ] do
             let parameters = if ofEither then [| typeof<bool> |] else [||]
 
@@ -2423,10 +2439,12 @@ public static class Cases
                 il.MarkLabel ofInt
                 il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
                 il.MarkLabel asked
+            elif ofOther then
+                il.Emit (Emit.OpCodes.Ldtoken, typeof<string>)
             else
                 il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
 
-            il.Emit (Emit.OpCodes.Call, getTypeFromHandle)
+            il.Emit (Emit.OpCodes.Call, (if ofOther then other :> MethodInfo else getTypeFromHandle))
             il.Emit (Emit.OpCodes.Callvirt, isValueType)
             il.Emit (Emit.OpCodes.Brfalse, otherwise)
             il.Emit (Emit.OpCodes.Newobj, exceptionConstructor)
@@ -2455,10 +2473,11 @@ public static class Cases
         asks.Assumes.Contains Assumption.JitOptimises |> shouldEqual true
 
         // The JIT expands only the intrinsics it must in a method that asks for the next call's
-        // return address, and a call that more than one way reaches has an operand it cannot name.
+        // return address, a call that more than one way reaches has an operand it cannot name, and
+        // only a type that `GetTypeFromHandle` made is a `typeof`.
         let mutable analysis = analysis
 
-        for name in [ "AsksAfterReturnAddress" ; "AsksOfEither" ] do
+        for name in [ "AsksAfterReturnAddress" ; "AsksOfEither" ; "AsksOfOther" ] do
             let next, escapes =
                 EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Cases" name)
 

@@ -3898,12 +3898,13 @@ module EscapeAnalysis =
                 | None -> failwith $"Concrete type handle %O{handle} is not registered"
             | state, _ -> state, None
         | TypeQuery.Identity (first, second, equality) ->
-            match concretized state first with
-            | state, Some first when named first ->
-                match concretized state second with
-                | state, Some second when named second -> state, Some ((first = second) = equality)
-                | state, _ -> state, None
-            | state, _ -> state, None
+            let state, first = concretized state first
+            let state, second = concretized state second
+
+            match first, second with
+            | Some first, Some second when List.forall named [ first ; second ] ->
+                state, Some ((first = second) = equality)
+            | _ -> state, None
 
     /// The facts of `instance`: those of its definition, less what a run of the instance cannot
     /// reach, given which of the values its callers pass are null or zero (`MethodInstance.Passed`),
