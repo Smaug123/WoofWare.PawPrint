@@ -108,6 +108,25 @@ public static class Program
         return accept;
     }
 
+    // ... and here the raise of the capture escapes the filter, which abandons it there.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool SpliceEscapingFilter(ExceptionDispatchInfo edi)
+    {
+        edi.Throw();
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void SpliceEscapingWhileFiltering()
+    {
+        Exception raised = null;
+        ExceptionDispatchInfo edi = null;
+        try { Index(new int[1], 2); }
+        catch (Exception e) { raised = e; edi = ExceptionDispatchInfo.Capture(e); }
+        try { ThrowAgain(raised); }
+        catch (Exception) when (SpliceEscapingFilter(edi)) { }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static Exception SpliceWhileFiltering(bool accept)
     {
@@ -153,6 +172,9 @@ public static class Program
             "a rethrow after a splice of a captured runtime raise", "SpliceThenRethrow()", "MadeByRuntime"
             "a raise continued after a rejecting filter spliced in a captured runtime raise",
             "SpliceWhileFiltering(false)",
+            "MadeByRuntime"
+            "a raise continued after a filter let a splice of a captured runtime raise escape",
+            "SpliceEscapingWhileFiltering()",
             "MadeByRuntime"
             "a raise caught by a filter that spliced in a captured runtime raise",
             "{ Exception caught = SpliceWhileFiltering(true); if (caught != null) return caught; }",
