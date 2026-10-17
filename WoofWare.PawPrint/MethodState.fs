@@ -73,6 +73,27 @@ type RuntimeExceptionField =
     /// that format string renders.
     | TypeLoadResourceId of int
 
+/// Which of the runtime's two ways of making an exception a constructor frame the interpreter
+/// pushed itself belongs to, which decides what happens to the object once that constructor
+/// returns and before it is dispatched.
+[<RequireQualifiedAccess>]
+type RuntimeExceptionMaking =
+    /// `EEException::CreateThrowable`: the runtime raising an exception of its own. Once the
+    /// constructor has run, `_HResult` is overwritten with the runtime's mapped value
+    /// (`SetHResult(GetHR())`), and then each of `fields` is written. They have to be applied
+    /// after the constructor, because the parameterless one sets `_message` to the type's default
+    /// resource string and would otherwise clobber it. Use them where the CLR would have called a
+    /// constructor overload that PawPrint cannot yet invoke (e.g.
+    /// `IndexOutOfRangeException(SR.IndexOutOfRange_ArrayRankIndex)`, or the four-argument
+    /// `TypeLoadException` constructor the EE uses); leave the list empty to accept the
+    /// parameterless constructor's defaults, which is what the CLR produces when it throws the
+    /// exception with no argument.
+    | Raised of fields : RuntimeExceptionField list
+    /// `WrapNonCompliantException`: a `RuntimeWrappedException` whose `(object)` constructor has
+    /// been given an object a `throw` threw that is not an exception. The constructor's own
+    /// `_HResult` and `_message` stand.
+    | WrappedNonException
+
 /// What `returnStackFrame` should do with a frame's product — the object it was constructing if
 /// `Constructing`, otherwise the value its signature says it returns — once it returns.
 [<RequireQualifiedAccess>]
@@ -81,18 +102,11 @@ type ReturnValueDisposition =
     /// object (or, for value types, its now-complete contents), onto the caller's evaluation
     /// stack.
     | PushToCaller
-    /// The runtime synthesised this exception and pushed its ctor frame itself (see
-    /// `IlMachineStateExecution.raiseRuntimeException`). Dispatch the constructed object as
-    /// a managed exception instead of pushing it.
-    ///
-    /// `fields` are written *after* the ctor has run — they must be applied post-ctor, because
-    /// the parameterless ctor sets `_message` to the type's default resource string and would
-    /// otherwise clobber it. Use them where the CLR would have called a constructor overload
-    /// that PawPrint cannot yet invoke (e.g. `IndexOutOfRangeException(SR.IndexOutOfRange_ArrayRankIndex)`,
-    /// or the four-argument `TypeLoadException` constructor the EE uses); leave the list empty
-    /// to accept the parameterless ctor's defaults, which is what the CLR produces when it
-    /// throws the exception with no argument.
-    | DispatchAsException of fields : RuntimeExceptionField list
+    /// The runtime made this exception and pushed its ctor frame itself (see
+    /// `IlMachineStateExecution.raiseRuntimeException` and `wrapNonException`). Dispatch the
+    /// constructed object as a managed exception instead of pushing it, once `making` has said
+    /// what else happens to it first.
+    | DispatchAsException of making : RuntimeExceptionMaking
     /// Throw the returned value away rather than pushing it. The interpreter pushed this frame
     /// itself, on top of a caller that is mid-instruction, to run something the CLR would have
     /// run inside that instruction; the caller wants the frame's *effect*, not its value, and
@@ -131,6 +145,13 @@ type ExceptionEscape =
     /// a frame's boundary rather than let the exception unwind into a caller that CoreCLR would
     /// never have shown it to.
     | SwallowedByRuntime of runtimeCaller : string
+    /// The runtime calls this method from native code that catches every exception at this
+    /// frame's boundary and raises it again from the caller's call site: CoreCLR's `EX_CATCH`
+    /// around `RuntimeWrappedException`'s constructor in `WrapNonCompliantException`, after which
+    /// `IL_Throw` dispatches what it caught in the wrapper's place. The first raise ends at this
+    /// boundary, so every `finally` inside the frame runs before any filter outside it, and the
+    /// second continues the trace the first left.
+    | RaisedAgainFromCaller
 
 /// What a C function in the runtime's native shim, which PawPrint implements, read from
 /// guest memory once, before a loop that makes a syscall again: the values a call made

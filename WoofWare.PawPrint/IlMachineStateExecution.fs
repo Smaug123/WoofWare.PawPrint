@@ -1437,13 +1437,43 @@ module IlMachineStateExecution =
         // `callMethod` to run the ctor, and `callMethod` needs to call it to service
         // `IntrinsicResult.RaiseException`.
         //
-        // 1. Allocate the zero-initialised exception with _HResult pre-set.  This deliberately
-        //    bypasses ensureTypeInitialised: opcode-manufactured exceptions are produced by the
-        //    runtime rather than by guest `newobj` class-initialisation semantics.
+        // Allocate the zero-initialised exception with _HResult pre-set.  This deliberately
+        // bypasses ensureTypeInitialised: opcode-manufactured exceptions are produced by the
+        // runtime rather than by guest `newobj` class-initialisation semantics.
         let addr, _exnHandle, state =
             ExceptionDispatching.allocateRuntimeException loggerFactory baseClassTypes exceptionTypeInfo state
 
-        // 2. Find the parameterless .ctor on the exception type.
+        constructRuntimeException
+            loggerFactory
+            baseClassTypes
+            exceptionTypeInfo
+            (fun method -> MethodInfo.arity method = 0)
+            "parameterless"
+            addr
+            []
+            (RuntimeExceptionMaking.Raised fields)
+            currentThread
+            state
+
+    /// Run the constructor of an exception the runtime itself is making, on the already-allocated
+    /// `addr`, and return to the dispatch loop; when it returns, `making` says what happens to the
+    /// object before it is dispatched (see `RuntimeExceptionMaking`). `isConstructor` picks the
+    /// constructor, which `description` names for a failure to find exactly one, and `arguments`
+    /// are what it is passed after `this`.
+    and private constructRuntimeException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (isConstructor :
+            WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> -> bool)
+        (description : string)
+        (addr : ManagedHeapAddress)
+        (arguments : CliType list)
+        (making : RuntimeExceptionMaking)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
         let assy =
             state.TypeSystem._LoadedAssemblies.ByDefinitionName exceptionTypeInfo.AssemblyFullName
 
@@ -1454,12 +1484,14 @@ module IlMachineStateExecution =
                 $"raiseRuntimeException: expected non-generic exception type, but %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %i{typeDef.Generics.Length} generic parameter(s)"
 
         let ctor =
-            typeDef.Methods
-            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && MethodInfo.arity method = 0)
-            |> Option.defaultWith (fun () ->
+            match
+                typeDef.Methods
+                |> List.filter (fun method -> method.Name = ".ctor" && not method.IsStatic && isConstructor method)
+            with
+            | [ ctor ] -> ctor
+            | found ->
                 failwith
-                    $"raiseRuntimeException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
-            )
+                    $"raiseRuntimeException: expected one %s{description} .ctor on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}, found %d{found.Length}"
             // The type has no generic parameters (guarded above), so any GenericParamFromMetadata
             // in the ctor's type-generic positions is unreachable. Map them to TypeDefn to satisfy
             // concretizeMethodForExecution's signature.
@@ -1467,16 +1499,19 @@ module IlMachineStateExecution =
                 failwith<TypeDefn> "raiseRuntimeException: exception type was unexpectedly generic"
             )
 
-        // 3. Push the allocated object ref as `this` for the ctor.
+        // Push the ctor's arguments, then the allocated object ref as `this` on top of them: a
+        // constructing call takes `this` from the top of the stack, as `newobj` leaves it.
         let state =
-            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread state
+            (state, arguments)
+            ||> List.fold (fun state argument -> IlMachineState.pushToEvalStack argument currentThread state)
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) currentThread
 
-        // 4. Call the ctor, marking the return state so that returnStackFrame dispatches
-        //    the exception instead of pushing the object onto the caller's eval stack.
-        //    Do NOT advance the caller's PC: when the ctor returns and exception dispatch
-        //    begins, handler lookup and the stack-trace frame must see the faulting
-        //    instruction's PC, not the next instruction.  (Same class of bug as call-site
-        //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
+        // Call the ctor, marking the return state so that returnStackFrame dispatches
+        // the exception instead of pushing the object onto the caller's eval stack.
+        // Do NOT advance the caller's PC: when the ctor returns and exception dispatch
+        // begins, handler lookup and the stack-trace frame must see the faulting
+        // instruction's PC, not the next instruction.  (Same class of bug as call-site
+        // vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
         let state, concretizedCtor, ctorDeclaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
@@ -1488,6 +1523,11 @@ module IlMachineStateExecution =
                 state
 
         let threadState = state.ThreadState.[currentThread]
+
+        let escape =
+            match making with
+            | RuntimeExceptionMaking.Raised _ -> ExceptionEscape.Propagate
+            | RuntimeExceptionMaking.WrappedNonException -> ExceptionEscape.RaisedAgainFromCaller
 
         let state =
             callMethod
@@ -1503,23 +1543,23 @@ module IlMachineStateExecution =
                 currentThread
                 threadState
                 None
-                (ReturnValueDisposition.DispatchAsException fields)
-                ExceptionEscape.Propagate
+                (ReturnValueDisposition.DispatchAsException making)
+                escape
                 state
 
-        // 5. Discharge the ctor frame's prologue without running it, holding step 1's bypass.
-        //    `callMethod` arms a type-initialisation check on every metadata callee it pushes,
-        //    which for this one would run the exception type's own `.cctor` — guest code, in the
-        //    middle of manufacturing a runtime exception, able to replace it with a
-        //    `TypeInitializationException`.
+        // Discharge the ctor frame's prologue without running it, holding the allocation's
+        // bypass of class initialisation. `callMethod` arms a type-initialisation check on every
+        // metadata callee it pushes, which for this one would run the exception type's own
+        // `.cctor` — guest code, in the middle of manufacturing a runtime exception, able to
+        // replace it with a `TypeInitializationException`.
         //
-        //    Latent as it stands: no exception type this path manufactures has a `.cctor` in the
-        //    CoreLib we resolve. CoreCLR reaches these through `EEException::CreateThrowable`
-        //    rather than through a JIT'd prologue.
+        // Latent as it stands: no exception type this path manufactures has a `.cctor` in the
+        // CoreLib we resolve. CoreCLR reaches these through `EEException::CreateThrowable`
+        // and `WrapNonCompliantException` rather than through a JIT'd prologue.
         //
-        //    Checked rather than assumed, because clearing the flag off the wrong frame would
-        //    silently let a `.cctor` run somewhere else instead: the frame `callMethod` just
-        //    pushed must be active, and must be awaiting this very exception type.
+        // Checked rather than assumed, because clearing the flag off the wrong frame would
+        // silently let a `.cctor` run somewhere else instead: the frame `callMethod` just
+        // pushed must be active, and must be awaiting this very exception type.
         let threadState = state.ThreadState.[currentThread]
         let ctorFrameId = threadState.ActiveMethodState
 
@@ -1531,6 +1571,50 @@ module IlMachineStateExecution =
         | other ->
             failwith
                 $"logic error: manufacturing %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} pushed a constructor frame whose pending type initialisation is %O{other}, not the exception's own type %O{ctorDeclaringTypeHandle}; the class-initialisation bypass cannot be applied to it"
+
+    /// A `throw` has thrown `thrown`, which is not an exception: wrap it as CoreCLR's
+    /// `WrapNonCompliantException` (excep.cpp) does, by allocating a `RuntimeWrappedException` and
+    /// running its `(object)` constructor on `thrown`. When the constructor returns, the wrapper is
+    /// dispatched from the `throw` in the object's place; if it raises instead, what it raised is
+    /// (`ExceptionEscape.RaisedAgainFromCaller`). The `throw`'s program counter is not advanced.
+    and wrapNonException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thrown : ManagedHeapAddress)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let wrapperType =
+            baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{baseClassTypes.Corelib.DefinitionFullName} defines no System.Runtime.CompilerServices.RuntimeWrappedException, in which the runtime wraps a thrown object that is not an exception"
+            )
+
+        // CoreCLR records the wrapper's type before it allocates, so even a wrap whose
+        // constructor raises teaches the runtime which type to unwrap.
+        let state =
+            { state with
+                HasWrappedNonException = true
+            }
+
+        // `AllocateObject`: zero-initialised, with no class initialisation; the constructor sets
+        // `_HResult` and `_message` itself.
+        let addr, _wrapperHandle, state =
+            ExceptionDispatching.allocateUnconstructed loggerFactory baseClassTypes wrapperType state
+
+        constructRuntimeException
+            loggerFactory
+            baseClassTypes
+            wrapperType
+            (fun method -> method.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Object ])
+            "(object)"
+            addr
+            [ CliType.ObjectRef (Some thrown) ]
+            RuntimeExceptionMaking.WrappedNonException
+            currentThread
+            state
 
     /// `raiseRuntimeExceptionWithFields` writing only `_message`, or nothing when `message` is
     /// `None`.

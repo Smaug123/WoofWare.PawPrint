@@ -275,10 +275,15 @@ class Program
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
-    /// The report of a string thrown by `Thrower.Throw` from `Program.Main`, escaping unhandled.
+    /// The report of a string thrown by `Thrower.Throw` from `Program.Main`, escaping unhandled: of
+    /// the `RuntimeWrappedException` the runtime raised in the string's place, as CoreCLR reports it.
     let private assertReportsThrownString (lines : string list) : unit =
         lines.Length |> shouldEqual 3
-        lines.[0] |> shouldEqual "System.String (not a System.Exception)"
+
+        lines.[0]
+        |> shouldEqual
+            "System.Runtime.CompilerServices.RuntimeWrappedException: An object that does not derive from System.Exception has been wrapped in a RuntimeWrappedException."
+
         indexOfLineContaining "Thrower.Throw at IL offset " lines |> shouldEqual 1
         indexOfLineContaining "Program.Main at IL offset " lines |> shouldEqual 2
 
@@ -286,8 +291,8 @@ class Program
     let ``the report names a thrown object that is not an exception`` () : unit =
         runThrowerDriver "        Thrower.Throw();" |> assertReportsThrownString
 
-    /// A run that has concretised `System.Exception` before the throw still has nowhere in a
-    /// thrown string to put a stack trace.
+    /// A run that has concretised `System.Exception` before the throw puts no stack trace into the
+    /// thrown string.
     [<Test>]
     let ``the report names a thrown object that is not an exception after an exception type is in use`` () : unit =
         runThrowerDriver
@@ -296,8 +301,8 @@ class Program
         Thrower.Throw();"""
         |> assertReportsThrownString
 
-    /// `catch { throw; }` is a `catch (object)` whose `rethrow` raises the caught string again,
-    /// carrying the trace it was caught with.
+    /// `catch { throw; }` is a `catch (object)`, which in a C# assembly is handed the wrapper, and
+    /// whose `rethrow` raises the wrapper again, carrying the trace it was caught with.
     [<Test>]
     let ``the report names a rethrown object that is not an exception`` () : unit =
         runThrowerDriver

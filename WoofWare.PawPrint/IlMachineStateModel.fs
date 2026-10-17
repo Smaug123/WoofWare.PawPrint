@@ -188,6 +188,14 @@ type IlMachineState =
         /// collecting GC must make this table weak-keyed.
         FrozenStackTraces :
             Map<ManagedHeapAddress, ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list>
+        /// Whether the runtime has yet wrapped a thrown object that is not an exception in a
+        /// `RuntimeWrappedException`. CoreCLR learns that type's method table the first time it
+        /// wraps (`pMT_RuntimeWrappedException` in `WrapNonCompliantException`, excep.cpp), and only
+        /// from then on hands a `catch` or `filter` body of an assembly that does not wrap such
+        /// throws what a `RuntimeWrappedException` wraps rather than the wrapper itself
+        /// (`PossiblyUnwrapThrowable`). Set by the wrap, before its constructor runs, and never
+        /// cleared.
+        HasWrappedNonException : bool
         /// The stack shape of every IL body that has executed, keyed by definition, computed on
         /// the body's first execution. See `StackShapeOfMethod`.
         StackShapes : Map<StackShapeKey, StackShape>
@@ -667,18 +675,15 @@ type ReturnFrameResult =
     | NoFrameToReturn
     /// Normal return; state is positioned at the caller frame.
     | NormalReturn of IlMachineState
-    /// The ctor that just returned was constructing a runtime-synthesised exception.
+    /// The ctor that just returned was constructing an exception the runtime is making.
     /// The caller should dispatch this object as a managed exception instead of pushing it
-    /// onto the eval stack.  Before dispatching, the caller MUST call
-    /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
-    /// SetHResult(GetHR()) step, and then write each of `fields` (see
-    /// `ReturnValueDisposition.DispatchAsException` for why that has to happen after the ctor
-    /// rather than before it).
+    /// onto the eval stack, once it has done to it what `making` says (see
+    /// `RuntimeExceptionMaking`).
     | DispatchException of
         IlMachineState *
         exceptionAddr : ManagedHeapAddress *
         exceptionType : ConcreteTypeHandle *
-        fields : RuntimeExceptionField list
+        making : RuntimeExceptionMaking
 
 /// How a run of the simulated process ended: the process itself ended, and each case
 /// carries the machine as it stood when it did, and how the kernel says it ended

@@ -4086,7 +4086,7 @@ public unsafe struct PointerWrapper
             match frame.ReturnState with
             | Some returnState ->
                 returnState.ReturnValueDisposition
-                |> shouldEqual (ReturnValueDisposition.DispatchAsException [])
+                |> shouldEqual (ReturnValueDisposition.DispatchAsException (RuntimeExceptionMaking.Raised []))
 
                 // NullReferenceException is a fixed-size type, so the exception object was
                 // allocated up front and handed to the ctor as `this`.

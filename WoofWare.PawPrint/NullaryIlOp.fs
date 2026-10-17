@@ -1564,20 +1564,23 @@ module NullaryIlOp =
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, fields) ->
-                // The ctor has run; now overwrite _HResult with the CLR's mapped value,
-                // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
+            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, making) ->
                 let state =
-                    ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
+                    match making with
+                    | RuntimeExceptionMaking.Raised fields ->
+                        // The ctor has run; now overwrite _HResult with the CLR's mapped value,
+                        // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
+                        let state =
+                            ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
 
-                // The raiser asked for specific field values, i.e. the CLR would have used a
-                // constructor overload taking them. This has to happen after the ctor, which
-                // has just written the type's default resource string into `_message`.
-                let state =
-                    (state, fields)
-                    ||> List.fold (fun state field ->
-                        IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
-                    )
+                        // The raiser asked for specific field values, i.e. the CLR would have used a
+                        // constructor overload taking them. This has to happen after the ctor, which
+                        // has just written the type's default resource string into `_message`.
+                        (state, fields)
+                        ||> List.fold (fun state field ->
+                            IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
+                        )
+                    | RuntimeExceptionMaking.WrappedNonException -> state
 
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
@@ -2527,23 +2530,10 @@ module NullaryIlOp =
                 // Its `StackTrace` out of `CatchExceptions` *is* stale: that is the snapshot this
                 // catch handler was entered with. The trace a rethrow inherits is the exception's
                 // own, whatever `_stackTrace` holds now.
-                //
-                // A caught object that is not an exception has no `_stackTrace`. What CoreCLR
-                // rethrows is the `RuntimeWrappedException` it raised in that object's place
-                // (`IL_Throw`, jithelpers.cpp), whose trace is still the snapshot unless the guest
-                // has thrown that wrapper again since. It cannot have here: PawPrint allocates no
-                // wrapper, and hands every clause the object itself.
-                let state, exceptionAncestor =
-                    IlMachineState.tryExceptionAncestor loggerFactory corelib exceptionType state
-
                 let cliException =
-                    match exceptionAncestor with
-                    | Some _ ->
-                        { cliException with
-                            StackTrace =
-                                IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
-                        }
-                    | None -> cliException
+                    { cliException with
+                        StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                    }
 
                 match
                     ExceptionDispatching.dispatchException
@@ -2579,20 +2569,18 @@ module NullaryIlOp =
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | existing -> failwith $"Throw instruction requires an object reference on the stack; got %O{existing}"
 
-            // Get exception type from heap object
-            let heapObject =
-                match ManagedHeap.tryGet addr state.ManagedHeap with
-                | Some obj -> obj
-                | None -> failwith "Exception object not found in heap"
+            let thrownType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+            match IlMachineState.tryExceptionAncestor loggerFactory corelib thrownType state with
+            | state, None ->
+                // `IL_Throw` (jithelpers.cpp) raises a `RuntimeWrappedException` in place of any
+                // object that is not an exception, and only ever dispatches an exception.
+                IlMachineStateExecution.wrapNonException loggerFactory corelib addr currentThread state
+                |> ExecutionResult.stepped
+            | state, Some _ ->
 
             match
-                ExceptionDispatching.throwExceptionObject
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    addr
-                    heapObject.ConcreteType
+                ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread addr thrownType
             with
             | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
