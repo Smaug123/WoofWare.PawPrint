@@ -382,8 +382,6 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``PCT runs with the same seed produce identical observable outcomes`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The core invariant of PCT: schedule is a deterministic function of
         // the seed plus the program. Run a schedule-sensitive guest twice with
         // the same seed and require bit-identical observable outcomes.
@@ -424,8 +422,6 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``a run that forks does consume randomness`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The other half of the iff. Without it, a policy that never drew anything would pass
         // the test above, and PCT would have silently degenerated into RoundRobin — which the
         // outcome-coverage tests in TestRaces would eventually catch, but only statistically
@@ -438,8 +434,6 @@ module TestSchedulerPct =
 
     [<Test>]
     let ``PCT runs without a seed default to RoundRobin parity`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // A `None` seed must select the legacy RoundRobin policy: two `None`
         // runs are identical, and they must also match the RoundRobin trace
         // (because RoundRobin is itself deterministic). This pins the

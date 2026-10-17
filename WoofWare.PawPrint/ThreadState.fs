@@ -443,19 +443,20 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnSleep _ -> true
         | ThreadStatus.BlockedInSyscall -> true
 
-    /// What `Thread.ThreadState` reports for a thread in this status whose `IsBackground` flag
-    /// is `isBackground` and whose `ThreadState.InWaitSleepJoin` is `inWaitSleepJoin`: CoreCLR's
-    /// `ThreadNative_GetThreadState` (comsynchronizable.cpp), which every row below was measured
-    /// against on real .NET 10.
+    /// What `Thread.ThreadState` reports on `runtime` for a thread in this status whose
+    /// `IsBackground` flag is `isBackground` and whose `ThreadState.InWaitSleepJoin` is
+    /// `inWaitSleepJoin`: CoreCLR's `ThreadNative_GetThreadState` (comsynchronizable.cpp), which
+    /// every row below was measured against on real .NET 10.
     ///
-    /// .NET 11 reports `WaitSleepJoin` exactly when its managed `WaitSubsystem` has set
-    /// `TS_WaitSleepJoin`, which is `inWaitSleepJoin`. On Unix that subsystem makes every
-    /// sleep, join and wait-handle wait, so none of the statuses below that reports
-    /// `WaitSleepJoin` for .NET 10's native waits arises there. Only a started, live thread can
-    /// be in such a wait, so `inWaitSleepJoin` must be `false` for any other.
+    /// .NET 11 reports the same bits, except that it reports `WaitSleepJoin` exactly when its
+    /// managed `WaitSubsystem` has set `TS_WaitSleepJoin`, which is `inWaitSleepJoin`: no native
+    /// wait sets that bit, so the entry thread waiting for foreground threads reads
+    /// `Background | Stopped` alone (measured on 11.0.0-rc.1). On Unix that subsystem makes every
+    /// sleep, join and wait-handle wait. Only a started, live thread can be in such a wait, so
+    /// `inWaitSleepJoin` must be `false` for any other.
     ///
-    /// On .NET 10, `inWaitSleepJoin` is always `false`, and `WaitSleepJoin` is CoreCLR's
-    /// `TS_Interruptible`, which only an *alertable* wait sets:
+    /// On .NET 10, whose CoreLib cannot set it, `inWaitSleepJoin` must be `false`, and
+    /// `WaitSleepJoin` is CoreCLR's `TS_Interruptible`, which only an *alertable* wait sets:
     /// `Sleep`, `Join`, `Monitor.Enter`/`Wait`, and a wait-handle wait whose `WaitAlertability`
     /// says so. A thread parked on a class initialiser, on a `LowLevelMonitor` (a plain pthread
     /// P/Invoke), in a non-alertable wait-handle wait (such as an idle thread-pool worker's) or
@@ -467,6 +468,7 @@ module ThreadStatus =
     /// `TS_ReportDead` and then waits alertably. The idle signal dispatcher reads as running,
     /// as `SignalHandlerLoop` does while blocked in its native `read`.
     let managedThreadState
+        (runtime : EmulatedRuntime)
         (isBackground : bool)
         (inWaitSleepJoin : bool)
         (status : ThreadStatus)
@@ -478,19 +480,18 @@ module ThreadStatus =
             else
                 System.Threading.ThreadState.Running
 
-        let managedWait =
-            if not inWaitSleepJoin then
-                System.Threading.ThreadState.Running
-            else
-                match status with
-                | ThreadStatus.NotStarted _
-                | ThreadStatus.Terminated ->
-                    failwith
-                        $"managedThreadState: a thread in status %O{status} cannot be inside .NET 11's managed wait (InWaitSleepJoin)"
-                | _ -> System.Threading.ThreadState.WaitSleepJoin
+        if inWaitSleepJoin then
+            match runtime, status with
+            | EmulatedRuntime.Net10, _ ->
+                failwith "managedThreadState: .NET 10's CoreLib cannot set InWaitSleepJoin, which is .NET 11's"
+            | _, ThreadStatus.NotStarted _
+            | _, ThreadStatus.Terminated ->
+                failwith
+                    $"managedThreadState: a thread in status %O{status} cannot be inside .NET 11's managed wait (InWaitSleepJoin)"
+            | EmulatedRuntime.Net11, _ -> ()
 
-        // Fully enumerated, like the ones above, so a new `ThreadStatus` must say what the
-        // guest sees.
+        // .NET 10's answer. Fully enumerated, like the ones above, so a new `ThreadStatus` must
+        // say what the guest sees.
         let fromStatus =
             match status with
             | ThreadStatus.Runnable -> background
@@ -513,7 +514,16 @@ module ThreadStatus =
             | ThreadStatus.BlockedInSyscall
             | ThreadStatus.Parked -> background
 
-        managedWait ||| fromStatus
+        match runtime with
+        | EmulatedRuntime.Net10 -> fromStatus
+        | EmulatedRuntime.Net11 ->
+            let managedWait =
+                if inWaitSleepJoin then
+                    System.Threading.ThreadState.WaitSleepJoin
+                else
+                    System.Threading.ThreadState.Running
+
+            (fromStatus &&& ~~~System.Threading.ThreadState.WaitSleepJoin) ||| managedWait
 
 
 type ThreadState =

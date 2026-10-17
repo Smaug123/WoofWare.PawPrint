@@ -154,6 +154,45 @@ module TestPureCases =
             "ModuleGetTypes.cs",
             """On .NET 11, the `RuntimeModule_GetTypes` QCall takes a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: "Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)". Un-park when the handler takes .NET 11's signature. Verified to exit 0 on real .NET 11."""
             yield!
+                [
+                    "AnonymousPipeThreads.cs"
+                    "SocketAcceptBlocking.cs"
+                    "SocketConnectManaged.cs"
+                    "SocketPoll.cs"
+                    "SocketPollTimeout.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
+            yield!
+                [
+                    "CancellationTokenRegistrationDisposeCrossThread.cs"
+                    "ThreadStartFlowsAsyncLocal.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
+            yield!
+                [
+                    "MonitorPulseWait.cs"
+                    "MonitorPulseWaitOnArray.cs"
+                    "MonitorTryEnterTimeout.cs"
+                    "MonitorTryEnterTimeoutSucceeds.cs"
+                    "MonitorWaitReentrant.cs"
+                    "TaskBasics.cs"
+                    "TaskConfigureAwaitBool.cs"
+                    "TaskConfigureAwaitOptions.cs"
+                    "TaskContinueWith.cs"
+                    "TaskDelayWait.cs"
+                    "TaskMultipleBlockingWaits.cs"
+                    "TaskMultipleContinuations.cs"
+                    "TaskRunThrowSetsFaulted.cs"
+                    "TaskWhenAll.cs"
+                    "TaskYieldAwait.cs"
+                    "ThreadJoinTimeout.cs"
+                    "ThreadStateObserved.cs"
+                    "ThreadStateOfIdlePoolWorker.cs"
+                    "Threads.cs"
+                    "ValueTaskConfigureAwait.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.fatLock)
+            yield!
                 [ "LibcKillIgnoredThenRegistered.cs" ; "MonitorWaitTimeout.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.fatLock)
             yield!
@@ -281,80 +320,6 @@ module TestPureCases =
                     "UnmanagedCallersOnlyFunctionPointer.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
-            yield!
-                [
-                    "AnonymousPipeThreads.cs"
-                    "AssemblyLoadEventImage.cs"
-                    "BackgroundWorkerJoinsMainThread.cs"
-                    "CancellationTokenRegistrationDisposeCrossThread.cs"
-                    "ContendedMonitorEnter.cs"
-                    "ContendedMonitorEnterOnArray.cs"
-                    "CyclicCctorAcrossThreads.cs"
-                    "EntryThreadIsBackgroundAfterMainReturns.cs"
-                    "EntryThreadReforegroundedThenBackgroundAgain.cs"
-                    "EnvironmentCurrentManagedThreadIdThread.cs"
-                    "ForegroundThreadExitsAfterMainReturns.cs"
-                    "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs"
-                    "InterlockedAndOrContended.cs"
-                    "LastErrorIsPerThread.cs"
-                    "LibcRaiseDiscardedFromThread.cs"
-                    "LockHeldByOtherThread.cs"
-                    "MainBackgroundBeforeStartingForegroundWorker.cs"
-                    "MainBackgroundThenForegroundAgainBeforeWorker.cs"
-                    "MonitorPulseWait.cs"
-                    "MonitorPulseWaitOnArray.cs"
-                    "MonitorTryEnterTimeout.cs"
-                    "MonitorTryEnterTimeoutSucceeds.cs"
-                    "MonitorWaitReentrant.cs"
-                    "NewobjCctorRace.cs"
-                    "PipeBlockingThreads.cs"
-                    "PosixSignalKillCancelled.cs"
-                    "PosixSignalKillQueued.cs"
-                    "PosixSignalRaiseCancelled.cs"
-                    "SocketAcceptBlocking.cs"
-                    "SocketBindListen.cs"
-                    "SocketConnectManaged.cs"
-                    "SocketCreateManaged.cs"
-                    "SocketEventDelivery.cs"
-                    "SocketEventListenerWait.cs"
-                    "SocketEventWaitCountCapture.cs"
-                    "SocketEventsWaitBackgroundThread.cs"
-                    "SocketPoll.cs"
-                    "SocketPollTimeout.cs"
-                    "SystemNativeOSThreadId.cs"
-                    "TaskAsyncVoid.cs"
-                    "TaskBasics.cs"
-                    "TaskConfigureAwaitBool.cs"
-                    "TaskConfigureAwaitOptions.cs"
-                    "TaskContinueWith.cs"
-                    "TaskDelayWait.cs"
-                    "TaskMultipleBlockingWaits.cs"
-                    "TaskMultipleContinuations.cs"
-                    "TaskRunThrowSetsFaulted.cs"
-                    "TaskWhenAll.cs"
-                    "TaskYieldAwait.cs"
-                    "ThreadCultureSetBeforeStart.cs"
-                    "ThreadGetCurrentProcessorId.cs"
-                    "ThreadJoinTimeout.cs"
-                    "ThreadJoinTimeoutSucceeds.cs"
-                    "ThreadJoinTwice.cs"
-                    "ThreadJoinZeroTimeout.cs"
-                    "ThreadParameterizedStart.cs"
-                    "ThreadStartFlowsAsyncLocal.cs"
-                    "ThreadStartJoin.cs"
-                    "ThreadStateObserved.cs"
-                    "ThreadStateOfEntryThreadAfterMain.cs"
-                    "ThreadStateOfIdlePoolWorker.cs"
-                    "ThreadStaticCctorInitialiser.cs"
-                    "ThreadStaticIsolation.cs"
-                    "ThreadUnsafeStartDoesNotFlowAsyncLocal.cs"
-                    "Threads.cs"
-                    "ValueTaskConfigureAwait.cs"
-                    "WaitHandleTimeoutSemaphoreSignalled.cs"
-                    "WaitHandleWaitAllBlocking.cs"
-                    "WaitHandleWaitAnyBlocking.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.threadStart)
             "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
             """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Real .NET 11 refuses the bind with `InvalidOperationException` ("Could not execute the method because either the method itself or the containing type is not fully instantiated"), measured on RC1, where .NET 10 binds it. PawPrint refuses it on every runtime, as a `TODO`: "Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when the bind raises what RC1 raises. Verified to end in that unhandled exception on real .NET 11."""
             "DelegateOpenInstanceRepresentation.cs",

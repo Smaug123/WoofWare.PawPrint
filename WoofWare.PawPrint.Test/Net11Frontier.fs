@@ -9,10 +9,6 @@ open WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Net11Frontier =
 
-    /// .NET 11's `Thread.StartInternal` has a new signature.
-    let threadStart : string =
-        "On .NET 11, `Thread.StartInternal` is the `ThreadNative_Start` QCall `(ThreadHandle, int, int, BOOL, char*, ObjectHandleOnStack) -> BOOL`, which PawPrint's handler, matching .NET 10's `void` signature, does not recognise: \"Unimplemented native method (PInvokeImpl QCall!ThreadNative_Start)\". Un-park when the handler takes .NET 11's signature."
-
     /// .NET 11 reads a method's handle from any `IRuntimeMethodInfo` at one field offset.
     let runtimeMethodInfoValue : string =
         "On .NET 11, `IRuntimeMethodInfo.GetValue` reads the method handle of any `IRuntimeMethodInfo` as `Unsafe.As<RuntimeMethodInfoStub>(method).m_value` (RuntimeHandles.cs:980), relying on every implementation keeping its handle at that field's offset. PawPrint resolves the field by identity, so on a `RuntimeMethodInfo`, whose handle is `m_handle`, the read stops: \"CliValueType.FindFieldById: field '...::m_value' not found\". Reflection over methods, `MethodBase.Invoke` and F#'s printf all reach it. Un-park when that read is answered."
@@ -32,6 +28,14 @@ module Net11Frontier =
     /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
     let inlineArrayOfReferences : string =
         "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."
+
+    /// .NET 11's Linux CoreLib blocks on a futex.
+    let linuxFutex : string =
+        "On .NET 11's Linux CoreLib, `LowLevelLock` and `LowLevelLifoSemaphore` block through `LowLevelThreadBlocker`, which calls the `SystemNative_LowLevelFutex_WaitOnAddress` P/Invoke that PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_LowLevelFutex_WaitOnAddress)\". The Darwin CoreLib blocks on `LowLevelMonitor` there instead, so these pass on a macOS host; measured on CI's Linux leg on 2026-10-17. Un-park when the futex wait runs."
+
+    /// `UnicodeEncoding.GetBytes` orders two byte views of one stackalloc block.
+    let stackallocByteOrder : string =
+        "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
 
     /// `MemoryExtensions.MinMaxInteger` bit-casts a value type holding runtime pointers.
     let bitCast : string =

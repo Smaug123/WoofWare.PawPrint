@@ -135,7 +135,9 @@ class CallsMissingNative
     /// why the boundary is the whole tick.
     [<Test>]
     let ``a failure in post-step scheduler bookkeeping is annotated too`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park (
+            "On .NET 11 the guest's abandoned `Monitor.Enter` is a thin lock in the object's header word, which a dying thread leaves set as real .NET does, so the scheduler has nothing to refuse and the run raises no failure (measured on 11.0.0-rc.1). The test needs a post-step bookkeeping failure that .NET 11 reaches."
+        )
 
         let source =
             """

@@ -383,15 +383,8 @@ public static class Program
         | Error stuck ->
             stuck |> List.map fst |> shouldEqual launched
 
-            // .NET 10 sleeps in a native wait; .NET 11 sleeps through its managed
-            // `WaitSubsystem`, which blocks on a `LowLevelMonitor`.
-            let sleeping =
-                match FrameworkUnderTest.runtime () with
-                | EmulatedRuntime.Net10 -> "BlockedOnSleep"
-                | EmulatedRuntime.Net11 -> "BlockedOnMonitorWait"
-
             for _, threads in stuck do
-                threads |> shouldContainText sleeping
+                threads |> shouldContainText (SleepAndJoinStatus.sleeping ())
 
     let private exitsThreeSource : string =
         """
@@ -671,13 +664,13 @@ public static class Program
 
     [<Test>]
     let ``a listener and a connector, as two processes on one machine, both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.stackallocByteOrder
 
         listenerAndConnector (FrameworkUnderTest.runtimeDirs ())
 
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.stackallocByteOrder
 
         listenerAndConnector (runtimeDirsPreferringLinux (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 

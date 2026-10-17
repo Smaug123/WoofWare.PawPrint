@@ -267,8 +267,6 @@ class Program
 
     [<Test>]
     let ``a contended blocking lock parks, and the holder's release completes it`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // The whole mechanism end to end: park, sweep, wake, re-entry, grant.
         //
         // The worker takes the lock and sleeps; the main thread's blocking acquire therefore
@@ -316,7 +314,7 @@ class Program
 
     [<Test>]
     let ``a release wakes every waiter, not one chosen by this interpreter`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.linuxFutex
 
         // The decision this sweep takes *against* its socket neighbour, which refuses to wake
         // several waiters at all: epoll's wait queue is exclusive, so a real edge wakes exactly
@@ -374,7 +372,7 @@ class Program
 
     [<Test>]
     let ``two waiters through one descriptor wait for the very same lock`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
+        Net11Frontier.park Net11Frontier.linuxFutex
 
         // The `flock` waiters that a sweep cannot tell apart. Every other multi-waiter guest here
         // opens a description per thread, deliberately — conflicts are between descriptions, so
@@ -438,8 +436,6 @@ class Program
 
     [<Test>]
     let ``the wake finishes the call on the description, not on the descriptor`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // A parked call is finished against the open file description it parked on, never by
         // re-issuing it with the descriptor number the guest passed. Numbers are handed out
         // lowest-free, so the number this call parked through is closed and immediately reused
@@ -497,8 +493,6 @@ class Program
 
     [<Test>]
     let ``a release by closing the holder's descriptor wakes a waiter`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         // A lock is released by more than the obvious call: dropping the holder's last
         // descriptor drops its lock too, and nothing about `close` knows somebody is waiting.
         // The sweep is what makes that work, and it is why waking is a sweep rather than

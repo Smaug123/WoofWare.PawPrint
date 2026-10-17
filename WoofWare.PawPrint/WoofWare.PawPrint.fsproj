@@ -151,6 +151,7 @@
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="HostStartupCall.fs" />
+    <Compile Include="ThreadStartCallback.fs" />
     <Compile Include="Native\UnixErrorPal.fs" />
     <Compile Include="Native\StrErrorR.fs" />
     <Compile Include="Native\SocketEventsPal.fs" />

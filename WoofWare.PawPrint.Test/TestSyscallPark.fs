@@ -153,8 +153,6 @@ class LockAndPortWaiters
 
     [<Test>]
     let ``a release wakes the lock waiter and leaves the port waiter alone`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let image = Roslyn.compile [ source ]
 
         let _messages, loggerFactory =

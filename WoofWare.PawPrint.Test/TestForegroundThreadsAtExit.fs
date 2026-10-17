@@ -40,8 +40,6 @@ module TestForegroundThreadsAtExit =
     /// The guest from the issue: measured on real .NET 10, this prints `worker ran` and exits 3.
     [<Test>]
     let ``a foreground worker still runs after Main has returned, and Main's exit code survives it`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System;
@@ -80,8 +78,6 @@ class WorkerAfterMain
     /// silently dropping a thread the real runtime waits for.
     [<Test>]
     let ``a foreground worker that never finishes keeps the process alive: reported as a deadlock`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System.Threading;
@@ -104,7 +100,7 @@ class ForegroundWorkerStuck
         // The thread summary says what the entry thread is doing, so a reader can tell this
         // deadlock (Main is done and is waiting on the worker) from one inside Main.
         exn.Message |> shouldContainText "WaitingForForegroundThreads"
-        exn.Message |> shouldContainText "BlockedOnSleep"
+        exn.Message |> shouldContainText (SleepAndJoinStatus.sleeping ())
 
     /// The entry thread is not dead after `Main` returns — it is waiting — so a `Join` on it
     /// does not return. With a foreground joiner that is a hang on real .NET (measured: still
@@ -112,8 +108,6 @@ class ForegroundWorkerStuck
     /// in `sourcesPure` is the other half: a background joiner is simply outlived.
     [<Test>]
     let ``a foreground worker joining the entry thread after Main returns is a deadlock`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System.Threading;
@@ -135,7 +129,7 @@ class ForegroundWorkerJoinsMain
         exn.Message |> shouldContainText "ForegroundWorkerJoinsMain.cs"
         exn.Message |> shouldContainText "deadlocked"
         exn.Message |> shouldContainText "WaitingForForegroundThreads"
-        exn.Message |> shouldContainText "BlockedOnJoin"
+        exn.Message |> shouldContainText (SleepAndJoinStatus.joining ())
 
     /// The waiting entry thread is background — `WaitForOtherThreads` makes it so — and a worker
     /// may set that back. Real .NET then counts the entry thread as a foreground thread again
@@ -144,8 +138,6 @@ class ForegroundWorkerJoinsMain
     /// process open is the entry thread itself.
     [<Test>]
     let ``a worker re-foregrounding the entry thread after Main returns makes the process wait for ever`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System.Threading;
@@ -172,7 +164,7 @@ class ReforegroundsMain
         exn.Message |> shouldContainText "deadlocked"
         exn.Message |> shouldContainText "WaitingForForegroundThreads"
         // The worker itself finished; it is the entry thread that is being waited for.
-        exn.Message |> shouldNotContainText "BlockedOnSleep"
+        exn.Message |> shouldNotContainText (SleepAndJoinStatus.sleeping ())
 
     /// The other side of `MainBackgroundBeforeStartingForegroundWorker.cs`: with the worker
     /// started *before* `Main` goes background, there is never a moment with no foreground
@@ -182,8 +174,6 @@ class ReforegroundsMain
     /// itself a shutdown signal.
     [<Test>]
     let ``Main going background after a foreground worker exists does not abandon the worker`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System.Threading;
@@ -205,7 +195,7 @@ class WorkerThenMainBackground
         exn.Message |> shouldContainText "WorkerThenMainBackground.cs"
         exn.Message |> shouldContainText "deadlocked"
         exn.Message |> shouldContainText "WaitingForForegroundThreads"
-        exn.Message |> shouldContainText "BlockedOnSleep"
+        exn.Message |> shouldContainText (SleepAndJoinStatus.sleeping ())
 
     /// A worker that is running when `Main` returns finishes on its own and the process then
     /// ends with `Main`'s exit code; nothing the worker did in the meantime is lost. The
@@ -213,8 +203,6 @@ class WorkerThenMainBackground
     /// and its output is the record of what it did.
     [<Test>]
     let ``a foreground worker's output after Main returns is all delivered`` () : unit =
-        Net11Frontier.park Net11Frontier.threadStart
-
         let source =
             """
 using System;
