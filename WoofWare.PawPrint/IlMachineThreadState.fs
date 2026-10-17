@@ -466,6 +466,7 @@ module IlMachineThreadState =
                 // No IL has run on this thread, so nothing can have asked to raise a foreign
                 // exception on it.
                 IsRaisingForeignException = false
+                InWaitSleepJoin = false
             }
 
         let newState =
@@ -509,6 +510,7 @@ module IlMachineThreadState =
                 YieldDebt = Set.empty
                 // As above: this thread has run no IL yet.
                 IsRaisingForeignException = false
+                InWaitSleepJoin = false
             }
 
         let newState =
@@ -619,6 +621,7 @@ module IlMachineThreadState =
                 // is set and consumed within a single guest `throw`, and the transition
                 // happens at a handler frame's bottom `ret`.
                 IsRaisingForeignException = existing.IsRaisingForeignException
+                InWaitSleepJoin = existing.InWaitSleepJoin
             }
 
         { state with

@@ -141,8 +141,6 @@ class Program
 
     [<Test>]
     let ``a guest started with signals ignored survives them on both runtimes`` () : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         HostPlatform.onUnixHost (fun flavour ->
             let platform = HostPlatform.platformOf flavour
             let numbering = SimulatedUnixPlatform.signalNumbering platform
@@ -201,8 +199,6 @@ class Program
 
     [<Test>]
     let ``an inherited-ignored SIGILL aborts the process at the first on both runtimes`` () : unit =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         // SIGILL is 4 on both flavours. The runtime's handler replaces the
         // ignore, and, sent the signal, aborts the process because what it
         // replaced was an ignore. Without the ignore, both survive the first.

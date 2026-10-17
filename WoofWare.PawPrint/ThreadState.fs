@@ -444,10 +444,18 @@ module ThreadStatus =
         | ThreadStatus.BlockedInSyscall -> true
 
     /// What `Thread.ThreadState` reports for a thread in this status whose `IsBackground` flag
-    /// is `isBackground`: CoreCLR's `ThreadNative_GetThreadState` (comsynchronizable.cpp),
-    /// which every row below was measured against on real .NET 10.
+    /// is `isBackground` and whose `ThreadState.InWaitSleepJoin` is `inWaitSleepJoin`: CoreCLR's
+    /// `ThreadNative_GetThreadState` (comsynchronizable.cpp), which every row below was measured
+    /// against on real .NET 10.
     ///
-    /// `WaitSleepJoin` is CoreCLR's `TS_Interruptible`, which only an *alertable* wait sets:
+    /// .NET 11 reports `WaitSleepJoin` exactly when its managed `WaitSubsystem` has set
+    /// `TS_WaitSleepJoin`, which is `inWaitSleepJoin`. On Unix that subsystem makes every
+    /// sleep, join and wait-handle wait, so none of the statuses below that reports
+    /// `WaitSleepJoin` for .NET 10's native waits arises there. Only a started, live thread can
+    /// be in such a wait, so `inWaitSleepJoin` must be `false` for any other.
+    ///
+    /// On .NET 10, `inWaitSleepJoin` is always `false`, and `WaitSleepJoin` is CoreCLR's
+    /// `TS_Interruptible`, which only an *alertable* wait sets:
     /// `Sleep`, `Join`, `Monitor.Enter`/`Wait`, and a wait-handle wait whose `WaitAlertability`
     /// says so. A thread parked on a class initialiser, on a `LowLevelMonitor` (a plain pthread
     /// P/Invoke), in a non-alertable wait-handle wait (such as an idle thread-pool worker's) or
@@ -458,35 +466,55 @@ module ThreadStatus =
     /// `Stopped` too, but keeps its other bits: `WaitForOtherThreads` marks it
     /// `TS_ReportDead` and then waits alertably. The idle signal dispatcher reads as running,
     /// as `SignalHandlerLoop` does while blocked in its native `read`.
-    let managedThreadState (isBackground : bool) (status : ThreadStatus) : System.Threading.ThreadState =
+    let managedThreadState
+        (isBackground : bool)
+        (inWaitSleepJoin : bool)
+        (status : ThreadStatus)
+        : System.Threading.ThreadState
+        =
         let background =
             if isBackground then
                 System.Threading.ThreadState.Background
             else
                 System.Threading.ThreadState.Running
 
+        let managedWait =
+            if not inWaitSleepJoin then
+                System.Threading.ThreadState.Running
+            else
+                match status with
+                | ThreadStatus.NotStarted _
+                | ThreadStatus.Terminated ->
+                    failwith
+                        $"managedThreadState: a thread in status %O{status} cannot be inside .NET 11's managed wait (InWaitSleepJoin)"
+                | _ -> System.Threading.ThreadState.WaitSleepJoin
+
         // Fully enumerated, like the ones above, so a new `ThreadStatus` must say what the
         // guest sees.
-        match status with
-        | ThreadStatus.Runnable -> background
-        | ThreadStatus.NotStarted _ -> System.Threading.ThreadState.Unstarted ||| background
-        | ThreadStatus.Terminated -> System.Threading.ThreadState.Stopped
-        | ThreadStatus.WaitingForForegroundThreads ->
-            System.Threading.ThreadState.Stopped
-            ||| System.Threading.ThreadState.WaitSleepJoin
-            ||| background
-        | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.NonAlertable) -> background
-        | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.Alertable)
-        | ThreadStatus.BlockedOnJoin _
-        | ThreadStatus.BlockedOnSleep _
-        | ThreadStatus.BlockedOnWaitHandles _
-        | ThreadStatus.BlockedOnSyncBlockAcquire _
-        | ThreadStatus.BlockedOnSyncBlockWait _ -> System.Threading.ThreadState.WaitSleepJoin ||| background
-        | ThreadStatus.BlockedOnClassInit _
-        | ThreadStatus.BlockedOnMonitorAcquire _
-        | ThreadStatus.BlockedOnMonitorWait _
-        | ThreadStatus.BlockedInSyscall
-        | ThreadStatus.Parked -> background
+        let fromStatus =
+            match status with
+            | ThreadStatus.Runnable -> background
+            | ThreadStatus.NotStarted _ -> System.Threading.ThreadState.Unstarted ||| background
+            | ThreadStatus.Terminated -> System.Threading.ThreadState.Stopped
+            | ThreadStatus.WaitingForForegroundThreads ->
+                System.Threading.ThreadState.Stopped
+                ||| System.Threading.ThreadState.WaitSleepJoin
+                ||| background
+            | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.NonAlertable) -> background
+            | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.Alertable)
+            | ThreadStatus.BlockedOnJoin _
+            | ThreadStatus.BlockedOnSleep _
+            | ThreadStatus.BlockedOnWaitHandles _
+            | ThreadStatus.BlockedOnSyncBlockAcquire _
+            | ThreadStatus.BlockedOnSyncBlockWait _ -> System.Threading.ThreadState.WaitSleepJoin ||| background
+            | ThreadStatus.BlockedOnClassInit _
+            | ThreadStatus.BlockedOnMonitorAcquire _
+            | ThreadStatus.BlockedOnMonitorWait _
+            | ThreadStatus.BlockedInSyscall
+            | ThreadStatus.Parked -> background
+
+        managedWait ||| fromStatus
+
 
 type ThreadState =
     {
@@ -559,6 +587,11 @@ type ThreadState =
         /// `IsBackground` as another per-thread runtime fact the guest can only influence
         /// indirectly.
         IsRaisingForeignException : bool
+        /// CoreCLR's `TS_WaitSleepJoin`, which .NET 11's managed `WaitSubsystem` sets through the
+        /// `ThreadNative_SetWaitSleepJoinState` QCall when this thread begins a wait, sleep or
+        /// join, and clears through `ThreadNative_ClearWaitSleepJoinState` when it ends. Always
+        /// `false` on .NET 10, whose CoreLib declares neither QCall.
+        InWaitSleepJoin : bool
     }
 
     // --- Frame resolution primitives ---
@@ -653,6 +686,7 @@ type ThreadState =
             Name = None
             YieldDebt = Set.empty
             IsRaisingForeignException = false
+            InWaitSleepJoin = false
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

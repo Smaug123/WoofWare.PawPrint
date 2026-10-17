@@ -41,10 +41,6 @@ module Net11Frontier =
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."
 
-    /// The `ThreadNative_SetWaitSleepJoinState` QCall, which .NET 11's managed wait subsystem calls.
-    let waitSleepJoin : string =
-        "On .NET 11, a thread that sleeps, joins or waits goes through the managed `WaitSubsystem`, which calls the `ThreadNative_SetWaitSleepJoinState` QCall that PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!ThreadNative_SetWaitSleepJoinState)\". Un-park when RC1's managed wait subsystem runs."
-
     /// `System.GCMemoryInfoData`'s layout changed.
     let gcMemoryInfo : string =
         "On .NET 11, `System.GCMemoryInfoData` has no `_generationInfo0` field, which `GC.GetMemoryInfo`'s native filler writes: \"System.GCMemoryInfoData does not declare expected instance field '_generationInfo0'\". Un-park when the native filler writes .NET 11's layout."

@@ -309,6 +309,7 @@ module TestPureCases =
                     "NewobjCctorRace.cs"
                     "PipeBlockingThreads.cs"
                     "PosixSignalKillCancelled.cs"
+                    "PosixSignalKillQueued.cs"
                     "PosixSignalRaiseCancelled.cs"
                     "SocketAcceptBlocking.cs"
                     "SocketBindListen.cs"
@@ -354,17 +355,6 @@ module TestPureCases =
                     "WaitHandleWaitAnyBlocking.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.threadStart)
-            yield!
-                [
-                    "LibcKillIgnoredPipe.cs"
-                    "PosixSignalKillQueued.cs"
-                    "ThreadJoinSelfTimeout.cs"
-                    "ThreadSleep.cs"
-                    "WaitHandleTimeoutSemaphore.cs"
-                    "WaitHandleWaitAll.cs"
-                    "WaitHandleWaitAny.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.waitSleepJoin)
             "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
             """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Real .NET 11 refuses the bind with `InvalidOperationException` ("Could not execute the method because either the method itself or the containing type is not fully instantiated"), measured on RC1, where .NET 10 binds it. PawPrint refuses it on every runtime, as a `TODO`: "Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when the bind raises what RC1 raises. Verified to end in that unhandled exception on real .NET 11."""
             "DelegateOpenInstanceRepresentation.cs",

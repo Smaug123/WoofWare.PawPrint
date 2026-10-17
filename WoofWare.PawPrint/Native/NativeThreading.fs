@@ -483,10 +483,51 @@ module NativeThreading =
                 )
 
             let result =
-                ThreadStatus.managedThreadState targetState.IsBackground targetState.Status
+                ThreadStatus.managedThreadState targetState.IsBackground targetState.InWaitSleepJoin targetState.Status
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (int result))) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | ("ThreadNative_SetWaitSleepJoinState" | "ThreadNative_ClearWaitSleepJoinState") as entryPoint,
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          ("SetWaitSleepJoinState" | "ClearWaitSleepJoinState"),
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
+          MethodReturnType.Void when threadHandleGenerics.IsEmpty ->
+            // .NET 11's managed `WaitSubsystem` brackets every wait, sleep and join with this pair
+            // (`ThreadWaitInfo.Wait`), which sets and clears `TS_WaitSleepJoin` on the target:
+            // the bit `Thread.ThreadState` reports as `WaitSleepJoin`.
+            let operation = entryPoint
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let threadAddr =
+                threadAddrFromThreadHandle state operation instruction.Arguments.[0]
+
+            let targetThreadId = threadIdFromThreadAddr state operation threadAddr
+
+            let targetState =
+                state.ThreadState
+                |> Map.tryFind targetThreadId
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
+                )
+
+            let value = (entryPoint = "ThreadNative_SetWaitSleepJoinState")
+
+            let state =
+                { state with
+                    ThreadState =
+                        state.ThreadState
+                        |> Map.add
+                            targetThreadId
+                            { targetState with
+                                InWaitSleepJoin = value
+                            }
+                }
 
             NativeHandlerResult.completed state |> Some
         | "ThreadNative_InformThreadNameChange",

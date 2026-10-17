@@ -177,8 +177,6 @@ class Program
     /// flush any tail it had not yet written.
     [<Test>]
     let ``a deadlocked guest still delivers what it wrote`` () =
-        Net11Frontier.park Net11Frontier.waitSleepJoin
-
         let source =
             """
 using System;
