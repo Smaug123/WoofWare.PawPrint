@@ -2958,6 +2958,8 @@ public static class Cases
     ///     `SpanOfGeneric`, for a `KeyValuePair<int, int>`, neither of which is a primitive type;
     ///   - `SpanOfPlainField`, `CreateSpan<int>` of a static field that has no data;
     ///   - `SpanTooShort`, `CreateSpan<int>` of a field of two bytes of data;
+    ///   - `SpanOfAutoLayout`, `CreateSpan<int>` of a field whose type is an auto-layout struct
+    ///     that metadata gives a size of sixteen, which CoreCLR ignores, making it one byte long;
     ///   - `SpanJoined(bool)`, whose two `ldtoken`s of the twelve bytes branch to one call;
     ///   - `SpanAfterReturnAddress`, of the twelve bytes, after calling
     ///     `StubHelpers.NextCallReturnAddress`.
@@ -3000,6 +3002,13 @@ public static class Cases
         let two =
             cases.DefineInitializedData ("Two", [| 1uy ; 2uy |], FieldAttributes.Static ||| FieldAttributes.Assembly)
 
+        let sixteen =
+            cases.DefineInitializedData (
+                "Sixteen",
+                Array.init 16 byte,
+                FieldAttributes.Static ||| FieldAttributes.Assembly
+            )
+
         let plain =
             cases.DefineField ("Plain", typeof<int>, FieldAttributes.Static ||| FieldAttributes.Public)
 
@@ -3035,6 +3044,7 @@ public static class Cases
                 "SpanOfGeneric", twelve, typeof<Collections.Generic.KeyValuePair<int, int>>
                 "SpanOfPlainField", plain, typeof<int>
                 "SpanTooShort", two, typeof<int>
+                "SpanOfAutoLayout", sixteen, typeof<int>
             ] do
             define
                 name
@@ -3073,7 +3083,30 @@ public static class Cases
         cases.CreateType () |> ignore<Type>
         use stream = new MemoryStream ()
         builder.Save stream
-        stream.ToArray ()
+        let image = stream.ToArray ()
+
+        // No `TypeBuilder` makes an auto-layout type with a size, which metadata allows, so the
+        // image's TypeDef row for the type of `Sixteen`'s data loses its layout flags.
+        use reader = new PEReader (new MemoryStream (image))
+        let metadata = reader.GetMetadataReader ()
+
+        let row =
+            metadata.TypeDefinitions
+            |> Seq.filter (fun handle -> metadata.GetTypeDefinition(handle).GetLayout().Size = 16)
+            |> Seq.exactlyOne
+
+        let attributes =
+            metadata.GetTypeDefinition(row).Attributes &&& ~~~TypeAttributes.LayoutMask
+
+        let offset =
+            reader.PEHeaders.MetadataStartOffset
+            + metadata.GetTableMetadataOffset TableIndex.TypeDef
+            + (MetadataTokens.GetRowNumber (TypeDefinitionHandle.op_Implicit row : EntityHandle)
+               - 1)
+              * metadata.GetTableRowSize TableIndex.TypeDef
+
+        BitConverter.GetBytes(int attributes).CopyTo (image, offset)
+        image
 
     /// Which of `RuntimeMethodInfoStub.FromPtr`, `RuntimeFieldInfoStub.FromPtr` and
     /// `RuntimeHelpers.CreateSpan` each method of `typeName` in `fixture` reaches, by name.
@@ -3183,6 +3216,7 @@ public static class Cases
                 "SpanOfGeneric"
                 "SpanOfPlainField"
                 "SpanTooShort"
+                "SpanOfAutoLayout"
                 "SpanJoined"
                 "SpanAfterReturnAddress"
             ]
@@ -3201,6 +3235,7 @@ public static class Cases
                     "SpanOfGeneric", both
                     "SpanOfPlainField", both
                     "SpanTooShort", both
+                    "SpanOfAutoLayout", both
                     "SpanJoined", both
                     "SpanAfterReturnAddress", both
                 ]
