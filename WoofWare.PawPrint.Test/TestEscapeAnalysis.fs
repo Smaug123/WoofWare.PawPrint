@@ -2071,10 +2071,7 @@ public static class SR
                 let key = methodNamed corelib typeName "FromIntPtr"
                 let analysis, sources = EscapeAnalysis.unknownSources analysis key
 
-                sources
-                |> Seq.map (renderSite analysis)
-                |> List.ofSeq
-                |> shouldEqual []
+                sources |> Seq.map (renderSite analysis) |> List.ofSeq |> shouldEqual []
 
                 analysis
             )
