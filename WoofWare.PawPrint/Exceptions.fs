@@ -64,13 +64,16 @@ type ExceptionSearchOutcome =
     /// second pass runs the cleanup between the throw point and the boundary, discards the
     /// exception, and resumes the search parked on that filter's continuation.
     | AbandonedAtFilter of frame : FrameId
-    /// Leaving this frame interposes a synthesised wrapper — a `TypeInitializationException`
+    /// Runtime code between this frame and its caller catches the exception and raises one
+    /// from the caller's call site: a synthesised wrapper (a `TypeInitializationException`
     /// around a throwing `.cctor`, a `TargetInvocationException` around an
-    /// `Activator.CreateInstance<T>()` ctor, or both. The search cannot continue past it,
-    /// because the wrap changes the exception's *type* and every outer frame must be searched
-    /// against the wrapper instead. The second pass unwinds to here, wraps, and starts a fresh
-    /// first pass at the caller.
-    | WrappedAt of frame : FrameId
+    /// `Activator.CreateInstance<T>()` ctor, or both), or, for
+    /// `ExceptionEscape.RaisedAgainFromCaller`, the same exception again. The search cannot
+    /// continue past it: a wrap changes the exception's *type*, and every outer frame must be
+    /// searched against the wrapper instead, and either way this raise ends here, so the cleanup
+    /// inside the frame runs before any filter outside it. The second pass unwinds to here and
+    /// starts a fresh first pass at the caller.
+    | RaisedAgainAt of frame : FrameId
     /// No frame on the thread has a handler. The second pass still runs — measured on .NET 10,
     /// an unhandled exception unwinds and runs every `finally` after the runtime has reported
     /// it — and terminates the thread when it reaches the outermost frame.

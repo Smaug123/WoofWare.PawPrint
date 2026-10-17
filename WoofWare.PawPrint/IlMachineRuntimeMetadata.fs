@@ -1001,10 +1001,9 @@ module IlMachineRuntimeMetadata =
         | Some objType ->
 
         match tryExceptionAncestor loggerFactory baseClassTypes objType state with
-        // CoreCLR raises a `RuntimeWrappedException` in place of any other object and writes the
-        // trace there (`IL_Throw`, jithelpers.cpp). PawPrint raises the object itself, and its
-        // trace lives only in the dispatch.
-        | state, None -> state
+        | _, None ->
+            failwith
+                $"setExceptionStackTraceString: object @ %O{exceptionAddr} of type %O{objType} is not an exception, but only an exception is ever dispatched: a `throw` wraps any other object in a `RuntimeWrappedException`. This is an interpreter bug."
         | state, Some exceptionHandle ->
             let trace = renderExceptionStackTrace state stackTrace
 
@@ -1035,8 +1034,8 @@ module IlMachineRuntimeMetadata =
     /// Read the frozen-stack-trace token out of `exceptionAddr`'s `_stackTrace`. `None` means the
     /// exception has never been thrown, which is a legitimate state and not an error.
     ///
-    /// `exceptionAddr` must be an exception (`tryExceptionAncestor`); any other thrown object has
-    /// no `_stackTrace`, and this fails on one.
+    /// `exceptionAddr` must be an exception (`tryExceptionAncestor`); any other object has no
+    /// `_stackTrace`, and this fails on one.
     ///
     /// Fails if the field holds a token PawPrint did not mint. The invariant is not that
     /// `recordThrownStackTrace` is the only writer — guest IL writes `_stackTrace` too, since
@@ -1078,7 +1077,7 @@ module IlMachineRuntimeMetadata =
             )
         then
             failwith
-                $"frozenStackTraceToken: object @ %O{exceptionAddr} of type %O{exceptionObj.ConcreteType} is not an exception, so it has no _stackTrace; the caller must ask tryExceptionAncestor first. This is an interpreter bug."
+                $"frozenStackTraceToken: object @ %O{exceptionAddr} of type %O{exceptionObj.ConcreteType} is not an exception, so it has no _stackTrace; only an exception is ever dispatched, a `throw` wrapping any other object in a `RuntimeWrappedException`. This is an interpreter bug."
 
         match AllocatedNonArrayObject.DereferenceFieldById stackTraceField exceptionObj with
         | CliType.ObjectRef None -> None
@@ -1157,8 +1156,9 @@ module IlMachineRuntimeMetadata =
         | Some objType ->
 
         match tryExceptionAncestor loggerFactory baseClassTypes objType state with
-        // As in `setExceptionStackTraceString`: only an exception carries a trace of its own.
-        | state, None -> state
+        | _, None ->
+            failwith
+                $"recordThrownStackTrace: object @ %O{exceptionAddr} of type %O{objType} is not an exception, but only an exception is ever dispatched: a `throw` wraps any other object in a `RuntimeWrappedException`. This is an interpreter bug."
         | state, Some exceptionHandle ->
             let state, sbyteHandle =
                 LoadedTypeInfo.typeInfoToTypeDefn'

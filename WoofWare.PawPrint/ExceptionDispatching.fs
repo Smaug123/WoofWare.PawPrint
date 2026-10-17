@@ -91,15 +91,18 @@ module ExceptionDispatching =
 
             state, handle
 
-    /// Check if an exception type matches a catch handler type.
-    let private isExceptionAssignableTo
+    /// Whether a `catch (T)` clause catches an exception it matches by `matchType`: whether `T` is
+    /// `matchType` or one of its base classes. Never an interface `matchType` implements, nor
+    /// anything array covariance or generic variance would make it assignable to: CoreCLR walks the
+    /// parent method tables alone (`ShouldTypedClauseCatchThisException`, `ExceptionHandling.cs`).
+    let private typedClauseCatches
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (exceptionType : ConcreteTypeHandle)
+        (matchType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         (catchType : ExceptionCatchType)
         : IlMachineState * bool
@@ -107,7 +110,15 @@ module ExceptionDispatching =
         let state, catchTypeHandle =
             catchClauseType loggerFactory baseClassTypes state activeAssy typeGenerics methodGenerics method catchType
 
-        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
+        let rec walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
+            if current = catchTypeHandle then
+                state, true
+            else
+                match IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state current with
+                | state, None -> state, false
+                | state, Some parent -> walk state parent
+
+        walk state matchType
 
     let private exceptionFilterRegion (filterOffset : int) (handlerOffset : ExceptionOffset) : ExceptionFilterRegion =
         {
@@ -191,6 +202,76 @@ module ExceptionDispatching =
     /// out of scope, for both passes. A frame that never began has no `finally` to run either.
     let private hasNotStarted (frame : MethodState) : bool = frame.PendingTypeInit.IsSome
 
+    /// What `exceptionObject`, of type `exceptionType`, wraps if it is a
+    /// `RuntimeWrappedException` (its `_wrappedException`, which may be null), and `None` if it is
+    /// any other type.
+    let private tryWrappedObject
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (exceptionObject : ManagedHeapAddress)
+        (exceptionType : ConcreteTypeHandle)
+        : ManagedHeapAddress option option
+        =
+        match
+            corelib.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException",
+            AllConcreteTypes.lookup exceptionType state.TypeSystem.ConcreteTypes
+        with
+        | Some wrapperType, Some ct when ct.Identity = wrapperType.Identity ->
+            let wrapper = ManagedHeap.get exceptionObject state.ManagedHeap
+
+            let field =
+                IlMachineState.requiredOwnInstanceFieldId state exceptionType "_wrappedException"
+
+            match AllocatedNonArrayObject.DereferenceFieldById field wrapper with
+            | CliType.ObjectRef wrapped -> Some wrapped
+            | other ->
+                failwith
+                    $"RuntimeWrappedException @ %O{exceptionObject} holds %O{other} in _wrappedException, which is declared object"
+        | _ -> None
+
+    /// The type a `catch (T)` clause of a method in `assembly` matches the in-flight exception
+    /// by: what a `RuntimeWrappedException` wraps if `assembly` does not wrap non-exception throws,
+    /// and the exception's own type otherwise (`ShouldTypedClauseCatchThisException` in CoreCLR's
+    /// `ExceptionHandling.cs`). This holds for any `RuntimeWrappedException`, the runtime's own
+    /// wrapper or one the guest made, whether or not the runtime has wrapped anything yet.
+    let private typedClauseMatchType
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (exceptionObject : ManagedHeapAddress)
+        (exceptionType : ConcreteTypeHandle)
+        : ConcreteTypeHandle
+        =
+        match tryWrappedObject corelib state exceptionObject exceptionType with
+        | None -> exceptionType
+        | Some _ when RuntimeCompatibility.wrapsNonExceptionThrows assembly -> exceptionType
+        | Some (Some wrapped) -> ManagedHeap.getObjectConcreteType wrapped state.ManagedHeap
+        | Some None ->
+            failwith
+                $"A RuntimeWrappedException wrapping null reached a typed catch clause in %s{assembly.Name.FullName}, which does not wrap non-exception throws. CoreCLR reads the method table of the null it wraps there; PawPrint does not model that, so it refuses to continue."
+
+    /// What the body of a `catch` or `filter` clause of a method in `assembly` is handed for the
+    /// in-flight exception: what a `RuntimeWrappedException` wraps if `assembly` does not wrap
+    /// non-exception throws and the runtime has wrapped one already, and the exception itself
+    /// otherwise (`PossiblyUnwrapThrowable`, excep.cpp; see `IlMachineState.HasWrappedNonException`).
+    let private shownToClauseBody
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (exceptionObject : ManagedHeapAddress)
+        (exceptionType : ConcreteTypeHandle)
+        : EvalStackValue
+        =
+        match tryWrappedObject corelib state exceptionObject exceptionType with
+        | Some wrapped when
+            state.HasWrappedNonException
+            && not (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
+            ->
+            match wrapped with
+            | Some wrapped -> EvalStackValue.ObjectRef wrapped
+            | None -> EvalStackValue.NullObjectRef
+        | _ -> EvalStackValue.ObjectRef exceptionObject
+
     /// The clause of `method` that accepts this exception at `currentPC`, if any: an assignable
     /// `catch`, or a `filter` whose body has not already run and rejected.
     ///
@@ -199,13 +280,15 @@ module ExceptionDispatching =
     /// that could return one would be answering a different question from the one its callers
     /// ask (issue #865 is the failure mode).
     ///
-    /// When several clauses cover `currentPC`, the innermost wins: smallest `try`, then metadata
-    /// order, which ECMA-335 II.25.4.6 requires to list more deeply nested clauses first.
+    /// When several clauses cover `currentPC`, they are offered the exception innermost first
+    /// (smallest `try`, then metadata order, which ECMA-335 II.25.4.6 requires to list more deeply
+    /// nested clauses first), and the first to accept it is the answer.
     let private findAcceptingClause
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentPC : int)
+        (exceptionObject : ManagedHeapAddress)
         (exceptionType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         (skippedFilters : ExceptionFilterRegion list)
@@ -220,68 +303,71 @@ module ExceptionDispatching =
         let covers (offset : ExceptionOffset) =
             currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
 
-        let state, matches =
-            ((state, []), instructions.ExceptionRegions |> Seq.indexed)
-            ||> Seq.fold (fun (state, acc) (regionIndex, region) ->
+        // The clauses are offered the exception one at a time, and the first to accept it takes
+        // it: a later `catch`'s type is never resolved, nor matched, once an earlier clause has
+        // accepted.
+        let candidates =
+            instructions.ExceptionRegions
+            |> Seq.indexed
+            |> Seq.filter (fun (_, region) ->
                 match region with
-                | ExceptionRegion.Catch (catchType, offset) ->
-                    if covers offset then
-                        let state, matches =
-                            isExceptionAssignableTo
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                activeAssy
-                                method.DeclaringTypeGenerics
-                                method.Generics
-                                exceptionType
-                                method
-                                catchType
-
-                        if matches then
-                            state, (regionIndex, region) :: acc
-                        else
-                            state, acc
-                    else
-                        state, acc
+                | ExceptionRegion.Catch (_, offset) -> covers offset
                 | ExceptionRegion.Filter (filterOffset, offset) ->
-                    if covers offset && not (isSkippedFilter skippedFilters filterOffset offset) then
-                        state, (regionIndex, region) :: acc
-                    else
-                        state, acc
+                    covers offset && not (isSkippedFilter skippedFilters filterOffset offset)
                 | ExceptionRegion.Finally _
-                | ExceptionRegion.Fault _ -> state, acc
+                | ExceptionRegion.Fault _ -> false
             )
+            |> Seq.sortBy (fun (regionIndex, region) -> (ExceptionHandling.regionOffset region).TryLength, regionIndex)
+            |> List.ofSeq
 
-        let result =
-            matches
-            |> List.sortBy (fun (regionIndex, region) -> (ExceptionHandling.regionOffset region).TryLength, regionIndex)
-            |> List.tryHead
-            |> Option.map snd
+        let rec offer (state : IlMachineState) candidates =
+            match candidates with
+            | [] -> state, None
+            | (_, (ExceptionRegion.Filter _ as region)) :: _ -> state, Some region
+            | (_, (ExceptionRegion.Catch (catchType, _) as region)) :: rest ->
+                let state, catches =
+                    typedClauseCatches
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        method.DeclaringTypeGenerics
+                        method.Generics
+                        (typedClauseMatchType baseClassTypes state activeAssy exceptionObject exceptionType)
+                        method
+                        catchType
 
-        state, result
+                if catches then state, Some region else offer state rest
+            | (_, ((ExceptionRegion.Finally _ | ExceptionRegion.Fault _) as region)) :: _ ->
+                failwith
+                    $"Logic error: cleanup region %O{region} of %s{method.Name} was offered an exception as a candidate to accept it"
+
+        offer state candidates
 
     /// Enter a catch handler: set PC to the handler offset, clear eval stack, preserve any
-    /// outer continuation frames, and push the exception object reference. Callers are
-    /// responsible for stack hygiene: ordinary catches should enter with an empty stack,
-    /// while catches nested inside filter/finally/fault evaluation must keep the outer frame
-    /// for the eventual endfilter/endfinally.
-    let enterCatchHandler
+    /// outer continuation frames, and push `shown`, what the clause is handed for the exception
+    /// (`shownToClauseBody`). Callers are responsible for stack hygiene: ordinary catches should
+    /// enter with an empty stack, while catches nested inside filter/finally/fault evaluation must
+    /// keep the outer frame for the eventual endfilter/endfinally.
+    let private enterCatchHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
         (offset : ExceptionOffset)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (shown : EvalStackValue)
         : IlMachineState
         =
+        // The handler is handed `shown`, but what a `rethrow` in it raises again is the exception
+        // itself (`IL_Rethrow` rethrows the thread's current throwable, never the unwrapped view).
         let newMethodState =
             methodState
             |> MethodState.setProgramCounter offset.HandlerOffset
             |> MethodState.clearEvalStack
             |> MethodState.clearPendingPrefix
             |> MethodState.setCatchException offset cliException
-            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
+            |> MethodState.pushToEvalStack' shown
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -290,8 +376,9 @@ module ExceptionDispatching =
             ThreadState = state.ThreadState |> Map.add currentThread newThreadState
         }
 
-    /// Enter a filter block: set PC to the filter offset, clear eval stack, push the exception
-    /// object reference, and park the first-pass search so `endfilter` can resume it.
+    /// Enter a filter block: set PC to the filter offset, clear eval stack, push `shown`, what the
+    /// clause is handed for the exception (`shownToClauseBody`), and park the first-pass search so
+    /// `endfilter` can resume it.
     let private enterFilterHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
@@ -300,6 +387,7 @@ module ExceptionDispatching =
         (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (filterOffset : int)
         (handlerOffset : ExceptionOffset)
+        (shown : EvalStackValue)
         : IlMachineState
         =
         let currentFilter = exceptionFilterRegion filterOffset handlerOffset
@@ -318,7 +406,7 @@ module ExceptionDispatching =
             |> MethodState.pushExceptionContinuation
                 (ExceptionContinuationScope.FilterHandler currentFilter)
                 (ExceptionContinuation.ResumeAfterFilter continuation)
-            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef search.Exception.ExceptionObject)
+            |> MethodState.pushToEvalStack' shown
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -624,6 +712,7 @@ module ExceptionDispatching =
                 corelib
                 state
                 search.SearchPC
+                search.Exception.ExceptionObject
                 search.ExceptionType
                 frame.ExecutingMethod
                 search.SkippedFilters
@@ -651,8 +740,16 @@ module ExceptionDispatching =
                     ThreadState = state.ThreadState |> Map.add currentThread threadState
                 }
 
+            let shown =
+                shownToClauseBody
+                    corelib
+                    state
+                    (assemblyOfMethod state frame.ExecutingMethod)
+                    search.Exception.ExceptionObject
+                    search.ExceptionType
+
             let state =
-                enterFilterHandler currentThread frame threadState state search filterOffset handlerOffset
+                enterFilterHandler currentThread frame threadState state search filterOffset handlerOffset shown
 
             state, FirstPassResult.SearchSuspendedInFilter
         | Some ((ExceptionRegion.Finally _ | ExceptionRegion.Fault _) as region) ->
@@ -676,6 +773,22 @@ module ExceptionDispatching =
 
             failwith
                 $"An exception of type %s{exceptionTypeName} escaped %s{frame.ExecutingMethod.Name}, which the runtime called from %s{runtimeCaller}. CoreCLR catches and discards it there; PawPrint does not yet model that, so it refuses to continue rather than unwind the exception into a caller that would never have seen it."
+        | ExceptionEscape.RaisedAgainFromCaller ->
+            match EmulatedRuntime.ofCoreLib corelib.Corelib with
+            | EmulatedRuntime.Net10 ->
+                // The runtime catches the exception at this boundary and raises it again from the
+                // caller. The walk cannot see past it; the second pass unwinds to here, and starts
+                // a fresh first pass at the caller.
+                state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.RaisedAgainAt search.Frame)
+            | EmulatedRuntime.Net11 ->
+                // .NET 11 runs the constructor inside `Exception.CreateRuntimeWrappedException`, an
+                // `[UnmanagedCallersOnly]` helper that catches what it raises, and re-raises that
+                // through `COMPlusThrow`, which first runs `Exception.InternalPreserveStackTrace` on
+                // it: managed code that renders the trace (through the same resource lookup), moves
+                // it to `_remoteStackTraceString`, and is itself re-raised the same way if it
+                // throws, which overflows the stack when it always does.
+                failwith
+                    $"%s{frame.ExecutingMethod.Name}, which the runtime ran to wrap a thrown object that is not an exception in a RuntimeWrappedException, raised an exception of its own. .NET 11 re-raises it through Exception.CreateRuntimeWrappedException and Exception.InternalPreserveStackTrace, which PawPrint does not model, so it refuses to continue."
         | ExceptionEscape.Propagate
         | ExceptionEscape.WrapInTargetInvocation ->
 
@@ -686,7 +799,7 @@ module ExceptionDispatching =
             // Leaving this frame changes the exception's *type*, so every outer frame must be
             // searched against the wrapper instead. The walk cannot see past it; the second pass
             // unwinds to here, wraps, and starts a fresh first pass at the caller.
-            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.WrappedAt search.Frame)
+            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.RaisedAgainAt search.Frame)
         else
 
         let caller = ThreadState.getFrame returnState.JumpTo threadState
@@ -728,7 +841,7 @@ module ExceptionDispatching =
             | None ->
                 failwith
                     $"Logic error: the first pass of exception dispatch abandoned an exception at a filter of %s{frame.ExecutingMethod.Name}, but by the time the second pass reached that frame it had no filter under evaluation"
-        | ExceptionSearchOutcome.WrappedAt _
+        | ExceptionSearchOutcome.RaisedAgainAt _
         | ExceptionSearchOutcome.NoHandler -> None
 
     /// Pop this frame's exception continuations down to and including the innermost
@@ -785,6 +898,9 @@ module ExceptionDispatching =
     /// PawPrint inlines the `Activator` intrinsic and so has no `CreateInstanceOfT` frame of its
     /// own; the call site in the frame that invoked `Activator.CreateInstance<T>()` stands in for
     /// it, which is the substitution the outer `TargetInvocationException` already made.
+    ///
+    /// A frame whose `ExceptionEscape` is `RaisedAgainFromCaller` interposes no wrapper: the
+    /// exception itself is raised again from the caller, its trace continued there.
     let private applyFrameWraps
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -795,8 +911,9 @@ module ExceptionDispatching =
         (exceptionType : ConcreteTypeHandle)
         : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
         =
-        /// Give a freshly synthesised wrapper the one frame it is raised from. The caller frame is
-        /// re-read from `state` at each use because a wrap allocates on the heap in between.
+        /// Append the frame a raise from the caller begins in: the one frame a freshly synthesised
+        /// wrapper has. The caller frame is re-read from `state` at each use because a wrap
+        /// allocates on the heap in between.
         let seedWrapper
             (state : IlMachineState)
             (wrapper : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -854,6 +971,26 @@ module ExceptionDispatching =
 
                 state, wrapped, tieType
 
+        match returnState.ExceptionEscape with
+        | ExceptionEscape.Propagate -> state, cliException, exceptionType
+        | ExceptionEscape.SwallowedByRuntime runtimeCaller ->
+            failwith
+                $"Logic error: the second pass of exception dispatch unwound past a frame that %s{runtimeCaller} calls, which swallows what escapes it; the first pass refuses to search past such a frame"
+        | ExceptionEscape.RaisedAgainFromCaller ->
+            // `WrapNonCompliantException`'s `EX_CATCH` hands the exception back to `IL_Throw`,
+            // which dispatches it from the `throw`. That raise continues the trace the exception
+            // carries, which is what `_stackTrace` holds now: guest code in the cleanup this pass
+            // just ran may have moved it on. Measured on .NET 10: the trace runs on unbroken from
+            // the constructor's frames into the `throw`'s.
+            let raised =
+                { cliException with
+                    StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                }
+
+            let state, raised = seedWrapper state raised
+            state, raised, exceptionType
+        | ExceptionEscape.WrapInTargetInvocation ->
+
         // If this frame was the ctor target of `Activator.CreateInstance<T>()` (or any other
         // CreateInstanceOfT-style invocation that opts in via `ExceptionEscape.WrapInTargetInvocation`),
         // wrap the in-flight exception in a fresh `TargetInvocationException` whose
@@ -863,10 +1000,7 @@ module ExceptionDispatching =
         // synthesising an extra trampoline frame: the wrap only fires on unwind across this
         // frame's boundary, so a try/catch *inside* the ctor that handles the exception is
         // unaffected.
-        if returnState.ExceptionEscape <> ExceptionEscape.WrapInTargetInvocation then
-            state, cliException, exceptionType
-        else
-
+        //
         // When both wraps fire on one boundary, `cliException` here is the
         // `TypeInitializationException` synthesised a few lines up. Its trace is deliberately not
         // frozen onto it: the catch is native and sits where the initialiser was run (see
@@ -957,7 +1091,7 @@ module ExceptionDispatching =
             match unwind.Target with
             | ExceptionSearchOutcome.CaughtAt (frameId, _)
             | ExceptionSearchOutcome.AbandonedAtFilter frameId
-            | ExceptionSearchOutcome.WrappedAt frameId -> Some frameId
+            | ExceptionSearchOutcome.RaisedAgainAt frameId -> Some frameId
             | ExceptionSearchOutcome.NoHandler -> None
 
         let atTarget = targetFrame = Some unwind.Frame
@@ -1053,7 +1187,15 @@ module ExceptionDispatching =
             // A `Filter`'s body already ran, back in the first pass, and its continuation was
             // popped by the `endfilter` that accepted; either way what is entered here is the
             // handler body.
-            enterCatchHandler currentThread frame threadState state offset unwind.Exception
+            let shown =
+                shownToClauseBody
+                    corelib
+                    state
+                    (assemblyOfMethod state frame.ExecutingMethod)
+                    unwind.Exception.ExceptionObject
+                    unwind.ExceptionType
+
+            enterCatchHandler currentThread frame threadState state offset unwind.Exception shown
             |> ExceptionDispatchResult.Dispatched
         | ExceptionSearchOutcome.AbandonedAtFilter _ ->
             // This exception's dispatch ends here — the CLR reports the filter as false and
@@ -1079,7 +1221,7 @@ module ExceptionDispatching =
                 { outer with
                     SkippedFilters = continuation.CurrentFilter :: outer.SkippedFilters
                 }
-        | ExceptionSearchOutcome.WrappedAt _ ->
+        | ExceptionSearchOutcome.RaisedAgainAt _ ->
 
         let returnState =
             match frame.ReturnState with
@@ -1291,22 +1433,11 @@ module ExceptionDispatching =
         // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
         // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
         // frame of its own — and so carries the question forward instead.
-        //
-        // A thrown object that is not an exception has no `_stackTrace` to splice. CoreCLR raises
-        // a fresh `RuntimeWrappedException` in its place (`IL_Throw`, jithelpers.cpp), and that has
-        // never been thrown, so the flag is spent on an empty trace and marks nothing.
-        let state, exceptionAncestor =
-            IlMachineState.tryExceptionAncestor loggerFactory corelib exceptionType state
-
         let state, restoredFrames =
             state
             |> consumeForeignExceptionRaise
                 currentThread
-                (fun () ->
-                    match exceptionAncestor with
-                    | Some _ -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state
-                    | None -> []
-                )
+                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
 
         let restoredFrames = restoredFrames |> Option.defaultValue []
 
@@ -1384,14 +1515,10 @@ module ExceptionDispatching =
         else
             ExceptionHResults.corEException
 
-    /// Allocate a zero-initialised exception of the given type on the managed heap and set its
-    /// _HResult field to the correct value.  The constructor is NOT run; the caller is
-    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseRuntimeException).
-    ///
-    /// This is the allocation half of the CLR's EEException::CreateThrowable.
-    /// See the corresponding CLR source:
-    /// https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
-    let allocateRuntimeException
+    /// Allocate a zero-initialised object of the given non-generic exception type on the managed
+    /// heap, running neither its constructor nor its class initialiser: the runtime's
+    /// `AllocateObject`. The caller is responsible for pushing a ctor frame.
+    let allocateUnconstructed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -1419,6 +1546,24 @@ module ExceptionDispatching =
             IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state exnHandle
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
+        addr, exnHandle, state
+
+    /// Allocate a zero-initialised exception of the given type on the managed heap and set its
+    /// _HResult field to the correct value.  The constructor is NOT run; the caller is
+    /// responsible for pushing a ctor frame (see IlMachineStateExecution.raiseRuntimeException).
+    ///
+    /// This is the allocation half of the CLR's EEException::CreateThrowable.
+    /// See the corresponding CLR source:
+    /// https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
+    let allocateRuntimeException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        =
+        let addr, exnHandle, state =
+            allocateUnconstructed loggerFactory baseClassTypes exceptionTypeInfo state
 
         // Pre-set _HResult to the correct value for this exception type.  The ctor will
         // overwrite this (base Exception() sets COR_E_EXCEPTION, then the subclass ctor

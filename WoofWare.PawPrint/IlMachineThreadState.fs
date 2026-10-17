@@ -267,12 +267,12 @@ module IlMachineThreadState =
         match returnState.Constructing with
         | ConstructionState.Constructing constructing ->
             match returnState.ReturnValueDisposition with
-            | ReturnValueDisposition.DispatchAsException fields ->
+            | ReturnValueDisposition.DispatchAsException making ->
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
                 // dispatch should occur.
                 let constructed = ManagedHeap.get constructing state.ManagedHeap
-                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, fields)
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, making)
             | ReturnValueDisposition.Discard ->
                 // A constructor's product is the object, and it is already allocated and reachable
                 // from `Constructing` — there is nothing here to throw away, and the caller
@@ -304,9 +304,9 @@ module IlMachineThreadState =
 
         match returnState.ReturnValueDisposition with
         | ReturnValueDisposition.DispatchAsException _ ->
-            // `DispatchAsException` is set only by `raiseRuntimeException`, which always pushes a
-            // constructor frame, so it never reaches here. Refusing rather than falling through to
-            // a push matters: a swallowed exception dispatch would leave the guest running past a
+            // `DispatchAsException` is set only where the runtime makes an exception, which always
+            // pushes a constructor frame, so it never reaches here. Refusing rather than falling
+            // through to a push matters: a swallowed exception dispatch would leave the guest running past a
             // throw the runtime had decided on.
             failwith
                 $"logic error: %s{returningMethodState.ExecutingMethod.Name} was not constructing an object, but its frame asked for its product to be dispatched as an exception"
@@ -368,6 +368,7 @@ module IlMachineThreadState =
                 PointerHashState = PointerHashState.empty
                 Kernel = EmulatedKernel.initial
                 FrozenStackTraces = Map.empty
+                HasWrappedNonException = false
                 StackShapes = Map.empty
                 Scheduling = SchedulerState.RoundRobin
             }
