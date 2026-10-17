@@ -1072,8 +1072,10 @@ module EscapeAnalysis =
 
     /// The size of the data of `field`, a static field with an RVA, that `getArrayInitializationData`
     /// (jitinterface.cpp) offers (`FieldDesc::LoadSize`): that of a primitive type, or of a struct
-    /// with an explicit size and no instance fields, which is how compilers declare a block of data.
-    /// `None` for a field of any other type, whose size is not worked out here.
+    /// of sequential or explicit layout with a declared size and no instance fields, which is how
+    /// compilers declare a block of data. `None` for a field of any other type, whose size is not
+    /// worked out here; CoreCLR ignores the declared size of a type of auto layout
+    /// (`HasLayoutMetadata`, methodtablebuilder.cpp).
     let private fieldDataSize
         (state : EscapeAnalysisState)
         (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
@@ -1084,8 +1086,8 @@ module EscapeAnalysis =
         | TypeDefn.FromDefinition (identity, _) ->
             let _, ty = definitionOf state identity
 
-            match ty.Layout with
-            | Layout.Custom (size, _) when
+            match ty.TypeAttributes &&& TypeAttributes.LayoutMask, ty.Layout with
+            | (TypeAttributes.SequentialLayout | TypeAttributes.ExplicitLayout), Layout.Custom (size, _) when
                 size > 0
                 && ty.Generics.IsEmpty
                 && ty.Fields |> List.forall (fun field -> field.IsStatic)
