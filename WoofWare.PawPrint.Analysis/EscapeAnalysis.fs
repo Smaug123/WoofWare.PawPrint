@@ -700,6 +700,28 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(string, string, string, int), found %d{found.Length}"
 
+    /// `RuntimeWrappedException`'s `(object)` constructor, which CoreCLR runs to wrap a thrown object
+    /// that is not an exception (`WrapNonCompliantException`).
+    let private wrapperConstructor (state : EscapeAnalysisState) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = ".ctor"
+                && not m.IsStatic
+                && m.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Object ]
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeWrappedException(object), found %d{found.Length}"
+
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
     /// making it as `making` says: the exception, and the methods it runs to make it, whose own
     /// raises escape there too.
@@ -2607,8 +2629,11 @@ module EscapeAnalysis =
                     )
 
             // 2. What the instruction throws explicitly: each object its operand may be. A null one
-            // raises only the fault `OpcodeFaults` names for `throw`.
-            let state, raises, opaque =
+            // raises only the fault `OpcodeFaults` names for `throw`. One that may not be an
+            // exception the runtime wraps, allocating a `RuntimeWrappedException` and running its
+            // constructor, and it throws what either raises in the wrapper's place
+            // (`WrapNonCompliantException`).
+            let state, raises, opaque, calls =
                 match op with
                 | IlOp.Nullary NullaryIlOp.Throw ->
                     let state, thrown =
@@ -2644,11 +2669,41 @@ module EscapeAnalysis =
                                     | state, Some identity -> state, Some (ThrownType.SubtypeOf identity :: thrown)
                             )
 
+                    let state, wrapped =
+                        match thrown with
+                        | None -> state, true
+                        | Some thrown ->
+                            ((state, false), thrown)
+                            ||> List.fold (fun (state, wrapped) thrown ->
+                                match wrapped, thrown with
+                                | true, _ -> state, true
+                                | false, ThrownType.Exactly ty
+                                | false, ThrownType.SubtypeOf ty ->
+                                    let state, isException = derivesFrom state ty state.BaseTypes.Exception.Identity
+                                    state, not isException
+                            )
+
+                    let raises, calls =
+                        if wrapped then
+                            let raised, constructed =
+                                raisedAt
+                                    offset
+                                    [
+                                        runtimeRaises state "System.OutOfMemoryException" ExceptionMaking.Preallocated
+                                    ]
+
+                            raised @ raises, (offset, runtimeRuns (wrapperConstructor state), []) :: constructed @ calls
+                        else
+                            raises, calls
+
                     match thrown with
                     | Some thrown ->
-                        state, (thrown |> List.distinct |> List.map (fun thrown -> offset, thrown)) @ raises, opaque
-                    | None -> state, raises, (offset, Opacity.UntypedThrow, None) :: opaque
-                | _ -> state, raises, opaque
+                        state,
+                        (thrown |> List.distinct |> List.map (fun thrown -> offset, thrown)) @ raises,
+                        opaque,
+                        calls
+                    | None -> state, raises, (offset, Opacity.UntypedThrow, None) :: opaque, calls
+                | _ -> state, raises, opaque, calls
 
             // 3. What the instruction calls.
             let state, raises, opaque, calls =
@@ -4665,3 +4720,21 @@ module EscapeAnalysis =
             walk state (onward @ rest) (visited.Add next) (Set.union sources (Set.ofList sites))
 
         walk state [ UnnamedAt.Escaping (rootOf state method) ] Set.empty Set.empty
+
+    /// The definition of every method that `escapes` follows from `method`, whether the method calls
+    /// it or the runtime runs it, `method` among them.
+    let internal reachable (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Set<MethodKey> =
+        let state, _ = escapes state method
+
+        let rec walk (pending : MethodInstance list) (visited : Set<MethodInstance>) : Set<MethodInstance> =
+            match pending with
+            | [] -> visited
+            | key :: rest when visited.Contains key -> walk rest visited
+            | key :: rest ->
+                match state.InstanceCalls.TryFind key with
+                | Some calls -> walk ((calls.Callees |> List.map snd) @ calls.Outside @ rest) (visited.Add key)
+                | None ->
+                    failwith
+                        $"BUG: %O{key.Definition} is reachable from %O{method}, which escapes summarised, but its calls are not recorded"
+
+        state, walk [ rootOf state method ] Set.empty |> Set.map (fun key -> key.Definition)
