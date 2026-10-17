@@ -5,8 +5,9 @@ open WoofWare.PawPrint
 
 /// A claim about the program that the escape analysis may take as given rather than derive from the
 /// code it reads. Each one lets the analysis replace a method's body with a contract
-/// (`Assumption.raises`); a caller chooses which it allows (`EscapeAnalysis.create`), and each
-/// answer lists those it relied on (`Escapes.Assumes`).
+/// (`Assumption.raises`), or, for `JitOptimises`, code with what the JIT compiles it to; a caller
+/// chooses which it allows (`EscapeAnalysis.create`), and each answer lists those it relied on
+/// (`Escapes.Assumes`).
 [<RequireQualifiedAccess>]
 type Assumption =
     /// Every type that the metadata of a loaded type names loads: the assembly that defines it is
@@ -35,6 +36,16 @@ type Assumption =
     /// well formed; when only CoreLib writes CoreLib's private static fields; and when the
     /// initializer of each of CoreLib's generic types does so whatever its type arguments.
     | CoreLibTypeInitializers
+    /// CoreCLR's JIT compiles every method with at least the optimisations it makes at tier 0
+    /// (the JIT's `Tier0OptimizationEnabled`), wherever neither the method nor its assembly says
+    /// otherwise: no debugger or profiler disables optimisation, `DOTNET_JitMinOpts` and
+    /// `DOTNET_JitDebuggable` are unset, and no interpreter runs the code. Then the JIT compares
+    /// `typeof(X) == typeof(Y)`, or `!=`, by the two types' handles, and calls neither
+    /// `Type.GetTypeFromHandle` nor the operator. The method says otherwise when it is marked
+    /// `MethodImplOptions.NoOptimization`, and the assembly when its `DebuggableAttribute`
+    /// disables optimisation (`Debuggable.allowsJitOptimisation`). This assumption stands in for
+    /// no method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
+    | JitOptimises
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -46,6 +57,7 @@ module Assumption =
                 Assumption.NamedTypesLoad
                 Assumption.StackTracePreserved
                 Assumption.CoreLibTypeInitializers
+                Assumption.JitOptimises
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -93,6 +105,7 @@ module Assumption =
                 // It makes calls, any of which can run out of stack.
                 exceptionName "System.StackOverflowException"
             ]
+        | Assumption.JitOptimises -> []
 
     /// The exceptions the method an assumption summarises makes in native code before raising them,
     /// by running each one's parameterless constructor, which is CoreLib's managed code: what that
@@ -103,7 +116,8 @@ module Assumption =
         match assumption with
         | Assumption.NamedTypesLoad -> [ exceptionName "System.ArgumentException" ]
         | Assumption.StackTracePreserved
-        | Assumption.CoreLibTypeInitializers -> []
+        | Assumption.CoreLibTypeInitializers
+        | Assumption.JitOptimises -> []
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by
