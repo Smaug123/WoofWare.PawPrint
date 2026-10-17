@@ -231,6 +231,7 @@ module TestPureCases =
                     "DelegateOverGenericMethodNewarr.cs"
                     "DelegateToAbstractMethodOverNull.cs"
                     "DelegateToIntrinsicTypeMember.cs"
+                    "ExceptionTargetSite.cs"
                     "ExpressionInterpreterByRefCall.cs"
                     "ForeignRaiseFlagConsumedByRethrow.cs"
                     "ForeignRaiseFlagNotStolenByCleanup.cs"
