@@ -434,7 +434,8 @@ module TestConcurrencyBugs =
         | "QueueIsNotThreadSafe.cs"
         | "LostUpdate.cs"
         | "TwoCountersSeparated.cs"
-        | "JustABoolNotAMutex.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
+        | "JustABoolNotAMutex.cs"
+        | "SimultaneousCounter.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
         | _ -> ()
 
         demonstrate scenario
