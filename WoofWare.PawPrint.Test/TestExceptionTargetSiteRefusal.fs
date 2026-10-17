@@ -99,6 +99,27 @@ public static class Program
         }
     }
 
+    // A filter runs guest code in the middle of a raise, and here it raises the same object again
+    // from a capture of its runtime raise, so the raise it interrupted continues that trace.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool SpliceInFilter(ExceptionDispatchInfo edi, bool accept)
+    {
+        try { edi.Throw(); } catch { }
+        return accept;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Exception SpliceWhileFiltering(bool accept)
+    {
+        Exception raised = null;
+        ExceptionDispatchInfo edi = null;
+        try { Index(new int[1], 2); }
+        catch (Exception e) { raised = e; edi = ExceptionDispatchInfo.Capture(e); }
+        try { ThrowAgain(raised); }
+        catch (Exception e) when (SpliceInFilter(edi, accept)) { return e; }
+        return null;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static Exception Raise()
     {
@@ -130,6 +151,12 @@ public static class Program
             "a rethrow of a runtime raise", "Rethrow()", "MadeByRuntime"
             "a captured runtime raise thrown again", "Replay()", "MadeByRuntime"
             "a rethrow after a splice of a captured runtime raise", "SpliceThenRethrow()", "MadeByRuntime"
+            "a raise continued after a rejecting filter spliced in a captured runtime raise",
+            "SpliceWhileFiltering(false)",
+            "MadeByRuntime"
+            "a raise caught by a filter that spliced in a captured runtime raise",
+            "{ Exception caught = SpliceWhileFiltering(true); if (caught != null) return caught; }",
+            "MadeByRuntime"
         ]
 
     let private caseNames : string list = cases |> List.map (fun (name, _, _) -> name)
