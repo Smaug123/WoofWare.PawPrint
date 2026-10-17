@@ -3228,7 +3228,13 @@ module EscapeAnalysis =
         //     `Type.get_IsValueType`, to a constant;
         //   - `typeof(X) == typeof(Y)`, `ldtoken X`, a call of `GetTypeFromHandle`, `ldtoken Y`,
         //     another, then a call of `Type.op_Equality`, or `op_Inequality` for `!=`, to a
-        //     comparison of X's and Y's handles (`gtFoldTypeCompare`, gentree.cpp).
+        //     comparison of X's and Y's handles (`gtFoldTypeCompare`, gentree.cpp);
+        //   - `t == typeof(X)`, whatever pushes `t`, then `ldtoken X`, a call of
+        //     `GetTypeFromHandle`, then one of `op_Equality` or `op_Inequality`, to a comparison
+        //     of `t` with X's `RuntimeType` by reference (`gtFoldTypeEqualityCall`), which is what
+        //     the operator decides for a `RuntimeType`. What pushes `t` runs: tier 0 does not
+        //     expand `Object.GetType`, so `o.GetType() == typeof(X)` still calls it. The analysis
+        //     does not decide a branch on it.
         // `impIntrinsic` (importercalls.cpp) folds them while the operands are still the
         // `GetTypeFromHandle`s it expanded, so where no branch lands between the instructions. By
         // the offset of the query's last call: the indices of its calls, those of its `ldtoken`s,
@@ -3404,17 +3410,19 @@ module EscapeAnalysis =
                                 queries
                     else
 
-                    let equality =
-                        if index + 4 >= ops.Length then
+                    // Whether the instruction at `index` calls `op_Equality`, `Some true`, or
+                    // `op_Inequality`, `Some false`.
+                    let equalityAt (index : int) : bool option =
+                        if index >= ops.Length then
                             None
-                        elif callsTypeIntrinsic (index + 4) "op_Equality" then
+                        elif callsTypeIntrinsic index "op_Equality" then
                             Some true
-                        elif callsTypeIntrinsic (index + 4) "op_Inequality" then
+                        elif callsTypeIntrinsic index "op_Inequality" then
                             Some false
                         else
                             None
 
-                    match typeofAt (index + 2), equality with
+                    match typeofAt (index + 2), equalityAt (index + 4) with
                     | Some y, Some equality when not (landsAfter index (index + 4)) ->
                         let state, x = spelledOf state x
                         let state, y = spelledOf state y
@@ -3427,6 +3435,25 @@ module EscapeAnalysis =
                                 Elided = [ index ; index + 2 ]
                                 Tested =
                                     Option.map2 (fun x y -> Tested.Types (TypeQuery.Identity (x, y, equality))) x y
+                            |}
+                            queries
+                    | _ ->
+
+                    // Where the first operand is itself a `typeof`, the comparison of handles above
+                    // has the operator already.
+                    match equalityAt (index + 2) with
+                    | Some _ when
+                        not (landsAfter index (index + 2))
+                        && not (Map.containsKey (snd ops.[index + 2]) queries)
+                        ->
+                        // The JIT still makes X's `RuntimeType` to compare `t` with.
+                        state,
+                        Map.add
+                            (snd ops.[index + 2])
+                            {|
+                                Gone = [ index + 1 ; index + 2 ]
+                                Elided = []
+                                Tested = None
                             |}
                             queries
                     | _ -> state, queries

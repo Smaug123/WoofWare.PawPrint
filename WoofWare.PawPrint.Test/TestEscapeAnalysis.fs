@@ -3367,10 +3367,18 @@ public static class Cases
         [
             folded "OfType"
             folded "NotOfType"
-            folded "Generic"
             folded "WithInt"
-            folded "WithString"
             folded "EitherOperand"
+            // Shared code looks `T[]` up, and makes its `RuntimeType` by calling into native code
+            // the analysis does not see into.
+            { folded "Generic" with
+                Unknown = Some true
+                Assumes = None
+            }
+            { folded "WithString" with
+                Unknown = Some true
+                Assumes = None
+            }
             { expect "TypeOperand.Cases" "Compared" with
                 Excludes = [ same ; different ]
                 Unknown = Some false
@@ -3409,6 +3417,14 @@ public static class Cases
         let called = typeComparisonCalls ()
 
         reachesOf called Set.empty true "TypeOperand.Cases" analysis fixture typeOperandFolded
+
+        // The JIT still makes the `typeof`'s `RuntimeType` to compare with, which it looks up at
+        // run time where the code is shared.
+        let lookup =
+            Set.singleton (methodNamed (hostCoreLib ()) "System.RuntimeTypeHandle" "GetRuntimeTypeFromHandle")
+
+        reachesOf lookup lookup true "TypeOperand.Cases" analysis fixture [ "Generic" ; "WithString" ]
+        reachesOf lookup Set.empty true "TypeOperand.Cases" analysis fixture [ "OfType" ; "WithInt" ]
 
         // Tier 0 does not expand `Object.GetType`, so an object's type is got by calling it.
         let getType = methodNamed (hostCoreLib ()) "System.Object" "GetType"
