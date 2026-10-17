@@ -1804,7 +1804,11 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        summarised |> Map.keys |> Set.ofSeq |> shouldEqual Assumption.all
+        // `JitOptimises` stands in for no method.
+        summarised
+        |> Map.keys
+        |> Set.ofSeq
+        |> shouldEqual (Set.remove Assumption.JitOptimises Assumption.all)
 
         // Each stands in for one method, but the one about CoreLib's type initializers, which
         // stands in for each of them.
@@ -1813,6 +1817,7 @@ public static class SR
             | Assumption.CoreLibTypeInitializers -> keys.Length |> shouldBeGreaterThan 1
             | Assumption.NamedTypesLoad
             | Assumption.StackTracePreserved -> keys.Length |> shouldEqual 1
+            | Assumption.JitOptimises -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -2203,6 +2208,255 @@ public static class Cases
 
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
+
+    /// Code that asks whether a `typeof` is a value type, which C# compiles to `ldtoken; call
+    /// GetTypeFromHandle; callvirt get_IsValueType`.
+    let private valueTypeQuerySource =
+        """
+using System;
+using System.Runtime.CompilerServices;
+
+namespace ValueTypeQuery;
+
+// Exceptions whose construction raises nothing, unlike CoreLib's, which look up their messages.
+public class Value : Exception { }
+
+public class Reference : Exception { }
+
+public static class Cases
+{
+    public static void OfInt()
+    {
+        if (typeof(int).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void OfString()
+    {
+        if (typeof(string).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    // The base types of value types are classes.
+    public static void OfEnum()
+    {
+        if (typeof(Enum).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void Generic<T>()
+    {
+        if (typeof(T).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void WithInt() => Generic<int>();
+
+    public static void WithString() => Generic<string>();
+
+    public static void WithNullable() => Generic<int?>();
+
+    public static void WithDayOfWeek() => Generic<DayOfWeek>();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void Unoptimized()
+    {
+        if (typeof(int).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    // The getter's operand arrives two ways, so it is not the one `GetTypeFromHandle` it would
+    // have to be for the JIT to fold the query.
+    public static void EitherType(bool flag)
+    {
+        if ((flag ? typeof(int) : typeof(string)).IsValueType) throw new Value();
+        throw new Reference();
+    }
+}
+"""
+
+    /// What each method of `valueTypeQuerySource` lets escape where the JIT compiles the query to a
+    /// constant in place of the calls.
+    let private valueTypeQueryExpectations : Expectation list =
+        let value = "=ValueTypeQuery.Value"
+        let reference = "=ValueTypeQuery.Reference"
+
+        let folded (name : string) (contains : string list) (excludes : string list) =
+            { expect "ValueTypeQuery.Cases" name with
+                Contains = contains
+                Excludes = excludes
+                Unknown = Some false
+                // A `throw` of null raises a `NullReferenceException`, which the runtime constructs.
+                Assumes = Some (Assumption.JitOptimises :: constructing)
+            }
+
+        [
+            folded "OfInt" [ value ] [ reference ]
+            folded "OfString" [ reference ] [ value ]
+            folded "OfEnum" [ reference ] [ value ]
+            // The open definition does not decide the branch, but makes no call either way.
+            folded "Generic" [ value ; reference ] []
+            folded "WithInt" [ value ] [ reference ]
+            folded "WithString" [ reference ] [ value ]
+            folded "WithNullable" [ value ] [ reference ]
+            folded "WithDayOfWeek" [ value ] [ reference ]
+        ]
+
+    /// The image of `valueTypeQuerySource`, optimized as CoreLib is unless `debug`.
+    let private valueTypeQueryFixture (debug : bool) : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            if debug then
+                Roslyn.compileAssembly "ValueTypeQuery" OutputKind.DynamicallyLinkedLibrary [] [ valueTypeQuerySource ]
+            else
+                Roslyn.compileOptimizedAssembly
+                    "ValueTypeQuery"
+                    OutputKind.DynamicallyLinkedLibrary
+                    [ valueTypeQuerySource ]
+
+        Assembly.read loggerFactory (Some "ValueTypeQuery.dll") (new MemoryStream (image))
+
+    /// Each of `methods` makes the calls: its answer is unknown, from what `get_IsValueType` reaches,
+    /// and relies on no assumption that the JIT optimises.
+    let private makesTheCalls
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (methods : string list)
+        : unit
+        =
+        let mutable analysis = analysis
+
+        for name in methods do
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture "ValueTypeQuery.Cases" name)
+
+            analysis <- next
+
+            if not escapes.Unknown || escapes.Assumes.Contains Assumption.JitOptimises then
+                failwith $"%s{name}: unknown %b{escapes.Unknown}, assuming %A{Set.toList escapes.Assumes}"
+
+    [<Test>]
+    let ``asking whether a typeof is a value type is a constant, which the instance decides, where the JIT optimises``
+        ()
+        : unit
+        =
+        let fixture = valueTypeQueryFixture false
+        Debuggable.allowsJitOptimisation fixture |> shouldEqual (Some true)
+
+        let analysis, failures =
+            unmet (analysisOver [ fixture ] id) fixture valueTypeQueryExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+        // A method marked `NoOptimization` makes the calls, as does one in which the getter's
+        // operand is not the `GetTypeFromHandle` straight before it.
+        makesTheCalls analysis fixture [ "Unoptimized" ; "EitherType" ]
+
+    [<Test>]
+    let ``asking whether a typeof is a value type makes the calls where the assembly disables optimisation`` () : unit =
+        let fixture = valueTypeQueryFixture true
+        Debuggable.allowsJitOptimisation fixture |> shouldEqual (Some false)
+
+        valueTypeQueryExpectations
+        |> List.map (fun expectation -> snd expectation.Method)
+        |> makesTheCalls (analysisOver [ fixture ] id) fixture
+
+    /// `Probe.Cases.Asks`, which branches on `typeof(int).IsValueType`, and
+    /// `Probe.Cases.AsksAfterReturnAddress`, which does so after calling
+    /// `StubHelpers.NextCallReturnAddress`, which C# cannot name.
+    let private emitReturnAddressQuery () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "ReturnAddress", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "ReturnAddress"
+
+        let cases =
+            modul.DefineType (
+                "Probe.Cases",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let nextCallReturnAddress =
+            typeof<obj>.Assembly
+                .GetType("System.StubHelpers.StubHelpers", true)
+                .GetMethod ("NextCallReturnAddress", BindingFlags.NonPublic ||| BindingFlags.Static)
+
+        let getTypeFromHandle =
+            typeof<Type>.GetMethod ("GetTypeFromHandle", [| typeof<RuntimeTypeHandle> |])
+
+        let isValueType = typeof<Type>.GetProperty("IsValueType").GetGetMethod ()
+        let exceptionConstructor = typeof<Exception>.GetConstructor Type.EmptyTypes
+
+        for name, asksReturnAddress in [ "Asks", false ; "AsksAfterReturnAddress", true ] do
+            let method =
+                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+            let il = method.GetILGenerator ()
+            let otherwise = il.DefineLabel ()
+
+            if asksReturnAddress then
+                il.Emit (Emit.OpCodes.Call, nextCallReturnAddress)
+                il.Emit Emit.OpCodes.Pop
+
+            il.Emit (Emit.OpCodes.Ldtoken, typeof<int>)
+            il.Emit (Emit.OpCodes.Call, getTypeFromHandle)
+            il.Emit (Emit.OpCodes.Callvirt, isValueType)
+            il.Emit (Emit.OpCodes.Brfalse, otherwise)
+            il.Emit (Emit.OpCodes.Newobj, exceptionConstructor)
+            il.Emit Emit.OpCodes.Throw
+            il.MarkLabel otherwise
+            il.Emit (Emit.OpCodes.Newobj, exceptionConstructor)
+            il.Emit Emit.OpCodes.Throw
+
+        cases.CreateType () |> ignore<Type>
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``asking whether a typeof is a value type makes the calls in a method that asks for the next call's return address``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "ReturnAddress.dll") (new MemoryStream (emitReturnAddressQuery ()))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, asks =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Cases" "Asks")
+
+        asks.Assumes.Contains Assumption.JitOptimises |> shouldEqual true
+
+        let _, asksAfter =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Cases" "AsksAfterReturnAddress")
+
+        asksAfter.Assumes.Contains Assumption.JitOptimises |> shouldEqual false
+
+    [<Test>]
+    let ``asking whether a typeof is a value type makes the calls unless the JIT is assumed to optimise`` () : unit =
+        let fixture = valueTypeQueryFixture false
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.JitOptimises Assumption.all)
+                [ fixture ]
+                id
+
+        valueTypeQueryExpectations
+        |> List.map (fun expectation -> snd expectation.Method)
+        |> makesTheCalls analysis fixture
 
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
