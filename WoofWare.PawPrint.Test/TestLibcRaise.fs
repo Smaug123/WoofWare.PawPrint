@@ -133,8 +133,6 @@ class Program
 
     [<Test>]
     let ``a registered signal raised on the main thread runs its handler`` () : unit =
-        Net11Frontier.park Net11Frontier.fatLock
-
         for platform in everyPlatform do
             exitsWith 42 platform [ "main" ; "15" ; "registered" ]
 

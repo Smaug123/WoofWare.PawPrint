@@ -5176,9 +5176,6 @@ module TestImpureCases =
                 [ "SignalRetryKeepsShimCopies.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             yield!
-                [ "LibcSigsuspendDarwin.cs" ; "LibcSigsuspendLinux.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.fatLock)
-            yield!
                 [
                     "CopyFileWiringDarwinSeeded.cs"
                     "CopyFileWiringLinuxSeeded.cs"
@@ -5606,7 +5603,9 @@ module TestImpureCases =
 
     [<Test>]
     let ``FileSystemWatcher on the pinned linux-x64 CoreLib raises an event for each change, and ends`` () : unit =
-        Net11Frontier.park Net11Frontier.fatLock
+        Net11Frontier.park (
+            "On .NET 11's linux-x64 CoreLib the watcher's read loop reaches `AsyncHelpers.Await`, a runtime-async method's, whose `TailAwait` call PawPrint refuses: \"CoreCLR's JIT replaces every call to this method with code of its own\" (measured on 11.0.0-rc.1). Un-park when runtime-async methods run."
+        )
 
         // On a macOS host the framework under test is a Darwin CoreLib, whose
         // FileSystemWatcher is FSEvents; production and CI run the Linux one, over inotify.

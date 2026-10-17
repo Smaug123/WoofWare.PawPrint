@@ -62,6 +62,18 @@ type SyncBlock =
             WaitQueue = []
         }
 
+/// .NET 11's sync block for one object, as far as its monitor goes: the handle CoreCLR's
+/// `SyncBlock::m_Lock` keeps to the `Lock` that the object's thin lock inflated to.
+[<RequireQualifiedAccess>]
+type MonitorLock =
+    /// `ObjectHeader_GetOrCreateLockObject` on `inflater` is running CoreLib's
+    /// `Lock.InitializeForMonitor` on the `Lock` that `handle` holds, to hand it the thin lock's
+    /// owner. CoreCLR holds the sync block's spin lock until that returns, so another thread
+    /// inflating the same object waits for it.
+    | Inflating of inflater : ThreadId * handle : GcHandleAddress
+    /// The handle to the object's `Lock`, which `ObjectHeader.GetLockHandleIfExists` returns.
+    | Inflated of handle : GcHandleAddress
+
 type AllocatedNonArrayObject =
     {
         // TODO: this is a slightly odd domain; the same type for value types as class types!

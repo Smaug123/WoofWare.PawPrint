@@ -1575,3 +1575,76 @@ module TestManagedHeap =
             Config.QuickThrowOnFailure.WithMaxTest 200,
             Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
         )
+
+    [<Test>]
+    let ``each object's sync block is numbered apart from every other, and only its inflater completes it`` () : unit =
+        let emptyIntArray : AllocatedArray =
+            {
+                Shape = int32ShapeOf (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)) 0
+                Elements = PersistentVector.empty
+            }
+
+        // A count of objects, and an order to inflate them in, each by one of a few threads.
+        let gen =
+            gen {
+                let! count = Gen.choose (1, 8)
+                let! order = Gen.shuffle [ 0 .. count - 1 ]
+                let! inflaters = Gen.listOfLength count (Gen.choose (0, 3))
+                return count, List.ofArray order, inflaters
+            }
+
+        let property (count : int, order : int list, inflaters : int list) : unit =
+            let addrs, heap =
+                (ManagedHeap.empty, [ 1..count ])
+                ||> List.mapFold (fun heap _ ->
+                    let addr, heap = ManagedHeap.allocateArray emptyIntArray heap
+                    addr, heap
+                )
+                |> fun (addrs, heap) -> Array.ofList addrs, heap
+
+            let heap =
+                (heap, List.indexed order)
+                ||> List.fold (fun heap (step, which) ->
+                    let addr = addrs.[which]
+                    let inflater = ThreadId (inflaters.[which])
+                    let handle = GcHandleAddress.GcHandleAddress (100 + which)
+
+                    ManagedHeap.tryGetMonitorLock addr heap |> shouldEqual None
+
+                    let index, heap = ManagedHeap.beginInflation addr inflater handle heap
+
+                    // Numbered in the order the sync blocks were made, from 1.
+                    index |> shouldEqual (step + 1)
+
+                    ManagedHeap.tryGetMonitorLock addr heap
+                    |> shouldEqual (Some (MonitorLock.Inflating (inflater, handle)))
+
+                    Assert.Throws<exn> (fun () -> ManagedHeap.beginInflation addr inflater handle heap |> ignore)
+                    |> ignore
+
+                    let other = ThreadId (inflaters.[which] + 1)
+
+                    Assert.Throws<exn> (fun () -> ManagedHeap.completeInflation addr other heap |> ignore)
+                    |> ignore
+
+                    let heap = ManagedHeap.completeInflation addr inflater heap
+
+                    ManagedHeap.tryGetMonitorLock addr heap
+                    |> shouldEqual (Some (MonitorLock.Inflated handle))
+
+                    Assert.Throws<exn> (fun () -> ManagedHeap.completeInflation addr inflater heap |> ignore)
+                    |> ignore
+
+                    heap
+                )
+
+            // An address that is not a live allocation has no sync block to begin.
+            let dangling = ManagedHeapAddress (count + 1000)
+
+            Assert.Throws<exn> (fun () ->
+                ManagedHeap.beginInflation dangling (ThreadId 0) (GcHandleAddress.GcHandleAddress 1) heap
+                |> ignore
+            )
+            |> ignore
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen gen) property)
