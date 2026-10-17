@@ -2485,6 +2485,205 @@ public static class Cases
         |> List.map (fun expectation -> snd expectation.Method)
         |> makesTheCalls analysis fixture
 
+    /// Code that compares two `typeof`s, which C# compiles to `ldtoken; call GetTypeFromHandle`
+    /// twice, then `call op_Equality` or `op_Inequality`.
+    let private typeEqualitySource =
+        """
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace TypeEquality;
+
+// Exceptions whose construction raises nothing, unlike CoreLib's, which look up their messages.
+public class Same : Exception { }
+
+public class Different : Exception { }
+
+public static class Cases
+{
+    public static void Equal()
+    {
+        if (typeof(int) == typeof(int)) throw new Same();
+        throw new Different();
+    }
+
+    public static void Unequal()
+    {
+        if (typeof(int) != typeof(long)) throw new Different();
+        throw new Same();
+    }
+
+    public static void Generic<T>()
+    {
+        if (typeof(T) == typeof(int)) throw new Same();
+        throw new Different();
+    }
+
+    public static void WithInt() => Generic<int>();
+
+    public static void WithString() => Generic<string>();
+
+    // The same type, spelled by the caller's instantiation on one side and by this body on the
+    // other.
+    public static void Constructed<T>()
+    {
+        if (typeof(T) == typeof(List<int>)) throw new Same();
+        throw new Different();
+    }
+
+    public static void WithList() => Constructed<List<int>>();
+
+    public static void WithListOfLong() => Constructed<List<long>>();
+
+    // The comparison decides no branch.
+    public static bool Compared() => typeof(int) == typeof(string);
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void Unoptimized()
+    {
+        if (typeof(int) == typeof(int)) throw new Same();
+        throw new Different();
+    }
+
+    // The comparison's first operand arrives two ways, so it is not the one `GetTypeFromHandle`
+    // it would have to be for the JIT to compare handles.
+    public static void EitherType(bool flag)
+    {
+        if ((flag ? typeof(int) : typeof(string)) == typeof(int)) throw new Same();
+        throw new Different();
+    }
+}
+"""
+
+    /// What each method of `typeEqualitySource` lets escape where the JIT compares the two types'
+    /// handles in place of the calls.
+    let private typeEqualityExpectations : Expectation list =
+        let same = "=TypeEquality.Same"
+        let different = "=TypeEquality.Different"
+
+        let folded (name : string) (contains : string list) (excludes : string list) =
+            { expect "TypeEquality.Cases" name with
+                Contains = contains
+                Excludes = excludes
+                Unknown = Some false
+                // A `throw` of null raises a `NullReferenceException`, which the runtime constructs.
+                Assumes = Some (Assumption.JitOptimises :: constructing)
+            }
+
+        [
+            folded "Equal" [ same ] [ different ]
+            folded "Unequal" [ different ] [ same ]
+            // The open definition does not decide the branch, but makes no call either way.
+            folded "Generic" [ same ; different ] []
+            folded "WithInt" [ same ] [ different ]
+            folded "WithString" [ different ] [ same ]
+            folded "Constructed" [ same ; different ] []
+            folded "WithList" [ same ] [ different ]
+            folded "WithListOfLong" [ different ] [ same ]
+            { expect "TypeEquality.Cases" "Compared" with
+                Excludes = [ same ; different ]
+                Unknown = Some false
+                Assumes = Some [ Assumption.JitOptimises ]
+            }
+        ]
+
+    /// The image of `typeEqualitySource`, optimized as CoreLib is unless `debug`.
+    let private typeEqualityFixture (debug : bool) : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            if debug then
+                Roslyn.compileAssembly "TypeEquality" OutputKind.DynamicallyLinkedLibrary [] [ typeEqualitySource ]
+            else
+                Roslyn.compileOptimizedAssembly
+                    "TypeEquality"
+                    OutputKind.DynamicallyLinkedLibrary
+                    [ typeEqualitySource ]
+
+        Assembly.read loggerFactory (Some "TypeEquality.dll") (new MemoryStream (image))
+
+    /// Whether each of `methods` of `typeEqualitySource` calls `Type.GetTypeFromHandle` and
+    /// `Type.op_Equality`, which `op_Inequality` calls, or neither, as `calls` says; and relies on
+    /// the JIT's comparing handles in place of the calls exactly where it calls neither.
+    let private comparesTypesByCalling
+        (calls : bool)
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (methods : string list)
+        : unit
+        =
+        let corelib = hostCoreLib ()
+
+        let called =
+            [ "GetTypeFromHandle" ; "op_Equality" ]
+            |> List.map (methodNamed corelib "System.Type")
+            |> Set.ofList
+
+        let mutable analysis = analysis
+
+        for name in methods do
+            let key = methodNamed fixture "TypeEquality.Cases" name
+            let next, reached = EscapeAnalysis.reachable analysis key
+            let next, escapes = EscapeAnalysis.escapes next key
+            analysis <- next
+            let reached = Set.intersect reached called
+
+            if
+                reached <> (if calls then called else Set.empty)
+                || escapes.Assumes.Contains Assumption.JitOptimises = calls
+            then
+                failwith $"%s{name}: reaches %A{Set.toList reached}, assuming %A{Set.toList escapes.Assumes}"
+
+    [<Test>]
+    let ``comparing two typeofs is a comparison of their handles, decided by the instance, where the JIT optimises``
+        ()
+        : unit
+        =
+        let fixture = typeEqualityFixture false
+        Debuggable.allowsJitOptimisation fixture |> shouldEqual (Some true)
+
+        let analysis, failures =
+            unmet (analysisOver [ fixture ] id) fixture typeEqualityExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+        typeEqualityExpectations
+        |> List.map (fun expectation -> snd expectation.Method)
+        |> comparesTypesByCalling false analysis fixture
+
+        // A method marked `NoOptimization` makes the calls, as does one in which the comparison's
+        // operand is not the `GetTypeFromHandle` straight before it.
+        comparesTypesByCalling true analysis fixture [ "Unoptimized" ; "EitherType" ]
+
+    [<Test>]
+    let ``comparing two typeofs makes the calls where the assembly disables optimisation`` () : unit =
+        let fixture = typeEqualityFixture true
+        Debuggable.allowsJitOptimisation fixture |> shouldEqual (Some false)
+
+        typeEqualityExpectations
+        |> List.map (fun expectation -> snd expectation.Method)
+        |> comparesTypesByCalling true (analysisOver [ fixture ] id) fixture
+
+    [<Test>]
+    let ``comparing two typeofs makes the calls unless the JIT is assumed to optimise`` () : unit =
+        let fixture = typeEqualityFixture false
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.JitOptimises Assumption.all)
+                [ fixture ]
+                id
+
+        typeEqualityExpectations
+        |> List.map (fun expectation -> snd expectation.Method)
+        |> comparesTypesByCalling true analysis fixture
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.
