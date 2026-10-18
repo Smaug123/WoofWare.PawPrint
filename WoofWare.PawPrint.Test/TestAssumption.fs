@@ -49,7 +49,8 @@ module TestAssumption =
             match assumption with
             | Assumption.CoreLibTypeInitializers -> count |> shouldEqual initializers
             | Assumption.NamedTypesLoad
-            | Assumption.StackTracePreserved -> count |> shouldEqual 1
+            | Assumption.StackTracePreserved
+            | Assumption.DynamicCastsAsDocumented -> count |> shouldEqual 1
             | Assumption.JitOptimises -> count |> shouldEqual 0
 
         for assumption, method in summarised do
@@ -80,6 +81,21 @@ module TestAssumption =
             | Assumption.CoreLibTypeInitializers ->
                 method.Name |> shouldEqual ".cctor"
                 method.IsStatic |> shouldEqual true
+            | Assumption.DynamicCastsAsDocumented ->
+                // What CoreCLR's `DynamicInterfaceCastable::IsInstanceOf` calls, as `corelib.h`
+                // binds `METHOD__DYNAMICINTERFACECASTABLEHELPERS__IS_INTERFACE_IMPLEMENTED`.
+                name
+                |> shouldEqual "System.Runtime.InteropServices.DynamicInterfaceCastableHelpers::IsInterfaceImplemented"
+
+                method.IsStatic |> shouldEqual true
+                method.Signature.ParameterTypes.Length |> shouldEqual 3
+
+                method.Signature.ReturnType
+                |> shouldEqual (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Boolean))
+
+                match method.Body with
+                | MethodBody.Il _ -> ()
+                | other -> failwith $"%A{assumption} summarises a method with no IL: %A{other}"
             | Assumption.JitOptimises -> failwith $"%A{assumption} summarises %s{name}"
 
     [<TestCaseSource(nameof coreLibs)>]
@@ -172,6 +188,60 @@ module TestAssumption =
         // A generic parameter whose constraints are all in CoreLib.
         let parameter = typedefof<Comparer<int>>.GetGenericArguments().[0]
         constraintsRaise parameter.TypeHandle |> shouldEqual None
+
+    /// An object that declines every interface it is asked about, as its documentation allows.
+    type private Declining () =
+        interface Runtime.InteropServices.IDynamicInterfaceCastable with
+            member _.IsInterfaceImplemented (_ : RuntimeTypeHandle, _ : bool) : bool = false
+
+            member _.GetInterfaceImplementation (_ : RuntimeTypeHandle) : RuntimeTypeHandle = RuntimeTypeHandle ()
+
+    /// What CoreLib's `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which CoreCLR calls
+    /// to ask an `IDynamicInterfaceCastable`, raises on the real runtime asking `castable` about
+    /// `IDisposable`: the full name of the exception's type, if it raises one.
+    let private dynamicCastRaises (castable : obj) (throwIfNotImplemented : bool) : string option =
+        let helper =
+            typeof<obj>.Assembly
+                .GetType("System.Runtime.InteropServices.DynamicInterfaceCastableHelpers", true)
+                .GetMethod ("IsInterfaceImplemented", BindingFlags.Static ||| BindingFlags.NonPublic)
+
+        // Unwrapped, since wrapping makes a `TargetInvocationException`, whose own constructor
+        // looks up its message.
+        try
+            helper.Invoke (
+                (null : obj),
+                BindingFlags.DoNotWrapExceptions,
+                null,
+                [| castable ; box typeof<IDisposable> ; box throwIfNotImplemented |],
+                null
+            )
+            |> ignore<obj>
+
+            None
+        with e ->
+            Some (e.GetType().FullName)
+
+    [<Test>]
+    let ``what asking an IDynamicInterfaceCastable raises on the real runtime is in the contract that assumes it answers as documented``
+        ()
+        : unit
+        =
+        let contract =
+            Assumption.raises Assumption.DynamicCastsAsDocumented
+            |> List.map (fun name -> name.FullName)
+            |> Set.ofList
+
+        // Declining where asked to throw: CoreLib throws in the object's place.
+        let raised = dynamicCastRaises (Declining ()) true
+        raised |> shouldEqual (Some "System.InvalidCastException")
+        contract.Contains raised.Value |> shouldEqual true
+
+        dynamicCastRaises (Declining ()) false |> shouldEqual None
+
+        // CoreCLR passes it only an object, but another caller may pass null.
+        let raised = dynamicCastRaises (null : obj) false
+        raised |> shouldEqual (Some "System.NullReferenceException")
+        contract.Contains raised.Value |> shouldEqual true
 
     /// The invariant culture, until its name cannot be read: setting the current UI culture reads
     /// it once.

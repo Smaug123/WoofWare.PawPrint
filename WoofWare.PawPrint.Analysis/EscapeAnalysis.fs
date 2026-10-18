@@ -446,8 +446,11 @@ type EscapeAnalysisState =
 /// in the module is made.
 ///
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
-/// on an object whose class implements it. That is assumed to throw nothing but the
-/// <c>InvalidCastException</c> its documentation asks for.
+/// on an object whose class implements it. Where the analysis follows the cast helpers' fallback,
+/// which asks it, that it throws nothing but the <c>InvalidCastException</c> its documentation asks
+/// for is <c>Assumption.DynamicCastsAsDocumented</c>; from <c>castclass</c>, <c>isinst</c> and
+/// <c>stelem.ref</c>, whose helpers the analysis does not yet follow, it is assumed without being
+/// listed.
 ///
 /// The IL is assumed to be well typed: a value held where the IL spells a type (an argument, a
 /// local, a field, a call's result) is of that type, as the JIT assumes when it devirtualises. So a
@@ -608,7 +611,10 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
 
-    /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes.
+    /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes: the one
+    /// of its name taking an argument per one the call spells. A CoreLib may declare others of the
+    /// name, as .NET 11's declares an `UnmanagedCallersOnly` overload of
+    /// `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which its VM calls instead.
     let private nativeCall (state : EscapeAnalysisState) (call : ManagedCall) : MethodKey * SpelledArgument list =
         let corelib = state.BaseTypes.Corelib
 
@@ -622,16 +628,15 @@ module EscapeAnalysis =
             |> Option.toList
             |> List.collect (fun ty ->
                 ty.Methods
-                |> List.filter (fun m -> m.Name = call.Method)
+                |> List.filter (fun m ->
+                    m.Name = call.Method
+                    && (if m.IsStatic then 0 else 1) + m.Signature.ParameterTypes.Length = call.Arguments.Length
+                )
                 |> List.choose (fun m -> m.TryMetadata |> Option.map (fun facts -> ty, m, facts))
             )
 
         match found with
-        | [ ty, method, facts ] when
-            ty.Generics.IsEmpty
-            && method.Signature.GenericParameterCount = 0
-            && (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length = call.Arguments.Length
-            ->
+        | [ ty, method, facts ] when ty.Generics.IsEmpty && method.Signature.GenericParameterCount = 0 ->
             let passes =
                 call.Arguments
                 |> List.map (fun argument ->
@@ -642,7 +647,7 @@ module EscapeAnalysis =
             MethodKey.make corelib facts.Handle, passes
         | found ->
             failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name"
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name and arity"
 
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
     /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
@@ -2499,7 +2504,13 @@ module EscapeAnalysis =
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->
                 match NativeMethod.recognise assembly key.Method.Get with
-                | Some native -> Runs.Native native
+                | Some native when
+                    (NativeMethod.contract native).Assumes
+                    |> List.forall (Assumption.ofNative >> assumptions.Contains)
+                    ->
+                    Runs.Native native
+                // Its contract holds under a claim the caller does not allow.
+                | Some _
                 | None -> Runs.Opaque Opacity.NativeBody
             | MethodBody.Il body -> Runs.Il (body, None)
 
@@ -2548,7 +2559,11 @@ module EscapeAnalysis =
                 contract.Raises
                 |> List.map (fun name -> parameterlessConstructor state name, [])
 
-            state, contracted (exactly contract.Raises) [] (constructors @ List.map (nativeCall state) contract.Runs)
+            state,
+            contracted
+                (exactly contract.Raises)
+                (contract.Assumes |> List.map Assumption.ofNative)
+                (constructors @ List.map (nativeCall state) contract.Runs)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.
