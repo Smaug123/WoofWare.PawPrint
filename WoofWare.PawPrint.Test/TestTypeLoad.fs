@@ -231,6 +231,8 @@ public class OuterOfGone : Provider.Gone { public class Nested { } }
 public struct SelfStatic { public static SelfStatic F; }
 public class StaticMissingBeforeDeferredArgument : Provider.KeptGeneric<DerivesGone> { public static Optional.ThingStruct F; }
 public class StaticGoneAfterDeferredArgument : Provider.KeptGeneric<DerivesMissing> { public static Provider.GoneStruct F; }
+public class StaticMissingBeforeInstanceGone { public static Optional.ThingStruct S; public Provider.GoneStruct I; }
+public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; public static Optional.ThingStruct S; }
 """
 
     let private curatedNames : string list =
@@ -268,6 +270,8 @@ public class StaticGoneAfterDeferredArgument : Provider.KeptGeneric<DerivesMissi
             "SelfStatic"
             "StaticMissingBeforeDeferredArgument"
             "StaticGoneAfterDeferredArgument"
+            "StaticMissingBeforeInstanceGone"
+            "InstanceGoneBeforeStaticMissing"
         ]
 
     [<Test>]
