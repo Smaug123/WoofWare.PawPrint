@@ -502,13 +502,52 @@ module ExceptionDispatching =
             loggerFactory
             corelib
             cliException.ExceptionObject
-            cliException.StackTrace
+            cliException.Trace.Frames
             state
-        |> IlMachineState.recordThrownStackTrace
-            loggerFactory
-            corelib
-            cliException.ExceptionObject
-            cliException.StackTrace
+        |> IlMachineState.recordThrownStackTrace loggerFactory corelib cliException.ExceptionObject cliException.Trace
+
+    /// The search parked on a filter, as it continues once the filter has run, whether the filter
+    /// returned or let an exception escape it.
+    ///
+    /// CoreCLR reads the exception's `_stackTrace` afresh at every frame it appends, and the filter
+    /// is the only guest code between two appends of one raise. Entering it projected the search's
+    /// trace onto the object, so the object's trace differs from the search's only if the filter
+    /// raised the same object again, as `ExceptionDispatchInfo.Throw` of a capture of it does; the
+    /// search continues, or concludes with, whichever trace the object now holds, its first frame's
+    /// origin included.
+    let private takeUpTraceAfterFilter
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (filter : ExceptionFilterRegion)
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState * ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let state, exceptionAncestor =
+            IlMachineState.tryExceptionAncestor loggerFactory corelib search.ExceptionType state
+
+        match exceptionAncestor with
+        | None -> state, search
+        | Some _ ->
+
+        match
+            IlMachineState.frozenStackTrace corelib search.Exception.ExceptionObject state,
+            search.Exception.Trace.Frames
+        with
+        | Some trace, _ ->
+            state,
+            { search with
+                Exception =
+                    { search.Exception with
+                        Trace = trace
+                    }
+            }
+        // No frames on entry (a rethrow, from its own frame, of an exception whose trace was
+        // cleared) minted no token, and the filter has not given it one either.
+        | None, [] -> state, search
+        | None, _ :: _ ->
+            failwith
+                $"TODO: the filter at IL offset %d{filter.FilterOffset} left the exception it was offered with no trace (its _stackTrace null), where entering it gave it one. CoreCLR would continue the raise from that empty trace, whose first frame is then the next one the raise passes through rather than any it was raised in; PawPrint does not model that."
 
 
     /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
@@ -529,10 +568,11 @@ module ExceptionDispatching =
 
             List.rev (last :: earlierReversed)
 
-    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
-    /// exception already carried, with the last marked as the end of that earlier trace, so that
-    /// the frame about to be appended continues them instead of starting a new trace. `None` means
-    /// no flag was pending and the caller's own frames stand unchanged.
+    /// If `currentThread` has a pending foreign-raise flag, clear it and return the trace the
+    /// exception already carried, with its last frame marked as the end of that earlier trace, so
+    /// that the frame about to be appended continues it instead of starting a new trace. `None`
+    /// means either that no flag was pending, or that one was and `traceAlreadyPresent` had no
+    /// trace to give (the exception was never thrown); either way the caller's own trace stands.
     ///
     /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
     /// and the placement matters as much as the marking: CoreCLR consumes the flag when a frame is
@@ -559,20 +599,22 @@ module ExceptionDispatching =
     /// `docs/plans/2026-08-11-two-pass-exception-dispatch.md` records why this answer is the
     /// faithful one.
     ///
-    /// The frames come from the exception object rather than from any in-flight list, because
-    /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
-    /// *same* object from inside a catch updates the token while the outer handler's snapshot goes
-    /// stale, and only the token still holds the nested boundary.
+    /// CoreCLR re-reads `_stackTrace` at every append. `throwExceptionObject` does too, reading the
+    /// trace from the exception object rather than from any in-flight list, which is observable: a
+    /// nested throw of the *same* object from inside a catch updates the token while the outer
+    /// handler's snapshot goes stale, and only the token still holds the nested boundary.
+    /// `appendCallerFrame` passes the raise's in-flight trace instead, which is the object's: between
+    /// two appends of one raise only a `filter` runs guest code, and `takeUpTraceAfterFilter`
+    /// takes up whatever trace the object holds once it has run.
     ///
-    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
+    /// `traceAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
     /// fails loudly on an exception address that is not a real heap object, which is exactly what
     /// the skeletal states in low-level dispatch tests use.
     let private consumeForeignExceptionRaise
         (currentThread : ThreadId)
-        (framesAlreadyPresent :
-            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (traceAlreadyPresent : unit -> ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option)
         (state : IlMachineState)
-        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
+        : IlMachineState * ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
         let threadState = state.ThreadState.[currentThread]
 
@@ -591,7 +633,15 @@ module ExceptionDispatching =
                         }
             }
 
-        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
+        let restored =
+            traceAlreadyPresent ()
+            |> Option.map (fun trace ->
+                { trace with
+                    Frames = markLastFrameAsForeign trace.Frames
+                }
+            )
+
+        state, restored
 
     /// Append the caller's frame to a raise's trace as the first pass crosses into it, consuming
     /// any pending foreign-raise flag in the process.
@@ -622,15 +672,18 @@ module ExceptionDispatching =
                 IsLastFrameFromForeignExceptionStackTrace = false
             }
 
-        let state, restoredFrames =
+        let state, restored =
             state
-            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
+            |> consumeForeignExceptionRaise currentThread (fun () -> Some cliException.Trace)
 
-        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
+        let traceBefore = restored |> Option.defaultValue cliException.Trace
 
         state,
         { cliException with
-            StackTrace = framesBefore @ [ stackFrame ]
+            Trace =
+                { traceBefore with
+                    Frames = traceBefore.Frames @ [ stackFrame ]
+                }
         }
 
     /// The innermost `filter` clause of this frame that is currently being evaluated, if any.
@@ -966,7 +1019,11 @@ module ExceptionDispatching =
                         state
                         {
                             ExceptionObject = tieAddr
-                            StackTrace = []
+                            Trace =
+                                {
+                                    Frames = []
+                                    HeadOrigin = TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TypeInitializerFailed
+                                }
                         }
 
                 state, wrapped, tieType
@@ -984,7 +1041,13 @@ module ExceptionDispatching =
             // the constructor's frames into the `throw`'s.
             let raised =
                 { cliException with
-                    StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                    Trace =
+                        IlMachineState.frozenStackTrace corelib cliException.ExceptionObject state
+                        |> Option.defaultValue
+                            {
+                                Frames = []
+                                HeadOrigin = TraceHeadOrigin.IlThrow
+                            }
                 }
 
             let state, raised = seedWrapper state raised
@@ -1014,7 +1077,11 @@ module ExceptionDispatching =
                 state
                 {
                     ExceptionObject = tieAddr
-                    StackTrace = []
+                    Trace =
+                        {
+                            Frames = []
+                            HeadOrigin = TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TargetInvocationWrap
+                        }
                 }
 
         state, wrapped, tieType
@@ -1211,7 +1278,8 @@ module ExceptionDispatching =
                     ThreadState = state.ThreadState |> Map.add currentThread threadState
                 }
 
-            let outer = continuation.Search
+            let state, outer =
+                takeUpTraceAfterFilter loggerFactory corelib state continuation.CurrentFilter continuation.Search
 
             runFirstPass
                 loggerFactory
@@ -1308,6 +1376,9 @@ module ExceptionDispatching =
             failwith
                 $"Logic error: endfilter for filter %O{continuation.CurrentFilter} resumed a search parked on frame %O{search.Frame} while the thread was executing frame %O{activeFrame}"
 
+        let state, search =
+            takeUpTraceAfterFilter loggerFactory corelib state continuation.CurrentFilter search
+
         if accepted then
             let region =
                 ExceptionRegion.Filter (
@@ -1389,13 +1460,14 @@ module ExceptionDispatching =
             )
             state
 
-    /// Initiate exception dispatch for an exception object already on the heap.
-    /// Builds the initial stack trace frame and dispatches.
+    /// Initiate exception dispatch for an exception object already on the heap, raised in the
+    /// current frame as `origin` says. Builds the initial stack trace frame and dispatches.
     let throwExceptionObject
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentThread : ThreadId)
+        (origin : TraceHeadOrigin)
         (exceptionAddr : ManagedHeapAddress)
         (exceptionType : ConcreteTypeHandle)
         : ExceptionDispatchResult
@@ -1433,18 +1505,32 @@ module ExceptionDispatching =
         // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
         // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
         // frame of its own — and so carries the question forward instead.
-        let state, restoredFrames =
+        let state, restored =
             state
             |> consumeForeignExceptionRaise
                 currentThread
-                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
+                (fun () -> IlMachineState.frozenStackTrace corelib exceptionAddr state)
 
-        let restoredFrames = restoredFrames |> Option.defaultValue []
+        // Restored frames come first, so the first of them is the head, and its origin is theirs.
+        // With none (no flag, or the captured exception was never thrown, so that
+        // `RestoreDispatchState` left `_stackTrace` null), this raise's own frame is the head, as
+        // it is in CoreCLR. A trace with a token always has frames (`recordThrownStackTrace`).
+        let trace =
+            match restored with
+            | Some restored ->
+                { restored with
+                    Frames = restored.Frames @ [ stackFrame ]
+                }
+            | None ->
+                {
+                    Frames = [ stackFrame ]
+                    HeadOrigin = origin
+                }
 
         let cliException =
             {
                 ExceptionObject = exceptionAddr
-                StackTrace = restoredFrames @ [ stackFrame ]
+                Trace = trace
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType

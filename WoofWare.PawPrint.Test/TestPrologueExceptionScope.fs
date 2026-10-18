@@ -176,7 +176,11 @@ module TestPrologueExceptionScope =
         let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 ExceptionObject = ManagedHeapAddress 42
-                StackTrace = []
+                Trace =
+                    {
+                        Frames = []
+                        HeadOrigin = TraceHeadOrigin.IlThrow
+                    }
             }
 
         match ExceptionDispatching.dispatchException loggerFactory bct state thread cliException (objectHandle ()) with
@@ -239,7 +243,11 @@ module TestPrologueExceptionScope =
         let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 ExceptionObject = ManagedHeapAddress 42
-                StackTrace = []
+                Trace =
+                    {
+                        Frames = []
+                        HeadOrigin = TraceHeadOrigin.IlThrow
+                    }
             }
 
         // Both frames run the same method, so both carry the same `finally`; the *caller's* is
@@ -270,7 +278,11 @@ module TestPrologueExceptionScope =
         let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 ExceptionObject = ManagedHeapAddress 42
-                StackTrace = []
+                Trace =
+                    {
+                        Frames = []
+                        HeadOrigin = TraceHeadOrigin.IlThrow
+                    }
             }
 
         let state =

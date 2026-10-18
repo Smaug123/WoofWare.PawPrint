@@ -1229,6 +1229,7 @@ module IlMachineStateExecution =
                     baseClassTypes
                     state
                     currentThread
+                    (TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.TypeInitializerFailedEarlier)
                     tieAddr
                     tieType
             with

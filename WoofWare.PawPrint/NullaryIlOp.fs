@@ -1565,7 +1565,7 @@ module NullaryIlOp =
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ReturnFrameResult.DispatchException (state, exnAddr, exnType, making) ->
-                let state =
+                let state, origin =
                     match making with
                     | RuntimeExceptionMaking.Raised fields ->
                         // The ctor has run; now overwrite _HResult with the CLR's mapped value,
@@ -1576,14 +1576,26 @@ module NullaryIlOp =
                         // The raiser asked for specific field values, i.e. the CLR would have used a
                         // constructor overload taking them. This has to happen after the ctor, which
                         // has just written the type's default resource string into `_message`.
-                        (state, fields)
-                        ||> List.fold (fun state field ->
-                            IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
-                        )
-                    | RuntimeExceptionMaking.WrappedNonException -> state
+                        let state =
+                            (state, fields)
+                            ||> List.fold (fun state field ->
+                                IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
+                            )
+
+                        state, TraceHeadOrigin.RuntimeRaise RuntimeRaiseSite.MadeByRuntime
+                    // `IL_Throw` dispatches the wrapper from the `throw`, so the method that threw
+                    // is the first frame of its trace, as it is for a `throw` of an exception.
+                    | RuntimeExceptionMaking.WrappedNonException -> state, TraceHeadOrigin.IlThrow
 
                 match
-                    ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
+                    ExceptionDispatching.throwExceptionObject
+                        loggerFactory
+                        corelib
+                        state
+                        currentThread
+                        origin
+                        exnAddr
+                        exnType
                 with
                 | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
@@ -2530,9 +2542,23 @@ module NullaryIlOp =
                 // Its `StackTrace` out of `CatchExceptions` *is* stale: that is the snapshot this
                 // catch handler was entered with. The trace a rethrow inherits is the exception's
                 // own, whatever `_stackTrace` holds now.
+                //
+                // The whole trace comes from the token, origin included: the snapshot's origin
+                // belongs to the snapshot's frames, which a later raise of the same object may have
+                // replaced. A token-less exception (its `_stackTrace` written null since) has no
+                // frames to continue, so the next frame this raise appends, at the rethrowing
+                // method's call site in its caller, is its first. CoreCLR's is the same frame: it
+                // appends none for the frame a rethrow begins in (`RH_EH_FIRST_RETHROW_FRAME`,
+                // exceptionhandling.cpp:2957).
                 let cliException =
                     { cliException with
-                        StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                        Trace =
+                            IlMachineState.frozenStackTrace corelib cliException.ExceptionObject state
+                            |> Option.defaultValue
+                                {
+                                    Frames = []
+                                    HeadOrigin = TraceHeadOrigin.IlThrow
+                                }
                     }
 
                 match
@@ -2580,7 +2606,14 @@ module NullaryIlOp =
             | state, Some _ ->
 
             match
-                ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread addr thrownType
+                ExceptionDispatching.throwExceptionObject
+                    loggerFactory
+                    corelib
+                    state
+                    currentThread
+                    TraceHeadOrigin.IlThrow
+                    addr
+                    thrownType
             with
             | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->

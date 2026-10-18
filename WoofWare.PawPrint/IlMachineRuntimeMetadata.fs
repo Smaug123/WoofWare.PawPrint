@@ -1089,33 +1089,44 @@ module IlMachineRuntimeMetadata =
                     $"frozenStackTraceToken: exception @ %O{exceptionAddr} holds a _stackTrace token @ %O{tokenAddr} that is not registered in FrozenStackTraces; this is an interpreter bug"
         | other -> failwith $"frozenStackTraceToken: expected ObjectRef in Exception._stackTrace, got %O{other}"
 
-    /// The frames behind `exceptionAddr`'s `_stackTrace` token: the trace as of its last dispatch.
-    /// Empty means the exception has never been thrown, which is a legitimate state — an
+    /// The trace behind `exceptionAddr`'s `_stackTrace` token: the trace as of its last dispatch.
+    /// `None` means the exception has never been thrown, which is a legitimate state — an
     /// `ExceptionDispatchInfo` may be captured from an unthrown exception. `exceptionAddr` must be
     /// an exception, as for `frozenStackTraceToken`.
     ///
     /// This is the read side of `recordThrownStackTrace`, and the two must agree about what a
     /// token means; `frozenStackTraceToken` is what enforces that the token is one PawPrint minted.
+    let frozenStackTrace
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        match frozenStackTraceToken baseClassTypes exceptionAddr state with
+        | None -> None
+        | Some token ->
+            match state.FrozenStackTraces |> Map.tryFind token with
+            | Some trace -> Some trace
+            | None ->
+                // `frozenStackTraceToken` has already established that the token is registered, so
+                // this is unreachable; stated rather than defaulted to `None` because silently
+                // answering "never thrown" would turn a bookkeeping bug into a lost stack trace.
+                failwith
+                    $"frozenStackTrace: token %O{token} for exception @ %O{exceptionAddr} vanished from FrozenStackTraces between lookups; this is an interpreter bug"
+
+    /// The frames of `frozenStackTrace`, empty for an exception that has never been thrown.
     let frozenStackTraceFrames
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
         (state : IlMachineState)
         : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
         =
-        match frozenStackTraceToken baseClassTypes exceptionAddr state with
+        match frozenStackTrace baseClassTypes exceptionAddr state with
         | None -> []
-        | Some token ->
-            match state.FrozenStackTraces |> Map.tryFind token with
-            | Some frames -> frames
-            | None ->
-                // `frozenStackTraceToken` has already established that the token is registered, so
-                // this is unreachable; stated rather than defaulted to `[]` because silently
-                // answering "never thrown" would turn a bookkeeping bug into a lost stack trace.
-                failwith
-                    $"frozenStackTraceFrames: token %O{token} for exception @ %O{exceptionAddr} vanished from FrozenStackTraces between lookups; this is an interpreter bug"
+        | Some trace -> trace.Frames
 
-    /// Record that `exceptionAddr` has been thrown, with `stackTrace` as the frames behind it:
-    /// mint a fresh token object, register `token -> frames` in `IlMachineState.FrozenStackTraces`,
+    /// Record that `exceptionAddr` has been thrown, with `stackTrace` as the trace behind it:
+    /// mint a fresh token object, register `token -> stackTrace` in `IlMachineState.FrozenStackTraces`,
     /// and store the token in the exception's `_stackTrace`.
     ///
     /// A separate function from `setExceptionStackTraceString` rather than folded
@@ -1129,7 +1140,7 @@ module IlMachineRuntimeMetadata =
     /// `Exception.Source` silently answers null where the real runtime names the assembly.
     /// See `FrozenStackTraces` for why the token is opaque.
     ///
-    /// An empty frame list mints no token. `HasBeenThrown`
+    /// A trace with no frames mints no token. `HasBeenThrown`
     /// being true is what sends `Exception.StackTrace` down `GetStackTrace()` and into the
     /// structured decoder, so a token with no frames would promise an answer PawPrint cannot
     /// give and turn a readable `null` trace into a crash at the unimplemented
@@ -1142,11 +1153,11 @@ module IlMachineRuntimeMetadata =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
-        (stackTrace : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (stackTrace : ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState
         =
-        match stackTrace with
+        match stackTrace.Frames with
         | [] -> state
         | _ :: _ ->
 

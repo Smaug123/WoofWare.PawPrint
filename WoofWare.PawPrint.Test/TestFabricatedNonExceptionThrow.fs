@@ -427,6 +427,57 @@ public static class Driver
         =
         FabricatedGuest.run "Thrower" (fabricate ()) "NonExceptionThrowDriver" driverSource 0
 
+    /// `TargetSite` and `Source` of the `RuntimeWrappedException` a `throw` of a non-exception
+    /// raises. `IL_Throw` dispatches the wrapper from the `throw`, so the first frame of its trace is
+    /// the method that threw, as for a `throw` of an exception. Returns the row's code if the runtime
+    /// disagrees with CoreCLR there.
+    let private targetSiteDriverSource : string =
+        """
+using System;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+public static class Driver
+{
+    public static int Main(string[] args)
+    {
+        try
+        {
+            Thrower.Throw();
+            return 1;
+        }
+        catch (RuntimeWrappedException e)
+        {
+            MethodBase site = e.TargetSite;
+            if (site == null) return 2;
+            if (site.Name != "Throw") return 3;
+            if (site.DeclaringType != typeof(Thrower)) return 4;
+            if (e.Source != "Thrower") return 5;
+        }
+
+        // A handler that does not wrap sees the string, and its `rethrow` raises the wrapper
+        // again, keeping its trace.
+        try
+        {
+            Thrower.CatchObjectAndRethrow();
+            return 6;
+        }
+        catch (RuntimeWrappedException e)
+        {
+            if (e.TargetSite.Name != "Throw") return 7;
+            if (e.TargetSite.DeclaringType != typeof(Thrower)) return 8;
+        }
+
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``TargetSite of a wrapped non-exception is the method that threw it, as the real runtime does`` () : unit =
+        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
+        FabricatedGuest.run "Thrower" (fabricate ()) "NonExceptionTargetSiteDriver" targetSiteDriverSource 0
+
     /// Throws a string while the current UI culture's name, which the wrapper's constructor reads
     /// to look up its message, throws a `TimeZoneNotFoundException`. Returns 0 if that exception
     /// reached the caller's filter with the lock CoreLib's resource lookup takes already

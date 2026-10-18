@@ -50,7 +50,11 @@ module TestSchedulerYieldDebt =
     let private unhandledException () : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
         {
             ExceptionObject = ManagedHeapAddress 1
-            StackTrace = []
+            Trace =
+                {
+                    Frames = []
+                    HeadOrigin = TraceHeadOrigin.IlThrow
+                }
         }
 
     /// Frame-less stub thread state. See `TestSchedulerVoluntaryYield.stubThreadState`: the
@@ -583,7 +587,11 @@ module TestSchedulerYieldDebt =
                 // Inert: this exception is only ever a payload in an `ExecutionResult` the
                 // scheduler is asked to classify, never a raise anything dispatches.
                 ExceptionObject = ManagedHeapAddress 1
-                StackTrace = []
+                Trace =
+                    {
+                        Frames = []
+                        HeadOrigin = TraceHeadOrigin.IlThrow
+                    }
             }
 
         let variants : ExecutionResult list =

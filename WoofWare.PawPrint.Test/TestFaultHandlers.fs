@@ -200,7 +200,11 @@ module TestFaultHandlers =
         let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 ExceptionObject = exceptionObject
-                StackTrace = []
+                Trace =
+                    {
+                        Frames = []
+                        HeadOrigin = TraceHeadOrigin.IlThrow
+                    }
             }
 
         // Neither frame has any exception region, so the first pass runs straight off the end of
@@ -272,7 +276,11 @@ module TestFaultHandlers =
                 Exception =
                     {
                         ExceptionObject = exceptionObject
-                        StackTrace = []
+                        Trace =
+                            {
+                                Frames = []
+                                HeadOrigin = TraceHeadOrigin.IlThrow
+                            }
                     }
                 ExceptionType = objectHandle
                 Frame = state.ThreadState.[thread].ActiveMethodState
@@ -296,7 +304,7 @@ module TestFaultHandlers =
         match methodState.ExceptionContinuation with
         | Some (ExceptionContinuation.PropagatingException actual) ->
             actual.Exception.ExceptionObject |> shouldEqual exceptionObject
-            actual.Exception.StackTrace |> List.isEmpty |> shouldEqual true
+            actual.Exception.Trace.Frames |> List.isEmpty |> shouldEqual true
         | other -> failwith $"Expected propagating exception continuation, got %O{other}"
 
     [<Test>]
@@ -494,7 +502,11 @@ module TestFaultHandlers =
                     Exception =
                         {
                             ExceptionObject = original
-                            StackTrace = []
+                            Trace =
+                                {
+                                    Frames = []
+                                    HeadOrigin = TraceHeadOrigin.IlThrow
+                                }
                         }
                     ExceptionType = objectHandle
                     StartFrame = frameId
@@ -533,7 +545,11 @@ module TestFaultHandlers =
                         thread
                         {
                             ExceptionObject = escaping
-                            StackTrace = []
+                            Trace =
+                                {
+                                    Frames = []
+                                    HeadOrigin = TraceHeadOrigin.IlThrow
+                                }
                         }
                         objectHandle
                 with

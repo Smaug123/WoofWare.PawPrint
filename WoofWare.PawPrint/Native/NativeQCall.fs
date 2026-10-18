@@ -40,6 +40,8 @@ module NativeQCall =
             "ExceptionNative_GetMessageFromNativeResources",
             NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
             "ExceptionNative_GetFrozenStackTrace", NativeException.tryExecuteQCall "ExceptionNative_GetFrozenStackTrace"
+            "ExceptionNative_GetMethodFromStackTrace",
+            NativeException.tryExecuteQCall "ExceptionNative_GetMethodFromStackTrace"
             "RuntimeTypeHandle_ConstructName", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_ConstructName"
             "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"

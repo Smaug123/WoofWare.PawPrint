@@ -187,7 +187,7 @@ type IlMachineState =
         /// only increments and there is no removal API, so an address is never reused. A future
         /// collecting GC must make this table weak-keyed.
         FrozenStackTraces :
-            Map<ManagedHeapAddress, ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list>
+            Map<ManagedHeapAddress, ExceptionTrace<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>>
         /// Whether the runtime has yet wrapped a thrown object that is not an exception in a
         /// `RuntimeWrappedException`. CoreCLR learns that type's method table the first time it
         /// wraps (`pMT_RuntimeWrappedException` in `WrapNonCompliantException`, excep.cpp), and only
