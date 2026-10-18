@@ -1029,6 +1029,89 @@ module NativeRuntimeAssembly =
             failwith
                 $"hasAssemblyLoadContextStaticEventSubscriber: AssemblyLoadContext.%s{eventName} holds %O{other}, not an object reference"
 
+    /// <summary>
+    /// The object <c>AssemblyLoadContext.Default</c> answers, <c>DefaultAssemblyLoadContext.s_loadContext</c>,
+    /// or <c>None</c> while that class's initialiser has not stored it, before which no guest can
+    /// hold the default context to subscribe to its events or hand it to a load.
+    /// </summary>
+    let private defaultAssemblyLoadContext
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        : ManagedHeapAddress option
+        =
+        let defaultContext =
+            ctx.BaseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.Loader" "DefaultAssemblyLoadContext"
+            |> Option.defaultWith (fun () ->
+                failwith
+                    "defaultAssemblyLoadContext: CoreLib defines no System.Runtime.Loader.DefaultAssemblyLoadContext"
+            )
+
+        let field =
+            match
+                defaultContext.Fields
+                |> List.filter (fun f ->
+                    f.Name = "s_loadContext"
+                    && f.Attributes.HasFlag System.Reflection.FieldAttributes.Static
+                )
+            with
+            | [ field ] -> field
+            | fields ->
+                failwith
+                    $"defaultAssemblyLoadContext: expected one static field DefaultAssemblyLoadContext.s_loadContext, found %d{List.length fields}"
+
+        match
+            AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes defaultContext.Identity
+        with
+        | None -> None
+        | Some handle ->
+
+        match
+            IlMachineState.getStatic StaticOwner.Shared handle (ComparableFieldDefinitionHandle.Make field.Handle) state
+        with
+        | None
+        | Some (CliType.ObjectRef None) -> None
+        | Some (CliType.ObjectRef (Some addr)) -> Some addr
+        | Some other ->
+            failwith
+                $"defaultAssemblyLoadContext: DefaultAssemblyLoadContext.s_loadContext holds %O{other}, not an object reference"
+
+    /// <summary>
+    /// Whether the guest has subscribed to <c>AssemblyLoadContext.Default.Resolving</c>, which
+    /// CoreCLR raises (<c>AssemblyLoadContext.ResolveUsingEvent</c>) for a request in the default
+    /// context that found nothing, before <c>AssemblyResolve</c>.
+    /// </summary>
+    let private defaultContextHasResolvingSubscriber (ctx : NativeCallContext) (state : IlMachineState) : bool =
+        match defaultAssemblyLoadContext ctx state with
+        | None -> false
+        | Some contextAddr ->
+
+        let alc =
+            ctx.BaseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.Loader" "AssemblyLoadContext"
+            |> Option.defaultWith (fun () ->
+                failwith
+                    "defaultContextHasResolvingSubscriber: CoreLib defines no System.Runtime.Loader.AssemblyLoadContext"
+            )
+
+        let alcHandle =
+            match AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes alc.Identity with
+            | Some handle -> handle
+            | None ->
+                failwith
+                    "defaultContextHasResolvingSubscriber: the default context exists, but its base class AssemblyLoadContext has no concrete type handle; this is an interpreter bug"
+
+        // A field-like event's backing field bears the event's name, here `_resolving`, declared
+        // on `AssemblyLoadContext` itself.
+        let field =
+            FieldIdentity.requiredOwnInstanceField alc "_resolving"
+            |> FieldIdentity.fieldId alcHandle
+
+        match AllocatedNonArrayObject.DereferenceFieldById field (ManagedHeap.get contextAddr state.ManagedHeap) with
+        | CliType.ObjectRef None -> false
+        | CliType.ObjectRef (Some _) -> true
+        | other ->
+            failwith
+                $"defaultContextHasResolvingSubscriber: AssemblyLoadContext._resolving holds %O{other}, not an object reference"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -2147,7 +2230,9 @@ module NativeRuntimeAssembly =
 
             // The requesting assembly and the stack mark (arguments 1 and 2) exist to pick a
             // *parent* whose fallback binder a custom load context would consult. PawPrint has one
-            // load context, so neither is read.
+            // load context, so neither is read. A context passed explicitly binds through its own
+            // binder, which for `AssemblyLoadContext.Default` is the default binder that a null
+            // context means as well.
             let contextPtr =
                 NativeCall.objectHandleOnStackTarget operation state "assemblyLoadContext" instruction.Arguments.[4]
 
@@ -2158,6 +2243,7 @@ module NativeRuntimeAssembly =
                     (ManagedPointerSource.requireAddressed contextPtr)
             with
             | CliType.ObjectRef None -> ()
+            | CliType.ObjectRef (Some context) when Some context = defaultAssemblyLoadContext ctx state -> ()
             | CliType.ObjectRef (Some _) ->
                 failwith
                     $"TODO: %s{operation} of '%s{simpleName}' into a load context other than the default one; PawPrint has a single load context and no binder to hand a custom AssemblyLoadContext"
@@ -2255,12 +2341,11 @@ module NativeRuntimeAssembly =
                 }
 
             // CoreCLR calls back into managed code from the binder: `AppDomain.AssemblyLoad` for
-            // an assembly it has just loaded, and `AppDomain.AssemblyResolve` for a request it
-            // could not bind (`AssemblyLoadContext.OnAssemblyLoad`, `OnAssemblyResolve`). This
-            // handler makes neither call, which is unobservable exactly while nobody listens. The
-            // default context's own `Resolving` event is out of reach, because constructing
-            // `AssemblyLoadContext.Default` needs `AssemblyNative_InitializeAssemblyLoadContext`,
-            // which is unimplemented.
+            // an assembly it has just loaded, and for a request it could not bind the default
+            // context's `Resolving` event and then `AppDomain.AssemblyResolve`
+            // (`AssemblyLoadContext.OnAssemblyLoad`, `ResolveUsingEvent`, `OnAssemblyResolve`).
+            // This handler makes none of those calls, which is unobservable exactly while nobody
+            // listens.
             let refuseIfSubscribed (eventName : string) (situation : string) : unit =
                 if hasAssemblyLoadContextStaticEventSubscriber ctx state eventName then
                     failwith
@@ -2286,6 +2371,10 @@ module NativeRuntimeAssembly =
                             }
                     }
             | AssemblyBindResult.NotFound ->
+                if defaultContextHasResolvingSubscriber ctx state then
+                    failwith
+                        $"TODO: %s{operation} of '%s{simpleName}' found nothing, and the guest subscribed to AssemblyLoadContext.Default.Resolving, which CoreCLR raises from the binder at this point; this handler does not call back into managed code"
+
                 refuseIfSubscribed "AssemblyResolve" "found nothing"
 
                 if not throwOnFileNotFound then

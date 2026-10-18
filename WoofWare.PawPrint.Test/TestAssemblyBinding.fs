@@ -594,3 +594,54 @@ module TestAssemblyBinding =
             refused |> shouldEqual true
         finally
             Directory.Delete (root, true)
+
+    /// CoreCLR's binder never consults a dynamic assembly: `Assembly.Load` of a name only an
+    /// `AssemblyBuilder` defines is not found, as a reference naming it is not
+    /// (`LoadedAssemblies.TryResolveReference`).
+    [<Test>]
+    let ``a dynamic assembly does not answer a request for its name`` () =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let dynamic =
+            use stream = File.OpenRead imagePath
+            AssemblyApi.read loggerFactory None stream
+
+        let assemblies =
+            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
+            | Ok assemblies -> assemblies
+            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+
+        match AssemblyBinding.tryBind loggerFactory [] (plainRequest imageSimpleName) assemblies with
+        | AssemblyBindResult.NotFound -> ()
+        | AssemblyBindResult.Bound (_, bound) -> failwith $"expected NotFound, bound %s{bound.Name.FullName}"
+
+    /// `PEAssembly::ValidateForExecution` refuses an image whose manifest carries
+    /// `ReferenceAssemblyAttribute`, raising `BadImageFormatException`, which this binder does not
+    /// report.
+    [<Test>]
+    let ``a probed reference assembly is refused`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            let image =
+                Roslyn.compileAssembly
+                    "RefOnly"
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                    []
+                    [
+                        "[assembly: System.Runtime.CompilerServices.ReferenceAssembly] public class C { }"
+                    ]
+
+            File.WriteAllBytes (Path.Combine (root, "RefOnly.dll"), image)
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            expectRefusal
+                "reference assembly"
+                (fun () ->
+                    AssemblyBinding.tryBind loggerFactory [ root ] (plainRequest "RefOnly") LoadedAssemblies.empty
+                )
+        finally
+            Directory.Delete (root, true)

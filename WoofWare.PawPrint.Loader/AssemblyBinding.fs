@@ -273,9 +273,30 @@ module AssemblyBinding =
 
         // What CoreCLR would refuse to load, or might bind where the comparisons below cannot tell:
         // an image marked 32-bit-required alone is x86-only, which no platform PawPrint simulates
-        // runs (`COR_IS_32BIT_REQUIRED`), and a manifest name outside ASCII may fold to the request
-        // under CoreCLR's rules.
+        // runs (`COR_IS_32BIT_REQUIRED`), a reference assembly is never loaded for execution
+        // (`PEAssembly::ValidateForExecution`), and a manifest name outside ASCII may fold to the
+        // request under CoreCLR's rules.
         let requireAdmissible (candidate : DumpedAssembly) : unit =
+            let metadata = candidate.PeReader.GetMetadataReader ()
+
+            // `GetCustomAttributeByName` on the manifest matches the attribute's type by name alone,
+            // whichever assembly defines it.
+            let isReferenceAssembly =
+                metadata.GetAssemblyDefinition().GetCustomAttributes ()
+                |> Seq.exists (fun handle ->
+                    CustomAttribute.constructorParentName
+                        metadata
+                        (fun () -> $"the manifest of %s{candidate.DefinitionFullName}")
+                        (metadata.GetCustomAttribute handle).Constructor = Some (
+                        "System.Runtime.CompilerServices",
+                        "ReferenceAssemblyAttribute"
+                    )
+                )
+
+            if isReferenceAssembly then
+                failwith
+                    $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, a reference assembly, which CoreCLR refuses to load for execution (BadImageFormatException), not an outcome this binder reports"
+
             let bitness =
                 candidate.PEImageHeaders.CorFlags
                 &&& (System.Reflection.PortableExecutable.CorFlags.Requires32Bit
@@ -309,8 +330,11 @@ module AssemblyBinding =
                     $"AssemblyBinding.tryBind: %s{candidate.DefinitionFullName} has no version, but every manifest row has one"
             | version -> version
 
+        // CoreCLR's binder never consults a dynamic assembly, so one neither answers a request
+        // nor shadows an image on disk.
         let loaded =
             assemblies.DefinitionNamesInLoadOrder
+            |> Seq.filter (assemblies.IsDynamic >> not)
             |> Seq.map assemblies.ByDefinitionName
             |> List.ofSeq
 
