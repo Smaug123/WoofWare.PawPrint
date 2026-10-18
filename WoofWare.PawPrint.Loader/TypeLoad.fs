@@ -3,12 +3,38 @@ namespace WoofWare.PawPrint
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
+/// <summary>
+/// CoreCLR's load of a type to <c>CLASS_LOADED</c>, the level at which the JIT asks for every type a
+/// method names, followed level by level, and the first type reference it reaches that names
+/// nothing, which fails the load.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The load brings the type's base class and interfaces approximately, then exactly, then in full,
+/// each transitively; the types of its value-type fields, static and instance, except an enum's,
+/// which has a primitive <c>FieldDesc</c>, though telling that it is an enum binds the reference to
+/// it and to its base; and every type each of those spells as a generic argument, an array's
+/// element, a pointer's target or a function pointer's signature. It does not load the
+/// type that encloses a nested one, the type of a field that is a class, an array or a pointer, the
+/// type of a <c>const</c> field, or anything a method's signature names.
+/// </para>
+/// <para>
+/// Not followed: the constraints of a generic definition's type parameters and of its generic
+/// methods', which <c>MethodTable::DoFullyLoad</c> loads except in CoreLib and in ReadyToRun images
+/// that skip type validation. A reference only a constraint names can fail a load that this reports
+/// as meeting no miss.
+/// </para>
+/// <para>
+/// No miss does not mean the load succeeds: CoreCLR's class loader fails a load for many other
+/// reasons, none of which this models (<c>ParentLoadVouching</c> says when none can arise).
+/// </para>
+/// </remarks>
 [<RequireQualifiedAccess>]
 module TypeLoad =
 
-    /// Why a type that loading a parent reaches cannot be loaded.
+    /// Why a type that a load reaches cannot be loaded.
     [<RequireQualifiedAccess>]
-    type internal LoadMiss =
+    type LoadMiss =
         /// A type reference names no type in the assembly it is scoped to.
         | TypeAbsent of TypeResolutionMiss
         /// A type reference is to an assembly no runtime directory supplies.
@@ -31,7 +57,7 @@ module TypeLoad =
         /// `CLASS_LOADED`, through `MethodTable::DoFullyLoad`.
         | Full
 
-    /// The type definitions a walk of a parent's load has brought to each of CoreCLR's load levels,
+    /// The type definitions a walk of a load has brought to each of CoreCLR's load levels,
     /// and the assemblies loaded on the way.
     type private LoadWalk =
         {
@@ -544,10 +570,18 @@ module TypeLoad =
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
 
-    /// The first type reference that names no type, among those CoreCLR's load of `spelling` (in
-    /// `spellingAssembly`) reaches, in the order it reaches them. Loads whatever assemblies those
-    /// references take.
-    let internal loadMiss
+    /// <summary>
+    /// The first type reference that names no type, among those CoreCLR's full load of
+    /// <paramref name="spelling" />, a type <paramref name="spellingAssembly" /> spells, reaches, in
+    /// the order it reaches them. Loads, from <paramref name="dotnetRuntimeDirs" />, whatever
+    /// assemblies those references take, and the returned <c>LoadedAssemblies</c> carries them.
+    /// </summary>
+    /// <remarks>
+    /// A type variable is not a type the load reaches: a spelling of one, or of a generic
+    /// definition's own instantiation over its type parameters, leaves the types an instantiation
+    /// supplies for them to wherever that instantiation is spelled.
+    /// </remarks>
+    let loadMiss
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
