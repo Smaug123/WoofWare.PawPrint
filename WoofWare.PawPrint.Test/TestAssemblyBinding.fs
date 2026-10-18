@@ -725,3 +725,39 @@ module TestAssemblyBinding =
                             LoadedAssemblies.empty
                     )
             )
+
+    /// An I386 image that is not IL-only is x86 to CoreCLR (`TranslatePEToArchitectureType`), not
+    /// architecture-neutral, so it binds only in an x86 process.
+    [<Test>]
+    let ``a probed I386 image that is not IL-only is refused`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            let bytes = File.ReadAllBytes imagePath
+
+            // The COR header's `Flags` follow `cb` (4), the runtime version (2 + 2) and the
+            // metadata directory (8).
+            let flagsOffset, flags =
+                use pe = new PEReader (new MemoryStream (bytes))
+                pe.PEHeaders.CorHeaderStartOffset + 16, pe.PEHeaders.CorHeader.Flags
+
+            BitConverter.GetBytes (uint32 (flags &&& ~~~CorFlags.ILOnly))
+            |> Array.iteri (fun i b -> bytes.[flagsOffset + i] <- b)
+
+            File.WriteAllBytes (Path.Combine (root, imageSimpleName + ".dll"), bytes)
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            expectRefusal
+                "built for the machine"
+                (fun () ->
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        [ root ]
+                        (plainRequest imageSimpleName)
+                        LoadedAssemblies.empty
+                )
+        finally
+            Directory.Delete (root, true)

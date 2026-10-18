@@ -302,20 +302,23 @@ module AssemblyBinding =
                 failwith
                     $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, whose manifest is marked NoPlatform, which CoreCLR refuses to load for execution (BadImageFormatException), not an outcome this binder reports"
 
-            // An IL image built for one machine binds only in a process of that architecture
-            // (`AssemblyBinderCommon::IsValidArchitecture` of the image's PE kind), which this
-            // binder does not model, and is not found in any other. A ReadyToRun image's machine
-            // is the one its native code targets, and its IL runs anywhere; the framework's own
-            // assemblies are such images.
+            // An image built for one machine binds only in a process of that architecture
+            // (`AssemblyBinderCommon::IsValidArchitecture` of the PE kind
+            // `TranslatePEToArchitectureType` reads), which this binder does not model, and is
+            // not found in any other. Only an IL-only I386 image is architecture-neutral; one
+            // that is not IL-only is x86. A ReadyToRun image's machine is the one its native code
+            // targets, and its IL runs anywhere; the framework's own assemblies are such images.
             match candidate.PEImageHeaders.ReadyToRunHeader with
             | Some _ -> ()
             | None ->
+                let headers = candidate.PEImageHeaders
+
                 if
-                    candidate.PEImageHeaders.Machine
-                    <> System.Reflection.PortableExecutable.Machine.I386
+                    headers.Machine <> System.Reflection.PortableExecutable.Machine.I386
+                    || not (headers.CorFlags.HasFlag System.Reflection.PortableExecutable.CorFlags.ILOnly)
                 then
                     failwith
-                        $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, an IL image built for the machine %O{candidate.PEImageHeaders.Machine}, which CoreCLR binds only in a process of that architecture; the process architecture is not modelled"
+                        $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, an image built for the machine %O{headers.Machine} with COR flags %O{headers.CorFlags}, which CoreCLR binds only in a process of that architecture; the process architecture is not modelled"
 
             let bitness =
                 candidate.PEImageHeaders.CorFlags
