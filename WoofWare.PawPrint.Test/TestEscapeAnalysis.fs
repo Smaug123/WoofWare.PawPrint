@@ -3733,6 +3733,125 @@ public static class Cases
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client whose `Cases` branches on whether a struct holds references, where answering loads
+    /// what nothing has loaded yet, and where the structs nest deeply.
+    [<Test>]
+    let ``whether a struct holds references loads its fields' base types, once each`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let depth = 24
+
+        // `Level{n}` lays two `Level{n-1}`s over each other, so it is four bytes long however deep,
+        // and holds no references.
+        let level (n : int) : string =
+            [
+                "[StructLayout(LayoutKind.Explicit)]"
+                $"public struct Level%d{n}"
+                "{"
+                $"    [FieldOffset(0)] public Level%d{n - 1} A;"
+                $"    [FieldOffset(0)] public Level%d{n - 1} B;"
+                "}"
+            ]
+            |> String.concat "\n"
+
+        let levels = [ 1..depth ] |> List.map level |> String.concat "\n"
+
+        let provider =
+            """
+namespace Provider;
+
+public class Base { }
+"""
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public class Holds : System.Exception { }
+
+public class HoldsNone : System.Exception { }
+
+public class Derived : Provider.Base { }
+
+public struct HoldsDerived { public Derived D; }
+
+public struct Level0 { public int X; }
+"""
+            + levels
+            + $"""
+public static class Cases
+{{
+    static void Generic<T>()
+    {{
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }}
+
+    public static void WithHoldsDerived() => Generic<HoldsDerived>();
+
+    public static void WithDeep() => Generic<Level%d{depth}>();
+}}
+"""
+
+        let providerImage =
+            Roslyn.compileOptimizedAssembly "Provider" OutputKind.DynamicallyLinkedLibrary [ provider ]
+
+        let clientImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange providerImage) ]
+                [ client ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
+
+        // The provider is where the analysis looks for assemblies, but not loaded.
+        let directory = Directory.CreateTempSubdirectory "escape-analysis-provider"
+
+        try
+            File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), providerImage)
+
+            let analysis =
+                analysisOf
+                    (hostCoreLib ())
+                    (Seq.append [ directory.FullName ] (FrameworkUnderTest.runtimeDirs ()))
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    Assumption.all
+                    [ fixture ]
+                    id
+
+            let holds = "=Client.Holds"
+            let holdsNone = "=Client.HoldsNone"
+            let stopwatch = Diagnostics.Stopwatch.StartNew ()
+
+            let _, failures =
+                unmet
+                    analysis
+                    fixture
+                    [
+                        { expect "Client.Cases" "WithHoldsDerived" with
+                            Contains = [ holds ]
+                            Excludes = [ holdsNone ]
+                        }
+                        { expect "Client.Cases" "WithDeep" with
+                            Contains = [ holdsNone ]
+                            Excludes = [ holds ]
+                        }
+                    ]
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+
+            // Each struct is walked once, not once for each way of reaching it, of which the deepest
+            // has two to the twenty-fourth.
+            stopwatch.Elapsed |> shouldBeSmallerThan (TimeSpan.FromSeconds 20.0)
+        finally
+            directory.Delete true
+
     /// An assembly whose `Probe.Cases` branches on a call of a generic intrinsic of `RuntimeHelpers`
     /// straight away, throwing `NotSupportedException` where the answer is false and
     /// `InvalidOperationException` where it is true: `OnReferences`, of

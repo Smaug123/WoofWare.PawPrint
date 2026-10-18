@@ -156,6 +156,17 @@ module Roslyn =
         compileCore assemblyName outputKind [] [] DebugSymbols.None Optimization.Release sources
         |> fst
 
+    /// As `compileOptimizedAssembly`, against `extraReferences` as well.
+    let compileOptimizedAssemblyWithReferences
+        (assemblyName : string)
+        (outputKind : OutputKind)
+        (extraReferences : MetadataReference list)
+        (sources : string list)
+        : byte[]
+        =
+        compileCore assemblyName outputKind extraReferences [] DebugSymbols.None Optimization.Release sources
+        |> fst
+
     /// Compiles the supplied C# source strings into an in-memory PE image.
     /// Raises if compilation fails.
     let compile (sources : string list) : byte[] =
