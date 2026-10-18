@@ -297,6 +297,26 @@ module AssemblyBinding =
                 failwith
                     $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, a reference assembly, which CoreCLR refuses to load for execution (BadImageFormatException), not an outcome this binder reports"
 
+            // `afPA_NoPlatform`: the manifest's three-bit processor-architecture field all set.
+            if int (metadata.GetAssemblyDefinition().Flags) &&& 0x70 = 0x70 then
+                failwith
+                    $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, whose manifest is marked NoPlatform, which CoreCLR refuses to load for execution (BadImageFormatException), not an outcome this binder reports"
+
+            // An IL image built for one machine binds only in a process of that architecture
+            // (`AssemblyBinderCommon::IsValidArchitecture` of the image's PE kind), which this
+            // binder does not model, and is not found in any other. A ReadyToRun image's machine
+            // is the one its native code targets, and its IL runs anywhere; the framework's own
+            // assemblies are such images.
+            match candidate.PEImageHeaders.ReadyToRunHeader with
+            | Some _ -> ()
+            | None ->
+                if
+                    candidate.PEImageHeaders.Machine
+                    <> System.Reflection.PortableExecutable.Machine.I386
+                then
+                    failwith
+                        $"TODO: %s{describe} found %s{candidate.DefinitionFullName}, an IL image built for the machine %O{candidate.PEImageHeaders.Machine}, which CoreCLR binds only in a process of that architecture; the process architecture is not modelled"
+
             let bitness =
                 candidate.PEImageHeaders.CorFlags
                 &&& (System.Reflection.PortableExecutable.CorFlags.Requires32Bit
@@ -364,6 +384,40 @@ module AssemblyBinding =
             else
                 AssemblyBindResult.NotFound
         | None ->
+
+        // CoreCLR's map of trusted platform assemblies compares simple names ignoring case by
+        // its own folding, where `AssemblyProbe` compares file names ordinally ignoring case, so
+        // a non-ASCII file name may answer the request on CoreCLR and not here. A directory
+        // listed before the first one holding an ordinal match could decide the bind.
+        dotnetRuntimeDirs
+        |> Seq.map AssemblyProbe.runtimeDirPath
+        |> Seq.tryPick (fun dir ->
+            let stems =
+                try
+                    Directory.EnumerateFiles dir
+                    |> Seq.map Path.GetFileName
+                    |> Seq.filter (fun name -> name.EndsWith (".dll", StringComparison.OrdinalIgnoreCase))
+                    |> Seq.map (fun name -> name.Substring (0, name.Length - ".dll".Length))
+                    |> List.ofSeq
+                with :? DirectoryNotFoundException ->
+                    []
+
+            match stems |> List.tryFind (fun stem -> mayFoldToSameName stem request.SimpleName) with
+            | Some stem ->
+                failwith
+                    $"TODO: %s{describe} with %s{dir} holding %s{stem}.dll, whose name is not ASCII and which CoreCLR's case folding may equate with the request; that folding is not modelled"
+            | None ->
+                if
+                    stems
+                    |> List.exists (fun stem ->
+                        String.Equals (stem, request.SimpleName, StringComparison.OrdinalIgnoreCase)
+                    )
+                then
+                    Some ()
+                else
+                    None
+        )
+        |> ignore<unit option>
 
         match AssemblyProbe.tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs request.SimpleName with
         | None -> AssemblyBindResult.NotFound

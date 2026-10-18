@@ -645,3 +645,83 @@ module TestAssemblyBinding =
                 )
         finally
             Directory.Delete (root, true)
+
+    /// `PEAssembly::ValidateForExecution` refuses a manifest whose processor-architecture field is
+    /// `afPA_NoPlatform` (0x70), raising `BadImageFormatException`, which this binder does not report.
+    [<Test>]
+    let ``a manifest marked NoPlatform is refused`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            writeImageWithManifestFlags root (imageSimpleName + ".dll") 0x70u
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            expectRefusal
+                "NoPlatform"
+                (fun () ->
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        [ root ]
+                        (plainRequest imageSimpleName)
+                        LoadedAssemblies.empty
+                )
+        finally
+            Directory.Delete (root, true)
+
+    /// An IL image built for one machine binds only in a process of that architecture, which the
+    /// binder does not model; CoreCLR reports one built for another as not found.
+    [<Test>]
+    let ``a probed image built for one machine is refused`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            let bytes = File.ReadAllBytes imagePath
+
+            let machineOffset =
+                use pe = new PEReader (new MemoryStream (bytes))
+                pe.PEHeaders.CoffHeaderStartOffset
+
+            BitConverter.GetBytes (uint16 Machine.Amd64)
+            |> Array.iteri (fun i b -> bytes.[machineOffset + i] <- b)
+
+            File.WriteAllBytes (Path.Combine (root, imageSimpleName + ".dll"), bytes)
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            expectRefusal
+                "built for the machine"
+                (fun () ->
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        [ root ]
+                        (plainRequest imageSimpleName)
+                        LoadedAssemblies.empty
+                )
+        finally
+            Directory.Delete (root, true)
+
+    /// A file named with a dotless i where the request has `i`: CoreCLR's map of trusted platform
+    /// assemblies may fold the two together, where an ordinal comparison of file names does not,
+    /// so neither "not found" nor a bind is known to be right.
+    [<Test>]
+    let ``a runtime-dir file whose non-ASCII name may fold to the request is refused`` () =
+        withRuntimeDir
+            "BındProbe.dll"
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                expectRefusal
+                    "not ASCII"
+                    (fun () ->
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            (plainRequest "BindProbe")
+                            LoadedAssemblies.empty
+                    )
+            )
