@@ -1267,3 +1267,96 @@ public static class Driver
         : unit
         =
         FabricatedGuest.run "Thrower" (fabricate ()) "NestedWrapDriver" nestedWrapDriverSource 0
+
+    /// Throws a string `WRAPS` times, each caught. When `PRESERVES` is true, each throw's wrapping
+    /// raises too, from the culture's name, and preserving what it raised raises once more, from
+    /// that exception's `Source`, so that on .NET 11 each throw runs both of the runtime's helpers
+    /// and preserves twice. Returns 0 once every throw has been caught.
+    let private repeatedWrapDriverSource (wraps : int) (preserves : bool) : string =
+        """
+using System;
+using System.Globalization;
+using System.Runtime.CompilerServices;
+
+sealed class SourceOnceException : Exception
+{
+    public bool Fired;
+    public SourceOnceException() : base("source once") { }
+    public override string Source
+    {
+        get
+        {
+            if (!Fired)
+            {
+                Fired = true;
+                throw new SourceOnceException { Fired = true };
+            }
+            return base.Source;
+        }
+    }
+}
+
+sealed class OneShotCulture : CultureInfo
+{
+    public OneShotCulture() : base("") { }
+    public bool Armed;
+    public override string Name
+    {
+        get
+        {
+            if (Armed)
+            {
+                Armed = false;
+                throw new SourceOnceException();
+            }
+            return base.Name;
+        }
+    }
+}
+
+public static class Driver
+{
+    public static int Main(string[] args)
+    {
+        var culture = new OneShotCulture();
+        CultureInfo.CurrentUICulture = culture;
+        for (int i = 0; i < WRAPS; i++)
+        {
+            culture.Armed = PRESERVES;
+            try
+            {
+                Thrower.Throw();
+                return 1;
+            }
+            catch (Exception)
+            {
+            }
+        }
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+        return 0;
+    }
+}
+"""
+            .Replace("WRAPS", string wraps)
+            .Replace ("PRESERVES", (if preserves then "true" else "false"))
+
+    /// How many native blocks are still allocated once the guest has wrapped `wraps` throws.
+    let private liveNativeBlocksAfter (wraps : int) (preserves : bool) : int =
+        let state =
+            FabricatedGuest.finalStateOnPawPrint
+                "Thrower"
+                (fabricate ())
+                "RepeatedWrapDriver"
+                (repeatedWrapDriverSource wraps preserves)
+
+        state.LatchedExitCode |> shouldEqual 0
+        IlMachineState.getNativeMemoryPool state |> NativeMemoryPool.liveBlockCount
+
+    /// The native cells the runtime's wrapping passes its CoreLib helpers die with the wrap, as the
+    /// VM's locals die when the native code holding them returns. Measured against one wrap rather
+    /// than none, so that whatever the first wrap allocates once is counted on both sides.
+    [<TestCase false>]
+    [<TestCase true>]
+    let ``wrapping a thrown non-exception leaves no native memory allocated`` (preserves : bool) : unit =
+        liveNativeBlocksAfter 3 preserves
+        |> shouldEqual (liveNativeBlocksAfter 1 preserves)

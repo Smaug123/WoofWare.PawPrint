@@ -173,14 +173,14 @@ module FabricatedGuest =
                     )
             )
 
-    /// Run the driver on PawPrint alone, and return what it wrote to stdout. A run that does not
-    /// exit, or exits nonzero, fails, with PawPrint's log written to stderr.
-    let stdoutOnPawPrint
+    /// Run the driver on PawPrint alone, and return the machine as it stood when the guest exited.
+    /// A run that does not exit fails, with PawPrint's log written to stderr.
+    let finalStateOnPawPrint
         (fabricatedName : string)
         (fabricated : byte[])
         (driverName : string)
         (driverSource : string)
-        : string
+        : IlMachineState
         =
         laidOut
             fabricatedName
@@ -207,17 +207,29 @@ module FabricatedGuest =
 
                 match exited with
                 | Error e -> raise (Exception ("PawPrint did not run the guest to completion", e))
-                | Ok state ->
-                    let stdout =
-                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
-                        |> Seq.toArray
-                        |> Text.Encoding.UTF8.GetString
-
-                    if state.LatchedExitCode <> 0 then
-                        failwith $"the guest exited %d{state.LatchedExitCode}; its stdout was:\n%s{stdout}"
-
-                    stdout
+                | Ok state -> state
             )
+
+    /// Run the driver on PawPrint alone, and return what it wrote to stdout. A run that does not
+    /// exit, or exits nonzero, fails, with PawPrint's log written to stderr.
+    let stdoutOnPawPrint
+        (fabricatedName : string)
+        (fabricated : byte[])
+        (driverName : string)
+        (driverSource : string)
+        : string
+        =
+        let state = finalStateOnPawPrint fabricatedName fabricated driverName driverSource
+
+        let stdout =
+            OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+            |> Seq.toArray
+            |> Text.Encoding.UTF8.GetString
+
+        if state.LatchedExitCode <> 0 then
+            failwith $"the guest exited %d{state.LatchedExitCode}; its stdout was:\n%s{stdout}"
+
+        stdout
 
     /// Run the driver on both runtimes and require they agree on the exit code.
     ///
