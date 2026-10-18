@@ -133,15 +133,20 @@ type internal CallSite =
     /// call, so what the instruction leaves on the stack is not what the method returns.
     | Runtime of Callee
 
-/// A query of types that the JIT compiles to what the types decide, making none of its calls
-/// (`Assumption.JitOptimises`).
+/// A query whose answer the types it names decide, in an instance that says what they are.
 [<RequireQualifiedAccess>]
 type internal TypeQuery =
-    /// Whether this type is a value type: `typeof(X).IsValueType`.
+    /// Whether this type is a value type: `typeof(X).IsValueType`, which the JIT compiles to a
+    /// constant, making none of its calls (`Assumption.JitOptimises`).
     | IsValueType of SpelledType
     /// Whether these two types are the same type where `equality`, and whether they are different
-    /// types otherwise: `typeof(X) == typeof(Y)`, or `!=`.
+    /// types otherwise: `typeof(X) == typeof(Y)`, or `!=`, which the JIT compiles to a comparison
+    /// of the types' handles, making none of its calls (`Assumption.JitOptimises`).
     | Identity of SpelledType * SpelledType * equality : bool
+    /// Whether storage of this type holds a reference or a byref the GC tracks:
+    /// `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, a constant however the method is
+    /// compiled.
+    | ContainsReferences of SpelledType
 
 /// What a `brtrue` or `brfalse` tests of the value it pops.
 [<RequireQualifiedAccess>]
@@ -3290,8 +3295,11 @@ module EscapeAnalysis =
         // tier-0 optimisations: not in a method marked `NoOptimization` or one whose assembly
         // disables optimisation, nor in one that calls `StubHelpers.NextCallReturnAddress`, where
         // it expands only the intrinsics it must.
-        let state, typeQueries, createdSpans =
+        let state, typeQueries, createdSpans, referenceQueries =
             let typeType = corelibType state "System" "Type"
+
+            let runtimeHelpers =
+                corelibType state "System.Runtime.CompilerServices" "RuntimeHelpers"
 
             let calledMethod (index : int) : (DumpedAssembly * MethodKey) option =
                 match fst ops.[index], Map.tryFind index targets with
@@ -3395,12 +3403,42 @@ module EscapeAnalysis =
                     | Some elementSize, Some dataSize -> state, dataSize >= elementSize
                     | _ -> state, false
 
-            if not optimised then
-                state, Map.empty, Set.empty
-            else
+            // Where a branch may test `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, which is
+            // a constant for each instance however the method is compiled: the JIT replaces the call
+            // with its answer at tier 0 (`impIntrinsic`, importercalls.cpp), and where it does not,
+            // the method's own body is a call to itself, which the JIT must expand. The call stays,
+            // raising nothing. By its offset.
+            let referenceQueries =
+                (Map.empty, [ 0 .. ops.Length - 1 ])
+                ||> List.fold (fun queries index ->
+                    match fst ops.[index], calledMethod index with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata call),
+                      Some (calleeAssembly, callee) when
+                        declaringTypeOf state callee = runtimeHelpers
+                        && IntrinsicBody.isIntrinsic calleeAssembly callee.Method.Get
+                        && IntrinsicPrimitive.recognise calleeAssembly callee.Method.Get = Some
+                            IntrinsicPrimitive.IsReferenceOrContainsReferences
+                        ->
+                        match call.Token with
+                        | MetadataToken.MethodSpecification spec ->
+                            match List.ofSeq assembly.MethodSpecs.[spec].Signature with
+                            | [ argument ] ->
+                                let spelled =
+                                    {
+                                        Type = argument
+                                        SpelledIn = assembly.DefinitionFullName
+                                        InBodyContext = true
+                                    }
 
-            let runtimeHelpers =
-                corelibType state "System.Runtime.CompilerServices" "RuntimeHelpers"
+                                Map.add (snd ops.[index]) (TypeQuery.ContainsReferences spelled) queries
+                            | _ -> queries
+                        | _ -> queries
+                    | _ -> queries
+                )
+
+            if not optimised then
+                state, Map.empty, Set.empty, referenceQueries
+            else
 
             let state, createdSpans =
                 ((state, Set.empty), [ 0 .. ops.Length - 2 ])
@@ -3499,7 +3537,7 @@ module EscapeAnalysis =
                     | _ -> state, queries
                 )
 
-            state, typeQueries, createdSpans
+            state, typeQueries, createdSpans, referenceQueries
 
         let folded =
             typeQueries
@@ -3529,6 +3567,10 @@ module EscapeAnalysis =
                     match Map.tryFind beforeOffset typeQueries |> Option.map (fun query -> query.Tested) with
                     | Some (Some query) -> state, Map.add beforeOffset query tested
                     | Some None -> state, tested
+                    | None ->
+
+                    match Map.tryFind beforeOffset referenceQueries with
+                    | Some query -> state, Map.add beforeOffset (Tested.Types query) tested
                     | None ->
 
                     match ControlFlow.successorsOf beforeOffset before, valueAt offset 0 with
@@ -4242,8 +4284,101 @@ module EscapeAnalysis =
             },
             facts
 
+    /// Does every type that `GcReferences.containsReferences` reads for `handle` load: each type it
+    /// walks, with the types it derives from, and the type of each instance field of each value type
+    /// among them, transitively? Loads the assemblies they need, which the walk itself does not.
+    /// Where one does not load, CoreCLR cannot load `handle`, so no instance whose arguments name it
+    /// runs.
+    let private containsReferencesLoads
+        (state : EscapeAnalysisState)
+        (handle : ConcreteTypeHandle)
+        : EscapeAnalysisState * bool
+        =
+        // Whether the types `identity` derives from bind, which `LoadedTypeInfo.isValueType` reads.
+        let rec basesBind
+            (state : EscapeAnalysisState)
+            (seen : Set<ResolvedTypeIdentity>)
+            (identity : ResolvedTypeIdentity)
+            : EscapeAnalysisState * bool
+            =
+            if seen.Contains identity then
+                state, true
+            else
+                let assembly, ty = definitionOf state identity
+
+                let state, binds =
+                    match ty.BaseType with
+                    | None
+                    | Some (BaseTypeInfo.TypeDef _) -> state, true
+                    | Some (BaseTypeInfo.TypeRef handle) ->
+                        let state, failure =
+                            spellingBindFailure
+                                state
+                                assembly
+                                (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
+
+                        state, failure.IsNone
+                    | Some (BaseTypeInfo.TypeSpec handle) ->
+                        concretizable state assembly assembly.TypeSpecs.[handle].Signature
+
+                if not binds then
+                    state, false
+                else
+                    match baseOf state identity with
+                    | state, Some parent -> basesBind state (seen.Add identity) parent
+                    | state, None -> state, true
+
+        // Each type is checked once, however many fields reach it, and a type already being checked
+        // is not checked again from within itself.
+        let rec walk
+            (state : EscapeAnalysisState, checkedSoFar : Set<ConcreteTypeHandle>)
+            (handle : ConcreteTypeHandle)
+            : EscapeAnalysisState * Set<ConcreteTypeHandle> * bool
+            =
+            match handle with
+            | ConcreteTypeHandle.Concrete _ when not (checkedSoFar.Contains handle) ->
+                let checkedSoFar = checkedSoFar.Add handle
+
+                match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+                | None -> failwith $"Concrete type handle %O{handle} is not registered"
+                | Some (concrete, ty) ->
+
+                match basesBind state Set.empty ty.Identity with
+                | state, false -> state, checkedSoFar, false
+                | state, true when
+                    not (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
+                    ->
+                    state, checkedSoFar, true
+                | state, true ->
+                    let assembly = assemblyOf state concrete.AssemblyFullName
+
+                    ((state, checkedSoFar, true), ty.Fields)
+                    ||> List.fold (fun (state, checkedSoFar, soFar) field ->
+                        if not soFar || field.IsStatic then
+                            state, checkedSoFar, soFar
+                        else
+                            match concretizable state assembly field.Signature with
+                            | state, false -> state, checkedSoFar, false
+                            | state, true ->
+                                let state, fieldType =
+                                    concretize
+                                        state
+                                        concrete.AssemblyFullName
+                                        (List.ofSeq concrete.Generics)
+                                        []
+                                        field.Signature
+
+                                walk (state, checkedSoFar) fieldType
+                    )
+            // The walk reads nothing of an array, a byref or a pointer.
+            | _ -> state, checkedSoFar, true
+
+        let state, _, loads = walk (state, Set.empty) handle
+        state, loads
+
     /// The answer to `query` in `instance`; `None` where the instance does not decide its types,
-    /// or where whether a type is a value type is asked of one that is not a class or struct.
+    /// where whether a type is a value type is asked of one that is not a class or struct, or where
+    /// whether a type holds references is asked of one CoreCLR cannot load (`containsReferencesLoads`).
     let private typeQueryIsKnown
         (state : EscapeAnalysisState)
         (instance : MethodInstance)
@@ -4286,6 +4421,26 @@ module EscapeAnalysis =
             | Some first, Some second when List.forall (named state) [ first ; second ] ->
                 state, Some ((first = second) = equality)
             | _ -> state, None
+        | TypeQuery.ContainsReferences spelled ->
+            match concretized state spelled with
+            | state, Some handle ->
+                match containsReferencesLoads state handle with
+                | state, false -> state, None
+                | state, true ->
+
+                let typeSystem, holds =
+                    GcReferences.containsReferences
+                        state.LoggerFactory
+                        state.RuntimeDirs
+                        state.BaseTypes
+                        state.TypeSystem
+                        handle
+
+                { state with
+                    TypeSystem = typeSystem
+                },
+                Some holds
+            | state, None -> state, None
 
     /// Whether a type that a body spells names a type variable whose argument in `typeArguments`,
     /// the declaring type's, or `methodArguments`, the method's, makes CoreCLR share the body's code

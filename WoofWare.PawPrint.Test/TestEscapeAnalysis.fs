@@ -3580,6 +3580,357 @@ public static class Cases
         let called = typeComparisonCalls ()
         reachesOf called called false "TypeOperand.Cases" analysis fixture typeOperandFolded
 
+    /// Code that branches on `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, which C#
+    /// compiles to a call of it, then `brtrue` or `brfalse`.
+    let private containsReferencesSource =
+        """
+using System.Runtime.CompilerServices;
+
+namespace ContainsReferences;
+
+// Exceptions whose construction raises nothing, unlike CoreLib's, which look up their messages.
+public class Holds : System.Exception { }
+
+public class HoldsNone : System.Exception { }
+
+public struct WithReference { public string S; }
+
+public struct Plain { public int X; public long Y; }
+
+public static class Cases
+{
+    public static void Generic<T>()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void WithInt() => Generic<int>();
+
+    public static void WithString() => Generic<string>();
+
+    public static void WithReference() => Generic<WithReference>();
+
+    public static void WithPlain() => Generic<Plain>();
+
+    // A generic struct, whose fields' types are its arguments.
+    public static void WithPairOfString() => Generic<System.Collections.Generic.KeyValuePair<int, string>>();
+
+    public static void WithPairOfInt() => Generic<System.Collections.Generic.KeyValuePair<int, int>>();
+
+    public static void Negated<T>()
+    {
+        if (!RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new HoldsNone();
+        throw new Holds();
+    }
+
+    public static void NegatedWithInt() => Negated<int>();
+
+    public static void Exact()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<Plain>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    // The branch is on the answer and something else.
+    public static void Combined<T>(bool flag)
+    {
+        if (flag && RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void CombinedWithInt(bool flag) => Combined<int>(flag);
+
+    // The answer is the same however the method is compiled.
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void Unoptimized<T>()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void UnoptimizedWithString() => Unoptimized<string>();
+
+    // No branch tests the answer straight away.
+    public static bool Answer<T>() => RuntimeHelpers.IsReferenceOrContainsReferences<T>();
+}
+"""
+
+    /// What each method of `containsReferencesSource` lets escape, which is so whether or not the
+    /// JIT is assumed to optimise: the answer is a constant for each instance however the code is
+    /// compiled.
+    let private containsReferencesExpectations : Expectation list =
+        let holds = "=ContainsReferences.Holds"
+        let holdsNone = "=ContainsReferences.HoldsNone"
+
+        let decided (name : string) (contains : string list) (excludes : string list) =
+            { expect "ContainsReferences.Cases" name with
+                Contains = contains
+                Excludes = excludes
+                Unknown = Some false
+                // A `throw` of null raises a `NullReferenceException`, which the runtime constructs.
+                Assumes = Some constructing
+            }
+
+        [
+            // The open definition does not decide the branch.
+            decided "Generic" [ holds ; holdsNone ] []
+            decided "WithInt" [ holdsNone ] [ holds ]
+            decided "WithString" [ holds ] [ holdsNone ]
+            decided "WithReference" [ holds ] [ holdsNone ]
+            decided "WithPlain" [ holdsNone ] [ holds ]
+            decided "WithPairOfString" [ holds ] [ holdsNone ]
+            decided "WithPairOfInt" [ holdsNone ] [ holds ]
+            decided "NegatedWithInt" [ holdsNone ] [ holds ]
+            decided "Exact" [ holdsNone ] [ holds ]
+            decided "CombinedWithInt" [ holdsNone ] [ holds ]
+            decided "UnoptimizedWithString" [ holds ] [ holdsNone ]
+            { expect "ContainsReferences.Cases" "Answer" with
+                Excludes = [ holds ; holdsNone ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+        ]
+
+    /// The image of `containsReferencesSource`, optimized as CoreLib is.
+    let private containsReferencesFixture () : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileOptimizedAssembly
+                "ContainsReferences"
+                OutputKind.DynamicallyLinkedLibrary
+                [ containsReferencesSource ]
+
+        Assembly.read loggerFactory (Some "ContainsReferences.dll") (new MemoryStream (image))
+
+    [<Test>]
+    let ``a branch on whether a type holds references goes the way the instance's type decides`` () : unit =
+        let fixture = containsReferencesFixture ()
+
+        let _, failures =
+            unmet (analysisOver [ fixture ] id) fixture containsReferencesExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a branch on whether a type holds references is decided without assuming the JIT optimises`` () : unit =
+        let fixture = containsReferencesFixture ()
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.JitOptimises Assumption.all)
+                [ fixture ]
+                id
+
+        let _, failures = unmet analysis fixture containsReferencesExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// A client whose `Cases` branches on whether a struct holds references, where answering loads
+    /// what nothing has loaded yet, and where the structs nest deeply.
+    [<Test>]
+    let ``whether a struct holds references loads its fields' base types, once each`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let depth = 24
+
+        // `Level{n}` lays two `Level{n-1}`s over each other, so it is four bytes long however deep,
+        // and holds no references.
+        let level (n : int) : string =
+            [
+                "[StructLayout(LayoutKind.Explicit)]"
+                $"public struct Level%d{n}"
+                "{"
+                $"    [FieldOffset(0)] public Level%d{n - 1} A;"
+                $"    [FieldOffset(0)] public Level%d{n - 1} B;"
+                "}"
+            ]
+            |> String.concat "\n"
+
+        let levels = [ 1..depth ] |> List.map level |> String.concat "\n"
+
+        let provider =
+            """
+namespace Provider;
+
+public class Base { }
+"""
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public class Holds : System.Exception { }
+
+public class HoldsNone : System.Exception { }
+
+public class Derived : Provider.Base { }
+
+public struct HoldsDerived { public Derived D; }
+
+public struct Level0 { public int X; }
+"""
+            + levels
+            + $"""
+public static class Cases
+{{
+    static void Generic<T>()
+    {{
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }}
+
+    public static void WithHoldsDerived() => Generic<HoldsDerived>();
+
+    public static void WithDeep() => Generic<Level%d{depth}>();
+}}
+"""
+
+        let providerImage =
+            Roslyn.compileOptimizedAssembly "Provider" OutputKind.DynamicallyLinkedLibrary [ provider ]
+
+        let clientImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange providerImage) ]
+                [ client ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
+
+        // The provider is where the analysis looks for assemblies, but not loaded.
+        let directory = Directory.CreateTempSubdirectory "escape-analysis-provider"
+
+        try
+            File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), providerImage)
+
+            let analysis =
+                analysisOf
+                    (hostCoreLib ())
+                    (Seq.append [ directory.FullName ] (FrameworkUnderTest.runtimeDirs ()))
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    Assumption.all
+                    [ fixture ]
+                    id
+
+            let holds = "=Client.Holds"
+            let holdsNone = "=Client.HoldsNone"
+            let stopwatch = Diagnostics.Stopwatch.StartNew ()
+
+            let _, failures =
+                unmet
+                    analysis
+                    fixture
+                    [
+                        { expect "Client.Cases" "WithHoldsDerived" with
+                            Contains = [ holds ]
+                            Excludes = [ holdsNone ]
+                        }
+                        { expect "Client.Cases" "WithDeep" with
+                            Contains = [ holdsNone ]
+                            Excludes = [ holds ]
+                        }
+                    ]
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+
+            // Each struct is walked once, not once for each way of reaching it, of which the deepest
+            // has two to the twenty-fourth.
+            stopwatch.Elapsed |> shouldBeSmallerThan (TimeSpan.FromSeconds 20.0)
+        finally
+            directory.Delete true
+
+    /// An assembly whose `Probe.Cases` branches on a call of a generic intrinsic of `RuntimeHelpers`
+    /// straight away, throwing `NotSupportedException` where the answer is false and
+    /// `InvalidOperationException` where it is true: `OnReferences`, of
+    /// `IsReferenceOrContainsReferences<int>()`, and `OnBitwiseEquatable`, of CoreLib's internal
+    /// `IsBitwiseEquatable<int>()`, which C# cannot call.
+    let private emitRuntimeHelpersBranches () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "RuntimeHelpersBranches", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "RuntimeHelpersBranches"
+
+        let cases =
+            modul.DefineType (
+                "Probe.Cases",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let runtimeHelpers = typeof<Runtime.CompilerServices.RuntimeHelpers>
+
+        for name, query in
+            [
+                "OnReferences", runtimeHelpers.GetMethod "IsReferenceOrContainsReferences"
+                "OnBitwiseEquatable",
+                runtimeHelpers.GetMethod ("IsBitwiseEquatable", BindingFlags.NonPublic ||| BindingFlags.Static)
+            ] do
+            let method =
+                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+            let il = method.GetILGenerator ()
+            let holds = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Call, query.MakeGenericMethod [| typeof<int> |])
+            il.Emit (Emit.OpCodes.Brtrue, holds)
+            il.Emit (Emit.OpCodes.Newobj, typeof<NotSupportedException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+            il.MarkLabel holds
+            il.Emit (Emit.OpCodes.Newobj, typeof<InvalidOperationException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+
+        cases.CreateType () |> ignore<Type>
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``only a call of IsReferenceOrContainsReferences is decided by whether its type holds references`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read
+                loggerFactory
+                (Some "RuntimeHelpersBranches.dll")
+                (new MemoryStream (emitRuntimeHelpersBranches ()))
+
+        let notSupported = "=System.NotSupportedException"
+        let invalidOperation = "=System.InvalidOperationException"
+
+        let _, failures =
+            unmet
+                (analysisOver [ fixture ] id)
+                fixture
+                [
+                    // `int` holds no references.
+                    { expect "Probe.Cases" "OnReferences" with
+                        Contains = [ notSupported ]
+                        Excludes = [ invalidOperation ]
+                    }
+                    // The analysis does not decide whether a type is bitwise equatable, so it follows
+                    // both ways, though `int` holds no references.
+                    { expect "Probe.Cases" "OnBitwiseEquatable" with
+                        Contains = [ notSupported ; invalidOperation ]
+                    }
+                ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.
@@ -3993,6 +4344,12 @@ public static class Uses
     static int ThroughNamesGone<T>(T x) where T : INamesGone => x.Go();
     static void Generic<T>() { }
     public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
+    public struct HoldsGone { public Provider.GoneStruct G; }
+    static int BranchOnReferences<T>() => System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<T>() ? 1 : 0;
+    public static int BranchOnHoldsGone() => BranchOnReferences<HoldsGone>();
+    public class DerivedFromGone : Provider.GoneType { }
+    public struct HoldsDerivedFromGone { public DerivedFromGone D; }
+    public static int BranchOnHoldsDerivedFromGone() => BranchOnReferences<HoldsDerivedFromGone>();
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
@@ -4077,6 +4434,13 @@ public static class Uses
                 // The type a `constrained.` prefix names.
                 "ConstrainedOnGone", "=System.TypeLoadException"
             ]
+
+        // Whether a struct holds references reads the types of its fields, one of which the
+        // provider no longer has. CoreCLR cannot load the struct, so no instance with it runs, and
+        // the analysis answers without deciding the branch.
+        against2 "BranchOnHoldsGone" |> ignore
+        // So too where a field's type derives from one the provider no longer has.
+        against2 "BranchOnHoldsDerivedFromGone" |> ignore
 
         for methodName, failure in failures do
             let bound, _ = against1 methodName
