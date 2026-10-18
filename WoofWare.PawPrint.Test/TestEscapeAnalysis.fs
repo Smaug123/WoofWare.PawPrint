@@ -3580,6 +3580,152 @@ public static class Cases
         let called = typeComparisonCalls ()
         reachesOf called called false "TypeOperand.Cases" analysis fixture typeOperandFolded
 
+    /// Code that branches on `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, which C#
+    /// compiles to a call of it, then `brtrue` or `brfalse`.
+    let private containsReferencesSource =
+        """
+using System.Runtime.CompilerServices;
+
+namespace ContainsReferences;
+
+// Exceptions whose construction raises nothing, unlike CoreLib's, which look up their messages.
+public class Holds : System.Exception { }
+
+public class HoldsNone : System.Exception { }
+
+public struct WithReference { public string S; }
+
+public struct Plain { public int X; public long Y; }
+
+public static class Cases
+{
+    public static void Generic<T>()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void WithInt() => Generic<int>();
+
+    public static void WithString() => Generic<string>();
+
+    public static void WithReference() => Generic<WithReference>();
+
+    public static void WithPlain() => Generic<Plain>();
+
+    public static void Negated<T>()
+    {
+        if (!RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new HoldsNone();
+        throw new Holds();
+    }
+
+    public static void NegatedWithInt() => Negated<int>();
+
+    public static void Exact()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<Plain>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    // The branch is on the answer and something else.
+    public static void Combined<T>(bool flag)
+    {
+        if (flag && RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void CombinedWithInt(bool flag) => Combined<int>(flag);
+
+    // The answer is the same however the method is compiled.
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void Unoptimized<T>()
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new Holds();
+        throw new HoldsNone();
+    }
+
+    public static void UnoptimizedWithString() => Unoptimized<string>();
+
+    // No branch tests the answer straight away.
+    public static bool Answer<T>() => RuntimeHelpers.IsReferenceOrContainsReferences<T>();
+}
+"""
+
+    /// What each method of `containsReferencesSource` lets escape, which is so whether or not the
+    /// JIT is assumed to optimise: the answer is a constant for each instance however the code is
+    /// compiled.
+    let private containsReferencesExpectations : Expectation list =
+        let holds = "=ContainsReferences.Holds"
+        let holdsNone = "=ContainsReferences.HoldsNone"
+
+        let decided (name : string) (contains : string list) (excludes : string list) =
+            { expect "ContainsReferences.Cases" name with
+                Contains = contains
+                Excludes = excludes
+                Unknown = Some false
+                // A `throw` of null raises a `NullReferenceException`, which the runtime constructs.
+                Assumes = Some constructing
+            }
+
+        [
+            // The open definition does not decide the branch.
+            decided "Generic" [ holds ; holdsNone ] []
+            decided "WithInt" [ holdsNone ] [ holds ]
+            decided "WithString" [ holds ] [ holdsNone ]
+            decided "WithReference" [ holds ] [ holdsNone ]
+            decided "WithPlain" [ holdsNone ] [ holds ]
+            decided "NegatedWithInt" [ holdsNone ] [ holds ]
+            decided "Exact" [ holdsNone ] [ holds ]
+            decided "CombinedWithInt" [ holdsNone ] [ holds ]
+            decided "UnoptimizedWithString" [ holds ] [ holdsNone ]
+            { expect "ContainsReferences.Cases" "Answer" with
+                Excludes = [ holds ; holdsNone ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+        ]
+
+    /// The image of `containsReferencesSource`, optimized as CoreLib is.
+    let private containsReferencesFixture () : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileOptimizedAssembly
+                "ContainsReferences"
+                OutputKind.DynamicallyLinkedLibrary
+                [ containsReferencesSource ]
+
+        Assembly.read loggerFactory (Some "ContainsReferences.dll") (new MemoryStream (image))
+
+    [<Test>]
+    let ``a branch on whether a type holds references goes the way the instance's type decides`` () : unit =
+        let fixture = containsReferencesFixture ()
+
+        let _, failures =
+            unmet (analysisOver [ fixture ] id) fixture containsReferencesExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a branch on whether a type holds references is decided without assuming the JIT optimises`` () : unit =
+        let fixture = containsReferencesFixture ()
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.JitOptimises Assumption.all)
+                [ fixture ]
+                id
+
+        let _, failures = unmet analysis fixture containsReferencesExpectations
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.
