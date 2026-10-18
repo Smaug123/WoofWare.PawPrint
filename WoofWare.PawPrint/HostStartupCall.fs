@@ -3,24 +3,6 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
-/// The `Exception*` out-slot the VM passes as the last argument of a CoreLib
-/// `[UnmanagedCallersOnly]` entry point, which stores there any exception it catches, for the VM
-/// to rethrow once the call has returned. Made by `HostStartupCall.allocateExceptionSlot`, and
-/// read by `HostStartupCall.readExceptionSlot`.
-type ExceptionSlot =
-    private
-        {
-            Block : NativeMemoryBlockId
-        }
-
-    /// The pointer to pass as the callee's `Exception*` argument.
-    member this.Pointer : ManagedPointerSource =
-        ManagedPointerSource.Byref
-            {
-                Root = ByrefRoot.NativeMemoryByte (this.Block, 0)
-                Projections = []
-            }
-
 /// Shared machinery for the CoreLib entry points the VM calls itself rather than any guest:
 /// `System.AppContext::Setup` and `System.Environment::InitializeCommandLineArgs` during
 /// startup, and `System.Threading.Thread::StartCallback` at the bottom of every started thread.
@@ -28,7 +10,7 @@ type ExceptionSlot =
 /// All are ordinary managed IL that PawPrint interprets. What the VM contributes, and the only
 /// thing PawPrint has to synthesise, is the lookup that finds the method and, for the startup
 /// pair, native-heap argument buffers — `char*` and `char**` over NUL-terminated UTF-16, and the
-/// `ExceptionSlot` an `[UnmanagedCallersOnly]` entry point stores what it caught in. Those
+/// `NativeReferenceCell` an `[UnmanagedCallersOnly]` entry point stores what it caught in. Those
 /// are here so the callers cannot drift on the pointer-cell conventions below, which are not
 /// locally obvious and which fail in ways that look like a corrupt guest rather than a wrong
 /// buffer.
@@ -119,71 +101,27 @@ module HostStartupCall =
 
         ptr, IlMachineState.setNativeMemoryPool pool state
 
-    /// A fresh native block of one object-reference cell holding `contents`: a protected local
-    /// of the VM's, whose address it passes to a CoreLib entry point as a `T*`.
-    ///
-    /// The cell is written rather than left to the zeroed block, because a typed read of a
-    /// native block finds only the cells written into it; a callee's `stind.ref` then replaces a
-    /// cell of the type it stores.
-    let private allocateReferenceCell
-        (contents : ManagedHeapAddress option)
-        (state : IlMachineState)
-        : NativeMemoryBlockId * IlMachineState
-        =
-        let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized PointerSize state
-
-        let block =
-            match ptr with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.NativeMemoryByte (blockId, 0)
-                                             Projections = []
-                                         } -> blockId
-            | other ->
-                failwith
-                    $"logic error: allocateNativeMemory returned %O{other} rather than a byref to byte 0 of a fresh native block"
-
-        let pool =
-            IlMachineState.getNativeMemoryPool state
-            |> NativeMemoryPool.writeCell block 0 (CliType.ObjectRef contents)
-
-        block, IlMachineState.setNativeMemoryPool pool state
-
     /// A pointer to a fresh VM local holding the object at `addr`, as the VM passes a `Thread*`.
     let allocateReferenceLocal
         (addr : ManagedHeapAddress)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
         =
-        let block, state = allocateReferenceCell (Some addr) state
+        let cell, pool =
+            NativeReferenceCell.allocate (Some addr) (IlMachineState.getNativeMemoryPool state)
 
-        ManagedPointerSource.Byref
-            {
-                Root = ByrefRoot.NativeMemoryByte (block, 0)
-                Projections = []
-            },
-        state
+        cell.Pointer, IlMachineState.setNativeMemoryPool pool state
 
-    /// A fresh `ExceptionSlot` holding null, as the VM's protected local does before the call.
-    let allocateExceptionSlot (state : IlMachineState) : ExceptionSlot * IlMachineState =
-        let block, state = allocateReferenceCell None state
+    /// A fresh `Exception*` out-slot holding null, as the VM's protected local does before the call.
+    let allocateExceptionSlot (state : IlMachineState) : NativeReferenceCell * IlMachineState =
+        let cell, pool =
+            NativeReferenceCell.allocate None (IlMachineState.getNativeMemoryPool state)
 
-        {
-            Block = block
-        },
-        state
+        cell, IlMachineState.setNativeMemoryPool pool state
 
-    /// What the callee stored in `slot`: `None` if it left it null. Fails if the slot holds
-    /// anything but an object reference, which no CoreLib entry point stores there.
-    let readExceptionSlot (slot : ExceptionSlot) (state : IlMachineState) : ManagedHeapAddress option =
-        match NativeMemoryPool.tryReadCell slot.Block 0 (IlMachineState.getNativeMemoryPool state) with
-        | Some (CliType.ObjectRef stored) -> stored
-        | Some other ->
-            failwith
-                $"The Exception* out-slot %O{slot.Block} holds %O{other}, which is not an object reference; the callee wrote something other than an exception into it."
-        | None ->
-            failwith
-                $"logic error: the Exception* out-slot %O{slot.Block} has no cell at byte 0, though allocateExceptionSlot writes one"
+    /// What the callee stored in the out-slot `slot`: `None` if it left it null.
+    let readExceptionSlot (slot : NativeReferenceCell) (state : IlMachineState) : ManagedHeapAddress option =
+        NativeReferenceCell.read slot (IlMachineState.getNativeMemoryPool state)
 
     /// The unique type definition `typeNamespace.typeName` in `corelib`. `purpose` is as for
     /// `findCorelibStaticMethod`.

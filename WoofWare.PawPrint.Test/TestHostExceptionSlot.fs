@@ -20,7 +20,7 @@ module TestHostExceptionSlot =
         let entry = Assembly.read NullLoggerFactory.Instance None peImage
         IlMachineState.initial NullLoggerFactory.Instance (FrameworkUnderTest.runtimeDirs ()) entry
 
-    let private store (slot : ExceptionSlot) (value : CliType) (state : IlMachineState) : IlMachineState =
+    let private store (slot : NativeReferenceCell) (value : CliType) (state : IlMachineState) : IlMachineState =
         let block =
             match slot.Pointer with
             | ManagedPointerSource.Byref {

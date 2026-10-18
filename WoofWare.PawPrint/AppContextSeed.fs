@@ -71,7 +71,7 @@ type internal SetupReadBack =
     /// `SetupShape.ThreeArg`: nothing, because an exception escapes the call itself.
     | Nothing
     /// `SetupShape.FourArg`: the out-slot in which `Setup` stores what it caught.
-    | ExceptionSlot of ExceptionSlot
+    | ExceptionSlot of NativeReferenceCell
 
 /// Seeds `System.AppContext` the way a real runtime host does, so that feature switches
 /// declared in `runtimeconfig.json` — `System.Diagnostics.Tracing.EventSource.IsSupported`
