@@ -567,7 +567,12 @@ module MultiProgram =
     /// The signal poll of every idle program, in launch order, whose poll may act
     /// (`SignalDispatch.mayAct`): each is checked out for its poll, which writes the signal pipe
     /// in its view. Answers the driver, or how the tick ended if a poll ended its process.
-    let rec private pollIdle (pids : ProcessId list) (driver : MultiProgram) : Result<MultiProgram, MultiStepOutcome> =
+    let rec private pollIdle
+        (loggerFactory : ILoggerFactory)
+        (pids : ProcessId list)
+        (driver : MultiProgram)
+        : Result<MultiProgram, MultiStepOutcome>
+        =
         match pids with
         | [] -> Ok driver
         | pid :: pids ->
@@ -577,7 +582,7 @@ module MultiProgram =
             let driver = checkOut pid driver
             let program = driver.Current
 
-            match SignalDispatch.poll program.BaseClassTypes program.State with
+            match SignalDispatch.poll loggerFactory program.BaseClassTypes program.State with
             | SignalPoll.ProcessKilled (state, ended) ->
                 Error (
                     endCurrent
@@ -585,8 +590,8 @@ module MultiProgram =
                         (RunningProgram.signalTerminated state ended)
                         ended
                 )
-            | SignalPoll.Continues state -> pollIdle pids (withCurrent (withState state program) driver)
-        | _ -> pollIdle pids driver
+            | SignalPoll.Continues state -> pollIdle loggerFactory pids (withCurrent (withState state program) driver)
+        | _ -> pollIdle loggerFactory pids driver
 
     /// The first half of a scheduler tick: everything that happens before a program is chosen
     /// and its policy asked which thread runs next. Advancing the clocks, firing wait deadlines,
@@ -615,7 +620,7 @@ module MultiProgram =
     ///
     /// Ends a program instead if System.Native's dispatcher, handling a signal between
     /// instructions, re-raises it at a default that kills the process.
-    let internal advance (driver : MultiProgram) : Advanced =
+    let internal advance (loggerFactory : ILoggerFactory) (driver : MultiProgram) : Advanced =
         let program = driver.Current
 
         // The tick this preamble is running, captured before the counter moves on, so that the
@@ -702,7 +707,7 @@ module MultiProgram =
         // onto the managed callback, so the scheduler can pick it on the same tick. Before the
         // syscall wakes, because writing to the pipe and reading from it change what a syscall
         // parked on it is waiting for.
-        match SignalDispatch.poll program.BaseClassTypes state with
+        match SignalDispatch.poll loggerFactory program.BaseClassTypes state with
         | SignalPoll.ProcessKilled (state, ended) ->
             let driver =
                 { driver with
@@ -723,7 +728,7 @@ module MultiProgram =
             if idle.IsEmpty then
                 Ok driver
             else
-                pollIdle driver.Launched driver
+                pollIdle loggerFactory driver.Launched driver
 
         match polled with
         | Error settled -> Advanced.Settled settled
@@ -818,7 +823,7 @@ module MultiProgram =
         annotating
             driver.Current.State
             (fun () ->
-                match advance driver with
+                match advance loggerFactory driver with
                 | Advanced.Decide (advanced, tick) -> decide loggerFactory logger advanced tick
                 | Advanced.Settled outcome -> outcome
             )

@@ -21,10 +21,6 @@ module Net11Frontier =
     let fileSystemSupportsLocking : string =
         "On .NET 11, opening a file through `SafeFileHandle` asks `Interop.Sys.FileSystemSupportsLocking` (SafeFileHandle.Unix.cs:528), the `SystemNative_FileSystemSupportsLocking` P/Invoke, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_FileSystemSupportsLocking)\". Un-park when the emulated kernel answers it."
 
-    /// PawPrint's signal dispatcher thread has no managed thread id on .NET 11.
-    let signalDispatcherThreadId : string =
-        "On .NET 11, `ManagedThreadId.Current` reads the thread-static `t_currentManagedThreadId`, which the VM sets when it attaches the native thread that delivers signals to managed code, on its first callback; PawPrint does not, so on that thread it reads 0. The dispatcher's `lock (s_registrations)` in `PosixSignalRegistration.OnPosixSignal` then takes the thin lock for no owner, alongside `Main`'s registrations: \"Encountered infinite recursion while looking up resource 'Lock_Exit_SynchronizationLockException'\", or a livelock. Seeding it there makes these cases pass (measured on 11.0.0-rc.1). Un-park when the dispatcher thread is given its managed id."
-
     /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
     let inlineArrayOfReferences : string =
         "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."
@@ -44,10 +40,6 @@ module Net11Frontier =
     /// The `MarshalNative_HasLayout` QCall, which .NET 11's `Marshal` asks before laying out a type.
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."
-
-    /// `System.GCMemoryInfoData`'s layout changed.
-    let gcMemoryInfo : string =
-        "On .NET 11, `System.GCMemoryInfoData` has no `_generationInfo0` field, which `GC.GetMemoryInfo`'s native filler writes: \"System.GCMemoryInfoData does not declare expected instance field '_generationInfo0'\". Un-park when the native filler writes .NET 11's layout."
 
     /// The checked-in hardware-intrinsic table is .NET 10's.
     let hardwareIntrinsicTable : string =

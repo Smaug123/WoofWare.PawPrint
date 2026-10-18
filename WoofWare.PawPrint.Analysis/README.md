@@ -82,6 +82,15 @@ method) may add more:
   another, then a call of `Type.op_Equality` or `op_Inequality`, which no branch lands between,
   call none of those methods, and a branch straight after follows only the way the answer goes,
   where the instance says what both types are;
+* `ldtoken` of a type gives its `RuntimeType`, which the JIT embeds as it compiles where it knows
+  the type exactly. In generic code that CoreCLR shares between instantiations
+  (`CodeSharing`), a type that names a type variable whose argument makes it share the code is
+  one the code looks up at run time, and there the JIT calls
+  `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the analysis follows, so it reaches native
+  code the analysis does not see into. A query of types the JIT folds, above, compares the
+  handles instead and makes no `RuntimeType`. Two cases are not modelled: the runtime makes the
+  `RuntimeType` at run time for a type of an assembly loaded into a collectible context, too,
+  and it makes a stub object by calling CoreLib for every `ldtoken` of a method or a field;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the

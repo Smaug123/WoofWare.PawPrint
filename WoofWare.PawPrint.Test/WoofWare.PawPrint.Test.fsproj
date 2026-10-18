@@ -387,6 +387,7 @@
     <Compile Include="TestFabricatedFieldReference.fs" />
     <Compile Include="TestSetupShape.fs" />
     <Compile Include="TestStartCallbackShape.fs" />
+    <Compile Include="TestGcMemoryInfoDataLayout.fs" />
     <Compile Include="TestHostExceptionSlot.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />

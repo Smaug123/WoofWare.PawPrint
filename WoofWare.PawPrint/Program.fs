@@ -464,7 +464,7 @@ module Program =
         (prepared : PreparedProgram)
         : PrefixOutcome
         =
-        match MultiProgram.annotating prepared.State (fun () -> MultiProgram.advance prepared.Driver) with
+        match MultiProgram.annotating prepared.State (fun () -> MultiProgram.advance loggerFactory prepared.Driver) with
         | Advanced.Settled (MultiStepOutcome.Finished (ends, _)) -> PrefixOutcome.NeverForked (onlyEnd ends)
         | Advanced.Settled (MultiStepOutcome.Deadlocked (_, stuck)) ->
             PrefixOutcome.DeadlockedBeforeFork (onlyStuck stuck)
@@ -539,7 +539,9 @@ module Program =
             // `stepStartup`; that is a handful of map operations against `executeOneStep`, and it
             // is paid once for a whole sweep rather than once per seed.
             let contenders =
-                match MultiProgram.annotating startup.State (fun () -> MultiProgram.advance startup.Driver) with
+                match
+                    MultiProgram.annotating startup.State (fun () -> MultiProgram.advance loggerFactory startup.Driver)
+                with
                 | Advanced.Decide (probed, _) -> Scheduler.tryContenders probed.Current.State
                 // `stepStartup` runs the same preamble, and ends or deadlocks the same way.
                 | Advanced.Settled _ -> None
