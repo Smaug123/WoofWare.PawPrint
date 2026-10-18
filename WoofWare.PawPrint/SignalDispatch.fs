@@ -183,17 +183,9 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: the PAL's restore of %O{signal}'s default was refused (%O{errno}), but the PAL catches only signals sigaction accepts."
         | PalReplacedDisposition.Ignore ->
-            // `abort` unblocks SIGABRT before raising it, which `frame`'s mask
-            // holds if `frame` is SIGABRT's own; returning through the frame
-            // first unblocks it the same way, and nothing else runs before the
-            // process dies.
-            let state =
-                state.MapKernel (fun kernel ->
-                    EmulatedKernel.withUnix
-                        (UnixSignal.sigreturn (kernel.Caller kernel.Leader) frame.Id kernel.System)
-                        kernel
-                )
-
+            // `PROCAbort` calls `abort` from inside the handler, which never returns through
+            // `frame`: `abort` itself unblocks SIGABRT, which `frame`'s mask holds if `frame` is
+            // SIGABRT's own, and the process dies of whichever instance it then takes.
             SignalPoll.ProcessKilled (state, EmulatedKernel.abort state.Kernel.Leader state.Kernel)
 
     /// System.Native's native handler for `frame`'s signal, run on the leader:

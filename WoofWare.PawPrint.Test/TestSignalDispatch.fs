@@ -1914,6 +1914,49 @@ module TestSignalDispatch =
         | SignalPoll.Continues _ -> failwith "expected the poll to abort the process"
 
     [<Test>]
+    let ``poll aborts the process for a SIGABRT whose fault handler replaced an ignore, with another pending``
+        ()
+        : unit
+        =
+        // Two SIGABRTs, one sent to the process and one to the leader, both while every task
+        // blocked them. The leader takes one, and the PAL's handler calls `PROCAbort` with the
+        // other still held off by the handler's mask, until `abort` unblocks it.
+        let state, _dispatcher, _ = preparedState ()
+        let sigabrt = Signal.SIGABRT
+
+        let state =
+            state
+            |> setDisposition
+                sigabrt
+                (SignalDisposition.Catch (
+                    SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
+                ))
+            |> blockEverywhere sigabrt
+            |> sendToProcess sigabrt
+            |> fun state ->
+                state.MapKernel (fun kernel ->
+                    match
+                        UnixSignal.pthreadKill
+                            (kernel.Caller kernel.Leader)
+                            kernel.Leader
+                            (Signal.toRawSignoUnder (numberingOf state) sigabrt)
+                            kernel.System
+                    with
+                    | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) ->
+                        EmulatedKernel.withUnix system kernel
+                    | other -> failwith $"expected the leader's SIGABRT to be left pending, got %A{other}"
+                )
+            |> unblockEverywhere
+
+        state.Kernel.Signals |> SignalState.pending |> List.length |> shouldEqual 2
+
+        match SignalDispatch.poll (snd (LoggerFactory.makeTest ())) baseClassTypes state with
+        | SignalPoll.ProcessKilled (_, ended) ->
+            EndedProcess.termination ended.Ended
+            |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
+        | SignalPoll.Continues _ -> failwith "expected the poll to abort the process"
+
+    [<Test>]
     let ``poll refuses a signal caught by any other handler installed before Main`` () : unit =
         // The PAL's thread-activation handler: glibc's SIGRTMIN, 34, on Linux.
         let state, _dispatcher, _ = preparedState ()

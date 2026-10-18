@@ -63,7 +63,9 @@ module TestDirectoryStreamFds =
 
     /// The number `open(2)` would hand out next.
     let private lowestFree (kernel : EmulatedKernel) : int =
-        let live = FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.ProcessId kernel.System)
+        let live =
+            FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.ProcessId kernel.System)
+
         Seq.initInfinite id |> Seq.find (fun fd -> not (Map.containsKey fd live))
 
     /// Where the stream `block` names is positioned, which is its descriptor's
