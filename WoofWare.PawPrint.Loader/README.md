@@ -33,12 +33,15 @@ What lives here:
   a literal one, matched by name and exact type, as CoreCLR's `FindField` binds it, or nothing (a
   `MissingFieldException`). `MemberReferenceParent` reads the parent token, which
   `WoofWare.PawPrint.TypeSystem`'s method resolver reads too, and decides whether CoreCLR could load
-  the parent at all: it walks the load CoreCLR performs before looking for the member, level by
-  level, and reports the first type reference that names nothing (a `TypeLoadException`) or that
-  needs an assembly no runtime directory supplies (a `FileNotFoundException`).
+  the parent at all, which it loads in full before looking for the member.
   `ParentLoadVouching` says whether every type that load reaches is one PawPrint knows to load
   (CoreLib's own, combined so that none of the loader's other failures can arise), which a caller
   needs before it can say which exception binding a reference throws.
+* `TypeLoad` — CoreCLR's full load of a type, walked level by level as the class loader brings
+  each type it reaches through them, and the first type reference that load reaches that names
+  nothing (a `TypeLoadException`) or that needs an assembly no runtime directory supplies (a
+  `FileNotFoundException`). The JIT asks for every type a method names at that level. The host's
+  CoreCLR is its oracle (`TestTypeLoad`).
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as
