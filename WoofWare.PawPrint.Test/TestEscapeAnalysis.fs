@@ -3726,6 +3726,85 @@ public static class Cases
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// An assembly whose `Probe.Cases` branches on a call of a generic intrinsic of `RuntimeHelpers`
+    /// straight away, throwing `NotSupportedException` where the answer is false and
+    /// `InvalidOperationException` where it is true: `OnReferences`, of
+    /// `IsReferenceOrContainsReferences<int>()`, and `OnBitwiseEquatable`, of CoreLib's internal
+    /// `IsBitwiseEquatable<int>()`, which C# cannot call.
+    let private emitRuntimeHelpersBranches () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "RuntimeHelpersBranches", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "RuntimeHelpersBranches"
+
+        let cases =
+            modul.DefineType (
+                "Probe.Cases",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let runtimeHelpers = typeof<Runtime.CompilerServices.RuntimeHelpers>
+
+        for name, query in
+            [
+                "OnReferences", runtimeHelpers.GetMethod "IsReferenceOrContainsReferences"
+                "OnBitwiseEquatable",
+                runtimeHelpers.GetMethod ("IsBitwiseEquatable", BindingFlags.NonPublic ||| BindingFlags.Static)
+            ] do
+            let method =
+                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+            let il = method.GetILGenerator ()
+            let holds = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Call, query.MakeGenericMethod [| typeof<int> |])
+            il.Emit (Emit.OpCodes.Brtrue, holds)
+            il.Emit (Emit.OpCodes.Newobj, typeof<NotSupportedException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+            il.MarkLabel holds
+            il.Emit (Emit.OpCodes.Newobj, typeof<InvalidOperationException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+
+        cases.CreateType () |> ignore<Type>
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``only a call of IsReferenceOrContainsReferences is decided by whether its type holds references`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read
+                loggerFactory
+                (Some "RuntimeHelpersBranches.dll")
+                (new MemoryStream (emitRuntimeHelpersBranches ()))
+
+        let notSupported = "=System.NotSupportedException"
+        let invalidOperation = "=System.InvalidOperationException"
+
+        let _, failures =
+            unmet
+                (analysisOver [ fixture ] id)
+                fixture
+                [
+                    // `int` holds no references.
+                    { expect "Probe.Cases" "OnReferences" with
+                        Contains = [ notSupported ]
+                        Excludes = [ invalidOperation ]
+                    }
+                    // The analysis does not decide whether a type is bitwise equatable, so it follows
+                    // both ways, though `int` holds no references.
+                    { expect "Probe.Cases" "OnBitwiseEquatable" with
+                        Contains = [ notSupported ; invalidOperation ]
+                    }
+                ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.
