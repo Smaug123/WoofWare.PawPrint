@@ -155,8 +155,8 @@ module TestEmulatedKernelCurrentDirectory =
         // The boundary that matters: without this, a defaulted value would sail
         // into kernel state and fail as a null reference inside the first
         // SystemNative_GetCwd instead of naming the knob.
-        let text =
-            message (fun () ->
+        let thrown =
+            Assert.Throws<System.ArgumentException> (fun () ->
                 EmulatedKernel.initialImage
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
                     (UnixTimestamp.ofSeconds 0L)
@@ -167,7 +167,7 @@ module TestEmulatedKernelCurrentDirectory =
                 |> ignore<EmulatedKernel>
             )
 
-        text |> shouldContainText "EmulatedKernel.CurrentDirectory"
+        thrown.Message |> shouldContainText "EmulatedKernel.CurrentDirectory"
 
     /// A seed name past the flavour's NAME_MAX is a host mistake in
     /// `KernelConfig.FileSystem`, and the message says which name and which

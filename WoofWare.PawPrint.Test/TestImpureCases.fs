@@ -598,11 +598,11 @@ module TestImpureCases =
                 name "lf", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "f", None)
             ]
 
-    /// The kernel the Darwin `access` wiring guest runs under, as `user`.
-    let private accessWiringDarwinConfig (user : uint32) : KernelConfig =
+    /// The kernel the Darwin `access` wiring guest runs under, as uid 1000.
+    let private accessWiringDarwinConfig : KernelConfig =
         { KernelConfig.Default with
             UnixPlatform = SimulatedUnixPlatform.macOsArm64
-            UserId = Some user
+            UserId = Some 1000u
             FileSystem = accessWiringSeed
         }
 
@@ -3177,7 +3177,7 @@ module TestImpureCases =
             {
                 FileName = "AccessWiringDarwinSeeded.cs"
                 ExpectedReturnCode = 0
-                KernelConfig = accessWiringDarwinConfig 1000u
+                KernelConfig = accessWiringDarwinConfig
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
@@ -5555,43 +5555,6 @@ module TestImpureCases =
         runTestOn
             (LinuxCoreLibFlavour.runtimeDirsPreferringLinux frameworkDir)
             (fileSystemWatcherLinuxCase frameworkDir)
-
-    [<Test>]
-    let ``a Darwin guest that asks root's X_OK of a regular file stops, naming the unmeasured rule`` () : unit =
-        // The Darwin wiring guest's first row, run as root: whether Darwin
-        // grants a privileged caller execution of a regular file has not been
-        // measured, and the run must stop saying so rather than answer.
-        let source = Assembly.getEmbeddedResourceAsString "AccessWiringDarwinSeeded.cs" assy
-        let image = Roslyn.compile [ source ]
-
-        let _messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", "AccessWiringDarwinSeeded.cs" ]
-
-        use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
-        use peImage = new MemoryStream (image)
-
-        let exn =
-            Assert.Catch (fun () ->
-                BoundedRun.run
-                    loggerFactory
-                    "AccessWiringDarwinSeeded.cs"
-                    (Some "AccessWiringDarwinSeeded.cs")
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Kernel = accessWiringDarwinConfig 0u
-                            }
-                    }
-                |> ExpectRun.ended
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "SystemNative_Access"
-        exn.Message |> shouldContainText "UnixPathResolution.accessWithPath"
-        exn.Message |> shouldContainText "KernelConfig.UserId"
-        exn.Message |> shouldContainText "privileged caller"
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

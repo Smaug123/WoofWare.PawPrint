@@ -64,7 +64,7 @@ module TestProcessPath =
         // `SystemNative_GetProcessPath` — the same boundary
         // `EmulatedKernel.withFileSystemAndCurrentDirectory` draws for the current directory.
         let exn =
-            Assert.Throws<Exception> (fun () ->
+            Assert.Throws<ArgumentException> (fun () ->
                 KernelConfig.toKernel
                     { KernelConfig.Default with
                         ProcessPath = Some Unchecked.defaultof<AbsoluteUnixPath>

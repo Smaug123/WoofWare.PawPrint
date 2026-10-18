@@ -503,8 +503,10 @@ module TestKernelConfig =
 
     [<Test>]
     let ``KernelConfig refuses credentials no process could hold, naming the knob`` () : unit =
+        // The kernel's own refusal where it names the knob, and PawPrint's wrapping of it where
+        // it does not, so any exception.
         let refusal (config : KernelConfig) : string =
-            (Assert.Throws<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
+            (Assert.Catch<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
 
         refusal
             { KernelConfig.Default with

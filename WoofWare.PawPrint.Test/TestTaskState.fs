@@ -432,7 +432,7 @@ module TestTaskState =
             |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let exn =
-            Assert.Throws<exn> (fun () ->
+            Assert.Throws<System.ArgumentException> (fun () ->
                 UnixThreadLifecycle.spawn (state.Kernel.Caller (ThreadId 0)) thread (CpuId 3) state.Kernel.System
                 |> ignore<SpawnAnswer * UnixSystem<ThreadId, NativeSignalHandler>>
             )
