@@ -29,6 +29,7 @@
         <Compile Include="AssemblyProbe.fs" />
         <Compile Include="TypeResolution.fs" />
         <Compile Include="SignatureComparison.fs" />
+        <Compile Include="TypeLoad.fs" />
         <Compile Include="MemberReferenceParent.fs" />
         <Compile Include="FieldReferenceResolution.fs" />
         <Compile Include="ParentLoadVouching.fs" />
