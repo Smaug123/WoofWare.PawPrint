@@ -1016,15 +1016,6 @@ module NativeSystemNative =
             failwith
                 $"%s{operation}: the kernel copies %d{length} bytes from `socketAddress`, which names no storage, yet the library admitted the copy rather than answering EFAULT. This is an interpreter bug."
 
-    /// How big the `d_name` buffer inside one directory stream is.
-    ///
-    /// Fixed for the stream's life, because its address *is* the `DIR*` the
-    /// guest holds. 1024 is what Darwin's `struct dirent` declares
-    /// (`__DARWIN_MAXPATHLEN`), and it bounds every name either modelled kernel
-    /// can store: Linux permits 255 bytes, and Darwin 255 UTF-16 code units,
-    /// which is at most 765 bytes.
-    let private directoryNameBufferBytes : int = 1024
-
     /// `sizeof(DirectoryEntry)`: a pointer, then two 32-bit fields.
     let private directoryEntrySize : int = 16
 
@@ -3540,7 +3531,7 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_OpenDir"
 
-            let fail (error : UnixError) : NativeHandlerResult option =
+            let fail (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (
@@ -3552,74 +3543,22 @@ module NativeSystemNative =
 
             let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
-            // `Follow`, and a trailing separator that merely records its demand:
-            // measured on both kernels, `opendir` follows a final symlink and a
-            // trailing separator changes no row at all — "ld" and "ld/" both
-            // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
-            // `TrailingSeparatorDemanded`, because a directory is demanded
-            // outright whether the separator was there or not.
-            // `opendir(3)` is this open: glibc's is
-            // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured,
-            // and `O_NONBLOCK` means nothing to a directory (see
-            // `OpenFlagsPal.directoryStream`).
-            let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
+            match DirectoryStream.opendir ctx.Thread path state.Kernel with
+            | DirectoryStreamOpen.Failed error, kernel -> fail error (state.WithKernel kernel)
+            | DirectoryStreamOpen.Opened block, kernel ->
+                let handle =
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.NativeMemoryByte (block, 0)
+                            Projections = []
+                        }
 
-            let opened =
-                try
-                    UnixNamespace.openPath ctx.Thread flags path 0 state.Kernel.System
-                with :? UnmodelledException as e ->
-                    KernelRefusal.failAdvising
-                        operation
-                        "This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models."
-                        e
-
-            match opened with
-            | SyscallOutcome.WouldBlock condition, _ ->
-                failwith
-                    $"%s{operation}: thread %O{ctx.Thread}'s open with O_DIRECTORY would sleep until %A{condition}, but an open that sleeps is of a FIFO, which O_DIRECTORY refuses with ENOTDIR before it could sleep (this is a bug in the kernel library)."
-            | SyscallOutcome.Restarts, _ ->
-                failwith
-                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
-            | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (EmulatedKernel.withUnix system)
-                |> fun state ->
-                    state.MapKernel (
-                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                    )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
+                state.WithKernel kernel
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer handle))
+                    ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
-
-            // The block whose address the guest holds as its `DIR*`, and whose
-            // bytes are the `d_name` buffer each `ReadDir` refills. One
-            // allocation per stream rather than one per entry, because
-            // `DirectoryEntry.Name` points into the stream's own storage and
-            // stays valid only until the next `readdir`.
-            let handle, state =
-                NativeCall.allocateNativeHeapBlob
-                    operation
-                    (Array.zeroCreate directoryNameBufferBytes)
-                    (withAnswered system state)
-
-            let block =
-                match handle with
-                | ManagedPointerSource.Byref {
-                                                 Root = ByrefRoot.NativeMemoryByte (block, 0)
-                                                 Projections = []
-                                             } -> block
-                | other ->
-                    failwith
-                        $"%s{operation}: the name buffer allocation returned an unexpected pointer shape (%O{other}); this is an interpreter bug."
-
-            state.MapKernel (EmulatedKernel.withDirectoryStreamFd block (int fd))
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer handle))
-                ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
         // `int32_t SystemNative_ReadDir(DIR* dir, DirectoryEntry* outputEntry)`
         // (pal_io.c:506): 0 when an entry was retrieved, **-1 at end of stream**,
         // and a **raw** errno otherwise — this entry point does not use
@@ -3713,7 +3652,7 @@ module NativeSystemNative =
 
             let kind = record.Kind
 
-            if nameBytes.Length + 1 > directoryNameBufferBytes then
+            if nameBytes.Length + 1 > DirectoryStream.nameBufferBytes then
                 // No name either kernel can store reaches this: Linux bounds a
                 // component at 255 bytes and Darwin at 765, and a seed is held
                 // to the same `NAME_MAX` as a binding is. So this is an
@@ -3722,7 +3661,7 @@ module NativeSystemNative =
                 // The buffer's size is the ABI's rather than the kernel's, which
                 // is why this check is here and not in `UnixNamespace.readDirectoryEntry`.
                 failwith
-                    $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
+                    $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{DirectoryStream.nameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
 
             let nameLength =
                 match DirectoryEntryPal.directoryEntryNameLength state.Kernel.UnixPlatform with
@@ -3775,21 +3714,10 @@ module NativeSystemNative =
                     operation
                     (NativeCall.managedPointerOfPointerArgument operation "dir" instruction.Arguments.[0])
 
-            let fd = EmulatedKernel.directoryStreamFd block state.Kernel
-
-            let state =
-                state.MapKernel (EmulatedKernel.withoutDirectoryStream block)
-                |> IlMachineState.freeNativeMemory block
-
             let state, result =
-                match UnixDescriptor.close fd state.Kernel.System with
-                | SyscallAnswer.Completed _, system -> withAnswered system state, 0
-                | SyscallAnswer.Failed error, system ->
-                    // EBADF, reachable only if the guest closed the stream's own
-                    // descriptor behind its back, which it can do because fd
-                    // numbers are guessable. `closedir` really does call
-                    // `close` on that fd, so EBADF is what a real one reports.
-                    withErrno ctx error system state, -1
+                match DirectoryStream.closedir block state.Kernel with
+                | Ok (), kernel -> state.WithKernel kernel, 0
+                | Error error, kernel -> withErrno ctx error kernel.System (state.WithKernel kernel), -1
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
