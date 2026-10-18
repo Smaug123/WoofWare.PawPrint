@@ -63,7 +63,7 @@ module internal ThreadStartCallback =
           StartCallbackShape
         =
         let threadType =
-            HostStartupCall.findCorelibType corelib "System.Threading" "Thread" purpose
+            CorelibEntryPoint.findCorelibType corelib "System.Threading" "Thread" purpose
 
         match threadType.Methods |> List.filter (fun m -> m.Name = "StartCallback") with
         | [ startCallback ] ->

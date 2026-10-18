@@ -1661,16 +1661,13 @@ module IlMachineStateExecution =
         : ExecutionResult
         =
         let helper =
-            match
-                baseClassTypes.Exception.Methods
-                |> List.filter (fun m ->
-                    m.Name = methodName && m.IsStatic && MethodInfo.arity m = List.length arguments
-                )
-            with
-            | [ helper ] -> helper
-            | found ->
-                failwith
-                    $"expected %s{baseClassTypes.Corelib.DefinitionFullName} to define one static System.Exception.%s{methodName} of %d{List.length arguments} arguments, which .NET 11's %s{runtimeCaller} calls to wrap a thrown object that is not an exception; found %d{found.Length}"
+            CorelibEntryPoint.findCorelibStaticMethod
+                baseClassTypes
+                "System"
+                "Exception"
+                methodName
+                (List.length arguments)
+                $"wrap a thrown object that is not an exception, as .NET 11's %s{runtimeCaller} does"
 
         let state, concretized, _declaringType =
             ExecutionConcretization.concretizeMethodWithTypeGenerics

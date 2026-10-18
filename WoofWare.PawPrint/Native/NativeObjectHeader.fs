@@ -192,7 +192,7 @@ module NativeObjectHeader =
                 let purpose = "hand an inflating thin lock's owner to the object's new Lock"
 
                 let initializeForMonitor =
-                    HostStartupCall.findCorelibStaticMethod
+                    CorelibEntryPoint.findCorelibStaticMethod
                         ctx.BaseClassTypes
                         "System.Threading"
                         "Lock"
