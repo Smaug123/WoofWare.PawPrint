@@ -16,8 +16,9 @@ What lives here:
 * `ContextSwitchPrior` — how likely interleaving an opcode with another thread's steps is to reveal
   a guest-visible difference. Consumed by PawPrint's Probabilistic Concurrency Testing scheduler.
 * `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
-  from a callee. Consumed by the interpreter, which raises through it and checks itself against it,
-  and readable by an analyser that never runs anything.
+  from a callee, and what it needs of its operands to raise each (a zero divisor, say). Consumed by
+  the interpreter, which raises through it and checks itself against it, and readable by an
+  analyser that never runs anything, which can rule a fault out where it knows the operands.
 * `ControlFlow` — where control goes after each instruction, and which offsets a run of a body can
   execute: following branches, fall-through and `leave`, entering a handler only once its protected
   block has run, and following a conditional branch one way only where it pops a Boolean known in
