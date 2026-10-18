@@ -314,6 +314,14 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: a signal is deliverable to thread %O{thread}, which is not the process's leader %O{state.Kernel.Leader}: the process's leader blocks it while another thread does not, so a real kernel would have that thread take it, and PawPrint delivers a process's signals to its leader alone."
 
+    /// `refuseOwedByOthers` of every thread of the process but its leader.
+    let private refuseOwedByNonLeaders (state : IlMachineState) : unit =
+        refuseOwedByOthers
+            (state.Kernel.Tasks
+             |> Map.keys
+             |> Seq.filter (fun thread -> thread <> state.Kernel.Leader))
+            state
+
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost
     /// first, and each returns through `sigreturn`, after which the leader
@@ -322,7 +330,9 @@ module SignalDispatch =
     /// restores the default or aborts the process (see `runPalFaultHandler`);
     /// every other handler is refused.
     ///
-    /// Made only where the leader owes it (`leaderOwesReturn`). A leader asleep
+    /// Made only where the leader owes it (`leaderOwesReturn`), and fails loudly,
+    /// whether or not the leader owes one, where another thread owes one
+    /// (`refuseOwedByOthers`). A leader asleep
     /// in a syscall is not in user mode, and owes nothing. A signal it would
     /// take wakes it instead (`WakePrimitive.SignalDeliverable`), the
     /// syscall's finishing call answers that it was interrupted, and the
@@ -355,7 +365,10 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend owing no return to user mode, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
             | Some _
-            | None -> SignalPoll.Continues state
+            | None ->
+                // A signal the leader blocks may still be another thread's to take.
+                refuseOwedByNonLeaders state
+                SignalPoll.Continues state
         else
 
         let returnToUser
@@ -472,7 +485,7 @@ module SignalDispatch =
         | SignalPoll.Continues state as polled ->
             // The frames the return pushed can come to block a signal of the process's that
             // another thread does not block, which that thread then takes.
-            refuseOwedByOthers (state.Kernel.Tasks |> Map.keys |> Seq.filter (fun thread -> thread <> leader)) state
+            refuseOwedByNonLeaders state
             polled
         | killed -> killed
 
@@ -821,7 +834,8 @@ module SignalDispatch =
                 $"SignalDispatch.poll: the dispatcher's wake woke %O{elsewhere}, threads of another process, which only that process's program can wake; poll a machine of several programs through `pollMachine`."
 
     /// Whether `poll` may do anything to `state` on the machine `system`, which holds its
-    /// process: a return to user mode the leader owes, or a dispatcher idle in its loop that has
+    /// process: a return to user mode one of its threads owes (the leader's to make, any other's
+    /// to refuse), or a dispatcher idle in its loop that has
     /// not yet made its read of the signal pipe, or whose read the kernel has woken. Reads the
     /// process from `system` rather than from `state`'s kernel, so that the driver can ask it of
     /// a program whose copy of the machine is stale and hand the machine over only to a program
@@ -832,7 +846,8 @@ module SignalDispatch =
     /// process, so only the process's own steps and polls write it, and the poll that follows
     /// each of those runs while the process is still the one checked out.
     let mayAct (system : UnixSystem<ThreadId, NativeSignalHandler>) (state : IlMachineState) : bool =
-        leaderOwesReturn system state
+        UnixSystem.threads state.Kernel.ProcessId system
+        |> Map.exists (fun thread _ -> UnixSignal.owesReturn (state.Kernel.Caller thread) system)
         || match idleDispatcher state with
            | None -> false
            | Some (dispatcher, _) ->

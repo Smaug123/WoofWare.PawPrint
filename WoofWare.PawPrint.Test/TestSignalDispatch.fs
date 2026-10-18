@@ -1728,6 +1728,36 @@ module TestSignalDispatch =
         exn.Message
         |> shouldContainText "the process's leader blocks it while another thread does not"
 
+    /// `preparedState`'s process with SIGINT sent while every task blocks it, after which the
+    /// dispatcher, busy rather than idle in its loop, unblocks it while the leader still blocks
+    /// it: the signal is the dispatcher's to take, and the leader owes no return.
+    let private takenOnlyByBusyDispatcher () : IlMachineState =
+        let state, dispatcher, _ = preparedState ()
+
+        state
+        |> withStatus dispatcher ThreadStatus.Runnable
+        |> register Signal.SIGINT
+        |> blockEverywhere Signal.SIGINT
+        |> sendToProcess Signal.SIGINT
+        |> fun state -> state.MapKernel (SignalFrames.leave dispatcher)
+
+    [<Test>]
+    let ``poll refuses a signal only a thread other than the leader can take, when the leader owes nothing`` () : unit =
+        let state = takenOnlyByBusyDispatcher ()
+
+        UnixSignal.owesReturn (state.Kernel.Caller state.Kernel.Leader) state.Kernel.System
+        |> shouldEqual false
+
+        let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
+
+        exn.Message
+        |> shouldContainText "the process's leader blocks it while another thread does not"
+
+    [<Test>]
+    let ``an idle program's poll may act when a thread other than its leader owes a return`` () : unit =
+        let state = takenOnlyByBusyDispatcher ()
+        SignalDispatch.mayAct state.Kernel.System state |> shouldEqual true
+
     [<Test>]
     let ``poll refuses a dispatcher that is the leader`` () : unit =
         // The dispatcher runs handlers for the leader, so it cannot be the
