@@ -61,6 +61,36 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close", SetLastError = true)]
     static extern int Close(IntPtr fd);
 
+    // Must match `Interop.Sys.FileStatus` exactly: 17 sequential fields, 120
+    // bytes. See sourcesPure/SystemNativeOpen.cs, which declares the same shape.
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileStatus
+    {
+        public int Flags;
+        public int Mode;
+        public uint Uid;
+        public uint Gid;
+        public long Size;
+        public long ATime;
+        public long ATimeNsec;
+        public long MTime;
+        public long MTimeNsec;
+        public long CTime;
+        public long CTimeNsec;
+        public long BirthTime;
+        public long BirthTimeNsec;
+        public long Dev;
+        public long RDev;
+        public long Ino;
+        public uint UserFlags;
+    }
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Stat", SetLastError = true)]
+    static extern unsafe int Stat(byte* path, FileStatus* output);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
+    static extern unsafe int FStat(IntPtr fd, FileStatus* output);
+
     // Must match `Interop.Sys.DirectoryEntry` exactly: a pointer then two 32-bit
     // fields, 16 bytes. `NameLength` is -1 on Linux and the name's byte length
     // on Darwin, so nothing here reads it -- walking to the terminator is valid
@@ -122,6 +152,28 @@ class Program
         for (int i = 0; i < length; i++) chars[i] = (char)name[i];
 
         return new string(chars);
+    }
+
+    /// Whether `fd` is open on the inode `target` describes.
+    static unsafe bool RefersTo(long fd, FileStatus target)
+    {
+        FileStatus status;
+        return FStat(new IntPtr(fd), &status) == 0 && status.Dev == target.Dev && status.Ino == target.Ino;
+    }
+
+    /// The lowest descriptor open on the inode `target` describes, or -1 if
+    /// none below 1024 is. The search starts at 3 because 0-2 are the standard
+    /// streams on both sides, and PawPrint refuses to `fstat` its standard
+    /// pipes. The limit is generous: a descriptor is allocated lowest-free, and
+    /// this process holds about twenty.
+    static long DescriptorOn(FileStatus target)
+    {
+        for (long fd = 3; fd < 1024; fd++)
+        {
+            if (RefersTo(fd, target)) return fd;
+        }
+
+        return -1;
     }
 
     /// Sorted, and with the directory prefix stripped, so a comparison is about
@@ -297,32 +349,62 @@ class Program
             if (afterEnd != 0) return 35;
         }
 
-        // 36-37: `opendir` consumes a file descriptor. Measured on both kernels:
-        // an `open` either side of one returned fds 3 and 5, with the stream
-        // holding 4. `dirfd(3)` is the only way to ask directly and appears
-        // nowhere in CoreLib, so the numbering of a later `open` is how a guest
-        // sees it -- and it is what makes the descriptor real rather than
-        // bookkeeping.
+        // 36-42: `opendir` holds a file descriptor of its own, open on the
+        // directory; it is the lowest free one, as an `open` would take; and
+        // `closedir` releases it. `dirfd(3)` is the only way to ask for it and
+        // appears nowhere in CoreLib, so it is found by `fstat`ing descriptors
+        // for the directory's inode -- and finding it there is what makes the
+        // descriptor real rather than bookkeeping.
+        //
+        // The lowest free descriptor is learnt by opening a file and closing
+        // it again, rather than read off the numbering of `open`s either side,
+        // because the table is not the guest's alone on the real runtime.
+        // Measured on .NET 11: the runtime's own threads make and close pipes
+        // while the main thread loads assemblies, so the table can have holes
+        // below its top when `Main` runs. An `open` and `opendir` then fill
+        // those holes and the next `open` lands at the top, returning (say) 9,
+        // 10 and 21 rather than three consecutive numbers -- in 1,182 of
+        // 16,000 runs on Linux, and 11 of 16,000 on macOS.
+        //
+        // Nothing but this guest opens `d`, so those threads cannot change
+        // which descriptor is open on it, and 36-41 hold whatever they do. They
+        // can still take the free descriptor between the `close` and the
+        // `opendir`, which is why the lowest-free row alone is retried; in
+        // 32,000 runs across the two kernels, the first attempt always held.
         unsafe
         {
+            byte* directory = stackalloc byte[8];
+            Ascii("d", directory);
+
+            FileStatus target;
+            if (Stat(directory, &target) != 0) return 36;
+
             byte* file = stackalloc byte[8];
             Ascii("f", file);
 
-            IntPtr before = Open(file, O_RDONLY, DefaultCreateMode);
-            if (before == new IntPtr(-1)) return 36;
+            bool tookLowest = false;
 
-            IntPtr stream = OpenDirPath("d");
-            if (stream == IntPtr.Zero) return 37;
+            for (int attempt = 0; attempt < 8 && !tookLowest; attempt++)
+            {
+                IntPtr free = Open(file, O_RDONLY, DefaultCreateMode);
+                if (free == new IntPtr(-1) || Close(free) != 0) return 37;
 
-            IntPtr after = Open(file, O_RDONLY, DefaultCreateMode);
-            if (after == new IntPtr(-1)) return 38;
+                IntPtr stream = OpenDirPath("d");
+                if (stream == IntPtr.Zero) return 38;
 
-            long gap = (long)after - (long)before;
+                long held = DescriptorOn(target);
+                if (CloseDir(stream) != 0) return 39;
 
-            Close(before);
-            Close(after);
-            if (CloseDir(stream) != 0) return 39;
-            if (gap != 2) return 40;
+                if (held == -1) return 40;
+
+                // Released. Another thread may already have been given the
+                // number, but not on this directory.
+                if (RefersTo(held, target)) return 41;
+
+                tookLowest = held == (long)free;
+            }
+
+            if (!tookLowest) return 42;
         }
 
         // 30-31: the payoff. `Directory.Delete(recursive: true)` enumerates and

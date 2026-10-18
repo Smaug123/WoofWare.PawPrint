@@ -155,6 +155,28 @@ type private TargetSignature =
         assembly : DumpedAssembly *
         environment : ReflectedTypeTarget.ReflectionTypeEnvironment
 
+/// Which of CoreCLR's two signatures for `Delegate_BindToMethodInfo` a CoreLib declares, which
+/// decides how the binding reaches the delegate.
+[<RequireQualifiedAccess>]
+type private BindToMethodInfoSignature =
+    /// .NET 10's `(ObjectHandleOnStack d, ObjectHandleOnStack target, RuntimeMethodHandleInternal,
+    /// QCallTypeHandle, DelegateBindingFlags) -> BOOL` (comdelegate.cpp:1110), which writes the
+    /// delegate `d` itself.
+    | WritesDelegate
+    /// .NET 11's `(MethodTable* pDelegateMT, MethodTable* pTargetMT, RuntimeMethodHandleInternal,
+    /// QCallTypeHandle, DelegateBindingFlags, ObjectHandleOnStack target, BindToMethodDetails*) ->
+    /// BOOL` (comdelegate.cpp:1080), which is never handed the delegate: it reports the binding
+    /// through the struct, of type `details`, and CoreLib's managed code writes the delegate.
+    | ReportsDetails of details : ConcreteTypeHandle
+
+/// Where `Delegate_BindToMethodInfo` puts a binding, as its `BindToMethodInfoSignature` says.
+[<RequireQualifiedAccess>]
+type private BindToMethodInfoOutput =
+    /// Into the fields of the delegate at this address.
+    | Delegate of ManagedHeapAddress
+    /// Into the `BindToMethodDetails` this points at, whose fields `fields` names.
+    | Details of pointer : ManagedPointerSource * fields : BindToMethodDetailsFields
+
 /// <summary>
 /// The QCalls behind <c>Delegate.CreateDelegate</c>, <c>Delegate.Method</c> and
 /// <c>Delegate.Equals</c>. Three are implemented: <c>Delegate_BindToMethodInfo</c>, for a target
@@ -786,6 +808,113 @@ module NativeDelegate =
             NativeHandlerResult.completed state |> Some
         | _ -> None
 
+    /// The parameters of `Delegate_BindToMethodInfo`'s interop stub, as one of the signatures
+    /// `BindToMethodInfoSignature` names.
+    let private (|BindToMethodInfoParameters|_|)
+        (concreteTypes : AllConcreteTypes)
+        (parameters : ConcreteTypeHandle list)
+        : BindToMethodInfoSignature option
+        =
+        match parameters with
+        | [ CorelibType concreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", delegateHandleGenerics)
+            CorelibType concreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", targetHandleGenerics)
+            CorelibType concreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
+            CorelibType concreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+            CorelibType concreteTypes ("System", "DelegateBindingFlags", flagsGenerics) ] when
+            delegateHandleGenerics.IsEmpty
+            && targetHandleGenerics.IsEmpty
+            && methodHandleGenerics.IsEmpty
+            && typeHandleGenerics.IsEmpty
+            && flagsGenerics.IsEmpty
+            ->
+            Some BindToMethodInfoSignature.WritesDelegate
+        | [ ConcretePointer (CorelibType concreteTypes ("System.Runtime.CompilerServices",
+                                                        "MethodTable",
+                                                        delegateMethodTableGenerics))
+            ConcretePointer (CorelibType concreteTypes ("System.Runtime.CompilerServices",
+                                                        "MethodTable",
+                                                        targetMethodTableGenerics))
+            CorelibType concreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
+            CorelibType concreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+            CorelibType concreteTypes ("System", "DelegateBindingFlags", flagsGenerics)
+            CorelibType concreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", targetHandleGenerics)
+            ConcretePointer (CorelibType concreteTypes ("", "BindToMethodDetails", detailsGenerics) as details) ] when
+            delegateMethodTableGenerics.IsEmpty
+            && targetMethodTableGenerics.IsEmpty
+            && methodHandleGenerics.IsEmpty
+            && typeHandleGenerics.IsEmpty
+            && flagsGenerics.IsEmpty
+            && targetHandleGenerics.IsEmpty
+            && detailsGenerics.IsEmpty
+            ->
+            Some (BindToMethodInfoSignature.ReportsDetails details)
+        | _ -> None
+
+    /// Write `details` into the `BindToMethodDetails` that `pointer` points at, whose fields
+    /// `fields` names: each field the native `BindToMethodDetails` mirror is written, and
+    /// `methodPtrAux` only where `details` has one, as `COMDelegate::BindToMethod` does.
+    let private writeBindToMethodDetails
+        (ctx : NativeCallContext)
+        (operation : string)
+        (pointer : ManagedPointerSource)
+        (fields : BindToMethodDetailsFields)
+        (details : BindToMethodDetails)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let pointer = ManagedPointerSource.requireAddressed pointer
+
+        let structure =
+            match IlMachineState.readManagedByref ctx.BaseClassTypes state pointer with
+            | CliType.ValueType structure -> structure
+            | other -> failwith $"%s{operation}: expected pBindToMethodDetails to point at a struct, got %O{other}"
+
+        let set
+            (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+            (value : CliType)
+            (structure : CliValueType)
+            : CliValueType
+            =
+            let id = FieldIdentity.fieldId structure.Declared field
+            let current = CliValueType.DereferenceFieldById id structure
+
+            CliValueType.WithFieldSetById
+                id
+                (EvalStackValue.toCliTypeCoerced current (EvalStackValue.ofCliType value))
+                structure
+
+        let nativeInt (source : NativeIntSource) : CliType =
+            CliType.Numeric (CliNumericType.NativeInt source)
+
+        // `loaderAllocatorGCHandle`: PawPrint has no collectible loader allocator
+        // (`LoaderAllocator.fs`), so CoreCLR's `GetLoaderAllocatorObjectHandle` answers the null
+        // handle for every method.
+        let nullHandle, state =
+            match
+                CliValueType.DereferenceFieldById
+                    (FieldIdentity.fieldId structure.Declared fields.LoaderAllocatorGcHandle)
+                    structure
+            with
+            | CliType.ValueType handle -> IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes handle.Declared
+            | other ->
+                failwith
+                    $"%s{operation}: expected BindToMethodDetails.loaderAllocatorGCHandle to be a struct, got %O{other}"
+
+        let structure =
+            structure
+            |> set
+                fields.SelfReferentialTarget
+                (CliType.Numeric (CliNumericType.Int32 (if details.SelfReferentialTarget then 1 else 0)))
+            |> set fields.MethodPtr (nativeInt (NativeIntSource.FunctionPointer details.MethodPtr))
+            |> fun structure ->
+                match details.MethodPtrAux with
+                | Some aux -> set fields.MethodPtrAux (nativeInt (NativeIntSource.FunctionPointer aux)) structure
+                | None -> structure
+            |> set fields.ExtraData (nativeInt (NativeIntSource.MethodHandlePtr details.ExtraData))
+            |> set fields.LoaderAllocatorGcHandle nullHandle
+
+        IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state pointer (CliType.ValueType structure)
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -802,24 +931,8 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                        "ObjectHandleOnStack",
-                                                        delegateHandleGenerics)
-            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                        "ObjectHandleOnStack",
-                                                        targetHandleGenerics)
-            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
-            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                        "QCallTypeHandle",
-                                                        typeHandleGenerics)
-            CorelibType state.TypeSystem.ConcreteTypes ("System", "DelegateBindingFlags", flagsGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
-            delegateHandleGenerics.IsEmpty
-            && targetHandleGenerics.IsEmpty
-            && methodHandleGenerics.IsEmpty
-            && typeHandleGenerics.IsEmpty
-            && flagsGenerics.IsEmpty
-            ->
+          BindToMethodInfoParameters state.TypeSystem.ConcreteTypes signature,
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `Delegate_BindToMethodInfo` (comdelegate.cpp:1110): decide whether `method` can back
             // the delegate `d`, and if so point `d` at it. The BOOL it returns is a *semantic*
             // answer — the managed caller turns FALSE into `ArgumentException(Arg_DlgtTargMeth)`
@@ -828,9 +941,15 @@ module NativeDelegate =
             // implemented crashes the host instead, because reporting it as FALSE would hand the
             // guest a specific, wrong, catchable answer.
             let operation = "Delegate_BindToMethodInfo"
+            let runtime = EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib
 
-            if instruction.Arguments.Length <> 5 then
-                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+            let arity =
+                match signature with
+                | BindToMethodInfoSignature.WritesDelegate -> 5
+                | BindToMethodInfoSignature.ReportsDetails _ -> 7
+
+            if instruction.Arguments.Length <> arity then
+                failwith $"%s{operation}: expected %d{arity} native arguments, got %d{instruction.Arguments.Length}"
 
             let readObjectHandle (argIndex : int) (argName : string) : ManagedHeapAddress option =
                 NativeCall.objectHandleOnStackTarget operation state argName instruction.Arguments.[argIndex]
@@ -841,20 +960,74 @@ module NativeDelegate =
                     | CliType.ObjectRef target -> target
                     | other -> failwith $"%s{operation}: expected %s{argName} to be an object reference, got %O{other}"
 
-            let delegateAddr =
-                readObjectHandle 0 "d"
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: the delegate is null, but every caller allocates it with Delegate.InternalAlloc immediately before reaching this QCall"
-                )
+            // The method handle, the declaring type and the flags are the third, fourth and fifth
+            // arguments of both signatures.
+            let output, delegateType, targetAddr =
+                match signature with
+                | BindToMethodInfoSignature.WritesDelegate ->
+                    let delegateAddr =
+                        readObjectHandle 0 "d"
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: the delegate is null, but every caller allocates it with Delegate.InternalAlloc immediately before reaching this QCall"
+                        )
 
-            let targetAddr = readObjectHandle 1 "target"
+                    let targetAddr = readObjectHandle 1 "target"
 
-            // CoreCLR asserts this (comdelegate.cpp:1134, "Assert to track down VS#458689"): a
-            // delegate closed over itself would be a cycle the invocation path cannot unpick.
-            if targetAddr = Some delegateAddr then
-                failwith
-                    $"%s{operation}: the delegate is its own bound target, which CoreCLR asserts against (comdelegate.cpp:1134)"
+                    // CoreCLR asserts this (comdelegate.cpp:1134, "Assert to track down VS#458689"):
+                    // a delegate closed over itself would be a cycle the invocation path cannot
+                    // unpick.
+                    if targetAddr = Some delegateAddr then
+                        failwith
+                            $"%s{operation}: the delegate is its own bound target, which CoreCLR asserts against (comdelegate.cpp:1134)"
+
+                    BindToMethodInfoOutput.Delegate delegateAddr,
+                    ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap,
+                    targetAddr
+                | BindToMethodInfoSignature.ReportsDetails detailsType ->
+                    let delegateType =
+                        NativeCall.methodTableOfEvalStackValue
+                            operation
+                            (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+                    let targetAddr = readObjectHandle 5 "targetParameter"
+
+                    // `pTargetMT` is `RuntimeHelpers.GetMethodTable(target)` of the same target,
+                    // or null for a null one (Delegate.CoreCLR.cs:546), and CoreCLR reads the
+                    // target's type from it alone. Cross-checked rather than trusted, because the
+                    // two travelling separately is where a mismatch would hide.
+                    let targetType =
+                        match EvalStackValue.ofCliType instruction.Arguments.[1] with
+                        | EvalStackValue.NativeInt source when NativeIntSource.isZero source -> None
+                        | other -> Some (NativeCall.methodTableOfEvalStackValue operation other)
+
+                    let heldType =
+                        targetAddr
+                        |> Option.map (fun addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap)
+
+                    if targetType <> heldType then
+                        failwith
+                            $"%s{operation}: pTargetMT names %O{targetType}, but the target it was read from is of type %O{heldType}; CoreLib passes the method table of the target it passes"
+
+                    let delegateInfo = ctx.BaseClassTypes.DelegateType
+
+                    let fields =
+                        match IlMachineState.tryGetConcreteTypeInfo state detailsType with
+                        | Some (_, detailsInfo) ->
+                            match
+                                BindToMethodDetailsLayout.classify ctx.BaseClassTypes.Corelib delegateInfo detailsInfo
+                            with
+                            | Ok fields -> fields
+                            | Error refusal -> failwith $"%s{operation}: %s{refusal}"
+                        | None -> failwith $"%s{operation}: BindToMethodDetails %O{detailsType} has no TypeDef row"
+
+                    let pointer =
+                        NativeCall.managedPointerOfPointerArgument
+                            operation
+                            "pBindToMethodDetails"
+                            instruction.Arguments.[6]
+
+                    BindToMethodInfoOutput.Details (pointer, fields), delegateType, targetAddr
 
             let flags =
                 match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[4] with
@@ -881,7 +1054,7 @@ module NativeDelegate =
                     failwith
                         $"TODO: %s{operation} was passed DelegateBindingFlags 0x%08x{flags}; PawPrint implements only DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.relaxedSignature}) and DBF_OpenDelegateOnly|DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.openDelegateOnly ||| DelegateBindingFlags.relaxedSignature}), which are the only sets any caller that can reach this QCall passes"
 
-            let methodHandle =
+            let methodHandleId, methodHandle =
                 match
                     MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal
                         operation
@@ -891,6 +1064,7 @@ module NativeDelegate =
                     failwith
                         $"%s{operation}: the method handle is the null sentinel, but Delegate.CreateDelegateNoSecurityCheck rejects a null handle with ArgumentNullException before reaching this QCall"
                 | Some id ->
+                    id,
                     MethodHandleRegistry.resolveMethodFromId id state.MethodHandles
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: method-registry id %d{id} names no method in this registry"
@@ -1050,8 +1224,6 @@ module NativeDelegate =
 
                 state, TargetSignature.Closed targetSignature, BindTarget.Dynamic dynamicHandle
 
-            let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
-
             let state, invokeMethod =
                 MulticastDelegateStub.invokeMethodOf ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
 
@@ -1142,6 +1314,7 @@ module NativeDelegate =
                                     ctx.LoggerFactory
                                     ctx.BaseClassTypes
                                     operation
+                                    runtime
                                     method
                                     declaringType
                                     state
@@ -1149,22 +1322,30 @@ module NativeDelegate =
                             | state, OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
                             | state, OpenDelegateAux.GenericVirtualUnsupported ->
                                 state, Error (ctx.BaseClassTypes.NotSupportedException, None)
-                        | BindTarget.OnGenericDefinition (method, definition), _ when
+                        | BindTarget.OnGenericDefinition (method, definition), DelegateBindingShape.Open when
+                            method.IsStatic
+                            && DelegateRepresentation.bindsOpenToVirtualCallStub runtime method
+                            ->
+                            // A static virtual interface method, open. On .NET 10 CoreCLR binds it
+                            // to a virtual call stub over the typical instantiation
+                            // (comdelegate.cpp:1237-1244), never asking for a code address, and the
+                            // delegate raises `EntryPointNotFoundException` only when invoked.
+                            // Measured on real .NET. A stub needs a closed declaring type here. On
+                            // .NET 11 it asks for the code address instead, and raises below.
+                            failwith
+                                $"TODO: %s{operation} was asked for an open delegate over %s{method.Name}, a static virtual method of the open generic definition %O{definition}; CoreCLR binds a virtual call stub over the definition's typical instantiation, which a FunctionPointerTarget cannot name"
+                        | BindTarget.OnGenericDefinition (method, definition), DelegateBindingShape.Closed when
                             method.IsStatic && method.IsVirtual
                             ->
-                            // A static virtual interface method. Open, CoreCLR binds it to a
-                            // virtual call stub over the typical instantiation
-                            // (comdelegate.cpp:1237-1244), never asking for a code address, and the
-                            // delegate raises `EntryPointNotFoundException` only when invoked;
-                            // closed over an object it virtualises instead, with the same result.
-                            // Both measured on real .NET. A stub needs a closed declaring type here.
-                            // Closed over null it does ask for a code address and raises as below,
-                            // but this arm refuses that shape too rather than splitting on the
-                            // bound argument.
+                            // A static virtual interface method, closed. Over an object CoreCLR
+                            // virtualises it on every runtime, binding the same stub; measured on
+                            // real .NET 10. Closed over null it does ask for a code address and
+                            // raises as below, but this arm refuses that shape too rather than
+                            // splitting on the bound argument.
                             failwith
-                                $"TODO: %s{operation} was asked to bind %s{method.Name}, a static virtual method of the open generic definition %O{definition}; CoreCLR binds a virtual call stub over the definition's typical instantiation, which a FunctionPointerTarget cannot name"
+                                $"TODO: %s{operation} was asked to bind %s{method.Name}, a static virtual method of the open generic definition %O{definition}, closed over its first argument; CoreCLR binds a virtual call stub over the definition's typical instantiation, which a FunctionPointerTarget cannot name"
                         | BindTarget.OnGenericDefinition (method, definition), DelegateBindingShape.Open when
-                            method.IsVirtual
+                            DelegateRepresentation.bindsOpenToVirtualCallStub runtime method
                             && IlMachineRuntimeMetadata.isObjRefTarget
                                 ctx.BaseClassTypes
                                 state
@@ -1311,7 +1492,8 @@ module NativeDelegate =
                             // `ContainsGenericVariables` check throws
                             // (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, method.cpp:2091-2093):
                             // a static method, a non-virtual one, a virtual one closed over null,
-                            // and an open delegate over a value type's virtual method.
+                            // an open delegate over a value type's virtual method, and on .NET 11
+                            // an open delegate over a static virtual method.
                             state,
                             Error (
                                 ctx.BaseClassTypes.InvalidOperationException,
@@ -1390,7 +1572,32 @@ module NativeDelegate =
 
                     binding
                     |> Result.map (fun binding ->
-                        DelegateRepresentation.write ctx.BaseClassTypes delegateAddr binding state
+                        match output with
+                        | BindToMethodInfoOutput.Delegate delegateAddr ->
+                            DelegateRepresentation.write ctx.BaseClassTypes delegateAddr binding state
+                        | BindToMethodInfoOutput.Details (pointer, fields) ->
+                            // `extraData = (INT_PTR)pTargetMethod`: the method handed in, which
+                            // `FindOrCreateAssociatedMethodDesc` leaves as it is but for a value
+                            // type's instance method, whose unboxing stub PawPrint's registry does
+                            // not tell apart from the method. A delegate the constructor binds
+                            // records its method by `getOrAllocateConcreteId`, so the two must
+                            // agree for `Delegate.Equals` to compare delegates made either way.
+                            match bindTarget with
+                            | BindTarget.Metadata (method, _) ->
+                                let registryId, _ =
+                                    MethodHandleRegistry.getOrAllocateConcreteId
+                                        state.TypeSystem.ConcreteTypes
+                                        method
+                                        state.MethodHandles
+
+                                if registryId <> methodHandleId then
+                                    failwith
+                                        $"%s{operation}: the method handed in is registry id %d{methodHandleId}, but the method it concretises to, %s{method.Name}, is registry id %d{registryId}"
+                            | BindTarget.Dynamic _
+                            | BindTarget.OnGenericDefinition _ -> ()
+
+                            DelegateRepresentation.bindToMethodDetails binding methodHandleId
+                            |> fun details -> writeBindToMethodDetails ctx operation pointer fields details state
                     )
 
             match bound with

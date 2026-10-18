@@ -170,6 +170,7 @@
     <Compile Include="Native\FileSystemTypePal.fs" />
     <Compile Include="Native\FileStatusPal.fs" />
     <Compile Include="Native\DirectoryEntryPal.fs" />
+    <Compile Include="Native\DirectoryStream.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\SocketOptionPal.fs" />
     <Compile Include="Native\OsThreadIdPal.fs" />

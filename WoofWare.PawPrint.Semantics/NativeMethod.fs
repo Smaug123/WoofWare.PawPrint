@@ -255,17 +255,17 @@ module NativeMethod =
         | MethodBody.InternalCall when
             assembly.ThisAssemblyDefinition.Name.Name = corelib
             && not declaringType.IsNested
-            && definition.IsStatic
             && definition.Signature.GenericParameterCount = 0
             ->
             let width =
                 match declaringType.Namespace, declaringType.Name with
-                | "System", "Math" -> Some (FloatWidth.Double, PrimitiveType.Double)
-                | "System", "MathF" -> Some (FloatWidth.Single, PrimitiveType.Single)
+                | "System", "Math" when definition.IsStatic -> Some (FloatWidth.Double, PrimitiveType.Double)
+                | "System", "MathF" when definition.IsStatic -> Some (FloatWidth.Single, PrimitiveType.Single)
                 | _ -> None
 
             // A row names an FCall by its name alone, as `vm/ecalllist.h` binds most, so it names one
-            // only when its type declares no other FCall of that name.
+            // only when its type declares no other FCall of that name. The row says whether it is
+            // static, as the C++ it binds to does by whether it takes the receiver first.
             let tabulated () =
                 let fcallsNamed =
                     declaringType.Methods
@@ -277,9 +277,13 @@ module NativeMethod =
 
                 match fcallsNamed with
                 | [ _ ] when declaringType.Generics.IsEmpty ->
-                    Map.tryFind
-                        (declaringType.Namespace + "." + declaringType.Name, definition.Name)
-                        (NativeContractTable.fcalls.Force ())
+                    let rows =
+                        if definition.IsStatic then
+                            NativeContractTable.fcalls
+                        else
+                            NativeContractTable.instanceFCalls
+
+                    Map.tryFind (declaringType.Namespace + "." + declaringType.Name, definition.Name) (rows.Force ())
                     |> Option.map NativeMethod.Tabulated
                 | _ -> None
 

@@ -16,8 +16,9 @@ What lives here:
 * `ContextSwitchPrior` — how likely interleaving an opcode with another thread's steps is to reveal
   a guest-visible difference. Consumed by PawPrint's Probabilistic Concurrency Testing scheduler.
 * `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
-  from a callee. Consumed by the interpreter, which raises through it and checks itself against it,
-  and readable by an analyser that never runs anything.
+  from a callee, and what it needs of its operands to raise each (a zero divisor, say). Consumed by
+  the interpreter, which raises through it and checks itself against it, and readable by an
+  analyser that never runs anything, which can rule a fault out where it knows the operands.
 * `ControlFlow` — where control goes after each instruction, and which offsets a run of a body can
   execute: following branches, fall-through and `leave`, entering a handler only once its protected
   block has run, and following a conditional branch one way only where it pops a Boolean known in
@@ -62,7 +63,8 @@ What lives here:
   hold only under a claim about the program (`NativeAssumption`), which an analyser must be allowed
   to make before relying on it: `NamedTypesLoad`, for a native that loads the types a loaded type's
   metadata names, which would otherwise run the program's assembly resolution handlers wherever an
-  assembly is missing. A QCall is described only when it is called as a shim function is. `TestNativeContractTable` checks that
+  assembly is missing. A row says whether an FCall is static or an instance method, which passes
+  its receiver to the C++ as the first argument. A QCall is described only when it is called as a shim function is. `TestNativeContractTable` checks that
   each row names a native both CoreLibs declare and recognise as that row, raises only CoreLib
   exception types, and cites functions the pinned source defines and binds the native to; that
   every call a cited function makes is to one its row also cites, or to one
