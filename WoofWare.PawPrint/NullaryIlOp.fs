@@ -1564,6 +1564,8 @@ module NullaryIlOp =
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            | ReturnFrameResult.ResumeNonExceptionWrap (state, step) ->
+                IlMachineStateExecution.resumeNonExceptionWrap loggerFactory corelib step currentThread state
             | ReturnFrameResult.DispatchException (state, exnAddr, exnType, making) ->
                 let state, origin =
                     match making with
@@ -2602,7 +2604,6 @@ module NullaryIlOp =
                 // `IL_Throw` (jithelpers.cpp) raises a `RuntimeWrappedException` in place of any
                 // object that is not an exception, and only ever dispatches an exception.
                 IlMachineStateExecution.wrapNonException loggerFactory corelib addr currentThread state
-                |> ExecutionResult.stepped
             | state, Some _ ->
 
             match

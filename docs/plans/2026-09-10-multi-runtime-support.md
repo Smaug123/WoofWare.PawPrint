@@ -678,12 +678,12 @@ mutation-testing skill applies to each table/classifier they introduce.
      arm is first exercised on the real image rather than classified against it: RC1's `Setup`
      itself reaches `HashHelpers.Primes`, which needs P6c's stub arm.
 
-     P6b's out-slot is a native block holding one object-reference cell (`HostStartupCall`'s
-     `ExceptionSlot`), written null before the call as the VM's protected local is. An
+     P6b's out-slot is a native block holding one object-reference cell (a
+     `NativeReferenceCell`), written null before the call as the VM's protected local is. An
      exception `Setup` stores there fails startup exactly as one escaping net10's `Setup`
      does. RC1 keeps the three-argument `Environment.InitializeCommandLineArgs` that PawPrint
      calls, beside the five-argument `[UnmanagedCallersOnly]` wrapper the VM calls; if a later
-     CoreLib drops it, that call takes the same `ExceptionSlot`.
+     CoreLib drops it, that call takes the same kind of out-slot.
 
      P6c's `RuntimeFieldInfoStubLayout.BareHandle` writes the registry id into the bare
      `m_fieldHandle` and zeroes `m_b`; its reader wraps that pointer in a

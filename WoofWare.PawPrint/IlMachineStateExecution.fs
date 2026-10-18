@@ -162,9 +162,10 @@ module IlMachineStateExecution =
     /// `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` are exactly that pair.
     [<RequireQualifiedAccess>]
     type CallSiteTransition =
-        /// The thread leaves cooperative mode before the callee runs. Only a `calli` through a
-        /// `delegate* unmanaged&lt;...&gt;` does this, and only when it does not suppress the
-        /// transition. This is the entry a `[UnmanagedCallersOnly]` method admits.
+        /// The thread leaves cooperative mode before the callee runs. A `calli` through a
+        /// `delegate* unmanaged&lt;...&gt;` does this when it does not suppress the transition, and
+        /// so does the VM calling a CoreLib method itself (`UnmanagedCallersOnlyCaller`). This is
+        /// the entry a `[UnmanagedCallersOnly]` method admits.
         | EntersPreemptive
         /// The thread is still cooperative when the callee's prologue runs. Every managed call site
         /// — `call`, `callvirt`, a delegate's `Invoke`, reflection — and *also* an unmanaged one
@@ -1574,25 +1575,23 @@ module IlMachineStateExecution =
                 $"logic error: manufacturing %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} pushed a constructor frame whose pending type initialisation is %O{other}, not the exception's own type %O{ctorDeclaringTypeHandle}; the class-initialisation bypass cannot be applied to it"
 
     /// A `throw` has thrown `thrown`, which is not an exception: wrap it as CoreCLR's
-    /// `WrapNonCompliantException` (excep.cpp) does, by allocating a `RuntimeWrappedException` and
-    /// running its `(object)` constructor on `thrown`. When the constructor returns, the wrapper is
-    /// dispatched from the `throw` in the object's place; if it raises instead, what it raised is
-    /// (`ExceptionEscape.RaisedAgainFromCaller`). The `throw`'s program counter is not advanced.
+    /// `WrapNonCompliantException` (excep.cpp) does, in a `RuntimeWrappedException` made by its
+    /// `(object)` constructor, and dispatch the wrapper from the `throw` in the object's place. The
+    /// `throw`'s program counter is not advanced.
+    ///
+    /// If the constructor raises, what it raised is dispatched instead. On .NET 10 the runtime
+    /// runs the constructor itself and raises that again from the `throw`, continuing its trace
+    /// (`ExceptionEscape.RaisedAgainFromCaller`). On .NET 11 it runs the constructor inside the
+    /// CoreLib helper `Exception.CreateRuntimeWrappedException`, and first preserves the trace of
+    /// what that caught (`resumeNonExceptionWrap`), so the `throw`'s raise begins a fresh one.
     and wrapNonException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thrown : ManagedHeapAddress)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState * WhatWeDid
+        : ExecutionResult
         =
-        let wrapperType =
-            baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{baseClassTypes.Corelib.DefinitionFullName} defines no System.Runtime.CompilerServices.RuntimeWrappedException, in which the runtime wraps a thrown object that is not an exception"
-            )
-
         // CoreCLR records the wrapper's type before it allocates, so even a wrap whose
         // constructor raises teaches the runtime which type to unwrap.
         let state =
@@ -1600,22 +1599,219 @@ module IlMachineStateExecution =
                 HasWrappedNonException = true
             }
 
-        // `AllocateObject`: zero-initialised, with no class initialisation; the constructor sets
-        // `_HResult` and `_message` itself.
-        let addr, _wrapperHandle, state =
-            ExceptionDispatching.allocateUnconstructed loggerFactory baseClassTypes wrapperType state
+        match EmulatedRuntime.ofCoreLib baseClassTypes.Corelib with
+        | EmulatedRuntime.Net10 ->
+            let wrapperType =
+                baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{baseClassTypes.Corelib.DefinitionFullName} defines no System.Runtime.CompilerServices.RuntimeWrappedException, in which the runtime wraps a thrown object that is not an exception"
+                )
 
-        constructRuntimeException
-            loggerFactory
-            baseClassTypes
-            wrapperType
-            (fun method -> method.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Object ])
-            "(object)"
-            addr
-            [ CliType.ObjectRef (Some thrown) ]
-            RuntimeExceptionMaking.WrappedNonException
-            currentThread
-            state
+            // `AllocateObject`: zero-initialised, with no class initialisation; the constructor sets
+            // `_HResult` and `_message` itself.
+            let addr, _wrapperHandle, state =
+                ExceptionDispatching.allocateUnconstructed loggerFactory baseClassTypes wrapperType state
+
+            constructRuntimeException
+                loggerFactory
+                baseClassTypes
+                wrapperType
+                (fun method -> method.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Object ])
+                "(object)"
+                addr
+                [ CliType.ObjectRef (Some thrown) ]
+                RuntimeExceptionMaking.WrappedNonException
+                currentThread
+                state
+            |> ExecutionResult.stepped
+        | EmulatedRuntime.Net11 ->
+            // The VM's protected locals: the thrown object, the wrapper, and the implied
+            // `Exception*` slot `UnmanagedCallersOnlyCaller::InvokeThrowing` appends.
+            let thrownCell, pool =
+                NativeReferenceCell.allocate (Some thrown) (IlMachineState.getNativeMemoryPool state)
+
+            let result, pool = NativeReferenceCell.allocate None pool
+            let raised, pool = NativeReferenceCell.allocate None pool
+            let state = IlMachineState.setNativeMemoryPool pool state
+
+            callNonExceptionWrapHelper
+                loggerFactory
+                baseClassTypes
+                "CreateRuntimeWrappedException"
+                "WrapNonCompliantException"
+                [ thrownCell ; result ; raised ]
+                (NonExceptionWrapStep.AfterCreate (thrownCell, result, raised))
+                currentThread
+                state
+
+    /// Call the static `[UnmanagedCallersOnly]` helper `methodName` of `System.Exception`, as the
+    /// runtime's `runtimeCaller` does from inside the active frame's `throw` of an object that is not
+    /// an exception, passing a pointer to each of `arguments`; `step` is what the runtime does once
+    /// it returns.
+    and private callNonExceptionWrapHelper
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (methodName : string)
+        (runtimeCaller : string)
+        (arguments : NativeReferenceCell list)
+        (step : NonExceptionWrapStep)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let helper =
+            match
+                baseClassTypes.Exception.Methods
+                |> List.filter (fun m ->
+                    m.Name = methodName && m.IsStatic && MethodInfo.arity m = List.length arguments
+                )
+            with
+            | [ helper ] -> helper
+            | found ->
+                failwith
+                    $"expected %s{baseClassTypes.Corelib.DefinitionFullName} to define one static System.Exception.%s{methodName} of %d{List.length arguments} arguments, which .NET 11's %s{runtimeCaller} calls to wrap a thrown object that is not an exception; found %d{found.Length}"
+
+        let state, concretized, _declaringType =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                helper
+                None
+                baseClassTypes.Corelib.DefinitionFullName
+                ImmutableArray.Empty
+                state
+
+        let state =
+            (state, arguments)
+            ||> List.fold (fun state cell ->
+                IlMachineState.pushToEvalStack
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed cell.Pointer))
+                    currentThread
+                    state
+            )
+
+        // The VM calls an `[UnmanagedCallersOnly]` method from native code
+        // (`UnmanagedCallersOnlyCaller`), which is the transition such a method admits. The
+        // `throw` is not finished, so its program counter stays where it is: the exception the
+        // runtime settles on is dispatched from it.
+        let state, commitment =
+            callMethodWithCommitment
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                CallDispatch.Direct
+                false
+                false
+                CallSiteTransition.EntersPreemptive
+                concretized.Generics
+                concretized
+                currentThread
+                state.ThreadState.[currentThread]
+                None
+                (ReturnValueDisposition.ResumeNonExceptionWrap step)
+                (ExceptionEscape.UnhandledAtNativeCaller runtimeCaller)
+                state
+
+        match commitment with
+        | CallCommitment.Committed -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+        | CallCommitment.Raised ->
+            failwith
+                $"TODO: calling System.Exception.%s{methodName}, which .NET 11's %s{runtimeCaller} calls to wrap a thrown object that is not an exception, raised before it ran; CoreCLR would raise that from the throw, which is not modelled"
+        | CallCommitment.Aborted fatal -> ExecutionResult.Aborted (state, currentThread, fatal)
+
+    /// Do what .NET 11's `WrapNonCompliantException` does next once the helper whose frame carried
+    /// `step` has returned to the throwing frame, which is active: dispatch from the `throw` the
+    /// exception the runtime has settled on, or call `Exception.InternalPreserveStackTrace` on the
+    /// one it is about to raise.
+    ///
+    /// Each exception a helper caught is raised through `COMPlusThrow`, which first preserves its
+    /// trace (`ExceptionPreserveStackTrace`), and raises instead whatever preserving it raised,
+    /// preserving that in turn. That recursion is on the native stack, which real .NET 11
+    /// overflows if every preserve raises; PawPrint follows a bounded number of re-raises and then
+    /// refuses.
+    and resumeNonExceptionWrap
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (step : NonExceptionWrapStep)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let reraiseBound = 16
+
+        let read (cell : NativeReferenceCell) : ManagedHeapAddress option =
+            NativeReferenceCell.read cell (IlMachineState.getNativeMemoryPool state)
+
+        let free (cells : NativeReferenceCell list) (state : IlMachineState) : IlMachineState =
+            (IlMachineState.getNativeMemoryPool state, cells)
+            ||> List.fold (fun pool cell -> NativeReferenceCell.free cell pool)
+            |> fun pool -> IlMachineState.setNativeMemoryPool pool state
+
+        // `IL_Throw` dispatches what `WrapNonCompliantException` left in `*ppThrowable` from the
+        // `throw`, so the method that threw is the first frame of the trace that raise begins.
+        let raiseFromThrow (exceptionAddr : ManagedHeapAddress) (state : IlMachineState) : ExecutionResult =
+            let exceptionType =
+                ManagedHeap.getObjectConcreteType exceptionAddr state.ManagedHeap
+
+            match
+                ExceptionDispatching.throwExceptionObject
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    currentThread
+                    TraceHeadOrigin.IlThrow
+                    exceptionAddr
+                    exceptionType
+            with
+            | ExceptionDispatchResult.Dispatched state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                ExecutionResult.UnhandledException (state, currentThread, exn)
+
+        // `preserved` holds `candidate`; CoreCLR passes the address of its own copy, which no
+        // guest can tell apart.
+        let preserve
+            (candidate : ManagedHeapAddress)
+            (preserved : NativeReferenceCell)
+            (reraises : int)
+            (state : IlMachineState)
+            : ExecutionResult
+            =
+            let raised, pool =
+                NativeReferenceCell.allocate None (IlMachineState.getNativeMemoryPool state)
+
+            callNonExceptionWrapHelper
+                loggerFactory
+                baseClassTypes
+                "InternalPreserveStackTrace"
+                "ExceptionPreserveStackTrace"
+                [ preserved ; raised ]
+                (NonExceptionWrapStep.AfterPreserve (candidate, preserved, raised, reraises))
+                currentThread
+                (IlMachineState.setNativeMemoryPool pool state)
+
+        match step with
+        | NonExceptionWrapStep.AfterCreate (thrown, result, raised) ->
+            match read raised, read result with
+            | None, Some wrapper -> state |> free [ thrown ; result ; raised ] |> raiseFromThrow wrapper
+            | None, None ->
+                failwith
+                    "logic error: Exception.CreateRuntimeWrappedException returned having stored neither a wrapper nor an exception, though its body stores one or the other"
+            | Some caught, None -> state |> free [ thrown ; result ] |> preserve caught raised 0
+            | Some caught, Some wrapper ->
+                failwith
+                    $"logic error: Exception.CreateRuntimeWrappedException stored both a wrapper (%O{wrapper}) and an exception (%O{caught}), though it stores the wrapper only once the constructor has returned"
+        | NonExceptionWrapStep.AfterPreserve (candidate, preserved, raised, reraises) ->
+            match read raised with
+            | None -> state |> free [ preserved ; raised ] |> raiseFromThrow candidate
+            | Some caught ->
+                if reraises + 1 > reraiseBound then
+                    failwith
+                        $"TODO: Exception.InternalPreserveStackTrace raised more than %d{reraiseBound} times running, each time on the exception the call before it raised, while .NET 11 wrapped a thrown object that is not an exception. Real .NET 11 raises each of them through COMPlusThrow, which preserves it in turn on the native stack, until a preserve raises nothing or the stack overflows and the process aborts; PawPrint follows %d{reraiseBound} and then refuses rather than model the overflow."
+
+                state |> free [ preserved ] |> preserve caught raised (reraises + 1)
 
     /// `raiseRuntimeExceptionWithFields` writing only `_message`, or nothing when `message` is
     /// `None`.

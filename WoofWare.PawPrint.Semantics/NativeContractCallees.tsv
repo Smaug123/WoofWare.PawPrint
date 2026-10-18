@@ -2,7 +2,7 @@
 # TestNativeContractTable holds every call that a routine a row cites makes, as the text spells it, to a routine the row cites or one vouched for here, matching by name.
 # Three tab-separated fields:
 #   callee   path:symbol under src/coreclr (a path may climb out of it, as ../native/minipal does), as the contract table cites one, with =spelling after it where a macro pastes the name together, giving the text that defines it; or -:symbol for a function of the C library or the operating system
-#   runs     nothing (it runs no managed code); exception (it runs no managed code but the constructor of the exception it throws); or unreached (it may run anything, and the cited code calls it only on a path the native never takes)
+#   runs     nothing (it runs no managed code); exception (it runs no managed code but the constructor of the exception it throws); loads (it runs no managed code when every type it loads is found without the program's assembly resolution handlers, so every row whose code calls it holds under NamedTypesLoad); or unreached (it may run anything, and the cited code calls it only on a path the native never takes)
 #   reason   why, in a sentence
 inc/debugmacros.h:_ASSERT	nothing	A debug build's assertion, which ends the process if it fails; a release build compiles it to nothing.
 inc/debugmacros.h:_ASSERTE	nothing	A debug build's assertion, which ends the process if it fails; a release build compiles it to nothing.
@@ -234,3 +234,62 @@ inc/debugmacrosext.h:INDEBUG	nothing	Compiles its argument in a debug build only
 vm/threads.cpp:PendingSync::Restore	unreached	Re-enters the monitors a Monitor.Wait released, which can wait as Monitor_Enter_Slowpath does; Thread::DoAppropriateWait calls it only with Monitor.Wait's sync state, which CLREventBase::Wait is passed by Monitor.Wait alone.
 vm/syncblk.cpp:DebugBlockingItemHolder	nothing	A holder that records, for a debugger, what the thread is blocked on.
 vm/appdomain.hpp:SystemDomain::GetCurrentDomain	nothing	Reads the global AppDomain.
+vm/exceptmacros.h:COMPlusThrowInvalidCastException	exception	Throws an InvalidCastException whose message it formats from the two types' names, by TypeHandle::GetName, which cannot trigger a GC, and where those agree from their assemblies' display names and paths; the COM object's message it formats otherwise is compiled only with FEATURE_COMINTEROP, which only Windows defines.
+vm/castcache.h:CastCache::TryAddToCache	nothing	Records the answer in the cast cache when both types are fully loaded, replacing the table with a larger one it allocates, swallowing running out of memory (CreateCastCache), or flushing it.
+vm/runtimecallablewrapper.cpp:ComObject::SupportsInterface	unreached	Asks a COM object's wrapper whether it supports the interface, which can call ICustomQueryInterface; compiled only with FEATURE_COMINTEROP, which only Windows defines, so a Unix build has no call to it.
+vm/object.h:Object::GetMethodTable	nothing	Reads the object's method table pointer.
+vm/methodtable.h:MethodTable::IsComObjectType	nothing	Reads the method table's flags.
+vm/methodtable.cpp:MethodTable::IsIDynamicInterfaceCastable	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::IsInterface	nothing	Reads the method table's flags.
+vm/typehandle.cpp:TypeHandle::IsInterface	nothing	Reads whether the handle is a method table whose flags say interface.
+vm/object.inl:Nullable::IsNullableForType	nothing	Reads whether the type is Nullable<T> of the method table's type, comparing the handles, which is all TypeHandle::IsEquivalentTo does without FEATURE_TYPEEQUIVALENCE, which only Windows defines.
+inc/contract.h:RETURN	nothing	Returns, after a debug build's postcondition checks.
+vm/callhelpers.h:BOOL_TO_ARGHOLDER	nothing	Converts an argument for a managed call the caller makes.
+vm/callhelpers.h:DECLARE_ARGHOLDER_ARRAY	nothing	Declares the arguments of a managed call the caller makes.
+vm/callhelpers.h:OBJECTREF_TO_ARGHOLDER	nothing	Converts an argument for a managed call the caller makes.
+vm/typehandle.cpp:TypeHandle::GetManagedClassObject	exception	Reads the type's RuntimeType, allocating it on first use, which can run out of memory; the type's CheckRestore loads nothing, since the cast helpers are passed only types loaded fully, by the JIT's resolveToken or a generic lookup, or the handle of a RuntimeType, which has its object already.
+inc/contract.h:CONTRACTL_END	nothing	A debug build's contract checks; a release build compiles it to nothing.
+vm/methodtable.inl:MethodTable::HasInstantiation	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::GetArrayElementTypeHandle	nothing	Reads the array method table's element type handle.
+vm/methodtable.cpp:MethodTable::GetInternalCorElementType	nothing	Reads the element type from the method table's flags, or its class's.
+vm/methodtable.inl:MethodTable::GetRank	nothing	Reads the array's rank from the method table's flags or its class.
+vm/methodtable.cpp:MethodTable::GetInstantiation	nothing	Reads the type arguments from the method table's generic dictionary.
+vm/methodtable.h:MethodTable::GetParentMethodTable	nothing	Reads the parent method table pointer.
+vm/methodtable.h:MethodTable::HasVariance	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::IsDelegate	nothing	Reads whether the parent is MulticastDelegate.
+vm/methodtable.h:MethodTable::GetAuxiliaryData	nothing	Reads the auxiliary data pointer.
+vm/methodtable.h:MethodTable::IsSpecialMarkerTypeForGenericCasting	nothing	Reads whether the method table is a generic definition's.
+vm/methodtable.h:MethodTableAuxiliaryData::MayHaveOpenInterfacesInInterfaceMap	nothing	Reads the auxiliary data's flags.
+vm/array.cpp:IsImplicitInterfaceOfSZArray	nothing	Compares the interface's module and token with those of CoreLib's generic list and collection interfaces, which are loaded already.
+vm/methodtable.inl:MethodTable::IsEquivalentTo	nothing	Compares the method tables, which is all it does without FEATURE_TYPEEQUIVALENCE, which only Windows defines.
+vm/typehandle.inl:TypeHandle::IsEquivalentTo	nothing	Compares the handles, which is all it does without FEATURE_TYPEEQUIVALENCE, which only Windows defines.
+inc/check.h:CONSISTENCY_CHECK	nothing	A debug build's assertion; a release build compiles it to nothing.
+vm/methodtable.h:MethodTable::IterateInterfaceMap	nothing	Makes an iterator over the interface map.
+vm/methodtable.h:MethodTable::InterfaceMapIterator::Next	nothing	Advances an iterator over the interface map.
+vm/methodtable.h:MethodTable::InterfaceMapIterator::GetInterfaceApprox	nothing	Reads the interface map entry's method table, without loading its exact instantiation.
+vm/typehandle.h:Instantiation::ContainsAllOneType	nothing	Compares each type argument with the handle.
+vm/typehandle.h:Instantiation::GetNumArgs	nothing	Reads the number of type arguments.
+vm/methodtable.h:MethodTable::GetSpecialInstantiationType	nothing	Reads the method table's first type argument, or itself.
+vm/methodtable.h:MethodTable::GetTypeDefRid	nothing	Reads the method table's token.
+vm/class.h:EEClass::GetVarianceOfTypeParameter	nothing	Reads the class's variance annotations.
+vm/typehandle.h:TypeHandlePairList::TypeHandlePairList	nothing	Links a pair onto the list of pairs being compared.
+vm/typehandle.h:TypeHandlePairList::Exists	nothing	Searches the list of pairs being compared.
+vm/methodtable.cpp:MethodTable::InterfaceMapIterator::CurrentInterfaceEquivalentTo	unreached	Compares an interface map entry for type equivalence; ImplementsEquivalentInterface calls it only after the interface's HasTypeEquivalence, which is false without FEATURE_TYPEEQUIVALENCE, which only Windows defines.
+vm/methodtable.h:MethodTable::GetNumInterfaces	nothing	Reads the number of interfaces in the method table's map.
+vm/methodtable.h:MethodTable::HasTypeEquivalence	nothing	Reads the method table's flags, and is false without FEATURE_TYPEEQUIVALENCE, which only Windows defines.
+vm/methodtable.inl:MethodTable::ImplementsInterfaceInline	nothing	Searches the method table's interface map; its contract is NOTHROW and GC_NOTRIGGER.
+vm/typedesc.cpp:TypeVarTypeDesc::ConstrainedAsObjRef	nothing	Reads the generic parameter's flags and its cached constraints; its contract is NOTHROW and GC_NOTRIGGER.
+vm/typedesc.h:TypeVarTypeDesc::ConstraintsLoaded	nothing	Reads the generic parameter's flags.
+vm/array.cpp:GetNormalizedIntegralArrayElementType	nothing	Maps an element type to its unsigned counterpart.
+vm/typehandle.cpp:TypeHandle::GetVerifierCorElementType	nothing	Reads the element type from the type desc or the method table's flags.
+inc/sigparser.h:CorTypeInfo::IsGenericVariable	nothing	Reads a table of element types.
+inc/sigparser.h:CorTypeInfo::IsObjRef	nothing	Reads a table of element types.
+inc/sigparser.h:CorTypeInfo::IsPrimitiveType	nothing	Reads a table of element types.
+vm/typedesc.cpp:TypeVarTypeDesc::LoadConstraints	loads	Loads the generic parameter's constraints, and the generic type or method that owns it, from its module's metadata, allocating the array that caches them; loading a type runs no constructor.
+vm/typehandle.inl:TypeHandle::AsTypeDesc	nothing	A cast.
+inc/daccess.h:dac_cast	nothing	A cast.
+vm/typedesc.h:TypeVarTypeDesc::GetToken	nothing	Reads the generic parameter's token.
+vm/typedesc.inl:ParamTypeDesc::GetTypeParam	nothing	Reads the parameterized type's argument.
+vm/castcache.h:CastCache::TryGetFromCache	nothing	Reads the cast cache, by CastCache::TryGet, whose contract is NOTHROW and GC_NOTRIGGER.
+inc/contract.h:LOADS_TYPE	nothing	A debug build's contract checks; a release build compiles it to nothing.
+vm/typedesc.cpp:TypeVarTypeDesc::GetConstraints	loads	Reads the generic parameter's cached constraints, loading them by LoadConstraints where those cached are fewer than asked for.

@@ -693,6 +693,10 @@ type ReturnFrameResult =
         exceptionAddr : ManagedHeapAddress *
         exceptionType : ConcreteTypeHandle *
         making : RuntimeExceptionMaking
+    /// The frame that returned was a CoreLib helper the runtime called from inside a `throw` to
+    /// wrap an object that is not an exception, and the runtime does `step` next; state is
+    /// positioned at the throwing frame.
+    | ResumeNonExceptionWrap of IlMachineState * step : NonExceptionWrapStep
 
 /// How a run of the simulated process ended: the process itself ended, and each case
 /// carries the machine as it stood when it did, and how the kernel says it ended

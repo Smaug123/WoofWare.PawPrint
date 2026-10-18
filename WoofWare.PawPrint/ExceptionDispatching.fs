@@ -834,14 +834,14 @@ module ExceptionDispatching =
                 // a fresh first pass at the caller.
                 state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.RaisedAgainAt search.Frame)
             | EmulatedRuntime.Net11 ->
-                // .NET 11 runs the constructor inside `Exception.CreateRuntimeWrappedException`, an
-                // `[UnmanagedCallersOnly]` helper that catches what it raises, and re-raises that
-                // through `COMPlusThrow`, which first runs `Exception.InternalPreserveStackTrace` on
-                // it: managed code that renders the trace (through the same resource lookup), moves
-                // it to `_remoteStackTraceString`, and is itself re-raised the same way if it
-                // throws, which overflows the stack when it always does.
+                // .NET 11 runs the constructor inside `Exception.CreateRuntimeWrappedException`, a
+                // guest frame of its own whose `catch` takes whatever the constructor raises
+                // (`IlMachineStateExecution.wrapNonException`), so no frame carries this escape.
                 failwith
-                    $"%s{frame.ExecutingMethod.Name}, which the runtime ran to wrap a thrown object that is not an exception in a RuntimeWrappedException, raised an exception of its own. .NET 11 re-raises it through Exception.CreateRuntimeWrappedException and Exception.InternalPreserveStackTrace, which PawPrint does not model, so it refuses to continue."
+                    $"logic error: an exception escaped %s{frame.ExecutingMethod.Name}, whose frame the runtime pushed to wrap a thrown object that is not an exception as .NET 10 does, but the CoreLib is .NET 11's"
+        | ExceptionEscape.UnhandledAtNativeCaller runtimeCaller ->
+            failwith
+                $"An exception escaped %s{frame.ExecutingMethod.Name}, an [UnmanagedCallersOnly] method which the runtime called from %s{runtimeCaller}. No exception may unwind into native code there: real .NET ends the process, which PawPrint does not model, so it refuses to continue."
         | ExceptionEscape.Propagate
         | ExceptionEscape.WrapInTargetInvocation ->
 
@@ -1033,6 +1033,9 @@ module ExceptionDispatching =
         | ExceptionEscape.SwallowedByRuntime runtimeCaller ->
             failwith
                 $"Logic error: the second pass of exception dispatch unwound past a frame that %s{runtimeCaller} calls, which swallows what escapes it; the first pass refuses to search past such a frame"
+        | ExceptionEscape.UnhandledAtNativeCaller runtimeCaller ->
+            failwith
+                $"Logic error: the second pass of exception dispatch unwound past an [UnmanagedCallersOnly] method that %s{runtimeCaller} calls, through which no exception may unwind; the first pass refuses to search past such a frame"
         | ExceptionEscape.RaisedAgainFromCaller ->
             // `WrapNonCompliantException`'s `EX_CATCH` hands the exception back to `IL_Throw`,
             // which dispatches it from the `throw`. That raise continues the trace the exception
