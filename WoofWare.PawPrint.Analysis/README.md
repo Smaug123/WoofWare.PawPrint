@@ -55,7 +55,8 @@ method) may add more:
   what its contract (`IntrinsicPrimitive`) says it can;
 * a method CoreCLR implements in native code is opaque, unless `NativeMethod` describes it (so far,
   the maths functions `Math` and `MathF` call, CoreLib's P/Invokes into the framework's own
-  native libraries, and the FCalls and QCalls of its contract table), when it raises what that
+  native libraries, and the FCalls and QCalls of its contract table), and the caller allows each
+  assumption its contract holds under (`NativeContract.Assumes`), when it raises what that
   contract says, and what the parameterless constructor of each of those exceptions raises, which
   CoreCLR runs to make it, and what each CoreLib method the contract says it calls raises, passed
   arguments the analysis cannot name. A `newobj` of a constructor of
@@ -188,12 +189,14 @@ that fails before the body runs. Each also says why the analysis cannot see thro
 and which method the instruction names, such as the virtual method a call names. The list is empty
 exactly when the answer is not "unknown".
 
-One callback is assumed to behave as documented rather than analysed. Casting an object to an
-interface, or storing it in an array (whose element type may be an interface), calls
-`IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class implements that interface.
-The analysis assumes that throws nothing but the `InvalidCastException` its documentation asks for;
-an implementation that throws anything else can let that escape unreported. The interface's other
-callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
+Casting an object to an interface, or storing it in an array (whose element type may be an
+interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class
+implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
+helpers' fallback, that is the assumption `DynamicCastsAsDocumented` (below). It does not yet
+follow the cast helpers from `castclass`, `isinst` or `stelem.ref` themselves, and there it assumes
+the same without listing it: an implementation that throws anything but the
+`InvalidCastException` its documentation asks for can let that escape unreported. The interface's
+other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
 an object whose class does not implement the interface. The analysis counts an interface
 `ldvirtftn` as opaque, and resolves an interface call only through a `constrained.` type that
 implements the interface itself, or on an object the IL says is of a class that does.
@@ -247,7 +250,7 @@ code, and each answer lists in
 escaping could come from, so that without them the answer could be "unknown". It may also list one
 that a handler in a method this one calls made unnecessary, since a callee's answer records only
 that it relied on the assumption. Allowed none, every answer follows from the code and the
-assumptions above. There are four so far:
+assumptions above. There are five so far:
 
 * `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
   defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
@@ -258,7 +261,10 @@ assumptions above. There are four so far:
   with its parameterless constructor, which looks up its message, so the analysis follows that
   constructor too, and what it raises escapes as well. `RuntimeType` asks for the constraints
   whenever it works out a generic parameter's base type, so without this assumption, comparing
-  `Type`s or asking whether one is a value type is "unknown".
+  `Type`s or asking whether one is a value type is "unknown". A native of the contract table that
+  loads such types holds under it too: the cast helpers' fallback, `IsInstanceOf_NoCacheLookup`,
+  loads a generic parameter's constraints where reflection asks it about an open type, so without
+  this assumption, every cast helper but `IsInstanceOfClass` is "unknown".
 * `StackTracePreserved`: reading an exception's `Source` and `StackTrace` raises only
   `OutOfMemoryException`, `TypeInitializationException`, `ThreadInterruptedException` and
   `StackOverflowException`. CoreCLR reads both when it throws an exception that has been thrown
@@ -295,6 +301,19 @@ assumptions above. There are four so far:
   `DOTNET_JitDebuggable` are unset, and when no interpreter runs the code. Without it, about one in
   twenty-five of CoreLib's own non-generic methods are "unknown" that are known with it, most of
   them through `Unsafe.BitCast`, which asks whether each of its type arguments is a value type.
+* `DynamicCastsAsDocumented`: asking an `IDynamicInterfaceCastable` whether it implements an
+  interface raises only `InvalidCastException`, `NullReferenceException` (where asked about null,
+  which CoreCLR never does), `OutOfMemoryException`, `TypeInitializationException`,
+  `ThreadInterruptedException` and `StackOverflowException`. Where
+  a cast to an interface its class does not implement misses the cast cache, CoreCLR asks an
+  object whose class implements that interface, through
+  `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which calls the object's
+  `IsInterfaceImplemented` and, where that declines and was asked to throw, throws an
+  `InvalidCastException` whose message names the two types. It holds when every class
+  implementing the interface raises from `IsInterfaceImplemented` only the
+  `InvalidCastException` its documentation asks for, and that only where asked to throw, and when
+  formatting the two types' names raises only what allocating and looking up a resource does.
+  Without it, every cast helper but `IsInstanceOfClass` is "unknown".
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

@@ -15,8 +15,10 @@ type Assumption =
     /// and defines the type as the name says. So CoreCLR's native code for listing a generic
     /// parameter's constraints, the QCall `RuntimeTypeHandle_GetConstraints`, which loads each
     /// constraint's type, raises only what `Assumption.raises` lists, besides what constructing the
-    /// exceptions it makes raises (`Assumption.constructs`). Were an assembly missing, the runtime
-    /// would run those handlers, which could throw anything.
+    /// exceptions it makes raises (`Assumption.constructs`); and a native whose contract holds
+    /// under `NativeAssumption.NamedTypesLoad` keeps to it, as the cast helpers' fallback,
+    /// `IsInstanceOf_NoCacheLookup`, does where reflection asks it about an open type. Were an
+    /// assembly missing, the runtime would run those handlers, which could throw anything.
     | NamedTypesLoad
     /// Reading an exception's `Source` and `StackTrace` raises only what `Assumption.raises` lists.
     /// CoreCLR reads both when it throws an exception that has been thrown before
@@ -48,6 +50,16 @@ type Assumption =
     /// disables optimisation (`Debuggable.allowsJitOptimisation`). This assumption stands in for
     /// no method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
     | JitOptimises
+    /// Every class implementing `IDynamicInterfaceCastable` raises from `IsInterfaceImplemented`
+    /// only the `InvalidCastException` its documentation asks for, and that only where it is asked
+    /// to throw rather than to answer false; and formatting the message of the
+    /// `InvalidCastException` CoreLib throws in its place from the two types' names raises only
+    /// what allocating and looking up a resource raises. CoreCLR asks an object whose class
+    /// implements that interface, where a cast to an interface its class does not implement misses
+    /// the cast cache, through `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which
+    /// raises only what `Assumption.raises` lists when this holds. Whether it does turns on code
+    /// the program supplies, and on reflection over the two types the analysis does not see into.
+    | DynamicCastsAsDocumented
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -60,6 +72,7 @@ module Assumption =
                 Assumption.StackTracePreserved
                 Assumption.CoreLibTypeInitializers
                 Assumption.JitOptimises
+                Assumption.DynamicCastsAsDocumented
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -108,6 +121,22 @@ module Assumption =
                 exceptionName "System.StackOverflowException"
             ]
         | Assumption.JitOptimises -> []
+        | Assumption.DynamicCastsAsDocumented ->
+            [
+                // What the documentation asks for, and what CoreLib throws in its place.
+                exceptionName "System.InvalidCastException"
+                // Calling the object's method on a null one: CoreCLR passes it only an object, but
+                // another caller may pass null.
+                exceptionName "System.NullReferenceException"
+                // Making that allocates.
+                exceptionName "System.OutOfMemoryException"
+                // Its message is looked up through `SR`, whose initializer may fail, and whose
+                // lookup waits for a lock, and an interrupted wait raises this.
+                exceptionName "System.TypeInitializationException"
+                exceptionName "System.Threading.ThreadInterruptedException"
+                // It makes calls, any of which can run out of stack.
+                exceptionName "System.StackOverflowException"
+            ]
 
     /// The exceptions the method an assumption summarises makes in native code before raising them,
     /// by running each one's parameterless constructor, which is CoreLib's managed code: what that
@@ -119,7 +148,8 @@ module Assumption =
         | Assumption.NamedTypesLoad -> [ exceptionName "System.ArgumentException" ]
         | Assumption.StackTracePreserved
         | Assumption.CoreLibTypeInitializers
-        | Assumption.JitOptimises -> []
+        | Assumption.JitOptimises
+        | Assumption.DynamicCastsAsDocumented -> []
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by
@@ -165,6 +195,14 @@ module Assumption =
         then
             Some Assumption.StackTracePreserved
         elif
+            inCoreLib "System.Runtime.InteropServices" "DynamicInterfaceCastableHelpers" true
+            && definition.Name = "IsInterfaceImplemented"
+            && definition.Signature.ParameterTypes.Length = 3
+            && definition.Signature.ReturnType = MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Boolean)
+            && il
+        then
+            Some Assumption.DynamicCastsAsDocumented
+        elif
             assembly.ThisAssemblyDefinition.Name.Name = corelib
             && definition.IsStatic
             && definition.Name = ".cctor"
@@ -172,3 +210,8 @@ module Assumption =
             Some Assumption.CoreLibTypeInitializers
         else
             None
+
+    /// The assumption that is the claim a native's contract holds under.
+    let ofNative (assumption : NativeAssumption) : Assumption =
+        match assumption with
+        | NativeAssumption.NamedTypesLoad -> Assumption.NamedTypesLoad

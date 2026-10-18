@@ -1,10 +1,14 @@
 namespace WoofWare.PawPrint.Test
 
+#nowarn "9"
+
 open System
 open System.IO
+open System.Reflection
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
+open Microsoft.FSharp.NativeInterop
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -286,6 +290,9 @@ module TestNativeContractTable =
         | Exception
         /// Whatever it likes: the cited code calls it only on a path the native never takes.
         | Unreached
+        /// No managed code, when every type it loads is found as `NativeAssumption.NamedTypesLoad`
+        /// says, without the program's assembly resolution handlers; the row must hold under it.
+        | Loads
 
     /// A row of `NativeContractCallees.tsv`.
     type private Vouch =
@@ -332,6 +339,7 @@ module TestNativeContractTable =
                                  | "nothing" -> VouchedRuns.Nothing
                                  | "exception" -> VouchedRuns.Exception
                                  | "unreached" -> VouchedRuns.Unreached
+                                 | "loads" -> VouchedRuns.Loads
                                  | other -> failwith $"%s{callee} is vouched to run %s{other}"
 
                              yield
@@ -485,6 +493,74 @@ module TestNativeContractTable =
         if unused <> "" then
             failwith $"No routine a row cites calls these, which are vouched for: %s{unused}"
 
+    /// What CoreLib's `CastHelpers.ChkCastAny_NoCacheLookup`, which the cast helpers fall back to
+    /// and which asks the QCall `IsInstanceOf_NoCacheLookup` to throw, raises on the real runtime
+    /// casting `value` to `target`: the full name of the exception's type, if it raises one.
+    let private castFallbackRaises (target : Type) (value : obj) : string option =
+        let fallback =
+            typeof<obj>.Assembly
+                .GetType("System.Runtime.CompilerServices.CastHelpers", true)
+                .GetMethod ("ChkCastAny_NoCacheLookup", BindingFlags.Static ||| BindingFlags.NonPublic)
+
+        let handle =
+            Pointer.Box (
+                NativePtr.toVoidPtr (NativePtr.ofNativeInt<byte> target.TypeHandle.Value),
+                typeof<Void>.MakePointerType ()
+            )
+
+        // Unwrapped, since wrapping makes a `TargetInvocationException`.
+        try
+            // A static method, so no receiver.
+            fallback.Invoke ((null : obj), BindingFlags.DoNotWrapExceptions, null, [| handle ; value |], null)
+            |> ignore<obj>
+
+            None
+        with e ->
+            Some (e.GetType().FullName)
+
+    [<Test>]
+    let ``what the cast helpers' fallback raises on the real runtime is in its row`` () : unit =
+        let row = (NativeContractTable.qcalls.Force ()).["IsInstanceOf_NoCacheLookup"]
+
+        let raises =
+            row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
+
+        let raised = castFallbackRaises typeof<IDisposable> (box "not disposable")
+        raised |> shouldEqual (Some "System.InvalidCastException")
+        raises.Contains raised.Value |> shouldEqual true
+
+        castFallbackRaises typeof<IComparable> (box "comparable") |> shouldEqual None
+
+    /// The rows whose cited code calls a routine vouched for as loading types, by native.
+    let private loadingRows () : Set<string> =
+        let loading =
+            vouches.Force ()
+            |> List.filter (fun vouch -> vouch.Runs = VouchedRuns.Loads)
+            |> List.map (fun vouch -> vouch.Symbol)
+
+        rows
+        |> List.filter (fun row ->
+            citedRoutines row
+            |> List.exists (fun (_, routine) ->
+                routine.Calls
+                |> Seq.exists (fun called -> loading |> List.exists (fun symbol -> CppSource.names symbol called))
+            )
+        )
+        |> List.map (fun row -> $"%A{row.Native}")
+        |> Set.ofList
+
+    [<Test>]
+    let ``a row holds under named types loading exactly when its code loads types`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let assuming =
+            rows
+            |> List.filter (fun row -> row.Contract.Assumes |> List.contains NativeAssumption.NamedTypesLoad)
+            |> List.map (fun row -> $"%A{row.Native}")
+            |> Set.ofList
+
+        assuming |> shouldEqual (loadingRows ())
+
     [<Test>]
     let ``the table's reader refuses a malformed row`` () : unit =
         let row (fields : string list) : string = String.concat "\t" fields
@@ -497,6 +573,7 @@ module TestNativeContractTable =
                 "returns"
                 "none"
                 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,?,?,?)"
+                "NamedTypesLoad"
                 "vm/file.cpp:Entry"
                 "Because."
             ]
@@ -510,7 +587,7 @@ module TestNativeContractTable =
 
         let malformed =
             [
-                row (List.take 7 good)
+                row (List.take 8 good)
                 replacing 0 "Call"
                 replacing 0 "FCall"
                 replacing 2 "OutOfMemoryException"
@@ -528,10 +605,15 @@ module TestNativeContractTable =
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,0)"
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|"
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|-"
-                replacing 6 "vm/file.cpp"
-                replacing 6 ":Entry"
+                replacing 6 ""
+                replacing 6 "NamedTypes"
+                replacing 6 "NamedTypesLoad|"
+                replacing 6 "NamedTypesLoad|NamedTypesLoad"
+                replacing 6 "NamedTypesLoad|-"
+                replacing 7 "vm/file.cpp"
+                replacing 7 ":Entry"
                 replacing 1 "Entry Point"
-                replacing 7 " "
+                replacing 8 " "
             ]
 
         for line in malformed do
@@ -593,6 +675,7 @@ module TestNativeContractTable =
                         "returns"
                         "none"
                         spellRuns calls
+                        "-"
                         "vm/file.cpp:Entry"
                         "Because."
                     ]
@@ -602,6 +685,31 @@ module TestNativeContractTable =
             | read -> failwith $"%s{line} read as %d{read.Length} rows"
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen (Gen.listOf call)) property)
+
+    [<Test>]
+    let ``the table's reader reads back the assumptions a row holds under`` () : unit =
+        let read (assumes : string) : NativeAssumption list =
+            let line =
+                String.concat
+                    "\t"
+                    [
+                        "QCall"
+                        "Entry"
+                        "-"
+                        "returns"
+                        "none"
+                        "-"
+                        assumes
+                        "vm/file.cpp:Entry"
+                        "Because."
+                    ]
+
+            match NativeContractTable.ofText line with
+            | [ read ] -> read.Contract.Assumes
+            | read -> failwith $"%s{line} read as %d{read.Length} rows"
+
+        read "-" |> shouldEqual []
+        read "NamedTypesLoad" |> shouldEqual [ NativeAssumption.NamedTypesLoad ]
 
     /// An image named `name` that disables runtime marshalling, declaring natives a row names and
     /// others that differ from one in a single respect: FCalls on `System.Environment` and
