@@ -477,6 +477,10 @@ public static class Driver
     let ``TargetSite of a wrapped non-exception is the method that threw it, as the real runtime does`` () : unit =
         FabricatedGuest.run "Thrower" (fabricate ()) "NonExceptionTargetSiteDriver" targetSiteDriverSource 0
 
+    /// Why the cases in which preserving a trace reads the culture are parked on .NET 11.
+    let private traceRenderedWhenThrown : string =
+        "PawPrint renders a thrown exception's trace when it is thrown, so preserving it never reads the culture and never raises: PawPrint catches the culture's first exception, where real .NET 11 raises and preserves the exceptions that reading the culture raises in turn (docs/divergences.md, \"A thrown exception's trace is rendered when it is thrown, not when it is read\"). Un-park when `Exception.StackTrace` renders through CoreLib's `StackTrace` on demand."
+
     /// Throws a string while the current UI culture's name, which the wrapper's constructor reads
     /// to look up its message, throws a `TimeZoneNotFoundException`. Returns 0 if that exception
     /// reached the caller's filter with the lock CoreLib's resource lookup takes already
@@ -558,12 +562,7 @@ public static class Driver
         | EmulatedRuntime.Net11 ->
             // Real .NET 11 does not survive this culture, which throws on every read: preserving
             // the trace of each exception it raises raises another, until the stack overflows
-            // (`Net11Frontier.nonExceptionWrapping`). PawPrint follows a bounded number of them and
-            // then refuses.
-            ParkedOn.check
-                [ EmulatedRuntime.Net11 ]
-                "PawPrint renders a thrown exception's trace when it is thrown, so preserving it never reads the culture and never raises: PawPrint catches the culture's first exception and exits 0, where real .NET 11 overflows its stack (docs/divergences.md, \"A thrown exception's trace is rendered when it is thrown, not when it is read\"). Un-park when `Exception.StackTrace` renders through CoreLib's `StackTrace` on demand."
-
+            // (`Net11Frontier.nonExceptionWrapping`).
             let onHost, onPawPrint =
                 FabricatedGuest.runOnBoth
                     "Thrower"
@@ -574,6 +573,9 @@ public static class Driver
             // The overflow aborts the process (SIGABRT), which the oracle reports as exit 134.
             onHost |> shouldEqual (RealRuntimeResult.NormalExit 134)
 
+            ParkedOn.check [ EmulatedRuntime.Net11 ] traceRenderedWhenThrown
+
+            // Once un-parked: PawPrint follows a bounded number of the re-raises, and then refuses.
             match onPawPrint with
             | FabricatedOutcome.Failed e ->
                 e.ToString ()
@@ -1012,3 +1014,256 @@ public static class Driver
         | EmulatedRuntime.Net11, FabricatedOutcome.Exited code ->
             failwith
                 $"PawPrint followed more re-raises from preserving a trace than it bounds itself to, exiting %d{code}"
+
+    /// Throws a string while the current UI culture's name throws a `TimeZoneNotFoundException` on
+    /// each of its first two reads, the first of which is the wrapper's constructor's. Returns 0 if
+    /// the exception the caller caught is the one the runtime settles on, and the row's code
+    /// otherwise.
+    ///
+    /// On .NET 11 preserving the first exception's trace renders it, which reads the culture
+    /// (`SR.Word_At`) and raises the second, which is preserved in turn and caught. On .NET 10
+    /// nothing reads the culture after the constructor, and the first is caught.
+    let private twiceThrowingCultureDriverSource : string =
+        """
+using System;
+using System.Globalization;
+using System.Reflection;
+
+sealed class TwiceThrowingCulture : CultureInfo
+{
+    public TwiceThrowingCulture() : base("") { }
+    public int Reads;
+    public bool Armed;
+    public override string Name
+    {
+        get
+        {
+            if (Armed)
+            {
+                Reads++;
+                if (Reads <= 2) throw new TimeZoneNotFoundException("read " + Reads);
+            }
+            return base.Name;
+        }
+    }
+}
+
+public static class Driver
+{
+    static bool Contains(string haystack, string needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool matches = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches) return true;
+        }
+
+        return false;
+    }
+
+    public static int Main(string[] args)
+    {
+        var culture = new TwiceThrowingCulture();
+        CultureInfo.CurrentUICulture = culture;
+        culture.Armed = true;
+
+        Exception caught = null;
+        try
+        {
+            Thrower.Throw();
+            return 1;
+        }
+        catch (Exception e)
+        {
+            caught = e;
+        }
+
+        culture.Armed = false;
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+
+        if (!(caught is TimeZoneNotFoundException)) return 2;
+        string remote = (string)typeof(Exception).GetField("_remoteStackTraceString", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(caught);
+
+        if (Environment.Version.Major == 10)
+        {
+            if (caught.Message != "read 1") return 10;
+            if (remote != null) return 11;
+            return 0;
+        }
+
+        if (caught.Message != "read 2") return 3;
+        if (remote == null) return 4;
+        // The second was raised rendering the first's trace, inside the helper that preserves it.
+        if (!Contains(remote, "TwiceThrowingCulture.get_Name")) return 5;
+        if (!Contains(remote, "Exception.InternalPreserveStackTrace")) return 6;
+        if (Contains(remote, "RuntimeWrappedException..ctor")) return 7;
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``what wrapping a thrown non-exception raises twice is the second, as the real runtime does`` () : unit =
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth
+                "Thrower"
+                (fabricate ())
+                "TwiceThrowingCultureWrapperConstructorDriver"
+                twiceThrowingCultureDriverSource
+
+        onHost |> shouldEqual (RealRuntimeResult.NormalExit 0)
+
+        ParkedOn.check [ EmulatedRuntime.Net11 ] traceRenderedWhenThrown
+
+        match onPawPrint with
+        | FabricatedOutcome.Exited code -> code |> shouldEqual 0
+        | FabricatedOutcome.Failed e -> raise (Exception ("PawPrint did not run the guest to completion", e))
+
+    /// Throws a string while the current UI culture's name throws a `SourceThrowingException` on
+    /// its first read alone, so that the wrapper's constructor raises it, and while that
+    /// exception's `Source` throws a string, from `Thrower.Throw`, on its first read alone. Returns
+    /// 0 if what the caller caught is what the runtime's handling gives, with the trace it gave it,
+    /// and the row's code otherwise.
+    ///
+    /// On .NET 11 preserving the constructor's exception reads `Source`, so the second string is
+    /// wrapped inside `Exception.InternalPreserveStackTrace`, while the runtime's wrapping of the
+    /// first is under way; that wrapper is what preserving raised, and is preserved and caught. On
+    /// .NET 10 nothing reads `Source`, and the constructor's exception is caught.
+    ///
+    /// (Wrapping cannot nest inside the constructor itself: its resource lookup would look up its
+    /// own message again, and real .NET fails fast on that recursion.)
+    let private nestedWrapDriverSource : string =
+        """
+using System;
+using System.Globalization;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+sealed class SourceThrowingException : Exception
+{
+    public static bool Fired;
+    public SourceThrowingException() : base("source throws") { }
+    public override string Source
+    {
+        get
+        {
+            if (!Fired)
+            {
+                Fired = true;
+                Thrower.Throw();
+            }
+            return base.Source;
+        }
+    }
+}
+
+sealed class OneShotCulture : CultureInfo
+{
+    public OneShotCulture() : base("") { }
+    public bool Armed;
+    public override string Name
+    {
+        get
+        {
+            if (Armed)
+            {
+                Armed = false;
+                throw new SourceThrowingException();
+            }
+            return base.Name;
+        }
+    }
+}
+
+public static class Driver
+{
+    static bool Contains(string haystack, string needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool matches = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches) return true;
+        }
+
+        return false;
+    }
+
+    public static int Main(string[] args)
+    {
+        var culture = new OneShotCulture();
+        CultureInfo.CurrentUICulture = culture;
+        culture.Armed = true;
+
+        Exception caught = null;
+        try
+        {
+            Thrower.Throw();
+            return 1;
+        }
+        catch (Exception e)
+        {
+            caught = e;
+        }
+
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+
+        if (culture.Armed) return 2;
+        string remote = (string)typeof(Exception).GetField("_remoteStackTraceString", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(caught);
+
+        if (Environment.Version.Major == 10)
+        {
+            if (!(caught is SourceThrowingException)) return 10;
+            if (SourceThrowingException.Fired) return 11;
+            if (remote != null) return 12;
+            return 0;
+        }
+
+        RuntimeWrappedException wrapper = caught as RuntimeWrappedException;
+        if (wrapper == null) return 3;
+        if (!ReferenceEquals(wrapper.WrappedException, "not an exception")) return 4;
+        if (!SourceThrowingException.Fired) return 5;
+
+        // The inner wrapper was raised from the `throw` in `Thrower.Throw`, which `Source` called
+        // inside the helper that preserves, and caught there.
+        if (remote == null) return 6;
+        if (!Contains(remote, "Thrower.Throw")) return 7;
+        if (!Contains(remote, "SourceThrowingException.get_Source")) return 8;
+        if (!Contains(remote, "Exception.InternalPreserveStackTrace")) return 9;
+        if (Contains(remote, "Driver.Main")) return 13;
+
+        // The outer `throw`'s raise began afresh after that prefix.
+        string trace = caught.StackTrace;
+        if (trace == null || trace.Length <= remote.Length) return 14;
+        string fresh = trace.Substring(remote.Length);
+        if (!Contains(fresh, "Thrower.Throw")) return 15;
+        if (!Contains(fresh, "Driver.Main")) return 16;
+        if (Contains(fresh, "get_Source")) return 17;
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``a non-exception thrown while preserving what wrapping raised is wrapped in turn, as the real runtime does``
+        ()
+        : unit
+        =
+        FabricatedGuest.run "Thrower" (fabricate ()) "NestedWrapDriver" nestedWrapDriverSource 0

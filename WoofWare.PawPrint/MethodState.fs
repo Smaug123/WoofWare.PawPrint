@@ -172,9 +172,9 @@ type ExceptionEscape =
     /// frame's boundary and raises it again from the caller's call site: .NET 10's `EX_CATCH`
     /// around `RuntimeWrappedException`'s constructor in `WrapNonCompliantException`, after which
     /// `IL_Throw` dispatches what it caught in the wrapper's place. (.NET 11 runs that constructor
-    /// inside a CoreLib helper of its own instead; see `NonExceptionWrapStep`.) The first raise ends at this
-    /// boundary, so every `finally` inside the frame runs before any filter outside it, and the
-    /// second continues the trace the first left.
+    /// inside a CoreLib helper of its own instead; see `NonExceptionWrapStep`.) The first raise
+    /// ends at this boundary, so every `finally` inside the frame runs before any filter outside
+    /// it, and the second continues the trace the first left.
     | RaisedAgainFromCaller
     /// The runtime calls this `[UnmanagedCallersOnly]` method from native code, which no exception
     /// may unwind through: one that escapes it is unhandled, and ends the process.

@@ -1013,8 +1013,9 @@ looks up `SR.Word_At` (`StackTrace.cs:220`) and so reads the current UI culture,
 `MethodBase` for every frame. Whatever that code does happens at the read, and can raise there.
 
 **PawPrint**: each raise writes the rendered trace into `_stackTraceString` as well
-(`ExceptionDispatching.projectStackTrace`), so `Exception.StackTrace` returns that string and
-runs none of CoreLib's rendering. A read of the trace never consults the culture, never looks up a
+(`ExceptionDispatching.projectStackTrace`, before any filter it reaches runs and once its first
+pass ends, so before any guest code can read it), and `Exception.StackTrace` returns that string,
+running none of CoreLib's rendering. A read of the trace never consults the culture, never looks up a
 resource, and never raises.
 
 **Spec status**: Outside ECMA-335, which says nothing about stack-trace text.
@@ -1036,7 +1037,8 @@ gets an exception on CoreCLR and the trace on PawPrint.
 **Where this lives in code**: `ExceptionDispatching.projectStackTrace`, and
 `IlMachineRuntimeMetadata.setExceptionStackTraceString`. The .NET 11 arm of
 `TestFabricatedNonExceptionThrow`'s "what wrapping a thrown non-exception raises is thrown in the
-wrapper's place" is parked on it.
+wrapper's place" and "what wrapping a thrown non-exception raises twice is the second, as the
+real runtime does" are parked on it on .NET 11, each after asserting what real .NET 11 does.
 
 ## A captured stack frame has no native offset
 

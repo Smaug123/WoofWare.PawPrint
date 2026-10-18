@@ -162,9 +162,10 @@ module IlMachineStateExecution =
     /// `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` are exactly that pair.
     [<RequireQualifiedAccess>]
     type CallSiteTransition =
-        /// The thread leaves cooperative mode before the callee runs. Only a `calli` through a
-        /// `delegate* unmanaged&lt;...&gt;` does this, and only when it does not suppress the
-        /// transition. This is the entry a `[UnmanagedCallersOnly]` method admits.
+        /// The thread leaves cooperative mode before the callee runs. A `calli` through a
+        /// `delegate* unmanaged&lt;...&gt;` does this when it does not suppress the transition, and
+        /// so does the VM calling a CoreLib method itself (`UnmanagedCallersOnlyCaller`). This is
+        /// the entry a `[UnmanagedCallersOnly]` method admits.
         | EntersPreemptive
         /// The thread is still cooperative when the callee's prologue runs. Every managed call site
         /// — `call`, `callvirt`, a delegate's `Invoke`, reflection — and *also* an unmanaged one
@@ -1591,13 +1592,6 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : ExecutionResult
         =
-        let wrapperType =
-            baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{baseClassTypes.Corelib.DefinitionFullName} defines no System.Runtime.CompilerServices.RuntimeWrappedException, in which the runtime wraps a thrown object that is not an exception"
-            )
-
         // CoreCLR records the wrapper's type before it allocates, so even a wrap whose
         // constructor raises teaches the runtime which type to unwrap.
         let state =
@@ -1607,6 +1601,13 @@ module IlMachineStateExecution =
 
         match EmulatedRuntime.ofCoreLib baseClassTypes.Corelib with
         | EmulatedRuntime.Net10 ->
+            let wrapperType =
+                baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "RuntimeWrappedException"
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{baseClassTypes.Corelib.DefinitionFullName} defines no System.Runtime.CompilerServices.RuntimeWrappedException, in which the runtime wraps a thrown object that is not an exception"
+                )
+
             // `AllocateObject`: zero-initialised, with no class initialisation; the constructor sets
             // `_HResult` and `_message` itself.
             let addr, _wrapperHandle, state =
