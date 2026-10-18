@@ -88,9 +88,17 @@ method) may add more:
   one the code looks up at run time, and there the JIT calls
   `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the analysis follows, so it reaches native
   code the analysis does not see into. A query of types the JIT folds, above, compares the
-  handles instead and makes no `RuntimeType`. Two cases are not modelled: the runtime makes the
-  `RuntimeType` at run time for a type of an assembly loaded into a collectible context, too,
-  and it makes a stub object by calling CoreLib for every `ldtoken` of a method or a field;
+  handles instead and makes no `RuntimeType`. One case is not modelled: the runtime makes the
+  `RuntimeType` at run time for a type of an assembly loaded into a collectible context, too;
+* `ldtoken` of a method or a field gives a handle holding a stub object, which the JIT makes by
+  calling `RuntimeMethodInfoStub.FromPtr` or `RuntimeFieldInfoStub.FromPtr`, in shared code as
+  elsewhere, and the analysis follows that call. Where the caller allows `JitOptimises`, an
+  `ldtoken` of a field then a call of `RuntimeHelpers.CreateSpan<T>`, which no branch lands on, is
+  a span over the field's data, calling neither method, where the field is a `FieldDef` of a type
+  that is not generic, it has data at least one `T` long, and `T` is a primitive type or an enum.
+  The JIT expands `RuntimeHelpers.InitializeArray` of a field's handle too, but only where it
+  optimises fully, which a method it compiles first does not, so there the analysis follows both
+  calls;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the

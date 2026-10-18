@@ -2925,6 +2925,322 @@ public static class Box<T>
 
         ofInt.Unknown |> shouldEqual false
 
+    /// Code that loads a handle of a field, which C# compiles to `ldtoken`: the data of a
+    /// `ReadOnlySpan<T>`, by `RuntimeHelpers.CreateSpan`, and that of an array, by
+    /// `RuntimeHelpers.InitializeArray`.
+    let private memberStubSource =
+        """
+using System;
+using System.Runtime.CompilerServices;
+
+namespace MemberStubs;
+
+public enum Small : short { A, B, C }
+
+public static class Cases
+{
+    public static ReadOnlySpan<int> Span() => new int[] { 1, 2, 3 };
+
+    public static ReadOnlySpan<Small> SpanOfEnum() => new Small[] { Small.A, Small.B, Small.C };
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static ReadOnlySpan<int> SpanUnoptimised() => new int[] { 1, 2, 3 };
+
+    public static int[] Array() => new int[] { 1, 2, 3 };
+}
+"""
+
+    /// Methods of `Probe.Cases` that load a handle of a member, in IL that C# does not write. Each
+    /// `Span...` calls `RuntimeHelpers.CreateSpan` with the handle:
+    ///   - `OfMethod`, of a method, and `OfField`, of a field, which they drop;
+    ///   - `SpanFolded`, `CreateSpan<int>` of a field of twelve bytes of data;
+    ///   - `SpanOfStruct`, `CreateSpan` of that field for a struct of an `int`, and
+    ///     `SpanOfGeneric`, for a `KeyValuePair<int, int>`, neither of which is a primitive type;
+    ///   - `SpanOfPlainField`, `CreateSpan<int>` of a static field that has no data;
+    ///   - `SpanTooShort`, `CreateSpan<int>` of a field of two bytes of data;
+    ///   - `SpanOfAutoLayout`, `CreateSpan<int>` of a field whose type is an auto-layout struct
+    ///     that metadata gives a size of sixteen, which CoreCLR ignores, making it one byte long;
+    ///   - `SpanJoined(bool)`, whose two `ldtoken`s of the twelve bytes branch to one call;
+    ///   - `SpanAfterReturnAddress`, of the twelve bytes, after calling
+    ///     `StubHelpers.NextCallReturnAddress`.
+    let private emitMemberTokens () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "MemberTokens", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "MemberTokens"
+
+        let pair =
+            modul.DefineType (
+                "Probe.Pair",
+                TypeAttributes.Public
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.SequentialLayout,
+                typeof<ValueType>
+            )
+
+        pair.DefineField ("First", typeof<int>, FieldAttributes.Public)
+        |> ignore<Emit.FieldBuilder>
+
+        let pair = pair.CreateType ()
+
+        let cases =
+            modul.DefineType (
+                "Probe.Cases",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let twelve =
+            cases.DefineInitializedData (
+                "Twelve",
+                Array.init 12 byte,
+                FieldAttributes.Static ||| FieldAttributes.Assembly
+            )
+
+        let two =
+            cases.DefineInitializedData ("Two", [| 1uy ; 2uy |], FieldAttributes.Static ||| FieldAttributes.Assembly)
+
+        let sixteen =
+            cases.DefineInitializedData (
+                "Sixteen",
+                Array.init 16 byte,
+                FieldAttributes.Static ||| FieldAttributes.Assembly
+            )
+
+        let plain =
+            cases.DefineField ("Plain", typeof<int>, FieldAttributes.Static ||| FieldAttributes.Public)
+
+        let nextCallReturnAddress =
+            typeof<obj>.Assembly
+                .GetType("System.StubHelpers.StubHelpers", true)
+                .GetMethod ("NextCallReturnAddress", BindingFlags.NonPublic ||| BindingFlags.Static)
+
+        let createSpan (element : Type) : MethodInfo =
+            typeof<Runtime.CompilerServices.RuntimeHelpers>.GetMethod("CreateSpan").MakeGenericMethod [| element |]
+
+        let target =
+            cases.DefineMethod ("Target", MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+        target.GetILGenerator().Emit Emit.OpCodes.Ret
+
+        let define (name : string) (parameters : Type[]) (emit : Emit.ILGenerator -> unit) =
+            let method =
+                cases.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, parameters)
+
+            let il = method.GetILGenerator ()
+            emit il
+            il.Emit Emit.OpCodes.Pop
+            il.Emit Emit.OpCodes.Ret
+
+        define "OfMethod" [||] (fun il -> il.Emit (Emit.OpCodes.Ldtoken, target))
+        define "OfField" [||] (fun il -> il.Emit (Emit.OpCodes.Ldtoken, plain))
+
+        for name, field, element in
+            [
+                "SpanFolded", twelve, typeof<int>
+                "SpanOfStruct", twelve, pair
+                "SpanOfGeneric", twelve, typeof<Collections.Generic.KeyValuePair<int, int>>
+                "SpanOfPlainField", plain, typeof<int>
+                "SpanTooShort", two, typeof<int>
+                "SpanOfAutoLayout", sixteen, typeof<int>
+            ] do
+            define
+                name
+                [||]
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldtoken, field)
+                    il.Emit (Emit.OpCodes.Call, createSpan element)
+                )
+
+        define
+            "SpanJoined"
+            [| typeof<bool> |]
+            (fun il ->
+                let other = il.DefineLabel ()
+                let joined = il.DefineLabel ()
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit (Emit.OpCodes.Brtrue, other)
+                il.Emit (Emit.OpCodes.Ldtoken, twelve)
+                il.Emit (Emit.OpCodes.Br, joined)
+                il.MarkLabel other
+                il.Emit (Emit.OpCodes.Ldtoken, twelve)
+                il.MarkLabel joined
+                il.Emit (Emit.OpCodes.Call, createSpan typeof<int>)
+            )
+
+        define
+            "SpanAfterReturnAddress"
+            [||]
+            (fun il ->
+                il.Emit (Emit.OpCodes.Call, nextCallReturnAddress)
+                il.Emit Emit.OpCodes.Pop
+                il.Emit (Emit.OpCodes.Ldtoken, twelve)
+                il.Emit (Emit.OpCodes.Call, createSpan typeof<int>)
+            )
+
+        cases.CreateType () |> ignore<Type>
+        use stream = new MemoryStream ()
+        builder.Save stream
+        let image = stream.ToArray ()
+
+        // No `TypeBuilder` makes an auto-layout type with a size, which metadata allows, so the
+        // image's TypeDef row for the type of `Sixteen`'s data loses its layout flags.
+        use reader = new PEReader (new MemoryStream (image))
+        let metadata = reader.GetMetadataReader ()
+
+        let row =
+            metadata.TypeDefinitions
+            |> Seq.filter (fun handle -> metadata.GetTypeDefinition(handle).GetLayout().Size = 16)
+            |> Seq.exactlyOne
+
+        let attributes =
+            metadata.GetTypeDefinition(row).Attributes &&& ~~~TypeAttributes.LayoutMask
+
+        let offset =
+            reader.PEHeaders.MetadataStartOffset
+            + metadata.GetTableMetadataOffset TableIndex.TypeDef
+            + (MetadataTokens.GetRowNumber (TypeDefinitionHandle.op_Implicit row : EntityHandle)
+               - 1)
+              * metadata.GetTableRowSize TableIndex.TypeDef
+
+        BitConverter.GetBytes(int attributes).CopyTo (image, offset)
+        image
+
+    /// Which of `RuntimeMethodInfoStub.FromPtr`, `RuntimeFieldInfoStub.FromPtr` and
+    /// `RuntimeHelpers.CreateSpan` each method of `typeName` in `fixture` reaches, by name.
+    let private reachesStubs
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (typeName : string)
+        (methods : string list)
+        : EscapeAnalysisState * Map<string, string list>
+        =
+        let corelib = hostCoreLib ()
+
+        let watched =
+            [
+                "method stub", methodNamed corelib "System.RuntimeMethodInfoStub" "FromPtr"
+                "field stub", methodNamed corelib "System.RuntimeFieldInfoStub" "FromPtr"
+                "CreateSpan", methodNamed corelib "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
+            ]
+
+        ((analysis, Map.empty), methods)
+        ||> List.fold (fun (analysis, reaches) name ->
+            let analysis, reached =
+                EscapeAnalysis.reachable analysis (methodNamed fixture typeName name)
+
+            let names =
+                watched |> List.filter (fun (_, key) -> reached.Contains key) |> List.map fst
+
+            analysis, Map.add name names reaches
+        )
+
+    [<Test>]
+    let ``loading a handle of a method or a field makes its stub, unless the JIT expands CreateSpan over it``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "MemberStubs" OutputKind.DynamicallyLinkedLibrary [ memberStubSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "MemberStubs.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+        let names = [ "Span" ; "SpanOfEnum" ; "SpanUnoptimised" ; "Array" ]
+        let analysis, reaches = reachesStubs analysis fixture "MemberStubs.Cases" names
+
+        reaches
+        |> shouldEqual (
+            Map.ofList
+                [
+                    // The JIT expands `CreateSpan` to a span over the data, calling neither.
+                    "Span", []
+                    "SpanOfEnum", []
+                    // Where it does not optimise, it calls both.
+                    "SpanUnoptimised", [ "field stub" ; "CreateSpan" ]
+                    // It expands `InitializeArray` only where it optimises fully, which a method
+                    // compiled first is not.
+                    "Array", [ "field stub" ]
+                ]
+        )
+
+        // The expansion raises nothing, which the JIT is assumed to make.
+        let _, span =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "MemberStubs.Cases" "Span")
+
+        span.Unknown |> shouldEqual false
+        span.Types |> shouldEqual Set.empty
+        span.Assumes |> shouldEqual (Set.singleton Assumption.JitOptimises)
+
+        // Not assumed to, it calls both.
+        let unassuming =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.JitOptimises Assumption.all)
+                [ fixture ]
+                id
+
+        let _, reaches =
+            reachesStubs unassuming fixture "MemberStubs.Cases" [ "Span" ; "SpanOfEnum" ]
+
+        reaches
+        |> shouldEqual (
+            Map.ofList
+                [
+                    "Span", [ "field stub" ; "CreateSpan" ]
+                    "SpanOfEnum", [ "field stub" ; "CreateSpan" ]
+                ]
+        )
+
+    [<Test>]
+    let ``loading a handle of a member makes its stub where the JIT cannot expand CreateSpan over it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "MemberTokens.dll") (new MemoryStream (emitMemberTokens ()))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let names =
+            [
+                "OfMethod"
+                "OfField"
+                "SpanFolded"
+                "SpanOfStruct"
+                "SpanOfGeneric"
+                "SpanOfPlainField"
+                "SpanTooShort"
+                "SpanOfAutoLayout"
+                "SpanJoined"
+                "SpanAfterReturnAddress"
+            ]
+
+        let _, reaches = reachesStubs analysis fixture "Probe.Cases" names
+        let both = [ "field stub" ; "CreateSpan" ]
+
+        reaches
+        |> shouldEqual (
+            Map.ofList
+                [
+                    "OfMethod", [ "method stub" ]
+                    "OfField", [ "field stub" ]
+                    "SpanFolded", []
+                    "SpanOfStruct", both
+                    "SpanOfGeneric", both
+                    "SpanOfPlainField", both
+                    "SpanTooShort", both
+                    "SpanOfAutoLayout", both
+                    "SpanJoined", both
+                    "SpanAfterReturnAddress", both
+                ]
+        )
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.
