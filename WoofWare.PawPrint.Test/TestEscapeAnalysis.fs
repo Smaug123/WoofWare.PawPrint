@@ -2262,9 +2262,13 @@ public static class SR
             failwith
                 $"Without DynamicCastsAsDocumented, ChkCastAny is hidden at %A{Set.toList rendered}, not at %s{site}"
 
-    /// Casts of each shape whose `CastHelpers` method `getCastingHelperStatic` (jitinterface.cpp)
-    /// picks, which the JIT calls at each `isinst`, `castclass` and `unbox.any` of a reference type
-    /// at tier 0 (`impCastClassOrIsInstToTree`), and generic ones whose instance decides it.
+    /// Instructions of each shape that the JIT compiles to a call of a `CastHelpers` method at tier
+    /// 0, and generic ones whose instance decides which: `isinst`, `castclass` and `unbox.any` of a
+    /// reference type call the method `getCastingHelperStatic` (jitinterface.cpp) picks
+    /// (`impCastClassOrIsInstToTree`); `unbox` and `unbox.any` of a value type, the one
+    /// `getUnBoxHelper` picks; `box` of a struct, the one `getBoxHelper` picks
+    /// (`impImportAndPushBox`); and `ldelema` of a reference type with no `readonly.` prefix,
+    /// `LdelemaRef` (importer.cpp).
     let private castSource =
         """
 using System;
@@ -2276,8 +2280,11 @@ public class Open { }
 
 public struct Comparable : IComparable
 {
+    public int X;
     public int CompareTo(object o) => 0;
 }
+
+public enum Colour { Red }
 
 public static class Cases
 {
@@ -2299,13 +2306,37 @@ public static class Cases
     public static object CastVariantInterface(object o) => (IEnumerable<object>)o;
     public static object CastArray(object o) => (int[])o;
 
-    // `unbox.any` of a value type unboxes, calling no cast helper.
     public static int UnboxInt(object o) => (int)o;
+    public static Colour UnboxEnum(object o) => (Colour)o;
     public static Comparable UnboxStruct(object o) => (Comparable)o;
     public static int? UnboxNullable(object o) => (int?)o;
+    public static int UnboxedField(object o) => ((Comparable)o).X;
 
-    // The JIT folds this to a constant, making no call; the analysis follows the call regardless.
+    public static object BoxInt(int i) => i;
+    public static object BoxEnum(Colour c) => c;
+    public static object BoxStruct(Comparable c) => c;
+    public static object BoxNullable(int? i) => i;
+
+    // The JIT folds this to a constant, making no call; the analysis follows the calls regardless.
     public static bool BoxedIsInterface(Comparable c) => (object)c is IComparable;
+
+    public static object BoxOf<T>(T t) => t;
+    public static object BoxOfString(string s) => BoxOf(s);
+    public static object BoxOfInt(int i) => BoxOf(i);
+    public static object BoxOfEnum(Colour c) => BoxOf(c);
+    public static object BoxOfStruct(Comparable c) => BoxOf(c);
+    public static object BoxOfNullable(int? i) => BoxOf(i);
+
+    public static ref string ElementOfStrings(string[] a) => ref a[0];
+    public static ref int ElementOfInts(int[] a) => ref a[0];
+    public static ref T ElementOf<T>(T[] a) => ref a[0];
+    public static ref string ElementOfString(string[] a) => ref ElementOf(a);
+    public static ref int ElementOfInt(int[] a) => ref ElementOf(a);
+    // A `constrained.` call on an element takes its address with `readonly. ldelema`.
+    public static int HashOfElement<T>(T[] a) => a[0].GetHashCode();
+
+    public static void Store(object[] a, object o) => a[0] = o;
+    public static void StoreOf<T>(T[] a, T t) => a[0] = t;
 
     public static bool Is<T>(object o) => o is T;
     public static bool IsOfString(object o) => Is<string>(o);
@@ -2325,11 +2356,13 @@ public static class Cases
     public static T Cast<T>(object o) => (T)o;
     public static string CastOfString(object o) => Cast<string>(o);
     public static int CastOfInt(object o) => Cast<int>(o);
+    public static int? CastOfNullableInt(object o) => Cast<int?>(o);
 }
 """
 
-    /// The `CastHelpers` methods the JIT calls for a cast, by name.
-    let private castEntries : string list =
+    /// The `CastHelpers` methods the JIT calls for an instruction, by name. The analysis does not
+    /// follow `StelemRef` yet, which `stelem.ref` calls.
+    let private helperEntries : string list =
         [
             "IsInstanceOfAny"
             "IsInstanceOfInterface"
@@ -2337,25 +2370,32 @@ public static class Cases
             "ChkCastAny"
             "ChkCastInterface"
             "ChkCastClass"
+            "Unbox"
+            "Unbox_Nullable"
+            "Box"
+            "Box_Nullable"
+            "LdelemaRef"
+            "StelemRef"
         ]
 
-    /// Which of `castEntries` `method` of `fixture` reaches, besides those constructing an
-    /// `InvalidCastException` does.
-    let private castsReached
+    /// Which of `helperEntries` `method` of `declaring` in `fixture` reaches, besides those
+    /// constructing an `InvalidCastException` does.
+    let private helpersReached
         (analysis : EscapeAnalysisState)
         (fixture : DumpedAssembly)
+        (declaring : string)
         (method : string)
         : EscapeAnalysisState * Set<string>
         =
         let corelib = hostCoreLib ()
 
         let entries =
-            castEntries
+            helperEntries
             |> List.map (fun name -> methodNamed corelib "System.Runtime.CompilerServices.CastHelpers" name, name)
             |> Map.ofList
 
         let analysis, reached =
-            EscapeAnalysis.reachable analysis (methodNamed fixture "Casts.Cases" method)
+            EscapeAnalysis.reachable analysis (methodNamed fixture declaring method)
 
         let analysis, constructing =
             EscapeAnalysis.reachable analysis (parameterlessConstructor corelib "System" "InvalidCastException")
@@ -2366,7 +2406,7 @@ public static class Cases
         analysis, Set.difference (named reached) (named constructing)
 
     [<Test>]
-    let ``a cast calls the CastHelpers method the JIT picks for its type`` () : unit =
+    let ``an instruction calls the CastHelpers method the JIT picks for its type`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let fixture =
@@ -2392,10 +2432,32 @@ public static class Cases
                 "CastInterface", [ "ChkCastInterface" ]
                 "CastVariantInterface", [ "ChkCastAny" ]
                 "CastArray", [ "ChkCastAny" ]
-                "UnboxInt", []
-                "UnboxStruct", []
-                "UnboxNullable", []
-                "BoxedIsInterface", [ "IsInstanceOfInterface" ]
+                "UnboxInt", [ "Unbox" ]
+                "UnboxEnum", [ "Unbox" ]
+                "UnboxStruct", [ "Unbox" ]
+                "UnboxNullable", [ "Unbox_Nullable" ]
+                "UnboxedField", [ "Unbox" ]
+                // A primitive or an enum is boxed inline.
+                "BoxInt", []
+                "BoxEnum", []
+                "BoxStruct", [ "Box" ]
+                // `Box_Nullable` boxes the value by `Box`.
+                "BoxNullable", [ "Box" ; "Box_Nullable" ]
+                "BoxedIsInterface", [ "Box" ; "IsInstanceOfInterface" ]
+                // A `box` of a reference type does nothing.
+                "BoxOfString", []
+                "BoxOfInt", []
+                "BoxOfEnum", []
+                "BoxOfStruct", [ "Box" ]
+                "BoxOfNullable", [ "Box" ; "Box_Nullable" ]
+                "ElementOfStrings", [ "LdelemaRef" ]
+                "ElementOfInts", []
+                // Shared code takes the address of a `__Canon`, a reference type's.
+                "ElementOfString", [ "LdelemaRef" ]
+                "ElementOfInt", []
+                "HashOfElement", []
+                "Store", []
+                "StoreOf", []
                 // Shared code looks the type up, and casts to `__Canon` by the `Any` helper.
                 "IsOfString", [ "IsInstanceOfAny" ]
                 "IsOfInt", [ "IsInstanceOfClass" ]
@@ -2408,13 +2470,16 @@ public static class Cases
                 "IsNullableOfSharedStruct", [ "IsInstanceOfAny" ]
                 "IsListOfString", [ "IsInstanceOfClass" ]
                 "CastOfString", [ "ChkCastAny" ]
-                // `unbox.any` of a value type unboxes, which calls no cast helper.
-                "CastOfInt", []
+                // `unbox.any` of a value type unboxes.
+                "CastOfInt", [ "Unbox" ]
+                "CastOfNullableInt", [ "Unbox_Nullable" ]
                 // The definitions stand for every instantiation.
                 "Is", [ "IsInstanceOfAny" ; "IsInstanceOfClass" ]
                 "IsNullable", [ "IsInstanceOfAny" ; "IsInstanceOfClass" ]
                 "IsList", [ "IsInstanceOfClass" ]
-                "Cast", [ "ChkCastAny" ]
+                "Cast", [ "ChkCastAny" ; "Unbox" ; "Unbox_Nullable" ]
+                "BoxOf", [ "Box" ; "Box_Nullable" ]
+                "ElementOf", [ "LdelemaRef" ]
             ]
 
         let mutable analysis = analysisOver [ fixture ] id
@@ -2422,7 +2487,7 @@ public static class Cases
         let failures =
             [
                 for method, expected in expectations do
-                    let next, reached = castsReached analysis fixture method
+                    let next, reached = helpersReached analysis fixture "Casts.Cases" method
                     analysis <- next
 
                     if reached <> Set.ofList expected then
@@ -2431,6 +2496,51 @@ public static class Cases
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
+
+    /// C# unboxes a `Nullable<T>` only by `unbox.any`, but `unbox` of one is IL too, and the JIT
+    /// calls `Unbox_Nullable` for it (`getUnBoxHelper`).
+    [<Test>]
+    let ``an unbox of a Nullable calls the CastHelpers method the JIT picks for it`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Unboxes", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Unboxes"
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let il =
+                emitted
+                    .DefineMethod(
+                        "UnboxNullable",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<bool>,
+                        [| typeof<obj> |]
+                    )
+                    .GetILGenerator ()
+
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Unbox, typeof<Nullable<int>>)
+            il.Emit (Emit.OpCodes.Call, typeof<Nullable<int>>.GetProperty("HasValue").GetGetMethod ())
+            il.Emit Emit.OpCodes.Ret
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Unboxes.dll") (new MemoryStream (image))
+
+        helpersReached (analysisOver [ fixture ] id) fixture "Emitted" "UnboxNullable"
+        |> snd
+        |> shouldEqual (Set.singleton "Unbox_Nullable")
 
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
