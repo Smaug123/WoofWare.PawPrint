@@ -40,9 +40,10 @@ type Assumption =
     /// (the JIT's `Tier0OptimizationEnabled`), wherever neither the method nor its assembly says
     /// otherwise: no debugger or profiler disables optimisation, `DOTNET_JitMinOpts` and
     /// `DOTNET_JitDebuggable` are unset, and no interpreter runs the code. Then the JIT compiles
-    /// `typeof(X).IsValueType` to a constant, and compares `typeof(X) == typeof(Y)`, or `!=`, by
-    /// the two types' handles, calling neither `Type.GetTypeFromHandle` nor the getter or the
-    /// operator. The method says otherwise when it is marked
+    /// `typeof(X).IsValueType` to a constant, compares `typeof(X) == typeof(Y)`, or `!=`, by the
+    /// two types' handles, and compares any other `t == typeof(X)` by reference, calling neither
+    /// `Type.GetTypeFromHandle` nor the getter or the operator. The method says otherwise when it
+    /// is marked
     /// `MethodImplOptions.NoOptimization`, and the assembly when its `DebuggableAttribute`
     /// disables optimisation (`Debuggable.allowsJitOptimisation`). This assumption stands in for
     /// no method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.

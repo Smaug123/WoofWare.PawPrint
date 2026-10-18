@@ -81,15 +81,21 @@ method) may add more:
   comparison of the two types' handles: `ldtoken X`, a call of `GetTypeFromHandle`, `ldtoken Y`,
   another, then a call of `Type.op_Equality` or `op_Inequality`, which no branch lands between,
   call none of those methods, and a branch straight after follows only the way the answer goes,
-  where the instance says what both types are;
+  where the instance says what both types are. So too any other `t == typeof(X)`, or `!=`, which
+  the JIT compiles to a comparison of `t` with X's `RuntimeType` by reference: whatever pushes `t`,
+  `ldtoken X`, a call of `GetTypeFromHandle`, then one of `op_Equality` or `op_Inequality`, which
+  no branch lands between, call neither method, and a branch on it is followed both ways. What
+  pushes `t` runs as written: `o.GetType()` still calls `Object.GetType`, which the JIT expands
+  only past tier 0;
 * `ldtoken` of a type gives its `RuntimeType`, which the JIT embeds as it compiles where it knows
   the type exactly. In generic code that CoreCLR shares between instantiations
   (`CodeSharing`), a type that names a type variable whose argument makes it share the code is
   one the code looks up at run time, and there the JIT calls
   `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the analysis follows, so it reaches native
-  code the analysis does not see into. A query of types the JIT folds, above, compares the
-  handles instead and makes no `RuntimeType`. One case is not modelled: the runtime makes the
-  `RuntimeType` at run time for a type of an assembly loaded into a collectible context, too;
+  code the analysis does not see into. Where the JIT compares two types' handles, above, it makes
+  neither `RuntimeType`; where it compares `t` with `typeof(X)` by reference, it makes X's. One
+  case is not modelled: the runtime makes the `RuntimeType` at run time for a type of an assembly
+  loaded into a collectible context, too;
 * `ldtoken` of a method or a field gives a handle holding a stub object, which the JIT makes by
   calling `RuntimeMethodInfoStub.FromPtr` or `RuntimeFieldInfoStub.FromPtr`, in shared code as
   elsewhere, and the analysis follows that call. Where the caller allows `JitOptimises`, an
@@ -279,8 +285,9 @@ assumptions above. There are four so far:
   tier 0, wherever neither the method nor its assembly says otherwise. Then it compiles
   `typeof(X).IsValueType` to a constant, and calls neither `Type.GetTypeFromHandle` nor the getter,
   whose own code walks the type's base types through native code the analysis does not see into.
-  Likewise the JIT compares `typeof(X) == typeof(Y)` by the two types' handles, and calls neither
-  `GetTypeFromHandle` nor the operator.
+  Likewise the JIT compares `typeof(X) == typeof(Y)` by the two types' handles, and any other
+  `t == typeof(X)` by reference, and calls neither `GetTypeFromHandle` nor the operator, whose own
+  code calls `Type.Equals` virtually.
   The method says otherwise when it is marked `MethodImplOptions.NoOptimization`, and the assembly
   when its `DebuggableAttribute` disables optimisation, as a Debug build's does
   (`Debuggable.allowsJitOptimisation`); the analysis follows the calls there whatever the caller
