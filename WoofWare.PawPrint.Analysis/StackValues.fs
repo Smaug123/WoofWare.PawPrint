@@ -39,6 +39,12 @@ module internal StackInteger =
         | StackInteger.Int32 value -> value = 0
         | StackInteger.Int64 value -> value = 0L
 
+    /// Whether `integer` has the value `value`, at the width the stack holds it.
+    let is (value : IntegerValue) (integer : StackInteger) : bool =
+        match integer with
+        | StackInteger.Int32 integer -> IntegerValue.holdsOfInt32 value integer
+        | StackInteger.Int64 integer -> IntegerValue.holdsOfInt64 value integer
+
     /// The integer type of a parameter spelled `parameter`, whose values the analysis follows;
     /// `None` for any other type.
     let ofParameter (parameter : TypeDefn) : PrimitiveType option =

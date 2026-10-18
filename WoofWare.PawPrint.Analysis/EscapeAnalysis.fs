@@ -2797,6 +2797,7 @@ module EscapeAnalysis =
             (unbound : Set<int>)
             (spellings : SpelledType[])
             (objectsAt : int -> int -> SpelledObject list option)
+            (integersAt : int -> int -> Set<SpelledInteger> option)
             (calleeArguments : int -> int option)
             (passedAt : int -> bool -> SpelledArgument list)
             (
@@ -2810,6 +2811,23 @@ module EscapeAnalysis =
             let op, offset = ops.[index]
             let methodTarget = Map.tryFind index targets
 
+            // Whether the operands on the stack may be what the instruction needs of them to raise
+            // `fault`. An integer the body does not decide may be any value.
+            let operandsAllow (fault : OpcodeFault) : bool =
+                OpcodeFaults.requiredOperands op fault
+                |> List.forall (fun required ->
+                    match integersAt offset required.FromTop with
+                    | None -> true
+                    | Some integers ->
+                        integers
+                        |> Set.exists (fun integer ->
+                            match integer with
+                            | SpelledInteger.Constant value -> StackInteger.is required.Is value
+                            | SpelledInteger.Argument _
+                            | SpelledInteger.Loaded _ -> true
+                        )
+                )
+
             // 1. What the instruction raises by itself. What a `rethrow` raises is its handler's to
             // say, which `rethrows` below records.
             let state, raises, opaque, calls =
@@ -2819,7 +2837,7 @@ module EscapeAnalysis =
                     | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque, calls
                     | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque, calls
                 | OpcodeFaults.Raises faults ->
-                    ((state, raises, opaque, calls), faults)
+                    ((state, raises, opaque, calls), List.filter operandsAllow faults)
                     ||> List.fold (fun (state, raises, opaque, calls) fault ->
                         match fault with
                         | OpcodeFault.TypeInitialization ->
@@ -3171,6 +3189,13 @@ module EscapeAnalysis =
             match valueAt offset fromTop with
             | StackValue.Objects objects -> Some (Set.toList objects)
             | StackValue.Integers _
+            | StackValue.Addresses _
+            | StackValue.Unknown -> None
+
+        let integersAt (offset : int) (fromTop : int) : Set<SpelledInteger> option =
+            match valueAt offset fromTop with
+            | StackValue.Integers integers -> Some integers
+            | StackValue.Objects _
             | StackValue.Addresses _
             | StackValue.Unknown -> None
 
@@ -3539,7 +3564,7 @@ module EscapeAnalysis =
             ((state, [], [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun acc index ->
                 if executed.Contains (snd ops.[index]) && not (folded.Contains index) then
-                    folder targets unbound spellings objectsAt calleeArguments passedAt acc index
+                    folder targets unbound spellings objectsAt integersAt calleeArguments passedAt acc index
                 else
                     acc
             )

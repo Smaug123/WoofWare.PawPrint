@@ -177,6 +177,43 @@ module OpcodeFault =
 /// concrete interpreter, which decides *whether* a fault happens on this execution, and an analyser
 /// that never executes anything and needs only to know *which* are possible.
 ///
+/// A value an integer operand of an instruction may have, which an instruction may need one to
+/// have before it can raise a fault (`OpcodeFaults.requiredOperands`).
+[<RequireQualifiedAccess>]
+type IntegerValue =
+    | Zero
+    | MinusOne
+    /// The least value of the operand's own type: `Int32.MinValue` of an int32, `Int64.MinValue`
+    /// of an int64. Where the other operand is a native int, the instruction works at that width,
+    /// sign-extending an int32; an int32 then reaches the least value of the instruction's width
+    /// only if it is the least of its own.
+    | Least
+
+[<RequireQualifiedAccess>]
+module IntegerValue =
+
+    /// Whether an int32 operand of the value `operand` has this value.
+    let holdsOfInt32 (value : IntegerValue) (operand : int32) : bool =
+        match value with
+        | IntegerValue.Zero -> operand = 0
+        | IntegerValue.MinusOne -> operand = -1
+        | IntegerValue.Least -> operand = System.Int32.MinValue
+
+    /// Whether an int64 operand of the value `operand` has this value.
+    let holdsOfInt64 (value : IntegerValue) (operand : int64) : bool =
+        match value with
+        | IntegerValue.Zero -> operand = 0L
+        | IntegerValue.MinusOne -> operand = -1L
+        | IntegerValue.Least -> operand = System.Int64.MinValue
+
+/// That one operand of an instruction is an integer of a value.
+type OperandRequirement =
+    {
+        /// The operand's depth on the evaluation stack before the instruction runs: 0 for the top.
+        FromTop : int
+        Is : IntegerValue
+    }
+
 /// Every match below is exhaustive with no wildcard, so an opcode added to `IlOp` fails the build
 /// here rather than silently acquiring `Raises []`. That distinction is the whole value of the
 /// table: `Raises []` is a claim, and a wrong one is a false negative in an analysis that is
@@ -557,6 +594,31 @@ module OpcodeFaults =
         // A multi-target branch on the integer at the top of the stack; the out-of-range case
         // falls through rather than faulting.
         | IlOp.Switch _ -> none
+
+    /// What `op` needs of its operands before it can raise `fault`, one of the faults `ofIlOp`
+    /// lists for it: it raises the fault only where every one of these holds. A float operand
+    /// meets none of them, being no integer. Empty where the table states nothing, so that any
+    /// operands may raise the fault.
+    let requiredOperands (op : IlOp) (fault : OpcodeFault) : OperandRequirement list =
+        let divisorIs (value : IntegerValue) : OperandRequirement =
+            {
+                FromTop = 0
+                Is = value
+            }
+
+        match op, fault with
+        | IlOp.Nullary (NullaryIlOp.Div | NullaryIlOp.Rem | NullaryIlOp.Div_un | NullaryIlOp.Rem_un),
+          OpcodeFault.DivideByZero -> [ divisorIs IntegerValue.Zero ]
+        | IlOp.Nullary (NullaryIlOp.Div | NullaryIlOp.Rem), OpcodeFault.Overflow ->
+            [
+                divisorIs IntegerValue.MinusOne
+                {
+                    FromTop = 1
+                    Is = IntegerValue.Least
+                }
+            ]
+        // A requirement is a narrowing, so stating none is never wrong.
+        | _ -> []
 
     /// Can an instruction with these faults raise `fault`? `Unmodelled` answers yes to everything,
     /// which is what makes it safe to meet: a consumer that asks this question can never read an
