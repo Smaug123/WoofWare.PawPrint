@@ -62,9 +62,12 @@ module TestNativeContractTable =
 
                     match method.Body, method.TryNativeImport with
                     | MethodBody.InternalCall, _ when not declaringType.IsNested ->
-                        yield
-                            TabulatedNative.FCall (declaringType.Namespace + "." + declaringType.Name, method.Name),
-                            handle
+                        let fullName = declaringType.Namespace + "." + declaringType.Name
+
+                        if method.IsStatic then
+                            yield TabulatedNative.FCall (fullName, method.Name), handle
+                        else
+                            yield TabulatedNative.InstanceFCall (fullName, method.Name), handle
                     | MethodBody.PInvoke, Some import when import.ModuleName = "QCall" ->
                         yield TabulatedNative.QCall import.EntryPointName, handle
                     | _ -> ()
@@ -76,7 +79,8 @@ module TestNativeContractTable =
 
             match row.Native, handles with
             | _, [] -> failwith $"No method of this CoreLib is %A{row.Native}"
-            | TabulatedNative.FCall _, _ :: _ :: _ ->
+            | TabulatedNative.FCall _, _ :: _ :: _
+            | TabulatedNative.InstanceFCall _, _ :: _ :: _ ->
                 failwith $"%A{row.Native} names %d{handles.Length} methods, which CoreCLR would bind alike"
             | _ ->
                 for handle in handles do
@@ -267,7 +271,8 @@ module TestNativeContractTable =
             let bound = (List.head row.Sources).Symbol
 
             match row.Native with
-            | TabulatedNative.FCall (_, method) ->
+            | TabulatedNative.FCall (_, method)
+            | TabulatedNative.InstanceFCall (_, method) ->
                 // `FCDynamic` binds the method to a slot whose implementation is assigned at
                 // startup, defaulting to the one `vm/ecall.h` names.
                 let byName = $"FCFuncElement(\"%s{method}\", %s{bound})"
@@ -531,6 +536,48 @@ module TestNativeContractTable =
 
         castFallbackRaises typeof<IComparable> (box "comparable") |> shouldEqual None
 
+    [<Test>]
+    let ``what the unbox helpers' throw raises on the real runtime is in its row`` () : unit =
+        let row = (NativeContractTable.qcalls.Force ()).["ThrowInvalidCastException"]
+
+        let raises =
+            row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
+
+        let voidPointer = typeof<Void>.MakePointerType ()
+
+        // The overload taking both types' handles, which `Unbox_TypeTest` calls.
+        let throwing =
+            typeof<obj>.Assembly
+                .GetType("System.Runtime.CompilerServices.CastHelpers", true)
+                .GetMethod (
+                    "ThrowInvalidCastException",
+                    BindingFlags.Static ||| BindingFlags.NonPublic,
+                    [| voidPointer ; voidPointer |]
+                )
+
+        let handle (ty : Type) : obj =
+            Pointer.Box (NativePtr.toVoidPtr (NativePtr.ofNativeInt<byte> ty.TypeHandle.Value), voidPointer)
+
+        let raised =
+            try
+                // A static method, so no receiver.
+                throwing.Invoke (
+                    (null : obj),
+                    BindingFlags.DoNotWrapExceptions,
+                    null,
+                    [| handle typeof<string> ; handle typeof<int> |],
+                    null
+                )
+                |> ignore<obj>
+
+                None
+            with e ->
+                Some (e.GetType().FullName)
+
+        raised |> shouldEqual (Some "System.InvalidCastException")
+        raises.Contains raised.Value |> shouldEqual true
+        row.Contract.CanReturn |> shouldEqual false
+
     /// The rows whose cited code calls a routine vouched for as loading types, by native.
     let private loadingRows () : Set<string> =
         let loading =
@@ -590,6 +637,7 @@ module TestNativeContractTable =
                 row (List.take 8 good)
                 replacing 0 "Call"
                 replacing 0 "FCall"
+                replacing 0 "InstanceFCall"
                 replacing 2 "OutOfMemoryException"
                 replacing 2 "System.OutOfMemoryException|"
                 replacing 3 "sometimes"
@@ -619,6 +667,33 @@ module TestNativeContractTable =
         for line in malformed do
             Assert.Throws<exn> (fun () -> NativeContractTable.ofText line |> ignore<NativeContractRow list>)
             |> ignore<exn>
+
+    [<Test>]
+    let ``the table's reader tells a static FCall from an instance one`` () : unit =
+        let read (kind : string) : TabulatedNative =
+            let line =
+                String.concat
+                    "\t"
+                    [
+                        kind
+                        "System.Ty::Method"
+                        "-"
+                        "returns"
+                        "none"
+                        "-"
+                        "-"
+                        "vm/file.cpp:Entry"
+                        "Because."
+                    ]
+
+            match NativeContractTable.ofText line with
+            | [ read ] -> read.Native
+            | read -> failwith $"%s{line} read as %d{read.Length} rows"
+
+        read "FCall" |> shouldEqual (TabulatedNative.FCall ("System.Ty", "Method"))
+
+        read "InstanceFCall"
+        |> shouldEqual (TabulatedNative.InstanceFCall ("System.Ty", "Method"))
 
     /// A row's `runs` field as the table spells it.
     let private spellRuns (calls : ManagedCall list) : string =
@@ -712,8 +787,9 @@ module TestNativeContractTable =
         read "NamedTypesLoad" |> shouldEqual [ NativeAssumption.NamedTypesLoad ]
 
     /// An image named `name` that disables runtime marshalling, declaring natives a row names and
-    /// others that differ from one in a single respect: FCalls on `System.Environment` and
-    /// `System.Runtime.InteropServices.Marshal`, and P/Invokes into `QCall` on `Interop`.
+    /// others that differ from one in a single respect: FCalls on `System.Environment`,
+    /// `System.Runtime.InteropServices.Marshal`, `System.String` and
+    /// `System.Runtime.CompilerServices.MethodTable`, and P/Invokes into `QCall` on `Interop`.
     let private fabricateNatives (name : string) : byte[] =
         let builder =
             System.Reflection.Emit.PersistedAssemblyBuilder (System.Reflection.AssemblyName name, typeof<obj>.Assembly)
@@ -768,6 +844,14 @@ module TestNativeContractTable =
 
         fcall instance false "FastAllocateString" typeof<string> [| typeof<int> |]
         instance.CreateType () |> ignore<Type>
+
+        // An instance FCall of a name a row gives an instance one, and a static FCall of another.
+        let methodTable =
+            modul.DefineType ("System.Runtime.CompilerServices.MethodTable", System.Reflection.TypeAttributes.Public)
+
+        fcall methodTable false "GetNumInstanceFieldBytes" typeof<uint32> [||]
+        fcall methodTable true "GetPrimitiveCorElementType" typeof<int> [||]
+        methodTable.CreateType () |> ignore<Type>
 
         let interop = staticClass "Interop"
 
@@ -833,6 +917,14 @@ module TestNativeContractTable =
                 "Interop::Unlisted/2", None
                 "Marshal::GetLastPInvokeError/0", None
                 "Marshal::GetLastPInvokeError/1", None
+                "MethodTable::GetNumInstanceFieldBytes/0",
+                Some (
+                    TabulatedNative.InstanceFCall (
+                        "System.Runtime.CompilerServices.MethodTable",
+                        "GetNumInstanceFieldBytes"
+                    )
+                )
+                "MethodTable::GetPrimitiveCorElementType/0", None
                 "String::FastAllocateString/1", None
             ]
 

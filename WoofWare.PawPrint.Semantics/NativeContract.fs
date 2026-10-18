@@ -102,6 +102,10 @@ type TabulatedNative =
     /// name joined with a dot), the only one of that name the type declares, which `vm/ecalllist.h`
     /// binds to C++ by its name.
     | FCall of declaringType : string * method : string
+    /// An instance FCall: the `InternalCall` instance method of this name on this top-level type,
+    /// the only `InternalCall` of that name the type declares, which `vm/ecalllist.h` binds to C++
+    /// by its name, and which passes the receiver as the C++ function's first argument.
+    | InstanceFCall of declaringType : string * method : string
     /// A QCall: a P/Invoke into `QCall` with this entry point, the name of the C++ function that
     /// `vm/qcallentrypoints.cpp` lists.
     | QCall of entryPoint : string
@@ -317,6 +321,7 @@ module NativeContractTable =
         index (fun row ->
             match row.Native with
             | TabulatedNative.FCall (declaringType, method) -> Some (declaringType, method)
+            | TabulatedNative.InstanceFCall _
             | TabulatedNative.QCall _ -> None
         )
 
@@ -325,5 +330,6 @@ module NativeContractTable =
         index (fun row ->
             match row.Native with
             | TabulatedNative.QCall entryPoint -> Some entryPoint
-            | TabulatedNative.FCall _ -> None
+            | TabulatedNative.FCall _
+            | TabulatedNative.InstanceFCall _ -> None
         )
