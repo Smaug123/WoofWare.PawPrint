@@ -2198,7 +2198,7 @@ module NativeRuntimeAssembly =
             match AssemblyBinding.unsupportedFlags flags with
             | Some reason ->
                 failwith
-                    $"TODO: %s{operation} of '%s{simpleName}': %s{reason}. A processor architecture (MSIL included) or a WindowsRuntime content type can miss where the plain name binds, and that miss poisons CoreCLR's failure cache for the plain name, which PawPrint does not model; what the binder makes of any other flag is unmeasured"
+                    $"TODO: %s{operation} of '%s{simpleName}': %s{reason}. A processor architecture (MSIL included), and on .NET 10 a WindowsRuntime content type, can miss where the plain name binds, and that miss poisons CoreCLR's failure cache for the plain name, which PawPrint does not model; .NET 11's binder ignores a requested content type, which is not modelled either; what the binder makes of any other flag is unmeasured"
             | None -> ()
 
             // A named culture asks for a satellite assembly, which CoreCLR looks for in the culture

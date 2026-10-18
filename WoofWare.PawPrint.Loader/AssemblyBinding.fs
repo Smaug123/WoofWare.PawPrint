@@ -237,8 +237,8 @@ module AssemblyBinding =
     /// before binding again. Neither is modelled, because neither is observable for the requests
     /// this accepts: the runtime directories do not change during a run and a loaded assembly is
     /// never unloaded, so binding afresh gives the answer the cache would, except after a miss
-    /// whose cause the failure cache's key leaves out -- a processor architecture or a content
-    /// type, which <see cref="unsupportedFlags"/> refuses.
+    /// whose cause the failure cache's key leaves out -- a processor architecture or, on .NET 10, a
+    /// content type, which <see cref="unsupportedFlags"/> refuses.
     /// </remarks>
     let tryBind
         (loggerFactory : ILoggerFactory)

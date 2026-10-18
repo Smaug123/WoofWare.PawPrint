@@ -48,7 +48,9 @@ public class Program
         if (Binds ("System.Runtime, processorArchitecture=x86")) return 11;
         if (!Binds ("System.Runtime")) return 12;
 
-        // A content-type miss poisons the plain request the same way.
+        // A content-type miss poisons the plain request the same way. .NET 11's binder ignores a
+        // requested content type, so there the request binds and this exits 13 (measured on
+        // 11.0.0-rc.1).
         if (Binds ("System.Memory, ContentType=WindowsRuntime")) return 13;
         if (Binds ("System.Memory")) return 14;
 
