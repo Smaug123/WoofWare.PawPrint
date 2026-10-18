@@ -2794,18 +2794,15 @@ module Intrinsics =
             //       ThrowHelper.ThrowNotSupportedException();
             //   return ReadUnaligned<TTo>(ref As<TFrom, byte>(ref source));
             //
-            // PawPrint models this as a primitive byte reinterpretation between
-            // two byte-addressable storage shapes. We are stricter than the BCL:
-            // a value type carrying provenance the byte model cannot render
-            // (managed pointers, runtime/method/field handles, GC handles, ...)
-            // is rejected via `CliType.ByteAddressability`. The BCL would happily
-            // produce undefined garbage in those cases; refusing is consistent
-            // with PawPrint's deterministic byte model and with the user-facing
-            // contract "between equal-sized unmanaged storage shapes".
+            // PawPrint models this as `CliType.TryReinterpret`: the target's numbers and padding
+            // take the source's bytes, and each object reference or runtime pointer moves whole
+            // into the target field of its kind at the same offset, which is what copying its
+            // bits does. We are stricter than the BCL where a field the byte model cannot render
+            // (a managed pointer, a handle-valued native int, ...) would have to become bytes, or
+            // bytes become one; the BCL copies those bits regardless.
             //
-            // The one exception is `TFrom` and `TTo` naming the *same* concrete type,
-            // where no reinterpretation happens at all and the value can be moved
-            // across as it stands — see the equal-handle arm below.
+            // `TFrom` and `TTo` naming the *same* concrete type is no reinterpretation at all, and
+            // the value moves across as it stands — see the equal-handle arm below.
             let fromHandle, toHandle =
                 match Seq.toList methodToCall.Generics with
                 | [ f ; t ] -> f, t
@@ -2826,18 +2823,6 @@ module Intrinsics =
             let popped, state = IlMachineState.popEvalStack currentThread state
             let inputCli = EvalStackValue.toCliTypeCoerced fromZero popped
 
-            let inputAddressable =
-                match CliType.ByteAddressability inputCli with
-                | CliByteAddressability.ByteAddressable -> true
-                | CliByteAddressability.SymbolicallyAddressable _
-                | CliByteAddressability.Rejected _ -> false
-
-            let targetAddressable =
-                match CliType.ByteAddressability toZero with
-                | CliByteAddressability.ByteAddressable -> true
-                | CliByteAddressability.SymbolicallyAddressable _
-                | CliByteAddressability.Rejected _ -> false
-
             // `!typeof(T).IsValueType` from the BCL guard. Reference types are pointer-sized on
             // both sides, so the size clause does not catch them; without this they would reach
             // PawPrint's byte model and be rejected as a host failure instead of the
@@ -2855,14 +2840,13 @@ module Intrinsics =
             // `NotSupportedException` via `ThrowHelper.ThrowNotSupportedException` — the
             // parameterless ctor, hence no message override.
             //
-            // The two addressability clauses below are PawPrint's own stricter rule, described
-            // above, and are NOT part of that guard: the BCL accepts those inputs
+            // A refusal from `CliType.TryReinterpret` is PawPrint's own stricter rule, described
+            // above, and NOT part of that guard: the BCL accepts those inputs
             // (`Unsafe.BitCast<IntPtr, long>` is legal .NET). Raising a guest exception for them
             // would make PawPrint throw where the real runtime succeeds, so they stay a host
             // failure with a precise diagnostic. Because the value-type clause is checked first
-            // and the equal-handle arm intercepts the rest, what reaches them is only a genuine
-            // reinterpretation — two *distinct* value types, one of whose provenance the byte
-            // model cannot render — which is the real PawPrint-only restriction.
+            // and the equal-handle arm intercepts the rest, what reaches it is only a genuine
+            // reinterpretation between two *distinct* value types.
             if
                 fromSize <> toSize
                 || not (isValueTypeHandle fromHandle)
@@ -2875,15 +2859,15 @@ module Intrinsics =
                 // compatible struct layouts or integrals where we can simply return op1"
                 // (importercalls.cpp, `NI_SRCS_UNSAFE_BitCast`). Serving this arm without
                 // consulting `ByteAddressability` is what lets provenance-carrying value types
-                // (a `ReadOnlySpan<char>`, a struct holding a `RuntimeTypeHandle`) through: their
-                // contents travel intact rather than being laundered into a bit pattern.
+                // (a `ReadOnlySpan<char>`, a struct holding a `RuntimeTypeHandle`) through whole,
+                // where reinterpreting would retype each managed pointer to its own type.
                 //
                 // `AllConcreteTypes` deduplicates by (identity, generic arguments), so equal
                 // handles really do mean the same type — including when only one side spells it
                 // through a generic parameter, as CoreLib's `TChar`-generic formatting code does.
-                // Unequal handles may still denote types of the same *shape*; those keep the byte
-                // path, because moving between distinct types is exactly the reinterpretation
-                // this restriction is about.
+                // Unequal handles may still denote types of the same *shape*; those are
+                // reinterpreted, because moving between distinct types is exactly what
+                // `TryReinterpret` describes.
                 //
                 // The BCL's value-type guard above still applies: `BitCast<string, string>`
                 // throws, so this arm deliberately sits after it rather than before.
@@ -2891,23 +2875,16 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack inputCli currentThread
                 |> advanceCaller
                 |> IntrinsicResult.Completed
-            elif not inputAddressable || not targetAddressable then
-                let reason =
-                    if not inputAddressable then
-                        $"input is not byte-addressable: %s{(CliType.ByteAddressability inputCli).Description}"
-                    else
-                        $"target is not byte-addressable: %s{(CliType.ByteAddressability toZero).Description}"
-
-                failwith
-                    $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> is rejected by PawPrint's byte model, though the BCL would allow it (%s{reason})"
             else
-                let bytes = CliType.ToBytes inputCli
-                let result = CliType.OfBytesLike toZero bytes
-
-                state
-                |> IlMachineState.pushToEvalStack result currentThread
-                |> advanceCaller
-                |> IntrinsicResult.Completed
+                match CliType.TryReinterpret toZero toHandle inputCli fromHandle with
+                | Ok result ->
+                    state
+                    |> IlMachineState.pushToEvalStack result currentThread
+                    |> advanceCaller
+                    |> IntrinsicResult.Completed
+                | Error refusal ->
+                    failwith
+                        $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> is rejected by PawPrint's byte model, though the BCL would allow it (%s{refusal.Description})"
         | CorelibAssembly, "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with

@@ -33,10 +33,6 @@ module Net11Frontier =
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
 
-    /// `MemoryExtensions.MinMaxInteger` bit-casts a value type holding runtime pointers.
-    let bitCast : string =
-        "On .NET 11, `MemoryExtensions.MinMaxInteger` (reached from span searches such as `string.StartsWith`) calls `Unsafe.BitCast` over a value type holding runtime pointers, which PawPrint's byte model refuses: \"Unsafe.BitCast ... input is not byte-addressable: rejected: value type containing runtime pointers\". Un-park when such a value can be bit-cast."
-
     /// The `MarshalNative_HasLayout` QCall, which .NET 11's `Marshal` asks before laying out a type.
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."

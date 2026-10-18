@@ -100,8 +100,6 @@ public class Root
 
     [<Test>]
     let ``a forwarded type resolves to the assembly that defines it`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         {
             Assemblies =
                 assemblies
@@ -146,8 +144,6 @@ class Program
 
     [<Test>]
     let ``a forwarder whose target assembly is absent answers null, or throws FileNotFoundException`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         {
             Assemblies =
                 assemblies
@@ -219,7 +215,7 @@ class Program
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.inlineArrayOfReferences
 
         {
             Assemblies =
@@ -292,8 +288,6 @@ public sealed class Bystander
 
     [<Test>]
     let ``a forwarded type whose base class is gone throws TypeLoadException, asked to throw or not`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         {
             Assemblies =
                 assemblies
@@ -362,8 +356,6 @@ public class Stranger
 
     [<Test>]
     let ``a case-insensitive lookup folds ASCII, through a forwarder and without one`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         {
             Assemblies =
                 assemblies
@@ -419,8 +411,6 @@ class Program
 
     [<Test>]
     let ``a forwarder into a case-colliding target is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // The walk asks the far side for the forwarder row's own spelling, exactly; CoreCLR
         // carries the fold across the hop instead. Measured on .NET 10: a facade forwarding
         // `TARGET` into a library declaring both `Target` and `TARGET` answers with `Target` — for
@@ -504,7 +494,9 @@ class Program
 
     [<Test>]
     let ``the module pseudo-type is not something GetType can name`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
+        ParkedOn.check
+            [ WoofWare.PawPrint.EmulatedRuntime.Net11 ]
+            "On .NET 11, `GetTypes()` calls the `RuntimeModule_GetTypes` QCall with a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: \"Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)\". Un-park when the handler takes .NET 11's signature."
 
         // ECMA-335 II.22.37's first `TypeDef` row parents an assembly's module-scope functions and
         // variables. `ClassLoader::PopulateAvailableClassHashTable` skips it, so it is in none of
@@ -587,8 +579,6 @@ namespace TypeForwardFacade
 
     [<Test>]
     let ``a folded name matching both a definition and a forwarder is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // Measured on .NET 10: with the facade defining `N.TARGET` and forwarding `N.Target`, a
         // case-insensitive query answers with the *forwarded* type — in preference to the facade's
         // own type even when that one matches exactly. Under `ignoreCase` CoreCLR has one table,
@@ -633,8 +623,6 @@ class Program
 
     [<Test>]
     let ``a folded lookup that must cross a forwarder hop is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // Measured on .NET 10: with the library replaced by a build that declares the type under a
         // different casing, a case-insensitive query still resolves — CoreCLR carries the fold
         // across the hop. PawPrint follows the forwarder row's own spelling exactly on the far
@@ -794,8 +782,6 @@ class Program
 
     [<Test>]
     let ``a forwarded generic type resolves to its generic type definition`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         {
             Assemblies =
                 assemblies
@@ -829,8 +815,6 @@ class Program
 
     [<Test>]
     let ``a forwarder into an assembly that both defines and forwards the folded name is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // The far side of a hop can collide with itself the same way the asking assembly can:
         // `DeepCollide.Mid` defines `TARGET` and forwards `Target`, which fold alike, so the folded
         // query CoreCLR carries across the hop matches both. The exact walk arrives at `TARGET`, and
@@ -925,8 +909,6 @@ class Program
 
     [<Test>]
     let ``a folded collision on the far side of a hop is refused even when one side's base chain is broken`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // The exact walk arrives at `TARGET`, whose base class is gone, and loading that base chain
         // fails before any folded question is asked. CoreCLR asks the folded question first, and
         // picks one of `Target` and `TARGET` by its internal hash ordering. Measured on .NET 10:
@@ -1044,8 +1026,6 @@ namespace FoldBrokenBase
 
     [<Test>]
     let ``a folded lookup whose forwarder chain has more than one hop is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // Only the far end of a chain has its folded candidates checked, and an intermediate
         // assembly can collide too: here `HopCollide.Mid` defines `Target` and forwards `TARGET`
         // onwards, so CoreCLR's folded question at `Mid` has two answers while the exact walk
@@ -1154,8 +1134,6 @@ namespace HopCollide
 
     [<Test>]
     let ``a folded lookup whose forwarder chain fails past its first hop is refused`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
-
         // As the multi-hop case above, but with the far end of the chain missing, so the exact walk
         // stops at an unavailable assembly having passed through `HopMissing.Mid` unchecked. There
         // `Mid`'s own `Target` folds alike with the row it forwards onwards, so which of the two
