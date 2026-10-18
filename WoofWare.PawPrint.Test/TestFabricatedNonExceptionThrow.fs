@@ -560,6 +560,10 @@ public static class Driver
             // the trace of each exception it raises raises another, until the stack overflows
             // (`Net11Frontier.nonExceptionWrapping`). PawPrint follows a bounded number of them and
             // then refuses.
+            ParkedOn.check
+                [ EmulatedRuntime.Net11 ]
+                "PawPrint renders a thrown exception's trace when it is thrown, so preserving it never reads the culture and never raises: PawPrint catches the culture's first exception and exits 0, where real .NET 11 overflows its stack (docs/divergences.md, \"A thrown exception's trace is rendered when it is thrown, not when it is read\"). Un-park when `Exception.StackTrace` renders through CoreLib's `StackTrace` on demand."
+
             let onHost, onPawPrint =
                 FabricatedGuest.runOnBoth
                     "Thrower"

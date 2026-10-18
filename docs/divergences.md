@@ -1004,6 +1004,40 @@ should be made together. Note the *name* half of such a frame is faithful, inclu
 of a declaring type — see `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
 cross-runtime facts for exactly this reason.
 
+## A thrown exception's trace is rendered when it is thrown, not when it is read
+
+**CoreCLR**: a raise records frames into the exception's `_stackTrace` and leaves
+`_stackTraceString` null. `Exception.StackTrace` (`Exception.cs:208`) renders the trace only when
+it is read, in managed code: `new StackTrace(this, fNeedFileInfo: true).ToString(...)`, which
+looks up `SR.Word_At` (`StackTrace.cs:220`) and so reads the current UI culture, and resolves a
+`MethodBase` for every frame. Whatever that code does happens at the read, and can raise there.
+
+**PawPrint**: each raise writes the rendered trace into `_stackTraceString` as well
+(`ExceptionDispatching.projectStackTrace`), so `Exception.StackTrace` returns that string and
+runs none of CoreLib's rendering. A read of the trace never consults the culture, never looks up a
+resource, and never raises.
+
+**Spec status**: Outside ECMA-335, which says nothing about stack-trace text.
+
+**Why we chose this**: PawPrint renders the trace itself (see "Rendered stack traces apply none of
+`StackTrace.ToString`'s display policy" above), and storing the rendering at the raise is what
+makes it readable at all. Rendering on demand through CoreLib's own `StackTrace` would close this
+and the display-policy gap together, and is deferred work.
+
+**Observable example**: .NET 11 preserves the trace of an exception that wrapping a thrown
+non-exception raised (`Exception.InternalPreserveStackTrace`, which reads `StackTrace`), and raises
+whatever preserving raises in its place. With a UI culture whose `Name` throws on its first `k`
+reads, real .NET 11 reads it `k + 3` times and catches the `k`th exception; PawPrint reads it once,
+in `RuntimeWrappedException`'s constructor, and catches the first. With a culture whose `Name`
+always throws, real .NET 11 overflows its stack and aborts, and PawPrint catches the first
+exception and runs on. On either runtime, a guest that reads `e.StackTrace` under such a culture
+gets an exception on CoreCLR and the trace on PawPrint.
+
+**Where this lives in code**: `ExceptionDispatching.projectStackTrace`, and
+`IlMachineRuntimeMetadata.setExceptionStackTraceString`. The .NET 11 arm of
+`TestFabricatedNonExceptionThrow`'s "what wrapping a thrown non-exception raises is thrown in the
+wrapper's place" is parked on it.
+
 ## A captured stack frame has no native offset
 
 **CoreCLR**: `StackFrame.GetNativeOffset()` answers the byte offset of the frame's return address

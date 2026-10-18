@@ -94,6 +94,25 @@ type RuntimeExceptionMaking =
     /// `_HResult` and `_message` stand.
     | WrappedNonException
 
+/// What .NET 11's `WrapNonCompliantException` (excep.cpp) does once a CoreLib helper it called from
+/// inside a `throw` of an object that is not an exception has returned. Each helper is an
+/// `[UnmanagedCallersOnly]` method that stores what it raised in an out-slot, and the runtime
+/// preserves the trace of any exception it is about to raise
+/// (`ExceptionPreserveStackTrace`), so the steps run until one raises nothing.
+[<RequireQualifiedAccess>]
+type NonExceptionWrapStep =
+    /// `Exception.CreateRuntimeWrappedException` returned on the object `thrown` holds: `result`
+    /// holds the wrapper, unless `raised` holds what its constructor raised.
+    | AfterCreate of thrown : NativeReferenceCell * result : NativeReferenceCell * raised : NativeReferenceCell
+    /// `Exception.InternalPreserveStackTrace` returned on `candidate`, the exception the runtime is
+    /// raising in the wrapper's place, which `preserved` holds; `raised` holds what preserving it
+    /// raised, if anything. `reraises` is how many earlier preserves raised.
+    | AfterPreserve of
+        candidate : ManagedHeapAddress *
+        preserved : NativeReferenceCell *
+        raised : NativeReferenceCell *
+        reraises : int
+
 /// What `returnStackFrame` should do with a frame's product — the object it was constructing if
 /// `Constructing`, otherwise the value its signature says it returns — once it returns.
 [<RequireQualifiedAccess>]
@@ -120,6 +139,10 @@ type ReturnValueDisposition =
     /// Only meaningful for a `NotConstructing` frame: a constructor's product is the object, not
     /// a return value, and no caller wants that discarded.
     | Discard
+    /// The runtime called this `[UnmanagedCallersOnly]` helper from inside the caller's `throw`,
+    /// to wrap an object that is not an exception, and does `step` next (see
+    /// `IlMachineStateExecution.resumeNonExceptionWrap`). The helpers return nothing.
+    | ResumeNonExceptionWrap of step : NonExceptionWrapStep
 
 /// What happens to an exception that escapes a frame, decided by whatever pushed the frame rather
 /// than by the frame's own method: the runtime code that calls a method can catch what it throws.
@@ -146,12 +169,21 @@ type ExceptionEscape =
     /// never have shown it to.
     | SwallowedByRuntime of runtimeCaller : string
     /// The runtime calls this method from native code that catches every exception at this
-    /// frame's boundary and raises it again from the caller's call site: CoreCLR's `EX_CATCH`
+    /// frame's boundary and raises it again from the caller's call site: .NET 10's `EX_CATCH`
     /// around `RuntimeWrappedException`'s constructor in `WrapNonCompliantException`, after which
-    /// `IL_Throw` dispatches what it caught in the wrapper's place. The first raise ends at this
+    /// `IL_Throw` dispatches what it caught in the wrapper's place. (.NET 11 runs that constructor
+    /// inside a CoreLib helper of its own instead; see `NonExceptionWrapStep`.) The first raise ends at this
     /// boundary, so every `finally` inside the frame runs before any filter outside it, and the
     /// second continues the trace the first left.
     | RaisedAgainFromCaller
+    /// The runtime calls this `[UnmanagedCallersOnly]` method from native code, which no exception
+    /// may unwind through: one that escapes it is unhandled, and ends the process.
+    /// `runtimeCaller` names that native code, for diagnostics.
+    ///
+    /// PawPrint does not model the process ending there. Exception dispatch ends the run on
+    /// reaching such a frame's boundary rather than let the exception unwind into a caller the
+    /// runtime would never have shown it to.
+    | UnhandledAtNativeCaller of runtimeCaller : string
 
 /// What a C function in the runtime's native shim, which PawPrint implements, read from
 /// guest memory once, before a loop that makes a syscall again: the values a call made
