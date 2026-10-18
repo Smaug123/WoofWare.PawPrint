@@ -169,6 +169,18 @@ module TestRaces =
             failwith
                 $"ReadWriteRace.cs PCT sweep over %d{List.length pctSeedSweep} seeds observed %A{Set.toList observed}; expected %A{Set.toList readWriteRaceLegalOutcomes}. Missing: %A{Set.toList missing}; Unexpected: %A{Set.toList extra}."
 
+    [<Test>]
+    let ``a pipe write that meets a caught SIGTERM and a closed reader ends cleanly under every PCT seed`` () : unit =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
+        // Under some schedules the writer finishes its write as the only thread that could make
+        // a call, owing the SIGTERM's delivery, and the SIGPIPE the write raises must still be
+        // screened.
+        let sourceName = "PipeWriteMeetsSigtermAndClosedReader.cs"
+        let image = compileImage sourceName
+        runRealRuntime sourceName image |> shouldEqual 0
+        sweepPctExitCodes sourceName image |> shouldEqual (Set.singleton 0)
+
     /// Step `image` instruction by instruction under the given scheduler seed,
     /// returning the guest's exit code and how many steps reported
     /// `WhatWeDid.BlockedOnClassInit` — i.e. how many times a thread found a

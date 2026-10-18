@@ -705,12 +705,15 @@ module TestNativeLibc =
             Prop.forAll (Arb.fromGen (Gen.choose (1, UnixSystem.defaultPidMax - 1))) linux
         )
 
-    [<Test>]
-    let ``a write's SIGPIPE is screened when its writer, finishing a sleeping write, is the only thread`` () : unit =
-        // The screen reads the signal's disposition from the system before the
-        // signal was raised, where a writer finishing a sleeping write is still
-        // parked, and so cannot ask `sigaction` itself. Here no other thread is
-        // left to ask either: the reader closed its end and exited.
+    /// `screenRaisedSignal` of the SIGPIPE of a write on Linux that finishes after sleeping, by
+    /// the process's only thread, with SIGPIPE at `disposition` (left as the process starts if
+    /// `None`). The screen reads the signal's disposition from the system before the signal was
+    /// raised, where the writer is still parked; and no other thread is left in the process: the
+    /// reader closed its end and exited.
+    let private screenLoneWritersSigpipe
+        (disposition : SignalDisposition<NativeSignalHandler> option)
+        : UnmodelledSelfSignal option
+        =
         let kernel =
             EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
 
@@ -718,7 +721,18 @@ module TestNativeLibc =
         let reader = kernel.Caller (ThreadId 1)
 
         let system =
-            match UnixThreadLifecycle.spawn writer (ThreadId 1) (CpuId 0) kernel.System with
+            match disposition with
+            | None -> kernel.System
+            | Some disposition ->
+                let signo =
+                    Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGPIPE
+
+                match UnixSignal.sigactionSyscall writer signo (Some disposition) kernel.System with
+                | Ok (_, system) -> system
+                | Error errno -> failwith $"sigaction answered %O{errno}"
+
+        let system =
+            match UnixThreadLifecycle.spawn writer (ThreadId 1) (CpuId 0) system with
             | SpawnAnswer.Spawned _, system -> system
             | other -> failwith $"spawn answered %A{other}"
 
@@ -756,7 +770,6 @@ module TestNativeLibc =
 
         match UnixReadWrite.finishWrite writer before with
         | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.ReturnsRaising (_, raised), after)) ->
-            // The runtime ignores SIGPIPE, so there is nothing to refuse.
             NativeLibc.screenRaisedSignal
                 kernel.UnixPlatform
                 writer
@@ -765,5 +778,21 @@ module TestNativeLibc =
                 before
                 raised
                 after
-            |> shouldEqual None
         | other -> failwith $"expected the write to end in EPIPE and SIGPIPE, got %A{other}"
+
+    [<Test>]
+    let ``a write's SIGPIPE is screened when its writer, finishing a sleeping write, is the only thread`` () : unit =
+        // The runtime ignores SIGPIPE, so there is nothing to refuse.
+        screenLoneWritersSigpipe None |> shouldEqual None
+
+    [<Test>]
+    let ``a caught SIGPIPE is refused when its writer, finishing a sleeping write, is the only thread and owes its return``
+        ()
+        : unit
+        =
+        // Once the kernel raises the caught signal, the writer owes a return to user mode to take
+        // it, so the screen's answer does not depend on any thread being able to make a call.
+        let handler = NativeSignalHandler.CoreClrPalActivation
+
+        screenLoneWritersSigpipe (Some (SignalDisposition.Catch (SignalCatch.ofHandler handler)))
+        |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (Signal.SIGPIPE, handler)))
