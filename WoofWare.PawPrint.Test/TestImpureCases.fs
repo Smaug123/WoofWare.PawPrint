@@ -5130,6 +5130,12 @@ module TestImpureCases =
     let parkedOnNet11 : Map<string, string> =
         [
             yield!
+                [ "DelegateInvokeHandlePerInstantiation.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
+            yield!
+                [ "DynamicMethodReflectedCalls.cs" ]
+                |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
+            yield!
                 [
                     "DelegateMethodOnDynamicMethod.cs"
                     "DynamicMethodDelegateBinding.cs"

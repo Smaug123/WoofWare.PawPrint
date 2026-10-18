@@ -323,6 +323,8 @@ class Program
     /// so no boundary is marked.
     [<Test>]
     let ``the report names a thrown object that is not an exception when a foreign raise is pending`` () : unit =
+        Net11Frontier.park Net11Frontier.isAsyncMethod
+
         runThrowerDriver
             """
         typeof(System.Exception)

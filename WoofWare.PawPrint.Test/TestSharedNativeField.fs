@@ -114,11 +114,16 @@ module TestSharedNativeField =
             )
             |> Set.ofList
 
-        SharedNativeField.all |> List.map canonical |> Set.ofList |> shouldEqual fromHeader
+        SharedNativeField.all
+        |> List.map canonical
+        |> Set.ofList
+        |> shouldEqual fromHeader
 
     [<Test>]
     let ``each managed field is laid out as one native field, and each class has one of them`` () : unit =
-        let managed = SharedNativeField.all |> List.collect (fun shared -> shared.ManagedFields)
+        let managed =
+            SharedNativeField.all |> List.collect (fun shared -> shared.ManagedFields)
+
         managed |> List.distinct |> shouldEqual managed
 
         for shared in SharedNativeField.all do
@@ -166,7 +171,8 @@ module TestSharedNativeField =
 
         for shared in SharedNativeField.all do
             for requested in shared.ManagedFields do
-                SharedNativeField.counterpartOn requested "System" "RuntimeType" |> shouldEqual None
+                SharedNativeField.counterpartOn requested "System" "RuntimeType"
+                |> shouldEqual None
 
         let unshared =
             {

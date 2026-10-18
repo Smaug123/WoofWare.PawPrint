@@ -39,7 +39,35 @@ module SharedNativeField =
     /// Every native field that `corelib.h` lays more than one managed field out as. The same on
     /// every supported runtime: `TestSharedNativeField` checks it against each runtime's own
     /// `corelib.h` and CoreLib.
-    let all : SharedNativeField list = []
+    let all : SharedNativeField list =
+        let field (ns : string) (typeName : string) (fieldName : string) : CoreLibInstanceField =
+            {
+                Namespace = ns
+                TypeName = typeName
+                FieldName = fieldName
+            }
+
+        [
+            {
+                NativeClass = "ReflectMethodObject"
+                NativeField = "m_pMD"
+                ManagedFields =
+                    [
+                        field "System.Reflection" "RuntimeConstructorInfo" "m_handle"
+                        field "System" "RuntimeMethodInfoStub" "m_value"
+                        field "System.Reflection" "RuntimeMethodInfo" "m_handle"
+                    ]
+            }
+            {
+                NativeClass = "ReflectFieldObject"
+                NativeField = "m_pFD"
+                ManagedFields =
+                    [
+                        field "System.Reflection" "RtFieldInfo" "m_fieldHandle"
+                        field "System" "RuntimeFieldInfoStub" "m_fieldHandle"
+                    ]
+            }
+        ]
 
     /// The field of the class `receiverNamespace.receiverTypeName` which is laid out as the same
     /// native field as `requested`, when that class is not `requested`'s own; `None` if
@@ -50,4 +78,12 @@ module SharedNativeField =
         (receiverTypeName : string)
         : CoreLibInstanceField option
         =
-        None
+        if requested.Namespace = receiverNamespace && requested.TypeName = receiverTypeName then
+            None
+        else
+            all
+            |> List.tryFind (fun shared -> List.contains requested shared.ManagedFields)
+            |> Option.bind (fun shared ->
+                shared.ManagedFields
+                |> List.tryFind (fun field -> field.Namespace = receiverNamespace && field.TypeName = receiverTypeName)
+            )

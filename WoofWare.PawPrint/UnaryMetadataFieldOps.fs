@@ -459,6 +459,66 @@ module internal UnaryMetadataFieldOps =
 
         state, WhatWeDid.Executed
 
+    /// The field a load of `field` from the object at `addr` reads: `fieldId` itself, unless
+    /// `field` is one of the CoreLib fields that `corelib.h` lays out as one native field
+    /// (`SharedNativeField`) and the object is of another class laid out with it. CoreLib reads
+    /// such a field through a reference to any of those classes (`Unsafe.As`), and CoreCLR reads
+    /// at the field's offset, which is that class's own field; so this is the object's field, and
+    /// it must have `field`'s type, since PawPrint's values are not reinterpreted between types.
+    let private fieldReadFromReceiver
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<TypeDefn, TypeDefn>)
+        (fieldId : FieldId)
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : FieldId
+        =
+        let requested : CoreLibInstanceField =
+            {
+                Namespace = field.DeclaringType.Namespace
+                TypeName = field.DeclaringType.Name
+                FieldName = field.Name
+            }
+
+        let isShared =
+            field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
+            && SharedNativeField.all
+               |> List.exists (fun shared -> List.contains requested shared.ManagedFields)
+
+        if not isShared then
+            fieldId
+        else
+
+        let receiverHandle =
+            match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
+            | Some handle -> handle
+            | None -> failwith $"ldfld %O{requested}: the object @ %O{addr} is not on the heap"
+
+        let receiverType =
+            match AllConcreteTypes.lookup receiverHandle state.TypeSystem.ConcreteTypes with
+            | Some receiverType -> receiverType
+            | None ->
+                failwith
+                    $"BUG: ldfld %O{requested}: the object @ %O{addr} has type %O{receiverHandle}, which is not concretized"
+
+        if receiverType.AssemblyFullName <> baseClassTypes.Corelib.DefinitionFullName then
+            fieldId
+        else
+
+        match SharedNativeField.counterpartOn requested receiverType.Namespace receiverType.Name with
+        | None -> fieldId
+        | Some counterpart ->
+            let receiverField =
+                FieldIdentity.requiredOwnInstanceField
+                    baseClassTypes.Corelib.TypeDefs.[receiverType.Definition.Get]
+                    counterpart.FieldName
+
+            if receiverField.Signature <> field.Signature then
+                failwith
+                    $"TODO: ldfld %O{requested} from an object of type %O{receiverType}, whose %s{counterpart.FieldName} is laid out as the same native field; the two fields' types differ (%O{field.Signature} and %O{receiverField.Signature}), and PawPrint does not reinterpret a value as another type"
+
+            FieldIdentity.fieldId receiverHandle receiverField
+
     let executeLdfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -540,6 +600,9 @@ module internal UnaryMetadataFieldOps =
                 match RuntimeFieldProjection.tryProjectFieldLoad baseClassTypes field managedHeapAddress state with
                 | Some value -> IlMachineState.pushToEvalStack value thread state
                 | None ->
+                    let fieldId =
+                        fieldReadFromReceiver baseClassTypes field fieldId managedHeapAddress state
+
                     // `get` discriminates "this is an array" from "this address is not
                     // allocated at all".
                     IlMachineState.pushToEvalStack

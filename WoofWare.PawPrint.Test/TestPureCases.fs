@@ -101,6 +101,77 @@ module TestPureCases =
         [
             yield!
                 [
+                    "AssemblyGetExecutingAssemblyViaReflection.cs"
+                    "CustomAttributeNamedArgs.cs"
+                    "DelegateDynamicInvoke.cs"
+                    "ForeignRaiseFlagConsumedByRethrow.cs"
+                    "ForeignRaiseFlagNotStolenByCleanup.cs"
+                    "ForeignRaiseFlagPendingBeforeCleanup.cs"
+                    "ForeignRaiseFlagSetInFinally.cs"
+                    "ForeignRaiseFlagSetInFinallyDuringRethrow.cs"
+                    "ForeignRaiseFlagSurvivesFramelessRethrow.cs"
+                    "ForeignRaiseReadsCurrentExceptionTrace.cs"
+                    "ForeignRaiseTokenSurvivesLocalCleanup.cs"
+                    "ImmutableAgileExceptionNullArgument.cs"
+                    "ReflectionInvokeByRefParameter.cs"
+                    "ReflectionInvokeIntrinsicTarget.cs"
+                    "ReflectionInvokeIntrinsicTypeMember.cs"
+                    "ReflectionInvokeMethod.cs"
+                    "ReflectionInvokeMethodManyArguments.cs"
+                    "ReflectionInvokeMethodMultipleArguments.cs"
+                    "ReflectionInvokeNullableReturn.cs"
+                    "ReflectionInvokeOutNullSlot.cs"
+                    "ReflectionInvokePointerSignature.cs"
+                    "ReflectionInvokeStructReceiver.cs"
+                    "ReflectionInvokeVirtualMethod.cs"
+                    "ReflectionMethodAtSlot.cs"
+                    "ReflectionOverloadedIndexer.cs"
+                    "ReflectionPropertyHiding.cs"
+                    "ReflectionPropertyHidingCrossModule.cs"
+                    "ReflectionPropertyType.cs"
+                    "ReflectionPropertyTypeGenericDeclaringType.cs"
+                    "ReflectiveIsTypicalMethodDefinition.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
+            yield!
+                [
+                    "DelegateBindOpenGenericDefinitionFormalSignature.cs"
+                    "DelegateBindOpenGenericDefinitionMethod.cs"
+                    "DelegateBindOpenVirtual.cs"
+                    "DelegateFindMethodHandleOpenInstanceGeneric.cs"
+                    "DelegateOverGenericMethodNewarr.cs"
+                    "DelegateToAbstractMethodOverNull.cs"
+                    "DelegateToIntrinsicTypeMember.cs"
+                    "IndirectCallToMethodLevelIntrinsic.cs"
+                    "OpenDelegateSpanClearOverReferenceLocal.cs"
+                    "UnmanagedCallersOnlyFunctionPointer.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
+            yield!
+                [
+                    "ReflectionParameterMarshalAsCustomMarshaler.cs"
+                    "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
+                    "StackFrameHelperUnsharedFrames.cs"
+                    "TypeMakeArrayType.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.bitCast)
+            yield!
+                [
+                    "ExpressionInterpreterByRefCall.cs"
+                    "ReflectionInvokeConstructor.cs"
+                    "ReflectionOpenConstructedMethods.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
+            "DelegateMulticastInvoke.cs",
+            """On .NET 11, `Delegate.Method` of a multicast delegate makes its `MethodInfo` through the `Delegate_CreateMethodInfo` QCall, which PawPrint does not implement: "Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)". Un-park when it is answered."""
+            "DelegateOpenInstanceRepresentation.cs",
+            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            "DelegateBindToMetadataMethod.cs",
+            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            "DelegateBindStaticAbstractInterfaceMethod.cs",
+            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `BadImageFormatException` from `CreateDelegate` over the static abstract method, which .NET 10 binds. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            yield!
+                [
                     "AssemblyGetType.cs"
                     "AssemblyGetTypeUnloadedBaseAssembly.cs"
                     "CustomAttributeTypeArg.cs"
