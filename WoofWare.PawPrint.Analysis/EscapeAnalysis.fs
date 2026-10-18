@@ -4284,18 +4284,11 @@ module EscapeAnalysis =
             },
             facts
 
-    /// Does every type that `GcReferences.containsReferences` reads for `handle` load: each type it
-    /// walks, with the types it derives from, and the type of each instance field of each value type
-    /// among them, transitively? Loads the assemblies they need, which the walk itself does not.
-    /// Where one does not load, CoreCLR cannot load `handle`, so no instance whose arguments name it
-    /// runs.
-    let private containsReferencesLoads
-        (state : EscapeAnalysisState)
-        (handle : ConcreteTypeHandle)
-        : EscapeAnalysisState * bool
-        =
-        // Whether the types `identity` derives from bind, which `LoadedTypeInfo.isValueType` reads.
-        let rec basesBind
+    /// Do the classes `identity` derives from, transitively, bind, which `LoadedTypeInfo.isValueType`
+    /// reads? Loads the assemblies they need. Where one does not bind, CoreCLR cannot load the type
+    /// `identity` names.
+    let private basesBind (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) : EscapeAnalysisState * bool =
+        let rec go
             (state : EscapeAnalysisState)
             (seen : Set<ResolvedTypeIdentity>)
             (identity : ResolvedTypeIdentity)
@@ -4325,9 +4318,21 @@ module EscapeAnalysis =
                     state, false
                 else
                     match baseOf state identity with
-                    | state, Some parent -> basesBind state (seen.Add identity) parent
+                    | state, Some parent -> go state (seen.Add identity) parent
                     | state, None -> state, true
 
+        go state Set.empty identity
+
+    /// Does every type that `GcReferences.containsReferences` reads for `handle` load: each type it
+    /// walks, with the types it derives from, and the type of each instance field of each value type
+    /// among them, transitively? Loads the assemblies they need, which the walk itself does not.
+    /// Where one does not load, CoreCLR cannot load `handle`, so no instance whose arguments name it
+    /// runs.
+    let private containsReferencesLoads
+        (state : EscapeAnalysisState)
+        (handle : ConcreteTypeHandle)
+        : EscapeAnalysisState * bool
+        =
         // Each type is checked once, however many fields reach it, and a type already being checked
         // is not checked again from within itself.
         let rec walk
@@ -4343,7 +4348,7 @@ module EscapeAnalysis =
                 | None -> failwith $"Concrete type handle %O{handle} is not registered"
                 | Some (concrete, ty) ->
 
-                match basesBind state Set.empty ty.Identity with
+                match basesBind state ty.Identity with
                 | state, false -> state, checkedSoFar, false
                 | state, true when
                     not (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
@@ -4377,7 +4382,8 @@ module EscapeAnalysis =
         state, loads
 
     /// The answer to `query` in `instance`; `None` where the instance does not decide its types,
-    /// where whether a type is a value type is asked of one that is not a class or struct, or where
+    /// where whether a type is a value type is asked of one that is not a class or struct, or of one
+    /// whose base classes do not bind (`basesBind`), or where
     /// whether a type holds references is asked of one CoreCLR cannot load (`containsReferencesLoads`).
     let private typeQueryIsKnown
         (state : EscapeAnalysisState)
@@ -4410,7 +4416,10 @@ module EscapeAnalysis =
             | state, Some (ConcreteTypeHandle.Concrete _ as handle) ->
                 match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
                 | Some (_, ty) ->
-                    state, Some (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
+                    match basesBind state ty.Identity with
+                    | state, false -> state, None
+                    | state, true ->
+                        state, Some (LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies ty)
                 | None -> failwith $"Concrete type handle %O{handle} is not registered"
             | state, _ -> state, None
         | TypeQuery.Identity (first, second, equality) ->
