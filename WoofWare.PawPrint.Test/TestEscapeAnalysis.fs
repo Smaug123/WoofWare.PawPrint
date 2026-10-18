@@ -3613,6 +3613,11 @@ public static class Cases
 
     public static void WithPlain() => Generic<Plain>();
 
+    // A generic struct, whose fields' types are its arguments.
+    public static void WithPairOfString() => Generic<System.Collections.Generic.KeyValuePair<int, string>>();
+
+    public static void WithPairOfInt() => Generic<System.Collections.Generic.KeyValuePair<int, int>>();
+
     public static void Negated<T>()
     {
         if (!RuntimeHelpers.IsReferenceOrContainsReferences<T>()) throw new HoldsNone();
@@ -3674,6 +3679,8 @@ public static class Cases
             decided "WithString" [ holds ] [ holdsNone ]
             decided "WithReference" [ holds ] [ holdsNone ]
             decided "WithPlain" [ holdsNone ] [ holds ]
+            decided "WithPairOfString" [ holds ] [ holdsNone ]
+            decided "WithPairOfInt" [ holdsNone ] [ holds ]
             decided "NegatedWithInt" [ holdsNone ] [ holds ]
             decided "Exact" [ holdsNone ] [ holds ]
             decided "CombinedWithInt" [ holdsNone ] [ holds ]
