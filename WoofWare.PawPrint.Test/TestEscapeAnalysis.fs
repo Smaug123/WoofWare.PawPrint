@@ -4139,6 +4139,9 @@ public static class Uses
     static int ThroughNamesGone<T>(T x) where T : INamesGone => x.Go();
     static void Generic<T>() { }
     public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
+    public struct HoldsGone { public Provider.GoneStruct G; }
+    static int BranchOnReferences<T>() => System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<T>() ? 1 : 0;
+    public static int BranchOnHoldsGone() => BranchOnReferences<HoldsGone>();
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
@@ -4223,6 +4226,11 @@ public static class Uses
                 // The type a `constrained.` prefix names.
                 "ConstrainedOnGone", "=System.TypeLoadException"
             ]
+
+        // Whether a struct holds references reads the types of its fields, one of which the
+        // provider no longer has. CoreCLR cannot load the struct, so no instance with it runs, and
+        // the analysis answers without deciding the branch.
+        against2 "BranchOnHoldsGone" |> ignore
 
         for methodName, failure in failures do
             let bound, _ = against1 methodName
