@@ -131,8 +131,6 @@ class CallsUnmintedCallee
 
     [<Test>]
     let ``a call naming an unminted dynamic method suspends once, then runs`` () : unit =
-        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
-
         let outcomes, exitCode =
             scopeCallOutcomes "CallsUnmintedCallee.cs" callsUnmintedCallee
 

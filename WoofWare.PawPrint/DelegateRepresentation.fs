@@ -41,6 +41,21 @@ type DelegateInvocation =
     /// <see cref="FunctionPointerTarget.VirtualCallStub"/>.
     | ThroughShuffleThunk of aux : FunctionPointerTarget
 
+/// What .NET 11's delegate-binding QCalls report through `BindToMethodDetails` for CoreLib's
+/// managed code to write into the delegate, in place of writing it themselves.
+type BindToMethodDetails =
+    {
+        /// Whether `_target` is to be the delegate itself rather than the target the caller holds.
+        SelfReferentialTarget : bool
+        /// What `_methodPtr` is to hold.
+        MethodPtr : FunctionPointerTarget
+        /// What `_methodPtrAux` is to hold, or `None` where the QCall leaves it as the interop stub
+        /// zeroed it.
+        MethodPtrAux : FunctionPointerTarget option
+        /// The method-registry id, PawPrint's `MethodDesc*`, that `_extraData` is to hold.
+        ExtraData : int64
+    }
+
 /// <summary>
 /// The fields of <c>System.Delegate</c> and <c>System.MulticastDelegate</c> that say what a
 /// delegate is bound to, written and read with the meaning CoreCLR gives them.
@@ -62,30 +77,50 @@ module DelegateRepresentation =
         CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target))
 
     /// <summary>
+    /// Whether <c>COMDelegate::BindToMethod</c> on <paramref name="runtime" /> points an open
+    /// delegate over <paramref name="method" />, declared on a reference type, at a virtual call
+    /// stub rather than at the method: for every virtual method on .NET 10 (comdelegate.cpp:1237),
+    /// and for every virtual instance method on .NET 11 (comdelegate.cpp:1182).
+    /// </summary>
+    /// <remarks>
+    /// The two differ only on a static virtual interface method. Measured: an open delegate over a
+    /// static abstract one raises <c>EntryPointNotFoundException</c> when invoked on .NET 10 and
+    /// <c>BadImageFormatException</c> on .NET 11; over a static virtual one with a default body it
+    /// raises <c>EntryPointNotFoundException</c> on .NET 10, and runs that body on .NET 11.
+    /// </remarks>
+    let bindsOpenToVirtualCallStub
+        (runtime : EmulatedRuntime)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGen, 'methodVar>)
+        : bool
+        =
+        match runtime with
+        | EmulatedRuntime.Net10 -> method.IsVirtual
+        | EmulatedRuntime.Net11 -> method.IsVirtual && not method.IsStatic
+
+    /// <summary>
     /// What an open delegate over <paramref name="method" /> stores in <c>_methodPtrAux</c>:
-    /// <c>COMDelegate::BindToMethod</c>'s rule (comdelegate.cpp:1236-1245), which uses a virtual
-    /// call stub for every virtual target except one declared on a value type. A value type
-    /// cannot be derived from, so its virtuals need no dispatch, and the stub could not dispatch
-    /// on the unboxed receiver an open delegate over one is handed anyway.
+    /// <c>COMDelegate::BindToMethod</c>'s rule on <paramref name="runtime" />, which uses a virtual
+    /// call stub where <c>bindsOpenToVirtualCallStub</c> says, except for a method declared on a
+    /// value type. A value type cannot be derived from, so its virtuals need no dispatch, and the
+    /// stub could not dispatch on the unboxed receiver an open delegate over one is handed anyway.
     /// </summary>
     /// <remarks>
     /// <c>IsVirtual</c>, not <c>DispatchesVirtually</c>: CoreCLR takes the stub path for a
-    /// <c>final</c> virtual too, where it resolves to the method itself, and for a static
-    /// abstract interface method, where invoking it raises. Only the latter is observable, and
-    /// only because of this choice. The delegate constructor's rule differs for statics; see
-    /// <c>construct</c>.
+    /// <c>final</c> virtual too, where it resolves to the method itself. The delegate
+    /// constructor's rule differs for statics; see <c>construct</c>.
     /// </remarks>
     let openAux
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
+        (runtime : EmulatedRuntime)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (declaringType : ConcreteTypeHandle)
         (state : IlMachineState)
         : IlMachineState * OpenDelegateAux
         =
         if
-            not method.IsVirtual
+            not (bindsOpenToVirtualCallStub runtime method)
             || not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType)
         then
             state, OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
@@ -237,6 +272,33 @@ module DelegateRepresentation =
         { state with
             ManagedHeap = heap
         }
+
+    /// <summary>
+    /// What <c>COMDelegate::BindToMethod</c> (.NET 11's comdelegate.cpp:1141) reports for
+    /// <paramref name="binding" />, a binding of the method whose registry id is
+    /// <paramref name="boundMethod" />. That method is the one the caller asked for, which
+    /// <c>_extraData</c> records even where a closed binding virtualises <c>_methodPtr</c> to an
+    /// override of it, so <c>Delegate.Method</c> then names the method asked for.
+    /// </summary>
+    /// <remarks>
+    /// A closed binding's target object is not reported: CoreLib stores the target it passed in.
+    /// </remarks>
+    let bindToMethodDetails (binding : DelegateBinding) (boundMethod : int64) : BindToMethodDetails =
+        match binding with
+        | DelegateBinding.Closed (_, methodPtr) ->
+            {
+                SelfReferentialTarget = false
+                MethodPtr = methodPtr
+                MethodPtrAux = None
+                ExtraData = boundMethod
+            }
+        | DelegateBinding.Open aux ->
+            {
+                SelfReferentialTarget = true
+                MethodPtr = FunctionPointerTarget.OpenDelegateShuffleThunk
+                MethodPtrAux = Some aux
+                ExtraData = boundMethod
+            }
 
     let private functionPointerField
         (operation : string)
@@ -446,7 +508,14 @@ module DelegateRepresentation =
                                 $"%s{operation}: declaring type %s{MethodOwner.describe method.Owner} is not registered in AllConcreteTypes"
                         )
 
-                    openAux loggerFactory baseClassTypes operation method declaringType state
+                    openAux
+                        loggerFactory
+                        baseClassTypes
+                        operation
+                        (EmulatedRuntime.ofCoreLib baseClassTypes.Corelib)
+                        method
+                        declaringType
+                        state
 
             match aux with
             | OpenDelegateAux.Aux aux -> write baseClassTypes constructing (DelegateBinding.Open aux) state |> Ok

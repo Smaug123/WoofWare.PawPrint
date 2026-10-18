@@ -191,6 +191,7 @@
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestRuntimeFieldInfoStubLayout.fs" />
     <Compile Include="TestDelegateLayout.fs" />
+    <Compile Include="TestBindToMethodDetailsLayout.fs" />
     <Compile Include="TestDelegateBindFormalSignature.fs" />
     <Compile Include="TestNativeTypeParamInfo.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />

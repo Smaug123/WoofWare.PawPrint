@@ -249,3 +249,91 @@ module DelegateLayout =
             )
 
         FieldIdentity.fieldId declaringType field
+
+/// The fields of .NET 11's `System.Delegate.BindToMethodDetails`, the struct through which the
+/// delegate-binding QCalls report a binding for CoreLib's managed code to write into the delegate.
+/// CoreCLR's native mirror of it is `BindToMethodDetails` (comdelegate.h:28).
+type BindToMethodDetailsFields =
+    {
+        /// `int selfReferentialTarget`: a C `BOOL`, nonzero when the delegate's `_target` is to be
+        /// the delegate itself, as it is for an open delegate.
+        SelfReferentialTarget : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        /// `IntPtr methodPtr`: what `_methodPtr` is to hold.
+        MethodPtr : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        /// `IntPtr methodPtrAux`: what `_methodPtrAux` is to hold. Written for an open delegate
+        /// only; the interop stub zeroes the struct before the call.
+        MethodPtrAux : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        /// `IntPtr extraData`: what `_extraData` is to hold, the `MethodDesc*` of the method bound.
+        ExtraData : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        /// `GCHandle loaderAllocatorGCHandle`: a handle to the bound method's loader allocator if it
+        /// is collectible, which CoreLib then stores in `_helperObject`; otherwise unallocated.
+        LoaderAllocatorGcHandle : FieldInfo<GenericParamFromMetadata, TypeDefn>
+    }
+
+[<RequireQualifiedAccess>]
+module BindToMethodDetailsLayout =
+
+    let private describeKnown : string =
+        "System.Delegate.BindToMethodDetails { int32 selfReferentialTarget; intptr methodPtr; intptr methodPtrAux; intptr extraData; System.Runtime.InteropServices.GCHandle loaderAllocatorGCHandle }"
+
+    /// The fields of `detailsType`, which is to be CoreLib's `System.Delegate.BindToMethodDetails`,
+    /// nested in `delegateType`; or why it is not that struct. `corelib` is the assembly both are
+    /// read from. Only instance fields are compared, in declaration order, by name and type, because
+    /// the QCall writes them by their offsets in the native struct, which that order decides.
+    let classify
+        (corelib : DumpedAssembly)
+        (delegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (detailsType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : Result<BindToMethodDetailsFields, string>
+        =
+        let isNamed
+            (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+            (name : string)
+            (primitive : PrimitiveType)
+            : bool
+            =
+            field.Name = name && field.Signature = TypeDefn.PrimitiveType primitive
+
+        let isGcHandle (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+            match field.Signature with
+            | TypeDefn.FromDefinition (identity, SignatureTypeKind.ValueType) when
+                identity.AssemblyFullName = corelib.DefinitionFullName
+                ->
+                let ty = corelib.TypeDefs.[identity.TypeDefinition.Get]
+                ty.Namespace = "System.Runtime.InteropServices" && ty.Name = "GCHandle"
+            | _ -> false
+
+        let instanceFields =
+            detailsType.Fields |> List.filter (fun field -> not field.IsStatic)
+
+        let refusal (problem : string) : string =
+            $"%s{detailsType.Namespace}.%s{detailsType.Name} %s{problem}, so it is not the struct PawPrint knows the delegate-binding QCalls to write (it knows %s{describeKnown})"
+
+        if detailsType.DeclaringType <> delegateType.TypeDefHandle then
+            Error (refusal $"is not nested in %s{delegateType.Namespace}.%s{delegateType.Name}")
+        else
+
+        match instanceFields with
+        | [ selfReferentialTarget ; methodPtr ; methodPtrAux ; extraData ; loaderAllocatorGcHandle ] when
+            isNamed selfReferentialTarget "selfReferentialTarget" PrimitiveType.Int32
+            && isNamed methodPtr "methodPtr" PrimitiveType.IntPtr
+            && isNamed methodPtrAux "methodPtrAux" PrimitiveType.IntPtr
+            && isNamed extraData "extraData" PrimitiveType.IntPtr
+            && loaderAllocatorGcHandle.Name = "loaderAllocatorGCHandle"
+            && isGcHandle loaderAllocatorGcHandle
+            ->
+            Ok
+                {
+                    SelfReferentialTarget = selfReferentialTarget
+                    MethodPtr = methodPtr
+                    MethodPtrAux = methodPtrAux
+                    ExtraData = extraData
+                    LoaderAllocatorGcHandle = loaderAllocatorGcHandle
+                }
+        | fields ->
+            let described =
+                fields
+                |> List.map (fun field -> $"%s{field.Name} : %O{field.Signature}")
+                |> String.concat "; "
+
+            Error (refusal $"declares the instance fields {{ %s{described} }}")

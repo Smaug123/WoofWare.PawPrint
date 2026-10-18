@@ -349,15 +349,10 @@ public static class Program
     let ``ldvirtftn of a reabstracted method throws before the delegate is made`` () : unit = agrees "CaseLdvirtftn" 0
 
     [<Test>]
-    let ``a delegate bound to a reabstracted method throws before it is made`` () : unit =
-        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
-
-        agrees "CaseCreateDelegate" 0
+    let ``a delegate bound to a reabstracted method throws before it is made`` () : unit = agrees "CaseCreateDelegate" 0
 
     [<Test>]
     let ``an open delegate invoked on a receiver whose slot is reabstracted throws`` () : unit =
-        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
-
         agrees "CaseOpenDelegate" 0
 
     [<Test>]
