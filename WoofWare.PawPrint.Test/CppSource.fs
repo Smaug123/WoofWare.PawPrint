@@ -346,10 +346,33 @@ module CppSource =
         let mutable headerStart = 0
         let mutable i = 0
 
+        // Whether the semicolon at `semicolon` ends a defining macro's header that a body follows,
+        // as `FCIMPL1(...);` then `{` compiles, the macro opening no scope of its own.
+        let endsDefiningHeader (semicolon : int) : bool =
+            let header = text.Substring(headerStart, semicolon - headerStart).Trim ()
+            let paren = header.IndexOf '('
+
+            let next =
+                let mutable j = semicolon + 1
+
+                while j < text.Length && Char.IsWhiteSpace text.[j] do
+                    j <- j + 1
+
+                j
+
+            paren > 0
+            && definingMacro.IsMatch (
+                whitespace.Replace ((definedName.Match (beforeParameters header paren)).Value, "")
+            )
+            && next < text.Length
+            && text.[next] = '{'
+
         while i < text.Length do
             match text.[i] with
             | ';' ->
-                headerStart <- i + 1
+                if not (endsDefiningHeader i) then
+                    headerStart <- i + 1
+
                 i <- i + 1
             | '}' ->
                 if scopes.Count = 0 then

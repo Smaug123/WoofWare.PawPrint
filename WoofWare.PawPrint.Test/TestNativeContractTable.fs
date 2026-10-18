@@ -26,12 +26,14 @@ module TestNativeContractTable =
     let private rows : NativeContractRow list = NativeContractTable.rows.Force ()
 
     [<Test>]
-    let ``the table has rows of both kinds, each native once`` () : unit =
+    let ``the table has rows of every kind, each native once`` () : unit =
         let fcalls = NativeContractTable.fcalls.Force ()
+        let instanceFCalls = NativeContractTable.instanceFCalls.Force ()
         let qcalls = NativeContractTable.qcalls.Force ()
         fcalls.Count |> shouldBeGreaterThan 0
+        instanceFCalls.Count |> shouldBeGreaterThan 0
         qcalls.Count |> shouldBeGreaterThan 0
-        fcalls.Count + qcalls.Count |> shouldEqual rows.Length
+        fcalls.Count + instanceFCalls.Count + qcalls.Count |> shouldEqual rows.Length
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every exception a row raises is a CoreLib exception type`` (which : AuditedCoreLib) : unit =
@@ -885,7 +887,10 @@ module TestNativeContractTable =
         image.ToArray ()
 
     [<Test>]
-    let ``only a CoreLib's one static FCall of a name, or its plain QCall of an entry point, is that row`` () : unit =
+    let ``only a CoreLib's one FCall of a name, static or instance as its row says, or its plain QCall of an entry point, is that row``
+        ()
+        : unit
+        =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let recognised (name : string) : (string * TabulatedNative option) list =

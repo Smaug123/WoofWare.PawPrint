@@ -96,6 +96,37 @@ auto lambda = [](int a) { return NotADefinition(a); };
                 "Attributed", [ "Plain" ]
             ]
 
+    /// `vm/comutilnative.cpp` spells `MethodTableNative::InstantiationArg0` with a semicolon after
+    /// the macro, which compiles because the macro opens no scope of its own.
+    [<Test>]
+    let ``a defining macro followed by a semicolon still defines the body after it`` () : unit =
+        callsOf
+            """
+static FCDECL1(Object*, Declared, MethodTable* pMT);
+
+FCIMPL1(MethodTable*, MethodTableNative::InstantiationArg0, MethodTable* mt);
+{
+    return Read(mt);
+}
+FCIMPLEND
+
+FCIMPL1(INT32, Spaced, Object* obj) ;
+
+{
+    return Again(obj);
+}
+FCIMPLEND
+
+FCIMPL1(INT32, OnlyDeclared, Object* obj);
+void Plain() { Called(); }
+"""
+        |> shouldEqual
+            [
+                "MethodTableNative::InstantiationArg0", [ "Read" ]
+                "Spaced", [ "Again" ]
+                "Plain", [ "Called" ]
+            ]
+
     [<Test>]
     let ``a call is spelled with its qualifier, a declaration with arguments calls its type`` () : unit =
         callsOf
