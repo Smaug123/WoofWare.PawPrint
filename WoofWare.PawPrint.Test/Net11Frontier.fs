@@ -13,10 +13,6 @@ module Net11Frontier =
     let isAsyncMethod : string =
         "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
-    /// .NET 11's `Delegate.Method` makes its `MethodInfo` through a QCall.
-    let delegateCreateMethodInfo : string =
-        "On .NET 11, `Delegate.Method` makes the `MethodInfo` it has not cached through the `Delegate_CreateMethodInfo` QCall (`GetMethodImplUncached`, Delegate.CoreCLR.cs:272), over the `MethodDesc*` in `_extraData`, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)\". Measured on 2026-10-18. Un-park when it is answered."
-
     /// .NET 11's `FileStream` asks whether the filesystem supports locking.
     let fileSystemSupportsLocking : string =
         "On .NET 11, opening a file through `SafeFileHandle` asks `Interop.Sys.FileSystemSupportsLocking` (SafeFileHandle.Unix.cs:528), the `SystemNative_FileSystemSupportsLocking` P/Invoke, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_FileSystemSupportsLocking)\". Un-park when the emulated kernel answers it."

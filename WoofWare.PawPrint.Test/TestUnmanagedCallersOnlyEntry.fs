@@ -91,7 +91,6 @@ module TestUnmanagedCallersOnlyEntry =
     [<TestCaseSource(nameof cases)>]
     let ``entering an UnmanagedCallersOnly method from managed code is fatal`` (sourceName : string) : unit =
         match sourceName with
-        | "UnmanagedCallersOnlyThreadStart.cs" -> Net11Frontier.park Net11Frontier.delegateCreateMethodInfo
         | "UnmanagedCallersOnlyForceEmitInvoke.cs"
         | "UnmanagedCallersOnlyReflectionInvoke.cs" -> Net11Frontier.park Net11Frontier.isAsyncMethod
         | _ -> ()

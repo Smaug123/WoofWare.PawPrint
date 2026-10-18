@@ -104,6 +104,7 @@ module TestPureCases =
                     "AssemblyGetExecutingAssemblyViaReflection.cs"
                     "CustomAttributeNamedArgs.cs"
                     "DelegateDynamicInvoke.cs"
+                    "DelegateMulticastInvoke.cs"
                     "ForeignRaiseFlagConsumedByRethrow.cs"
                     "ForeignRaiseFlagNotStolenByCleanup.cs"
                     "ForeignRaiseFlagPendingBeforeCleanup.cs"
@@ -133,8 +134,13 @@ module TestPureCases =
                     "ReflectionPropertyTypeGenericDeclaringType.cs"
                     "ReflectiveIsTypicalMethodDefinition.cs"
                     "StackFrameHelperUnsharedFrames.cs"
+                    "UnmanagedCallersOnlyFunctionPointer.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
+            "DelegateOpenInstanceRepresentation.cs",
+            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            "DelegateMethodInfo.cs",
+            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             yield!
                 [
                     "ExpressionInterpreterByRefCall.cs"
@@ -143,19 +149,6 @@ module TestPureCases =
                     "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
-            yield!
-                [
-                    "DelegateFindMethodHandleOpenInstanceGeneric.cs"
-                    "DelegateMulticastInvoke.cs"
-                    "UnmanagedCallersOnlyFunctionPointer.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.delegateCreateMethodInfo)
-            "DelegateOpenInstanceRepresentation.cs",
-            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            "DelegateBindToMetadataMethod.cs",
-            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            "DelegateBindStaticAbstractInterfaceMethod.cs",
-            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 dies of the `BadImageFormatException` that invoking the delegate over the static abstract method raises, where .NET 10 raises `EntryPointNotFoundException` (`DelegateOpenStaticVirtualInvoke.cs` checks both). Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             yield!
                 [
                     "AdvancedStructLayout.cs"
@@ -182,8 +175,6 @@ module TestPureCases =
             """On .NET 11, an unchecked conversion from floating point to an integer narrower than 32 bits saturates to that integer's own range, where .NET 10 takes the low bits of the saturated `int32` conversion. Measured on RC1 against .NET 10: `(byte)300.0` is 255 (44), `(sbyte)-1e20` is -128 (0), `(short)70000.7` is 32767 (4464), `(char)70000.7` is 65535 (4464), and `(byte)-1.5` is 0 (255). The guest asserts .NET 10's rule, so real RC1 exits 40 at its first narrow check, and PawPrint converts by .NET 10's rule on every runtime. Un-park when the conversion opcodes take the runtime's rule and this case states .NET 11's results."""
             "ReflectionIsCollectible.cs",
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered. Verified to exit 0 on real .NET 11."""
-            "DelegateMethodInfo.cs",
-            """On .NET 11, `Delegate.Method` asks the `Delegate_CreateMethodInfo` QCall, which PawPrint does not implement: "Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)". Un-park when it is answered and the case states each runtime's answer: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1."""
             "StringContentRoundTrip.cs",
             """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
             "ReflectionStripMethodInstantiationOpenDefinition.cs",
