@@ -71,6 +71,9 @@ vm/object.h:ReflectModuleBaseObject::GetModule	nothing	Reads the RuntimeModule's
 vm/typehandle.cpp:TypeHandle::GetModule	nothing	Reads the module from the method table, or from the type desc, its type parameter's or its type variable's.
 vm/loaderallocator.hpp:GET_LOADERHANDLE_VALUE_FAST	nothing	Reads a loader allocator's handle, by LoaderAllocator::GetHandleValueFast or GetHandleValueFastPhase2, neither of which allocates or takes a lock.
 vm/ceeload.h:ModuleBase::GetLoaderAllocator	nothing	Reads the module's loader allocator.
+vm/method.cpp:MethodDesc::GetLoaderAllocator	nothing	Reads the loader allocator of the method's loader module.
+vm/methodtable.inl:MethodTable::GetLoaderAllocator	nothing	Reads the loader allocator of the type's loader module.
+vm/field.h:FieldDesc::GetApproxEnclosingMethodTable	nothing	Reads the field's declaring method table.
 md/inc/metamodel.h:CMiniMdTemplate::SupportsGenerics	nothing	Compares the metadata's schema version.
 md/inc/metamodel.h:getFlagsOfGenericParam=_GETFLD(GenericParam,Flags)	nothing	Reads a column of a metadata record.
 md/inc/metamodel.h:getNumberOfGenericParam=_GETFLD(GenericParam,Number)	nothing	Reads a column of a metadata record.
