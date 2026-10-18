@@ -26,7 +26,7 @@ open Microsoft.Extensions.Logging
 module CommandLineArgsInit =
 
     /// What PawPrint wants `Environment::InitializeCommandLineArgs` for, phrased to complete
-    /// "PawPrint calls it to …" in `HostStartupCall`'s rejections.
+    /// "PawPrint calls it to …" in `CorelibEntryPoint`'s rejections.
     [<Literal>]
     let private Purpose =
         "install the process's command line, which is what Environment.GetCommandLineArgs reads"
@@ -104,7 +104,7 @@ module CommandLineArgsInit =
         let pArgv, state = HostStartupCall.allocatePointerArray argPointers state
 
         let method =
-            HostStartupCall.findCorelibStaticMethod
+            CorelibEntryPoint.findCorelibStaticMethod
                 baseClassTypes
                 "System"
                 "Environment"

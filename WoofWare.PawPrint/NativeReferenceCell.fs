@@ -22,9 +22,9 @@ type NativeReferenceCell =
 [<RequireQualifiedAccess>]
 module NativeReferenceCell =
 
-    /// Bytes in the cell: an object reference is pointer-sized.
+    /// Bytes in a native pointer-sized cell, such as the cell an object reference occupies.
     [<Literal>]
-    let private PointerSize = 8
+    let PointerSize = 8
 
     /// A fresh cell holding `contents`, as the VM's protected local does before the call: null for
     /// an out-slot.

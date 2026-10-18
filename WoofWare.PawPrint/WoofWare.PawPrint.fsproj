@@ -68,6 +68,7 @@
     <Compile Include="MemoryPools.fsi" />
     <Compile Include="MemoryPools.fs" />
     <Compile Include="NativeReferenceCell.fs" />
+    <Compile Include="CorelibEntryPoint.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />
