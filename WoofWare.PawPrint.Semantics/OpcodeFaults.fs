@@ -463,6 +463,9 @@ module OpcodeFaults =
         // (`impCastClassOrIsInstToTree`, importer.cpp), which raises it there, and whatever else
         // that callee raises reaches the instruction too.
         | UnaryMetadataTokenIlOp.Castclass -> resolves [ OpcodeFault.InvalidCast ] [ ResolutionFault.TypeAccess ]
+        // CoreCLR's JIT compiles `unbox`, and `unbox.any` of a value type, to a call of
+        // `CastHelpers.Unbox`, or of `Unbox_Nullable` for a `Nullable<T>` (`getUnBoxHelper`,
+        // jitinterface.cpp), which raises these there.
         | UnaryMetadataTokenIlOp.Unbox
         | UnaryMetadataTokenIlOp.Unbox_Any ->
             resolves [ OpcodeFault.InvalidCast ; OpcodeFault.NullReference ] [ ResolutionFault.TypeAccess ]
@@ -477,6 +480,9 @@ module OpcodeFaults =
         // A negative length is the overflow; the allocation itself is the OOM.
         | UnaryMetadataTokenIlOp.Newarr ->
             resolves [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ] [ ResolutionFault.TypeAccess ]
+        // CoreCLR's JIT boxes a primitive type or an enum inline, and compiles a `box` of another
+        // struct to a call of `CastHelpers.Box`, or of `Box_Nullable` for a `Nullable<T>`
+        // (`impImportAndPushBox`, importer.cpp), which allocates there.
         | UnaryMetadataTokenIlOp.Box -> resolves [ OpcodeFault.OutOfMemory ] [ ResolutionFault.TypeAccess ]
         // What the constructor itself raises travels by the call edge, not by this entry; running
         // the declaring type's `.cctor` first does not, for the reason given against `call` below.
@@ -565,7 +571,9 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldelem -> resolves uncheckedElementAccess []
         // `ldelema` takes the covariance check too: handing out a writable address to an element
         // of an array whose element type is not the one named would defeat the check `stelem`
-        // makes.
+        // makes. CoreCLR's JIT compiles an `ldelema` of a reference type with no `readonly.` prefix,
+        // and a `stelem` of one, to a call of `CastHelpers.LdelemaRef` or `StelemRef` (importer.cpp),
+        // which raises these there.
         | UnaryMetadataTokenIlOp.Stelem
         | UnaryMetadataTokenIlOp.Ldelema -> resolves covariantElementAccess []
         // A static-field access runs the declaring type's `.cctor`, and a `.cctor` that threw

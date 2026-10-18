@@ -202,17 +202,49 @@ type internal CastTarget =
     /// class, such as a pointer.
     | Any
 
-/// An `isinst`, `castclass` or `unbox.any` whose `CastHelpers` method only an instance of the
-/// body decides: one of a type variable, or of a `Nullable<T>` over one.
-type internal GenericCast =
+/// An instruction that CoreCLR's JIT compiles to a call of one of CoreLib's `CastHelpers` methods
+/// for a type of some kinds (`JitHelper`).
+[<RequireQualifiedAccess>]
+type internal HelpedInstruction =
+    | Isinst
+    | Castclass
+    /// An `unbox.any`, which CoreCLR compiles as a `castclass` where the type is a reference type.
+    | UnboxAny
+    | Unbox
+    | Box
+    /// An `ldelema` with no `readonly.` prefix.
+    | Ldelema
+
+/// One of CoreLib's `CastHelpers` methods, which `jithelpers.h` binds a JIT helper to, and which
+/// the JIT calls for an instruction at tier 0, under MinOpts and in debuggable code. Where it
+/// optimises, it calls the same method at fewer instructions.
+[<RequireQualifiedAccess>]
+type internal JitHelper =
+    /// A cast's (`impCastClassOrIsInstToTree`, importer.cpp): a `ChkCast` one where `throwing`, for
+    /// a `castclass` or an `unbox.any` of a reference type, and an `IsInstanceOf` one for an
+    /// `isinst`.
+    | Cast of throwing : bool * CastTarget
+    /// `Unbox`, for an `unbox`, or an `unbox.any` of a value type, of any type but a
+    /// `Nullable<T>` (`getUnBoxHelper`, jitinterface.cpp).
+    | Unbox
+    /// `Unbox_Nullable`, for an `unbox` or `unbox.any` of a `Nullable<T>`.
+    | UnboxNullable
+    /// `Box`, for a `box` of a value type that is no primitive type, enum, byref-like type or
+    /// `Nullable<T>` (`impImportAndPushBox`, importer.cpp). The JIT boxes a primitive or an enum
+    /// inline, and a byref-like type only where it folds the box away.
+    | Box
+    /// `Box_Nullable`, for a `box` of a `Nullable<T>`.
+    | BoxNullable
+    /// `LdelemaRef`, for an `ldelema` of a reference type (`CEE_LDELEMA`, importer.cpp).
+    | LdelemaRef
+
+/// An instruction whose `CastHelpers` method only an instance of the body decides: one of a type
+/// variable, or a cast to a `Nullable<T>` over one.
+type internal GenericHelperSite =
     {
         /// The type, as the body spells it.
         Type : TypeDefn
-        /// Whether it is a `castclass`, or an `unbox.any`, which CoreCLR compiles as one where the
-        /// type is a reference type.
-        Throwing : bool
-        /// Whether it is an `unbox.any`.
-        Unboxing : bool
+        Instruction : HelpedInstruction
     }
 
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
@@ -234,9 +266,9 @@ type internal LocalFacts =
         /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle` there, which an instance makes only where
         /// its shared code looks the type up at run time.
         LookedUp : (int * SpelledType) list
-        /// Each cast whose `CastHelpers` method only an instance decides, by its offset. `Calls`
-        /// has the runtime's call of each one some instance calls there.
-        Casts : (int * GenericCast) list
+        /// Each instruction whose `CastHelpers` method only an instance decides, by its offset.
+        /// `Calls` has the runtime's call of each one some instance calls there.
+        HelperSites : (int * GenericHelperSite) list
         /// Each `constrained. ldftn` of a static virtual method, with the type its prefix names, a
         /// token of the body's assembly. It calls nothing, but the type decides the method whose
         /// pointer it loads, and dispatch failing there may raise at the `ldftn`.
@@ -2683,7 +2715,7 @@ module EscapeAnalysis =
             Returns = StackValue.Unknown
             Consults = Set.empty
             LookedUp = []
-            Casts = []
+            HelperSites = []
             Branching = None
         }
 
@@ -2722,80 +2754,162 @@ module EscapeAnalysis =
         | InstructionFault.ZeroDivisor -> made "System.DivideByZeroException"
         | InstructionFault.QuotientOverflow -> made "System.OverflowException"
 
-    /// The `CastHelpers` method that `jithelpers.h` binds the JIT's helper for a cast to a type of
-    /// `target` to: `IsInstanceOf...` for `isinst`, and, where `throwing`, `ChkCast...` for
-    /// `castclass`. It binds the array helpers to the `Any` ones.
-    let private castHelper (state : EscapeAnalysisState) (throwing : bool) (target : CastTarget) : MethodKey =
+    /// The `CastHelpers` method that `jithelpers.h` binds `helper`'s JIT helper to. It binds the
+    /// array cast helpers to the `Any` ones.
+    let private jitHelperMethod (state : EscapeAnalysisState) (helper : JitHelper) : MethodKey =
         let corelib = state.BaseTypes.Corelib
 
-        let name =
-            let operation = if throwing then "ChkCast" else "IsInstanceOf"
+        let name, parameters =
+            match helper with
+            | JitHelper.Cast (throwing, target) ->
+                let operation = if throwing then "ChkCast" else "IsInstanceOf"
 
-            match target with
-            | CastTarget.Class -> operation + "Class"
-            | CastTarget.Interface -> operation + "Interface"
-            | CastTarget.Any -> operation + "Any"
+                match target with
+                | CastTarget.Class -> operation + "Class", 2
+                | CastTarget.Interface -> operation + "Interface", 2
+                | CastTarget.Any -> operation + "Any", 2
+            | JitHelper.Unbox -> "Unbox", 2
+            | JitHelper.UnboxNullable -> "Unbox_Nullable", 3
+            | JitHelper.Box -> "Box", 2
+            | JitHelper.BoxNullable -> "Box_Nullable", 2
+            | JitHelper.LdelemaRef -> "LdelemaRef", 3
 
         let found =
             corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "CastHelpers"
             |> Option.toList
             |> List.collect (fun ty -> List.ofSeq ty.Methods)
-            |> List.filter (fun m -> m.Name = name && m.IsStatic && m.Signature.ParameterTypes.Length = 2)
+            |> List.filter (fun m -> m.Name = name && m.IsStatic && m.Signature.ParameterTypes.Length = parameters)
             |> List.choose (fun m -> m.TryMetadata)
 
         match found with
         | [ facts ] -> MethodKey.make corelib facts.Handle
         | found ->
             failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one CastHelpers.%s{name} of two parameters, found %d{found.Length}"
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one CastHelpers.%s{name} of %d{parameters} parameters, found %d{found.Length}"
 
-    /// What a cast to a type the body in `assembly` spells (`spelling`) casts to, as
-    /// `getCastingHelperStatic` decides it, over every instance of the body: each kind of type it
-    /// casts to, and `None` where an `unbox.any` (`unboxing`) unboxes a value type rather than
-    /// casting; and whether only an instance decides which (`instanceCastTarget`). Only on Unix:
-    /// CoreCLR casts to a type with type equivalence by the `Any` helper, but only Windows builds
-    /// have type equivalence (`FEATURE_TYPEEQUIVALENCE`).
-    let rec private castTargets
+    /// Every `CastHelpers` method an `instruction` may call, whatever its type.
+    let private candidateHelpers (instruction : HelpedInstruction) : JitHelper list =
+        let casts (throwing : bool) : JitHelper list =
+            [ CastTarget.Class ; CastTarget.Interface ; CastTarget.Any ]
+            |> List.map (fun target -> JitHelper.Cast (throwing, target))
+
+        match instruction with
+        | HelpedInstruction.Isinst -> casts false
+        | HelpedInstruction.Castclass -> casts true
+        | HelpedInstruction.UnboxAny -> casts true @ [ JitHelper.Unbox ; JitHelper.UnboxNullable ]
+        | HelpedInstruction.Unbox -> [ JitHelper.Unbox ; JitHelper.UnboxNullable ]
+        | HelpedInstruction.Box -> [ JitHelper.Box ; JitHelper.BoxNullable ]
+        | HelpedInstruction.Ldelema -> [ JitHelper.LdelemaRef ]
+
+    /// Whether the JIT boxes a value type of this definition without calling `CastHelpers.Box`
+    /// (`impImportAndPushBox`, importer.cpp): a primitive type or an enum, which it boxes inline, or
+    /// a byref-like type, which it boxes only where it folds the box away and otherwise refuses.
+    let private boxedWithoutHelper
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * bool
+        =
+        let primitive =
+            [
+                PrimitiveType.Boolean
+                PrimitiveType.Char
+                PrimitiveType.SByte
+                PrimitiveType.Byte
+                PrimitiveType.Int16
+                PrimitiveType.UInt16
+                PrimitiveType.Int32
+                PrimitiveType.UInt32
+                PrimitiveType.Int64
+                PrimitiveType.UInt64
+                PrimitiveType.Single
+                PrimitiveType.Double
+                PrimitiveType.IntPtr
+                PrimitiveType.UIntPtr
+            ]
+            |> List.exists (fun primitive -> (BaseClassTypes.ofPrimitive state.BaseTypes primitive).Identity = identity)
+
+        let _, definition = definitionOf state identity
+
+        if primitive || definition.HasIsByRefLikeAttribute then
+            state, true
+        else
+            let enum = state.BaseTypes.Enum.Identity
+            let state, derivesFromEnum = derivesFrom state identity enum
+            state, derivesFromEnum && identity <> enum
+
+    /// The `CastHelpers` methods that `instruction` of a type the body in `assembly` spells
+    /// (`spelling`) calls, over every instance of the body, as `getCastingHelperStatic`,
+    /// `getUnBoxHelper` and `impImportAndPushBox` decide them; and whether only an instance decides
+    /// which (`instanceHelper`). Only on Unix: CoreCLR casts to a type with type equivalence by the
+    /// `Any` helper, but only Windows builds have type equivalence (`FEATURE_TYPEEQUIVALENCE`).
+    let rec private helpersAt
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
-        (unboxing : bool)
+        (instruction : HelpedInstruction)
         (spelling : TypeDefn)
-        : EscapeAnalysisState * Set<CastTarget option> * bool
+        : EscapeAnalysisState * Set<JitHelper> * bool
         =
-        // A definition's, as `getCastingHelperStatic` reads its method table: a type with variant
-        // type parameters, an interface, a `Nullable<T>`, or a class or value type.
+        let cast (target : CastTarget) : JitHelper =
+            JitHelper.Cast (instruction <> HelpedInstruction.Isinst, target)
+
+        let unbox (nullable : bool) : JitHelper =
+            if nullable then
+                JitHelper.UnboxNullable
+            else
+                JitHelper.Unbox
+
+        // A definition's, as the JIT reads its method table: for a cast, a type with variant type
+        // parameters, an interface, a `Nullable<T>`, or a class or value type.
         let ofDefinition
             (state : EscapeAnalysisState)
             (identity : ResolvedTypeIdentity)
             (nullableOverVariable : bool)
-            : EscapeAnalysisState * Set<CastTarget option> * bool
+            : EscapeAnalysisState * Set<JitHelper> * bool
             =
             let _, definition = definitionOf state identity
             // Whether it is a value type turns on its base chain, which may be in an assembly not
             // loaded yet.
             let state, _, valueType = spelledDefinition state identity
+            let nullable = identity = state.BaseTypes.Nullable.Identity
 
-            if unboxing && valueType then
-                state, Set.singleton None, false
-            elif
-                definition.Generics
-                |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-            then
-                state, Set.singleton (Some CastTarget.Any), false
-            elif definition.IsInterface then
-                state, Set.singleton (Some CastTarget.Interface), false
-            elif identity = state.BaseTypes.Nullable.Identity && nullableOverVariable then
-                // `impCastClassOrIsInstToTree` asks about a `Nullable<T>` as `T`, a class to cast
-                // to, but only where the code is not shared over it.
-                state, Set.ofList [ Some CastTarget.Class ; Some CastTarget.Any ], true
-            else
-                // A `Nullable<T>` of a type that names no type variable is asked about as `T`.
-                state, Set.singleton (Some CastTarget.Class), false
+            match instruction with
+            | HelpedInstruction.Unbox -> state, Set.singleton (unbox nullable), false
+            | HelpedInstruction.UnboxAny when valueType -> state, Set.singleton (unbox nullable), false
+            | HelpedInstruction.Box ->
+                if not valueType then
+                    state, Set.empty, false
+                elif nullable then
+                    state, Set.singleton JitHelper.BoxNullable, false
+                else
+                    match boxedWithoutHelper state identity with
+                    | state, true -> state, Set.empty, false
+                    | state, false -> state, Set.singleton JitHelper.Box, false
+            | HelpedInstruction.Ldelema ->
+                if valueType then
+                    state, Set.empty, false
+                else
+                    state, Set.singleton JitHelper.LdelemaRef, false
+            | HelpedInstruction.Isinst
+            | HelpedInstruction.Castclass
+            | HelpedInstruction.UnboxAny ->
+                if
+                    definition.Generics
+                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+                then
+                    state, Set.singleton (cast CastTarget.Any), false
+                elif definition.IsInterface then
+                    state, Set.singleton (cast CastTarget.Interface), false
+                elif nullable && nullableOverVariable then
+                    // `impCastClassOrIsInstToTree` asks about a `Nullable<T>` as `T`, a class to
+                    // cast to, but only where the code is not shared over it.
+                    state, Set.ofList [ cast CastTarget.Class ; cast CastTarget.Any ], true
+                else
+                    // A `Nullable<T>` of a type that names no type variable is asked about as `T`.
+                    state, Set.singleton (cast CastTarget.Class), false
 
-        // A type the analysis cannot bind fails the cast's own binding, before it calls anything,
-        // and so does every cast it could be.
-        let unbound : Set<CastTarget option> =
-            Set.ofList [ Some CastTarget.Class ; Some CastTarget.Interface ; Some CastTarget.Any ]
+        // A type the analysis cannot bind fails the instruction's own binding, before it calls
+        // anything, and so does every instruction it could be.
+        let unbound : Set<JitHelper> = Set.ofList (candidateHelpers instruction)
 
         let ofRoot (state : EscapeAnalysisState) (root : TypeDefn) (nullableOverVariable : bool) =
             match root with
@@ -2804,7 +2918,7 @@ module EscapeAnalysis =
                 match resolveTypeRef state assembly typeRef with
                 | state, Some identity -> ofDefinition state identity nullableOverVariable
                 | state, None -> state, unbound, false
-            | other -> failwith $"BUG: a cast to %O{other} as a definition"
+            | other -> failwith $"BUG: a %O{instruction} of %O{other} as a definition"
 
         match spelling with
         | TypeDefn.PrimitiveType primitive ->
@@ -2813,22 +2927,44 @@ module EscapeAnalysis =
         | TypeDefn.FromReference _ -> ofRoot state spelling false
         | TypeDefn.GenericInstantiation (root, arguments) ->
             ofRoot state root (Seq.exists mentionsTypeVariable arguments)
-        // Shared code casts to `__Canon`; code for a value type unboxes it, or casts to it as a
-        // class, or, for a `Nullable<T>` shared over its argument, casts by the `Any` helper.
+        // Shared code names `__Canon`, a reference type; code for a value type names it, which a
+        // cast takes to be a class, and which may be a `Nullable<T>`.
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _ ->
-            if unboxing then
-                state, Set.ofList [ Some CastTarget.Any ; None ], true
-            else
-                state, Set.ofList [ Some CastTarget.Any ; Some CastTarget.Class ], true
-        | TypeDefn.Modified modified -> castTargets state assembly unboxing modified.Unmodified
+            let helpers =
+                match instruction with
+                | HelpedInstruction.Isinst
+                | HelpedInstruction.Castclass -> [ cast CastTarget.Any ; cast CastTarget.Class ]
+                | HelpedInstruction.UnboxAny -> [ cast CastTarget.Any ; JitHelper.Unbox ; JitHelper.UnboxNullable ]
+                | HelpedInstruction.Unbox -> [ JitHelper.Unbox ; JitHelper.UnboxNullable ]
+                | HelpedInstruction.Box -> [ JitHelper.Box ; JitHelper.BoxNullable ]
+                | HelpedInstruction.Ldelema -> [ JitHelper.LdelemaRef ]
+
+            state, Set.ofList helpers, true
+        | TypeDefn.Modified modified -> helpersAt state assembly instruction modified.Unmodified
+        // An array is a reference type, which a cast casts to by the `Any` helper.
         | TypeDefn.Array _
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _ ->
+            match instruction with
+            | HelpedInstruction.Isinst
+            | HelpedInstruction.Castclass
+            | HelpedInstruction.UnboxAny -> state, Set.singleton (cast CastTarget.Any), false
+            | HelpedInstruction.Unbox -> state, Set.singleton JitHelper.Unbox, false
+            | HelpedInstruction.Box -> state, Set.empty, false
+            | HelpedInstruction.Ldelema -> state, Set.singleton JitHelper.LdelemaRef, false
+        // A type that is no class, which the JIT takes an element of to be an integer.
         | TypeDefn.Pointer _
         | TypeDefn.Byref _
         | TypeDefn.Pinned _
         | TypeDefn.FunctionPointer _
-        | TypeDefn.Void -> state, Set.singleton (Some CastTarget.Any), false
+        | TypeDefn.Void ->
+            match instruction with
+            | HelpedInstruction.Isinst
+            | HelpedInstruction.Castclass
+            | HelpedInstruction.UnboxAny -> state, Set.singleton (cast CastTarget.Any), false
+            | HelpedInstruction.Unbox -> state, Set.singleton JitHelper.Unbox, false
+            | HelpedInstruction.Box
+            | HelpedInstruction.Ldelema -> state, Set.empty, false
 
     /// What CoreCLR runs when `key` is called, or the contract of one of `assumptions` that stands
     /// in for it. The VM's substitute for an intrinsic runs whatever IL CoreLib ships in its place,
@@ -2908,7 +3044,7 @@ module EscapeAnalysis =
                 Returns = StackValue.Unknown
                 Consults = Set.empty
                 LookedUp = []
-                Casts = []
+                HelperSites = []
                 Branching = None
             }
 
@@ -4120,25 +4256,44 @@ module EscapeAnalysis =
 
         // Where the JIT calls one of CoreLib's `CastHelpers` methods: at every `isinst` and
         // `castclass`, and every `unbox.any` of a reference type, which it imports as a call of the
-        // helper `getCastingHelperStatic` picks (`impCastClassOrIsInstToTree`, importer.cpp). It
-        // decides a cast without one only where it optimises (`impOptimizeCastClassOrIsInst`), which
-        // a method it compiles first does not, or where it folds a `box` the cast tests
-        // (`impBoxPatternMatch`), which the analysis does not follow: there it follows the call.
-        let state, casts, genericCasts =
+        // helper `getCastingHelperStatic` picks (`impCastClassOrIsInstToTree`, importer.cpp); at
+        // every `unbox`, and `unbox.any` of a value type, the one `getUnBoxHelper` picks; at a `box`
+        // of a struct (`impImportAndPushBox`); and at an `ldelema` of a reference type with no
+        // `readonly.` prefix. It decides a cast or an unbox without one only where it optimises
+        // (`impOptimizeCastClassOrIsInst`), which a method it compiles first does not, or where it
+        // folds a `box` that the cast tests (`impBoxPatternMatch`), which the analysis does not
+        // follow: there it follows the calls.
+        let state, helperCalls, helperSites =
             ((state, [], []), [ 0 .. ops.Length - 1 ])
-            ||> List.fold (fun (state, casts, genericCasts) index ->
-                let cast =
+            ||> List.fold (fun (state, helperCalls, helperSites) index ->
+                let readonlyPrefixed =
+                    index > 0
+                    && (
+                        match fst ops.[index - 1] with
+                        | IlOp.Nullary NullaryIlOp.Readonly -> true
+                        | _ -> false
+                    )
+
+                let helped =
                     match fst ops.[index] with
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, MetadataOperand.FromMetadata token) ->
-                        Some (token, false, false)
+                        Some (token, HelpedInstruction.Isinst)
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Castclass, MetadataOperand.FromMetadata token) ->
-                        Some (token, true, false)
+                        Some (token, HelpedInstruction.Castclass)
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, MetadataOperand.FromMetadata token) ->
-                        Some (token, true, true)
+                        Some (token, HelpedInstruction.UnboxAny)
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, MetadataOperand.FromMetadata token) ->
+                        Some (token, HelpedInstruction.Unbox)
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, MetadataOperand.FromMetadata token) ->
+                        Some (token, HelpedInstruction.Box)
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, MetadataOperand.FromMetadata token) when
+                        not readonlyPrefixed
+                        ->
+                        Some (token, HelpedInstruction.Ldelema)
                     | _ -> None
 
-                match cast with
-                | Some (token, throwing, unboxing) when
+                match helped with
+                | Some (token, instruction) when
                     executed.Contains (snd ops.[index])
                     && not (unbound.Contains index)
                     && not (elided.Contains index)
@@ -4147,39 +4302,37 @@ module EscapeAnalysis =
 
                     match spelledType state assembly token.Token with
                     | state, Some (spelling, spelledIn) ->
-                        let state, targets, byInstance =
-                            castTargets state (assemblyOf state spelledIn) unboxing spelling
+                        let state, helpers, byInstance =
+                            helpersAt state (assemblyOf state spelledIn) instruction spelling
 
                         let called =
-                            targets
-                            |> Seq.choose id
-                            |> Seq.map (fun target -> offset, runtimeRuns (castHelper state throwing target), [])
+                            helpers
+                            |> Seq.map (fun helper -> offset, runtimeRuns (jitHelperMethod state helper), [])
                             |> List.ofSeq
 
-                        let genericCasts =
+                        let helperSites =
                             if byInstance then
                                 (offset,
                                  {
                                      Type = spelling
-                                     Throwing = throwing
-                                     Unboxing = unboxing
+                                     Instruction = instruction
                                  })
-                                :: genericCasts
+                                :: helperSites
                             else
-                                genericCasts
+                                helperSites
 
-                        state, called @ casts, genericCasts
-                    // A token that does not bind, which fails before the cast calls anything, or
-                    // of a generic type's definition, which the JIT refuses to cast to.
-                    | state, None -> state, casts, genericCasts
-                | _ -> state, casts, genericCasts
+                        state, called @ helperCalls, helperSites
+                    // A token that does not bind, which fails before the instruction calls
+                    // anything, or of a generic type's definition, which the JIT refuses.
+                    | state, None -> state, helperCalls, helperSites
+                | _ -> state, helperCalls, helperSites
             )
 
         let calls =
             stubs
             @ (lookedUp
                |> List.map (fun (offset, _) -> offset, runtimeRuns (runtimeTypeLookup state), []))
-            @ casts
+            @ helperCalls
             @ calls
 
         let regions = List.ofSeq body.ExceptionRegions
@@ -4310,7 +4463,7 @@ module EscapeAnalysis =
                 |> List.ofSeq
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
-            Casts = List.rev genericCasts
+            HelperSites = List.rev helperSites
             ConstrainedPointers = List.rev pointers
             Rethrows = List.rev rethrows
             Regions = regions
@@ -5026,55 +5179,98 @@ module EscapeAnalysis =
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void -> false
 
-    /// What `instance`'s cast to a type variable, or to a `Nullable<T>` over one, casts to, given the
-    /// declaring type's arguments, `typeArguments`, and the method's, `methodArguments`: `None` where
-    /// an `unbox.any` unboxes a value type. Shared code casts to the canonical form of the type,
-    /// where a reference type is `__Canon`; CoreCLR asks about a `Nullable<T>` as `T` only where it
-    /// is not shared (`impCastClassOrIsInstToTree`).
-    let rec private instanceCastTarget
+    /// The `CastHelpers` method, if any, that `site`, an instruction of `instance` naming a type
+    /// variable, or a cast to a `Nullable<T>` over one, calls, given the declaring type's arguments,
+    /// `typeArguments`, and the method's, `methodArguments`. Shared code names the canonical form
+    /// of the type, where a reference type is `__Canon`; CoreCLR asks about a `Nullable<T>` as `T`
+    /// only where it is not shared (`impCastClassOrIsInstToTree`).
+    let rec private instanceHelper
         (state : EscapeAnalysisState)
         (typeArguments : ConcreteTypeHandle list)
         (methodArguments : ConcreteTypeHandle list)
-        (cast : GenericCast)
+        (site : GenericHelperSite)
         (spelling : TypeDefn)
-        : CastTarget option
+        : EscapeAnalysisState * JitHelper option
         =
-        let ofArgument (arguments : ConcreteTypeHandle list) (index : int) : CastTarget option =
+        let throwing = site.Instruction <> HelpedInstruction.Isinst
+
+        let ofArgument (arguments : ConcreteTypeHandle list) (index : int) : EscapeAnalysisState * JitHelper option =
             let argument =
                 match List.tryItem index arguments with
                 | Some argument -> argument
                 | None ->
                     failwith
-                        $"BUG: a cast to %O{cast.Type} names type variable %d{index}, which the instance has no argument for"
+                        $"BUG: a %O{site.Instruction} of %O{site.Type} names type variable %d{index}, which the instance has no argument for"
 
-            let nullable =
-                match AllConcreteTypes.lookup argument state.TypeSystem.ConcreteTypes with
-                | Some concrete -> concrete.Identity = state.BaseTypes.Nullable.Identity
-                | None -> false
+            let identity =
+                AllConcreteTypes.lookup argument state.TypeSystem.ConcreteTypes
+                |> Option.map (fun concrete -> concrete.Identity)
 
-            if TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem argument then
-                Some CastTarget.Any
-            elif cast.Unboxing then
-                None
-            elif
-                nullable
-                && CodeSharing.canonicalisesToCanon state.BaseTypes state.TypeSystem argument
-            then
-                Some CastTarget.Any
-            else
-                Some CastTarget.Class
+            let nullable = identity = Some state.BaseTypes.Nullable.Identity
+
+            let reference =
+                TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem argument
+
+            match site.Instruction with
+            | HelpedInstruction.Unbox ->
+                state,
+                Some (
+                    if nullable then
+                        JitHelper.UnboxNullable
+                    else
+                        JitHelper.Unbox
+                )
+            | HelpedInstruction.Isinst
+            | HelpedInstruction.Castclass
+            | HelpedInstruction.UnboxAny when reference -> state, Some (JitHelper.Cast (throwing, CastTarget.Any))
+            | HelpedInstruction.UnboxAny ->
+                state,
+                Some (
+                    if nullable then
+                        JitHelper.UnboxNullable
+                    else
+                        JitHelper.Unbox
+                )
+            | HelpedInstruction.Isinst
+            | HelpedInstruction.Castclass ->
+                if
+                    nullable
+                    && CodeSharing.canonicalisesToCanon state.BaseTypes state.TypeSystem argument
+                then
+                    state, Some (JitHelper.Cast (throwing, CastTarget.Any))
+                else
+                    state, Some (JitHelper.Cast (throwing, CastTarget.Class))
+            | HelpedInstruction.Box ->
+                if reference then
+                    state, None
+                elif nullable then
+                    state, Some JitHelper.BoxNullable
+                else
+                    match identity with
+                    | Some identity ->
+                        match boxedWithoutHelper state identity with
+                        | state, true -> state, None
+                        | state, false -> state, Some JitHelper.Box
+                    | None ->
+                        failwith
+                            $"BUG: a box of %O{site.Type} names type variable %d{index}, whose argument %O{argument} is no registered type"
+            | HelpedInstruction.Ldelema -> state, (if reference then Some JitHelper.LdelemaRef else None)
 
         match spelling with
         | TypeDefn.GenericTypeParameter index -> ofArgument typeArguments index
         | TypeDefn.GenericMethodParameter index -> ofArgument methodArguments index
-        | TypeDefn.Modified modified -> instanceCastTarget state typeArguments methodArguments cast modified.Unmodified
-        // A `Nullable<T>` over a type variable.
-        | TypeDefn.GenericInstantiation _ ->
+        | TypeDefn.Modified modified -> instanceHelper state typeArguments methodArguments site modified.Unmodified
+        // A cast to a `Nullable<T>` over a type variable.
+        | TypeDefn.GenericInstantiation _ when
+            site.Instruction = HelpedInstruction.Isinst
+            || site.Instruction = HelpedInstruction.Castclass
+            || site.Instruction = HelpedInstruction.UnboxAny
+            ->
             if namesSharedArgument state typeArguments methodArguments spelling then
-                Some CastTarget.Any
+                state, Some (JitHelper.Cast (throwing, CastTarget.Any))
             else
-                Some CastTarget.Class
-        | other -> failwith $"BUG: a cast to %O{other} recorded as one only an instance decides"
+                state, Some (JitHelper.Cast (throwing, CastTarget.Class))
+        | other -> failwith $"BUG: a %O{site.Instruction} of %O{other} recorded as one only an instance decides"
 
     /// The facts of `instance`: those of its definition, less what a run of the instance cannot
     /// reach, given which of the values its callers pass are null or zero (`MethodInstance.Passed`),
@@ -5128,7 +5324,7 @@ module EscapeAnalysis =
                             // These two are read only to drop `Calls` at their offsets, which are
                             // filtered.
                             LookedUp = facts.LookedUp
-                            Casts = facts.Casts
+                            HelperSites = facts.HelperSites
                             ConstrainedPointers =
                                 facts.ConstrainedPointers |> List.filter (fun (offset, _, _) -> at offset)
                             Rethrows = facts.Rethrows |> List.filter (fst >> at)
@@ -5166,25 +5362,32 @@ module EscapeAnalysis =
                                 )
                         }
 
-            // The JIT calls the one `CastHelpers` method the instance's cast picks.
-            let refined =
+            // The JIT calls the one `CastHelpers` method, if any, that the instance's instruction
+            // picks.
+            let state, refined =
                 match instance.Arguments with
-                | Instantiation.Open -> refined
+                | Instantiation.Open -> state, refined
                 | Instantiation.Closed (typeArguments, methodArguments) ->
-                    let excluded =
-                        refined.Casts
-                        |> List.collect (fun (offset, cast) ->
-                            let target = instanceCastTarget state typeArguments methodArguments cast cast.Type
+                    let state, excluded =
+                        ((state, []), refined.HelperSites)
+                        ||> List.fold (fun (state, excluded) (offset, site) ->
+                            let state, picked =
+                                instanceHelper state typeArguments methodArguments site site.Type
 
-                            [ CastTarget.Class ; CastTarget.Interface ; CastTarget.Any ]
-                            |> List.filter (fun other -> Some other <> target)
-                            |> List.map (fun other -> offset, castHelper state cast.Throwing other)
+                            let others =
+                                candidateHelpers site.Instruction
+                                |> List.filter (fun helper -> Some helper <> picked)
+                                |> List.map (fun helper -> offset, jitHelperMethod state helper)
+
+                            state, others @ excluded
                         )
-                        |> Set.ofList
+
+                    let excluded = Set.ofList excluded
 
                     if excluded.IsEmpty then
-                        refined
+                        state, refined
                     else
+                        state,
                         { refined with
                             Calls =
                                 refined.Calls

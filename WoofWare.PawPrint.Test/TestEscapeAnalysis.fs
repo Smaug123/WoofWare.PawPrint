@@ -2327,6 +2327,10 @@ public static class Cases
     public static object BoxOfStruct(Comparable c) => BoxOf(c);
     public static object BoxOfNullable(int? i) => BoxOf(i);
 
+    // The JIT folds a byref-like type's box away, or refuses it.
+    public static bool IsNull<T>(T t) where T : allows ref struct => t == null;
+    public static bool IsNullOfSpan(Span<int> s) => IsNull(s);
+
     public static ref string ElementOfStrings(string[] a) => ref a[0];
     public static ref int ElementOfInts(int[] a) => ref a[0];
     public static ref T ElementOf<T>(T[] a) => ref a[0];
@@ -2450,6 +2454,7 @@ public static class Cases
                 "BoxOfEnum", []
                 "BoxOfStruct", [ "Box" ]
                 "BoxOfNullable", [ "Box" ; "Box_Nullable" ]
+                "IsNullOfSpan", []
                 "ElementOfStrings", [ "LdelemaRef" ]
                 "ElementOfInts", []
                 // Shared code takes the address of a `__Canon`, a reference type's.
@@ -2479,6 +2484,7 @@ public static class Cases
                 "IsList", [ "IsInstanceOfClass" ]
                 "Cast", [ "ChkCastAny" ; "Unbox" ; "Unbox_Nullable" ]
                 "BoxOf", [ "Box" ; "Box_Nullable" ]
+                "IsNull", [ "Box" ; "Box_Nullable" ]
                 "ElementOf", [ "LdelemaRef" ]
             ]
 
