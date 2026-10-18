@@ -98,7 +98,7 @@ type internal SetupReadBack =
 module AppContextSeed =
 
     /// What PawPrint wants `AppContext::Setup` for, phrased to complete "PawPrint calls it
-    /// to …" in `HostStartupCall`'s rejections.
+    /// to …" in `CorelibEntryPoint`'s rejections.
     [<Literal>]
     let private Purpose =
         "install the host's configuration properties, which is what AppContext.GetData reads"
@@ -139,10 +139,10 @@ module AppContextSeed =
         : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * SetupShape
         =
         let appContext =
-            HostStartupCall.findCorelibType corelib "System" "AppContext" Purpose
+            CorelibEntryPoint.findCorelibType corelib "System" "AppContext" Purpose
 
         let exceptionType =
-            HostStartupCall.findCorelibType corelib "System" "Exception" Purpose
+            CorelibEntryPoint.findCorelibType corelib "System" "Exception" Purpose
 
         let candidates =
             appContext.Methods |> List.filter (fun m -> m.Name = "Setup" && m.IsStatic)

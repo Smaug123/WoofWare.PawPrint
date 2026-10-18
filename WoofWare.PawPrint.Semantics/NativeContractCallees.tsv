@@ -293,3 +293,17 @@ vm/typedesc.inl:ParamTypeDesc::GetTypeParam	nothing	Reads the parameterized type
 vm/castcache.h:CastCache::TryGetFromCache	nothing	Reads the cast cache, by CastCache::TryGet, whose contract is NOTHROW and GC_NOTRIGGER.
 inc/contract.h:LOADS_TYPE	nothing	A debug build's contract checks; a release build compiles it to nothing.
 vm/typedesc.cpp:TypeVarTypeDesc::GetConstraints	loads	Reads the generic parameter's cached constraints, loading them by LoadConstraints where those cached are fewer than asked for.
+vm/gcheaputilities.h:GCHeapUtilities::UseThreadAllocationContexts	nothing	Reads whether the GC uses thread allocation contexts, which it always does on Unix.
+vm/gcheaputilities.h:ee_alloc_context::getCombinedLimit	nothing	Reads the allocation context's limit.
+vm/methodtable.h:MethodTable::GetBaseSize	nothing	Reads the method table's base size.
+vm/object.h:Object::HasEmptySyncBlockInfo	nothing	Reads the object's header, in a debug build's assertion.
+vm/methodtable.h:MethodTable::HasFinalizer	nothing	Reads the method table's flags.
+vm/methodtable.h:MethodTable::RequiresAlign8	nothing	Reads the method table's flags.
+vm/methodtable.cpp:MethodTable::CheckInstanceActivated	nothing	Reads whether the type's module and its parents' modules are activated, in a debug build's consistency check.
+vm/common.h:GCHeapMemoryBarrier	nothing	A memory barrier on a target with a weak memory model, and nothing on x64.
+inc/stdmacros.h:IS_ALIGNED	nothing	Tests a value's alignment, in a debug build's assertion.
+classlibnative/bcltype/arraynative.inl:InlinedForwardGCSafeCopyHelper	nothing	Copies pointer-aligned memory forwards a pointer or more at a time; its contract is NOTHROW and GC_NOTRIGGER.
+classlibnative/bcltype/arraynative.inl:InlinedBackwardGCSafeCopyHelper	nothing	Copies pointer-aligned memory backwards a pointer or more at a time; its contract is NOTHROW and GC_NOTRIGGER.
+vm/gchelpers.inl:InlinedSetCardsAfterBulkCopyHelper	nothing	Marks the GC's cards and card bundles over the copied range, and its software write watch where that is enabled.
+vm/methodtable.inl:MethodTable::IsEnum	nothing	Reads the method table's flags, in a debug build's assertion.
+vm/methodtable.inl:MethodTable::IsTruePrimitive	nothing	Reads the method table's flags, in a debug build's assertion.

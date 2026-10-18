@@ -2184,6 +2184,53 @@ public static class SR
             failwith
                 $"Without DynamicCastsAsDocumented, ChkCastAny is hidden at %A{Set.toList rendered}, not at %s{site}"
 
+    /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
+    /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
+    /// through the QCall `ThrowInvalidCastException`.
+    let private boxingHelpers : (string * string) list =
+        [
+            "Box", "=System.OutOfMemoryException"
+            "Box_Nullable", "=System.OutOfMemoryException"
+            "Unbox", "=System.InvalidCastException"
+            "Unbox_Nullable", "=System.InvalidCastException"
+            "Unbox_TypeTest", "=System.InvalidCastException"
+        ]
+
+    [<Test>]
+    let ``every box and unbox helper the JIT calls is seen through`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let corelib = hostCoreLib ()
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        let _ =
+            (analysis, boxingHelpers)
+            ||> List.fold (fun analysis (name, raised) ->
+                let key = methodNamed corelib "System.Runtime.CompilerServices.CastHelpers" name
+
+                let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+                (name, sources |> Seq.map (renderSite analysis) |> List.ofSeq)
+                |> shouldEqual (name, [])
+
+                let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+                (name, (render analysis escapes).Contains raised) |> shouldEqual (name, true)
+
+                analysis
+            )
+
+        ()
+
     /// Code a capability query guards, compiled optimized as CoreLib is, so that the query's result
     /// is branched on directly.
     let private guardedSource =

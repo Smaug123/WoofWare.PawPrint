@@ -192,7 +192,7 @@ module NativeObjectHeader =
                 let purpose = "hand an inflating thin lock's owner to the object's new Lock"
 
                 let initializeForMonitor =
-                    HostStartupCall.findCorelibStaticMethod
+                    CorelibEntryPoint.findCorelibStaticMethod
                         ctx.BaseClassTypes
                         "System.Threading"
                         "Lock"
@@ -252,7 +252,7 @@ module NativeObjectHeader =
                         state.ThreadState.[ctx.Thread]
                         None
                         ReturnValueDisposition.PushToCaller
-                        ExceptionEscape.Propagate
+                        (ExceptionEscape.UnhandledAtNativeCaller "SyncBlock::TryUpgradeThinLockToFullLock")
                         state
 
                 match commitment with
