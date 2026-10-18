@@ -91,8 +91,7 @@ module TestUnmanagedCallersOnlyEntry =
     [<TestCaseSource(nameof cases)>]
     let ``entering an UnmanagedCallersOnly method from managed code is fatal`` (sourceName : string) : unit =
         match sourceName with
-        | "UnmanagedCallersOnlyDelegateInvoke.cs"
-        | "UnmanagedCallersOnlyThreadStart.cs" -> Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
+        | "UnmanagedCallersOnlyThreadStart.cs" -> Net11Frontier.park Net11Frontier.delegateCreateMethodInfo
         | "UnmanagedCallersOnlyForceEmitInvoke.cs"
         | "UnmanagedCallersOnlyReflectionInvoke.cs" -> Net11Frontier.park Net11Frontier.isAsyncMethod
         | _ -> ()
@@ -149,8 +148,6 @@ module TestUnmanagedCallersOnlyEntry =
     /// otherwise satisfied by a guest that could not have printed it at all.
     [<Test>]
     let ``the refusal precedes the declaring type's static constructor`` () : unit =
-        Net11Frontier.park Net11Frontier.delegateBindToMethodInfo
-
         let sourceName = "UnmanagedCallersOnlyCctorNotRun.cs"
         let marker = "HOLDER CCTOR RAN"
 

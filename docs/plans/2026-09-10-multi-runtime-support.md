@@ -761,6 +761,14 @@ mutation-testing skill applies to each table/classifier they introduce.
      `isAsyncMethod`, `inlineArrayOfReferences`, the futex, the three-argument
      `RuntimeModule_GetTypes`, and a runtime-async method in System.Net.Http
      (`StringContentRoundTrip.cs`);
+   * **(landed)** `Delegate_BindToMethodInfo`'s new signature. .NET 11's QCall is handed the
+     delegate's and the target's `MethodTable*` in place of the delegate, and reports the binding
+     through a `BindToMethodDetails` struct that CoreLib copies into the delegate
+     (`BindToMethodDetailsLayout`); its `extraData` is the method handed in, where a closed
+     binding's `_methodPtr` may name an override. Its open path also stopped sending a static
+     virtual method to a virtual call stub (`DelegateRepresentation.bindsOpenToVirtualCallStub`).
+     Past it, the parked cases that ask `Delegate.Method` reach `Delegate_CreateMethodInfo`
+     (`delegateCreateMethodInfo`);
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);

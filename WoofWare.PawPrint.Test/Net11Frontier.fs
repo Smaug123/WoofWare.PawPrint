@@ -13,9 +13,9 @@ module Net11Frontier =
     let isAsyncMethod : string =
         "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
-    /// .NET 11's `Delegate_BindToMethodInfo` has a new signature.
-    let delegateBindToMethodInfo : string =
-        "On .NET 11, `Delegate.BindToMethodInfo` calls the `Delegate_BindToMethodInfo` QCall with a new signature, `(MethodTable*, MethodTable*, RuntimeMethodHandleInternal, QCallTypeHandle, DelegateBindingFlags, ObjectHandleOnStack, BindToMethodDetails*) -> int`, which PawPrint's handler, matching .NET 10's, does not recognise: \"Unimplemented native method (PInvokeImpl QCall!Delegate_BindToMethodInfo)\". `DynamicMethod.CreateDelegate` reaches it. Un-park when the handler takes .NET 11's signature."
+    /// .NET 11's `Delegate.Method` makes its `MethodInfo` through a QCall.
+    let delegateCreateMethodInfo : string =
+        "On .NET 11, `Delegate.Method` makes the `MethodInfo` it has not cached through the `Delegate_CreateMethodInfo` QCall (`GetMethodImplUncached`, Delegate.CoreCLR.cs:272), over the `MethodDesc*` in `_extraData`, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)\". Measured on 2026-10-18. Un-park when it is answered."
 
     /// .NET 11's `FileStream` asks whether the filesystem supports locking.
     let fileSystemSupportsLocking : string =
