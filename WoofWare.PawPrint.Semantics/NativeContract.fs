@@ -62,6 +62,16 @@ type ManagedCall =
         Arguments : NativeArgument list
     }
 
+/// A claim about the program under which a native method's contract holds, and which an analyser
+/// must be allowed to make before it relies on the contract.
+[<RequireQualifiedAccess>]
+type NativeAssumption =
+    /// Every type the native loads is found without running the program's `AssemblyResolve` or
+    /// `Resolving` handlers, which are managed code, is intact, and is defined as its name says:
+    /// each is named by the metadata of a type already loaded, such as a generic parameter's
+    /// constraint.
+    | NamedTypesLoad
+
 /// What a method CoreCLR implements in native code (`NativeMethod`) can do to its caller, as an
 /// analyser needs it. Unrecoverable failures (`StackOverflowException`, `OutOfMemoryException` from
 /// an operation that allocates nothing, and a fault in native code, which ends the process) are out
@@ -80,6 +90,9 @@ type NativeContract =
         /// constructors of the exceptions it raises. The empty list is a positive claim that it
         /// runs no other managed code.
         Runs : ManagedCall list
+        /// The claims under which all of the above holds. Where one fails, the method may run
+        /// other managed code and raise anything.
+        Assumes : NativeAssumption list
     }
 
 /// A method of CoreLib's that CoreCLR implements in native code, as the contract table names it.
@@ -125,9 +138,9 @@ module NativeContractTable =
             failwith $"NativeContractTable: %s{why} in %s{line}"
 
         match line.Split '\t' with
-        | [| kind ; name ; raises ; returns ; result ; runs ; sources ; reason |] ->
+        | [| kind ; name ; raises ; returns ; result ; runs ; assumes ; sources ; reason |] ->
             if
-                [ kind ; name ; raises ; returns ; result ; runs ; sources ]
+                [ kind ; name ; raises ; returns ; result ; runs ; assumes ; sources ]
                 |> List.exists (Seq.exists Char.IsWhiteSpace)
             then
                 fail "white space in a field before the reason"
@@ -207,6 +220,24 @@ module NativeContractTable =
                     )
                     |> List.ofArray
 
+            let assumes =
+                match assumes with
+                | "-" -> []
+                | assumes ->
+                    let parsed =
+                        assumes.Split '|'
+                        |> Array.map (fun assumption ->
+                            match assumption with
+                            | "NamedTypesLoad" -> NativeAssumption.NamedTypesLoad
+                            | other -> fail $"no assumption named %s{other}"
+                        )
+                        |> List.ofArray
+
+                    if List.distinct parsed <> parsed then
+                        fail $"an assumption named twice in %s{assumes}"
+
+                    parsed
+
             let sources =
                 sources.Split '|'
                 |> Array.map (fun source ->
@@ -234,11 +265,12 @@ module NativeContractTable =
                         CanReturn = canReturn
                         Result = result
                         Runs = runs
+                        Assumes = assumes
                     }
                 Sources = sources
                 Reason = reason
             }
-        | _ -> fail "not eight tab-separated fields"
+        | _ -> fail "not nine tab-separated fields"
 
     /// The rows of a table in the checked-in format, whatever its line endings. A line starting
     /// with `#` is a comment.

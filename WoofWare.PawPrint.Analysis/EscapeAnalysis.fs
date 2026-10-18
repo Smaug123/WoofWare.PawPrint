@@ -446,8 +446,11 @@ type EscapeAnalysisState =
 /// in the module is made.
 ///
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
-/// on an object whose class implements it. That is assumed to throw nothing but the
-/// <c>InvalidCastException</c> its documentation asks for.
+/// on an object whose class implements it. Where the analysis follows the cast helpers' fallback,
+/// which asks it, that it throws nothing but the <c>InvalidCastException</c> its documentation asks
+/// for is <c>Assumption.DynamicCastsAsDocumented</c>; from <c>castclass</c>, <c>isinst</c> and
+/// <c>stelem.ref</c>, whose helpers the analysis does not yet follow, it is assumed without being
+/// listed.
 ///
 /// The IL is assumed to be well typed: a value held where the IL spells a type (an argument, a
 /// local, a field, a call's result) is of that type, as the JIT assumes when it devirtualises. So a
@@ -2499,7 +2502,13 @@ module EscapeAnalysis =
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->
                 match NativeMethod.recognise assembly key.Method.Get with
-                | Some native -> Runs.Native native
+                | Some native when
+                    (NativeMethod.contract native).Assumes
+                    |> List.forall (Assumption.ofNative >> assumptions.Contains)
+                    ->
+                    Runs.Native native
+                // Its contract holds under a claim the caller does not allow.
+                | Some _
                 | None -> Runs.Opaque Opacity.NativeBody
             | MethodBody.Il body -> Runs.Il (body, None)
 
@@ -2548,7 +2557,11 @@ module EscapeAnalysis =
                 contract.Raises
                 |> List.map (fun name -> parameterlessConstructor state name, [])
 
-            state, contracted (exactly contract.Raises) [] (constructors @ List.map (nativeCall state) contract.Runs)
+            state,
+            contracted
+                (exactly contract.Raises)
+                (contract.Assumes |> List.map Assumption.ofNative)
+                (constructors @ List.map (nativeCall state) contract.Runs)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.

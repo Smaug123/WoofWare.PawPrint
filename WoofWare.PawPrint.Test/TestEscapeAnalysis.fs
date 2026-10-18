@@ -1816,7 +1816,8 @@ public static class SR
             match assumption with
             | Assumption.CoreLibTypeInitializers -> keys.Length |> shouldBeGreaterThan 1
             | Assumption.NamedTypesLoad
-            | Assumption.StackTracePreserved -> keys.Length |> shouldEqual 1
+            | Assumption.StackTracePreserved
+            | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
@@ -2077,6 +2078,111 @@ public static class SR
             )
 
         ()
+
+    /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's `isinst` and `castclass`
+    /// helpers to, and whether each throws. All but `IsInstanceOfClass` fall back, where `CastCache`
+    /// has no answer, to the QCall `IsInstanceOf_NoCacheLookup`; the `ChkCast` ones ask it to throw.
+    let private castHelpers : (string * bool) list =
+        [
+            "IsInstanceOfAny", false
+            "IsInstanceOfInterface", false
+            "IsInstanceOfClass", false
+            "ChkCastAny", true
+            "ChkCastInterface", true
+            "ChkCastClass", true
+            "ChkCastClassSpecial", true
+        ]
+
+    /// The assumptions the QCall `IsInstanceOf_NoCacheLookup` relies on: that the constraints of a
+    /// generic parameter of an open target load, and what an `IDynamicInterfaceCastable` answers.
+    let private castFallbackAssumes : Set<Assumption> =
+        Set.ofList [ Assumption.NamedTypesLoad ; Assumption.DynamicCastsAsDocumented ]
+
+    [<Test>]
+    let ``every cast helper the JIT calls is seen through, the throwing ones raising InvalidCastException`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let corelib = hostCoreLib ()
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        let _ =
+            (analysis, castHelpers)
+            ||> List.fold (fun analysis (name, throws) ->
+                let key = methodNamed corelib "System.Runtime.CompilerServices.CastHelpers" name
+
+                let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+                (name, sources |> Seq.map (renderSite analysis) |> List.ofSeq)
+                |> shouldEqual (name, [])
+
+                let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+                if throws then
+                    (name, (render analysis escapes).Contains "=System.InvalidCastException")
+                    |> shouldEqual (name, true)
+
+                let falls = name <> "IsInstanceOfClass"
+
+                (name, Set.intersect escapes.Assumes castFallbackAssumes)
+                |> shouldEqual (name, (if falls then castFallbackAssumes else Set.empty))
+
+                analysis
+            )
+
+        ()
+
+    [<Test>]
+    let ``a cast helper's fallback is hidden without either assumption it relies on`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let corelib = hostCoreLib ()
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                []
+                id
+
+        let key =
+            methodNamed corelib "System.Runtime.CompilerServices.CastHelpers" "ChkCastAny"
+
+        // Without named types loading, the QCall's own body is hidden.
+        let unloading, sources =
+            EscapeAnalysis.unknownSources (analysis (Set.remove Assumption.NamedTypesLoad Assumption.all)) key
+
+        sources
+        |> Seq.map (fun site -> EscapeAnalysis.methodName unloading site.Method, site.Reason)
+        |> List.ofSeq
+        |> function
+            | [ method, Opacity.NativeBody ] when method.Contains "IsInstanceOf_NoCacheLookup" -> ()
+            | other -> failwith $"Without NamedTypesLoad, ChkCastAny is hidden at %A{other}"
+
+        // Without what an `IDynamicInterfaceCastable` answers, the wrapper's call of it is.
+        let undynamic, sources =
+            EscapeAnalysis.unknownSources (analysis (Set.remove Assumption.DynamicCastsAsDocumented Assumption.all)) key
+
+        let rendered = sources |> Seq.map (renderSite undynamic) |> Set.ofSeq
+
+        let site =
+            "System.Runtime.InteropServices.DynamicInterfaceCastableHelpers::IsInterfaceImplemented IL VirtualCall "
+            + "System.Runtime.InteropServices.IDynamicInterfaceCastable::IsInterfaceImplemented"
+
+        if not (rendered.Contains site) then
+            failwith
+                $"Without DynamicCastsAsDocumented, ChkCastAny is hidden at %A{Set.toList rendered}, not at %s{site}"
 
     /// Code a capability query guards, compiled optimized as CoreLib is, so that the query's result
     /// is branched on directly.

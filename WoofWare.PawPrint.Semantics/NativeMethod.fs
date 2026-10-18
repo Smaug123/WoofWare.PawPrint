@@ -314,6 +314,7 @@ module NativeMethod =
                 CanReturn = true
                 Result = ResultNullness.NotAReference
                 Runs = []
+                Assumes = []
             }
         // Native code raises no managed exception: a fault in it ends the process, and so does an
         // exception thrown by a managed callback it calls, which does not cross the native frames
@@ -326,5 +327,6 @@ module NativeMethod =
                 CanReturn = true
                 Result = ResultNullness.NotAReference
                 Runs = []
+                Assumes = []
             }
         | NativeMethod.Tabulated row -> row.Contract
