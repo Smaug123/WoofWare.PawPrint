@@ -283,14 +283,10 @@ public static class Program
 
     [<Test>]
     let ``a delegate bound to an ambiguous method throws before it is made`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         agrees "CaseCreateDelegate"
 
     [<Test>]
     let ``an open delegate invoked on a receiver whose slot is ambiguous throws`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         agrees "CaseOpenDelegate"
 
     [<Test>]

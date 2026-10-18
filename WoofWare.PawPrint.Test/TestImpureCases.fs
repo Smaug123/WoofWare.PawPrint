@@ -5182,9 +5182,6 @@ module TestImpureCases =
                     "TruncateWiringLinuxSeeded.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.fileSystemSupportsLocking)
-            yield!
-                [ "DelegateInvokeHandlePerInstantiation.cs" ; "DynamicMethodReflectedCalls.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
             "DynamicAssemblyHosting.cs",
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
         ]

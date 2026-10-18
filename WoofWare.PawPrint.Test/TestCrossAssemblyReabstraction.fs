@@ -350,14 +350,10 @@ public static class Program
 
     [<Test>]
     let ``a delegate bound to a reabstracted method throws before it is made`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         agrees "CaseCreateDelegate" 0
 
     [<Test>]
     let ``an open delegate invoked on a receiver whose slot is reabstracted throws`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         agrees "CaseOpenDelegate" 0
 
     [<Test>]

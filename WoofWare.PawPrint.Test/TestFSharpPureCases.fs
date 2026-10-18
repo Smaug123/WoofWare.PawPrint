@@ -189,15 +189,7 @@ module TestFSharpPureCases =
 
     /// F# cases parked on .NET 11 alone, each with why it is parked there and what would un-park it.
     let parkedOnNet11 : Map<string, string> =
-        [
-            "SprintfBasic"
-            "SprintfPercentA"
-            "SprintfPercentO"
-            "UnionReflection"
-            "UnionVirtualSlots"
-        ]
-        |> List.map (fun case -> case, Net11Frontier.runtimeMethodInfoValue)
-        |> Map.ofList
+        Map.empty
 
     /// Which F# cases are parked on `runtime`, and how each case is expected to end there.
     let onRuntime (runtime : EmulatedRuntime) : GuestCasesOnRuntime<string> =

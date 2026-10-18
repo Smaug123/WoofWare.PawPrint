@@ -262,8 +262,6 @@ unsafe class Program
     /// are compared here.
     [<Test>]
     let ``Scalar-only profile raises PlatformNotSupportedException from CoreCLR's throw helper`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         let source =
             """
 using System;
