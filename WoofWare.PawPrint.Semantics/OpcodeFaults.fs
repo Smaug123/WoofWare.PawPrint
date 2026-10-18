@@ -398,6 +398,11 @@ module OpcodeFaults =
 
     let ofUnaryMetadata (op : UnaryMetadataTokenIlOp) : OpcodeFaults =
         match op with
+        // "System.InvalidCastException is thrown if obj cannot be cast to typeTok" (ECMA-335
+        // III.4.3), as PawPrint's interpreter throws it. CoreCLR's JIT compiles `castclass`, and
+        // `unbox.any` of a reference type, to a call of one of CoreLib's `CastHelpers` methods
+        // (`impCastClassOrIsInstToTree`, importer.cpp), which raises it there, and whatever else
+        // that callee raises reaches the instruction too.
         | UnaryMetadataTokenIlOp.Castclass -> OpcodeFaults.Raises [ OpcodeFault.InvalidCast ]
         | UnaryMetadataTokenIlOp.Unbox
         | UnaryMetadataTokenIlOp.Unbox_Any ->
@@ -515,10 +520,15 @@ module OpcodeFaults =
             OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
         // These fault on nothing themselves and invoke nothing.
         | UnaryMetadataTokenIlOp.Mkrefany
-        | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Constrained
         | UnaryMetadataTokenIlOp.Sizeof -> none
+        // `isinst` faults on nothing itself either, but CoreCLR's JIT compiles it to a call of
+        // CoreLib (`impCastClassOrIsInstToTree`, importer.cpp): one of the `IsInstanceOf` methods
+        // of `CastHelpers` that `jithelpers.h` binds, whose fallback asks the runtime, which can
+        // allocate and call the object's `IDynamicInterfaceCastable.IsInterfaceImplemented`. What
+        // those raise reaches it from that callee, so it is not this table's.
+        | UnaryMetadataTokenIlOp.Isinst -> none
         // `ldtoken` faults on nothing itself either, but CoreCLR's JIT compiles it to a call of
         // CoreLib (`CEE_LDTOKEN`, importer.cpp): for a method or a field, the `FromPtr` of
         // `RuntimeMethodInfoStub` or `RuntimeFieldInfoStub`, which makes the stub its handle holds,
