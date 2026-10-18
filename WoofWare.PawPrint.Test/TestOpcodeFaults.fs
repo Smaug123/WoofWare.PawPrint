@@ -425,3 +425,88 @@ module TestOpcodeFaults =
     let ``switch does not fault on an out-of-range index`` () : unit =
         OpcodeFaults.ofIlOp (IlOp.Switch (System.Collections.Immutable.ImmutableArray.Create<int32> 0))
         |> shouldEqual (OpcodeFaults.Raises [])
+
+    // ---------- What a fault needs of the operands ----------
+
+    /// A requirement narrows a fault the entry lists, of an operand the instruction pops; one of a
+    /// fault the entry omits would say nothing, and one of an operand deeper than the instruction
+    /// pops would be read from a stack slot the instruction never sees.
+    [<Test>]
+    let ``every operand requirement is of a listed fault and a popped operand`` () : unit =
+        let dummy =
+            SourcedMetadataToken.ofInt (System.Reflection.AssemblyName "dummy-for-opcode-fault-tests") 0x02000001
+
+        let inputs : StackEffectInputs =
+            {
+                Arguments = 4
+                Locals = 4
+                ReturnsValue = true
+                Callees = Map.empty
+            }
+
+        let ops =
+            [
+                for op in allCasesOf<NullaryIlOp> () -> IlOp.Nullary op
+                for op in allCasesOf<UnaryMetadataTokenIlOp> () ->
+                    IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata dummy)
+                for op in allCasesOf<UnaryStringTokenIlOp> () ->
+                    IlOp.UnaryStringToken (
+                        op,
+                        StringOperand.FromMetadata (
+                            SourcedStringToken.ofInt
+                                (System.Reflection.AssemblyName "dummy-for-opcode-fault-tests")
+                                0x70000001
+                        )
+                    )
+            ]
+
+        let offenders =
+            [
+                for op in ops do
+                    for fault in allCasesOf<OpcodeFault> () do
+                        match OpcodeFaults.requiredOperands op fault with
+                        | [] -> ()
+                        | required ->
+                            if not (OpcodeFaults.mayRaise fault (OpcodeFaults.ofIlOp op)) then
+                                yield $"%O{op} needs operands to raise %O{fault}, which it does not list"
+
+                            match StackEffect.ofInstruction inputs (Map.ofList [ 0, op ]) 0 op with
+                            | Ok effect ->
+                                for requirement in required do
+                                    if requirement.FromTop < 0 || requirement.FromTop >= effect.Pops then
+                                        yield
+                                            $"%O{op} needs operand %d{requirement.FromTop} to raise %O{fault}, but pops %d{effect.Pops}"
+                            | Error e -> yield $"%O{op} has no stack effect: %O{e}"
+            ]
+
+        offenders |> shouldEqual []
+
+    /// Division needs a zero divisor to divide by zero, and the signed forms need a divisor of -1
+    /// under the least dividend to overflow.
+    [<Test>]
+    let ``division's faults need the operands that cause them`` () : unit =
+        let divisorZero : OperandRequirement list =
+            [
+                {
+                    FromTop = 0
+                    Is = IntegerValue.Zero
+                }
+            ]
+
+        for op in [ NullaryIlOp.Div ; NullaryIlOp.Rem ; NullaryIlOp.Div_un ; NullaryIlOp.Rem_un ] do
+            OpcodeFaults.requiredOperands (IlOp.Nullary op) OpcodeFault.DivideByZero
+            |> shouldEqual divisorZero
+
+        for op in [ NullaryIlOp.Div ; NullaryIlOp.Rem ] do
+            OpcodeFaults.requiredOperands (IlOp.Nullary op) OpcodeFault.Overflow
+            |> shouldEqual
+                [
+                    {
+                        FromTop = 0
+                        Is = IntegerValue.MinusOne
+                    }
+                    {
+                        FromTop = 1
+                        Is = IntegerValue.Least
+                    }
+                ]
