@@ -62,7 +62,8 @@ What lives here:
   hold only under a claim about the program (`NativeAssumption`), which an analyser must be allowed
   to make before relying on it: `NamedTypesLoad`, for a native that loads the types a loaded type's
   metadata names, which would otherwise run the program's assembly resolution handlers wherever an
-  assembly is missing. A QCall is described only when it is called as a shim function is. `TestNativeContractTable` checks that
+  assembly is missing. A row says whether an FCall is static or an instance method, which passes
+  its receiver to the C++ as the first argument. A QCall is described only when it is called as a shim function is. `TestNativeContractTable` checks that
   each row names a native both CoreLibs declare and recognise as that row, raises only CoreLib
   exception types, and cites functions the pinned source defines and binds the native to; that
   every call a cited function makes is to one its row also cites, or to one

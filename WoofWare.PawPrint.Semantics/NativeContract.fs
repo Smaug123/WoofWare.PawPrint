@@ -98,9 +98,9 @@ type NativeContract =
 /// A method of CoreLib's that CoreCLR implements in native code, as the contract table names it.
 [<RequireQualifiedAccess>]
 type TabulatedNative =
-    /// An FCall: the `InternalCall` method of this name on this top-level type (by namespace and
-    /// name joined with a dot), the only one of that name the type declares, which `vm/ecalllist.h`
-    /// binds to C++ by its name.
+    /// A static FCall: the static `InternalCall` method of this name on this top-level type (by
+    /// namespace and name joined with a dot), the only `InternalCall` of that name the type
+    /// declares, which `vm/ecalllist.h` binds to C++ by its name.
     | FCall of declaringType : string * method : string
     /// An instance FCall: the `InternalCall` instance method of this name on this top-level type,
     /// the only `InternalCall` of that name the type declares, which `vm/ecalllist.h` binds to C++
