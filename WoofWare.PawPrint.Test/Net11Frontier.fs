@@ -9,9 +9,9 @@ open WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Net11Frontier =
 
-    /// .NET 11 reads a method's handle from any `IRuntimeMethodInfo` at one field offset.
-    let runtimeMethodInfoValue : string =
-        "On .NET 11, `IRuntimeMethodInfo.GetValue` reads the method handle of any `IRuntimeMethodInfo` as `Unsafe.As<RuntimeMethodInfoStub>(method).m_value` (RuntimeHandles.cs:980), relying on every implementation keeping its handle at that field's offset. PawPrint resolves the field by identity, so on a `RuntimeMethodInfo`, whose handle is `m_handle`, the read stops: \"CliValueType.FindFieldById: field '...::m_value' not found\". Reflection over methods, `MethodBase.Invoke` and F#'s printf all reach it. Un-park when that read is answered."
+    /// .NET 11's `RuntimeMethodInfo` asks whether its method is async.
+    let isAsyncMethod : string =
+        "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
     /// .NET 11's `Delegate_BindToMethodInfo` has a new signature.
     let delegateBindToMethodInfo : string =

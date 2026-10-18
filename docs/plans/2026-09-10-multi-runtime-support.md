@@ -741,8 +741,10 @@ mutation-testing skill applies to each table/classifier they introduce.
      refused. The uncontended thin lock runs, recursion included. Past it, the net11 leg measured
      these frontiers, each now a `Net11Frontier` reason: `ThreadNative_Start`'s new signature
      (`threadStart`); `IRuntimeMethodInfo.GetValue`'s read of `m_value` at
-     `RuntimeMethodInfoStub`'s offset on any method info (`runtimeMethodInfoValue`), which most
-     reflection reaches; `Delegate_BindToMethodInfo`'s new signature
+     `RuntimeMethodInfoStub`'s offset on any method info, which most reflection reaches (landed:
+     `SharedNativeField` transcribes `corelib.h`'s rows that lay several managed fields out as one
+     native field, and past it most of that reflection stops at the `IsAsyncMethod` FCall,
+     `isAsyncMethod`); `Delegate_BindToMethodInfo`'s new signature
      (`delegateBindToMethodInfo`); `SystemNative_FileSystemSupportsLocking`
      (`fileSystemSupportsLocking`); the fat lock, reached by contention, `Monitor.Wait` and
      `Pulse` through `GetLockHandleIfExists` (`fatLock`); and inline arrays of references

@@ -475,7 +475,6 @@ public static class Driver
 
     [<Test>]
     let ``TargetSite of a wrapped non-exception is the method that threw it, as the real runtime does`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
         FabricatedGuest.run "Thrower" (fabricate ()) "NonExceptionTargetSiteDriver" targetSiteDriverSource 0
 
     /// Throws a string while the current UI culture's name, which the wrapper's constructor reads

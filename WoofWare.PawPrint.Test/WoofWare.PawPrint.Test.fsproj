@@ -398,6 +398,7 @@
     <Compile Include="CppSource.fs" />
     <Compile Include="TestCppSource.fs" />
     <Compile Include="TestNativeContractTable.fs" />
+    <Compile Include="TestSharedNativeField.fs" />
     <Compile Include="TestAssumption.fs" />
     <Compile Include="TestExceptionMaking.fs" />
     <Compile Include="TestStringConstructor.fs" />
