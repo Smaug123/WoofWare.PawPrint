@@ -320,6 +320,20 @@ module MultiProgram =
         }
         |> withIdle (mapIdle wake driver.Idle)
 
+    /// `ended`, how a program's end left the driver, with `woken`, threads of other programs a
+    /// poll woke before it ended its own process, flipped in the programs left: the kernel wakes
+    /// a thread once, so a wake that is not flipped here is lost.
+    let private flipWokenAfterEnd (woken : Caller<ThreadId> list) (ended : MultiStepOutcome) : MultiStepOutcome =
+        match woken, ended with
+        | [], _ -> ended
+        | _, MultiStepOutcome.Stepped (driver, pid, event) ->
+            MultiStepOutcome.Stepped (flipWoken woken driver, pid, event)
+        // No program is left to have a thread woken.
+        | _, MultiStepOutcome.Finished _ -> ended
+        | _, MultiStepOutcome.Deadlocked _ ->
+            failwith
+                "MultiProgram: a program's end answered a deadlock, which only the preamble's end does (this is a bug in PawPrint)."
+
     /// Wake every thread whose syscall could get further now, in every program, and flip
     /// `alsoWoken` too, threads a program's signal poll woke in another program
     /// (`SignalDispatch.pollMachine`).
@@ -516,13 +530,13 @@ module MultiProgram =
             let program = driver.Current
 
             match SignalDispatch.pollMachine loggerFactory program.BaseClassTypes program.State with
-            | SignalPoll.ProcessKilled (state, ended), _ ->
-                Error (
-                    endCurrent
-                        (withCurrent (withState state program) driver)
-                        (RunningProgram.signalTerminated state ended)
-                        ended
-                )
+            | SignalPoll.ProcessKilled (state, ended), elsewhere ->
+                endCurrent
+                    (withCurrent (withState state program) driver)
+                    (RunningProgram.signalTerminated state ended)
+                    ended
+                |> flipWokenAfterEnd (woken @ elsewhere)
+                |> Error
             | SignalPoll.Continues state, elsewhere ->
                 pollIdle loggerFactory pids (woken @ elsewhere) (withCurrent (withState state program) driver)
         | _ -> pollIdle loggerFactory pids woken driver
@@ -642,14 +656,16 @@ module MultiProgram =
         // syscall wakes, because writing to the pipe and reading from it change what a syscall
         // parked on it is waiting for.
         match SignalDispatch.pollMachine loggerFactory program.BaseClassTypes state with
-        | SignalPoll.ProcessKilled (state, ended), _ ->
+        | SignalPoll.ProcessKilled (state, ended), woken ->
             let driver =
                 { driver with
                     Current = withState state program
                 }
                 |> withIdle idle
 
-            Advanced.Settled (endCurrent driver (RunningProgram.signalTerminated state ended) ended)
+            endCurrent driver (RunningProgram.signalTerminated state ended) ended
+            |> flipWokenAfterEnd woken
+            |> Advanced.Settled
         | SignalPoll.Continues state, woken ->
 
         let driver =

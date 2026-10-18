@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -703,3 +704,66 @@ module TestNativeLibc =
             Config.QuickThrowOnFailure.WithMaxTest 200,
             Prop.forAll (Arb.fromGen (Gen.choose (1, UnixSystem.defaultPidMax - 1))) linux
         )
+
+    [<Test>]
+    let ``a write's SIGPIPE is screened when its writer, finishing a sleeping write, is the only thread`` () : unit =
+        // The screen reads the signal's disposition from the system before the
+        // signal was raised, where a writer finishing a sleeping write is still
+        // parked, and so cannot ask `sigaction` itself. Here no other thread is
+        // left to ask either: the reader closed its end and exited.
+        let kernel =
+            EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
+
+        let writer = kernel.Caller kernel.Leader
+        let reader = kernel.Caller (ThreadId 1)
+
+        let system =
+            match UnixThreadLifecycle.spawn writer (ThreadId 1) (CpuId 0) kernel.System with
+            | SpawnAnswer.Spawned _, system -> system
+            | other -> failwith $"spawn answered %A{other}"
+
+        let readEnd, writeEnd, system =
+            match UnixPipe.pipe2 writer 0 UserBuffer.Mapped system with
+            | Pipe2Answer.Created (readEnd, writeEnd), system -> readEnd, writeEnd, system
+            | other -> failwith $"pipe2 answered %A{other}"
+
+        let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
+            match UnixReadWrite.write writer writeEnd UserBuffer.Mapped 4096UL system with
+            | CallProgress.NeedsCopyIn paused ->
+                let count = (PausedWrite.copyRange paused).ByteCount
+
+                match
+                    UnixReadWrite.writeWithBytes (ImmutableArray.CreateRange (Array.zeroCreate<byte> count)) paused
+                with
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system) -> fill system
+                | other -> failwith $"filling the pipe answered %A{other}"
+            // Full: the writer sleeps.
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock _, system)) -> system
+            | other -> failwith $"filling the pipe answered %A{other}"
+
+        let alone =
+            match UnixDescriptor.close reader readEnd (fill system) with
+            | SyscallAnswer.Completed _, system ->
+                match UnixThreadLifecycle.exitThread reader 0 system with
+                | ProcessFate.Continues ((), system) -> system
+                | other -> failwith $"the reader's exit answered %A{other}"
+            | other -> failwith $"closing the read end answered %A{other}"
+
+        let before =
+            match UnixWait.wake alone with
+            | [ woken, _ ], system when woken = writer -> system
+            | other -> failwith $"expected the close to wake the writer alone, got %A{fst other}"
+
+        match UnixReadWrite.finishWrite writer before with
+        | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.ReturnsRaising (_, raised), after)) ->
+            // The runtime ignores SIGPIPE, so there is nothing to refuse.
+            NativeLibc.screenRaisedSignal
+                kernel.UnixPlatform
+                writer
+                kernel.Leader
+                kernel.PosixSignalShim
+                before
+                raised
+                after
+            |> shouldEqual None
+        | other -> failwith $"expected the write to end in EPIPE and SIGPIPE, got %A{other}"

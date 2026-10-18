@@ -91,60 +91,64 @@ module NativeLibc =
         | SimulatedUnixFlavour.Linux, _ -> false
 
     /// `signo`'s disposition in the process of `asker`, as the `sigaction(2)` system call
-    /// reports it in `system`: `None` where the kernel will not report it (Darwin's SIGKILL and
-    /// SIGSTOP, which nothing can catch). Asked by `asker` if it may make a call, and otherwise
-    /// by the first thread of its process that may: a disposition is the process's, so which
-    /// thread asks changes nothing, and `asker` may be parked in the call that raised the signal.
+    /// reports it in the first of `systems` in which a thread of the process may make a call:
+    /// `None` where the kernel will not report it (Darwin's SIGKILL and SIGSTOP, which nothing
+    /// can catch). Every one of `systems` must hold the same dispositions, as the systems on
+    /// either side of a call that changes none do. Asked by `asker` where it may make a call, and
+    /// otherwise by the first thread of its process that may: a disposition is the process's,
+    /// so which thread asks changes nothing, and `asker` may be parked in the call that raised
+    /// the signal, or owe its return from it.
     ///
-    /// Fails loudly if no thread of the process may make a call.
+    /// Fails loudly if no thread of the process may make a call in any of `systems`: the
+    /// kernel reports a disposition only to a call.
     let private dispositionAsked<'Task when 'Task : comparison>
         (asker : Caller<'Task>)
         (signo : int)
-        (system : UnixSystem<'Task, NativeSignalHandler>)
+        (systems : UnixSystem<'Task, NativeSignalHandler> list)
         : SignalDisposition<NativeSignalHandler> option
         =
         let pid = Caller.processId asker
-        let threads = UnixSystem.threads pid system
 
-        let mayCall (caller : Caller<'Task>) : bool =
-            match Map.tryFind (Caller.thread caller) threads with
-            | Some task ->
-                (UnixThreadState.parkedIn task).IsNone
-                && not (UnixSignal.owesReturn caller system)
-            | None -> false
+        let askerIn (system : UnixSystem<'Task, NativeSignalHandler>) : Caller<'Task> option =
+            let threads = UnixSystem.threads pid system
 
-        let caller =
+            let mayCall (caller : Caller<'Task>) : bool =
+                match Map.tryFind (Caller.thread caller) threads with
+                | Some task ->
+                    (UnixThreadState.parkedIn task).IsNone
+                    && not (UnixSignal.owesReturn caller system)
+                | None -> false
+
             if mayCall asker then
-                asker
+                Some asker
             else
                 threads
                 |> Map.toSeq
                 |> Seq.map (fun (thread, _) -> Caller.make pid thread)
                 |> Seq.tryFind mayCall
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"NativeLibc: no thread of process %O{pid} may make a call, so none can ask sigaction for signal %d{signo}'s disposition (this is a bug in PawPrint)."
-                )
+
+        let asked =
+            systems
+            |> List.tryPick (fun system -> askerIn system |> Option.map (fun caller -> caller, system))
+
+        match asked with
+        | None ->
+            failwith
+                $"NativeLibc: no thread of process %O{pid} may make a call, so none can ask sigaction for signal %d{signo}'s disposition, and the kernel reports a disposition only to a call."
+        | Some (caller, system) ->
 
         match UnixSignal.sigactionSyscall caller signo None system with
         | Ok (disposition, _) -> Some disposition
         | Error _ -> None
 
-    /// Whether PawPrint's kernel model can answer a signal that `sender` sends
-    /// within its own process, on `platform`, given the system and
-    /// System.Native's state before it is sent. `None` if it can. `receiver` is
-    /// the thread that takes it: the process's main thread for a signal sent
-    /// to the process, and the target of one sent to a thread.
-    ///
-    /// Asked only of a signal that is actually being sent: the null signal, an
-    /// invalid number and another target are all answered or refused by the
-    /// kernel model before this matters.
-    let screenSelfSignal<'Task when 'Task : comparison>
+    /// `screenSelfSignal`, with the disposition read from the first of `systems` it can be
+    /// (see `dispositionAsked`).
+    let private screenSelfSignalIn<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
         (sender : Caller<'Task>)
         (receiver : 'Task)
         (shim : PosixSignalShim)
-        (system : UnixSystem<'Task, NativeSignalHandler>)
+        (systems : UnixSystem<'Task, NativeSignalHandler> list)
         (signal : Signal)
         : UnmodelledSelfSignal option
         =
@@ -169,7 +173,7 @@ module NativeLibc =
 
         // Asked of the kernel rather than through the C library, which will not
         // report Linux's 33, whose handler is glibc's own.
-        match dispositionAsked sender (Signal.toRawSignoUnder numbering signal) system with
+        match dispositionAsked sender (Signal.toRawSignoUnder numbering signal) systems with
         // Darwin will not report SIGKILL or SIGSTOP, which nothing can catch,
         // so no native code runs for either.
         | None -> None
@@ -195,6 +199,26 @@ module NativeLibc =
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 
+    /// Whether PawPrint's kernel model can answer a signal that `sender` sends
+    /// within its own process, on `platform`, given the system and
+    /// System.Native's state before it is sent. `None` if it can. `receiver` is
+    /// the thread that takes it: the process's main thread for a signal sent
+    /// to the process, and the target of one sent to a thread.
+    ///
+    /// Asked only of a signal that is actually being sent: the null signal, an
+    /// invalid number and another target are all answered or refused by the
+    /// kernel model before this matters.
+    let screenSelfSignal<'Task when 'Task : comparison>
+        (platform : SimulatedUnixPlatform)
+        (sender : Caller<'Task>)
+        (receiver : 'Task)
+        (shim : PosixSignalShim)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        (signal : Signal)
+        : UnmodelledSelfSignal option
+        =
+        screenSelfSignalIn platform sender receiver shim [ system ] signal
+
     /// Whether PawPrint's kernel model can carry on after a syscall made by
     /// `sender` raised `raised`, given the system and System.Native's state
     /// before the call, and `after`, the system once the kernel generated it.
@@ -219,7 +243,9 @@ module NativeLibc =
             | ValueSome target -> target
             | ValueNone -> leader
 
-        match screenSelfSignal platform sender receiver shim before raised.Signal with
+        // The call changed no disposition, so `after` may answer for `before`, where the
+        // sender may still be parked in the call.
+        match screenSelfSignalIn platform sender receiver shim [ before ; after ] raised.Signal with
         | Some refusal -> Some refusal
         | None ->
 
