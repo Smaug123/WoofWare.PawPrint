@@ -139,3 +139,40 @@ module TestSignalTerminatedCases =
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual (128 + case.Signo)
         | other ->
             failwith $"%s{case.FileName}: expected the real runtime to exit with 128 + %d{case.Signo}, got %O{other}"
+
+    [<Test>]
+    let ``A guest that fails fast with SIGABRT pending dies of the fail-fast on both runtimes`` () : unit =
+        // `Environment.FailFast` with SIGABRT raised while blocked, and so pending: the abort's
+        // unblocking lets it through, and the process dies of it there.
+        let fileName = "FailFastWithSigabrtPending.cs"
+        let source = Assembly.getEmbeddedResourceAsString fileName assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", fileName ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        use peImage = new MemoryStream (image)
+
+        let realResult, pawPrintResult =
+            DifferentialOracle.alongsideInterpreted
+                (fun () -> RealRuntime.executeWithRealRuntime [||] image)
+                (fun () ->
+                    BoundedRun.run
+                        loggerFactory
+                        fileName
+                        (Some fileName)
+                        peImage
+                        (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                )
+
+        match ExpectRun.ended pawPrintResult with
+        | RunOutcome.Aborted (_, _, fatal, termination) ->
+            fatal.Code |> shouldEqual FatalErrorCode.FailFast
+            termination |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
+        | other -> failwith $"%s{fileName}: expected PawPrint to report the fail-fast, got %O{other}"
+
+        match realResult with
+        | RealRuntimeResult.Aborted (ObservedFatalError.FailFast, _) -> ()
+        | other -> failwith $"%s{fileName}: expected the real runtime to fail fast, got %O{other}"

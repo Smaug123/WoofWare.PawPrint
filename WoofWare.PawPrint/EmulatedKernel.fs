@@ -1733,9 +1733,41 @@ module EmulatedKernel =
         let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
         let signo = Signal.toRawSignoUnder numbering Signal.SIGABRT
 
-        let system =
+        let diedOfAbrt (ended : EndedProcess) (remaining : UnixSystem<ThreadId, NativeSignalHandler>) : ProcessEnd =
+            match EndedProcess.termination ended with
+            | ProcessTermination.Signaled (Signal.SIGABRT, _) ->
+                {
+                    Ended = ended
+                    Remaining = remaining
+                }
+            | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
+
+        // The thread's return to user mode after `call`, one of the calls `abort` makes, at
+        // which it takes whatever the call has let through: SIGABRT itself, at its default,
+        // where it was pending while blocked. `Error` if the process dies of it.
+        let returned
+            (call : string)
+            (system : UnixSystem<ThreadId, NativeSignalHandler>)
+            : Result<UnixSystem<ThreadId, NativeSignalHandler>, ProcessEnd>
+            =
+            let answer =
+                try
+                    UnixSignal.onReturnToUser caller system
+                with :? UnmodelledException as e ->
+                    KernelRefusal.fail
+                        $"EmulatedKernel.abort: %O{thread}'s return to user mode after %s{call} was refused"
+                        e
+
+            match answer with
+            | ProcessFate.Continues (ReturnToUserOutcome.Resumes None, system) -> Ok system
+            | ProcessFate.ProcessEnded (ended, remaining) -> Error (diedOfAbrt ended remaining)
+            | ProcessFate.Continues (outcome, _) ->
+                failwith
+                    $"EmulatedKernel.abort: %O{thread}'s return to user mode after %s{call} answered %O{outcome}, where only SIGABRT at its default could be let through."
+
+        let restored =
             match UnixSignal.sigaction caller signo (Some SignalDisposition.Default) system with
-            | Ok (_, system) -> system
+            | Ok (_, system) -> returned "restoring SIGABRT's default" system
             | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
 
         // `SIG_UNBLOCK`, as each `<signal.h>` numbers it.
@@ -1744,16 +1776,23 @@ module EmulatedKernel =
             | SignalNumbering.Linux -> 1
             | SignalNumbering.Darwin -> 2
 
-        let system =
-            match
-                UnixSignal.pthreadSigmask
-                    caller
-                    unblock
-                    (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
-                    system
-            with
-            | Ok (_, system) -> system
-            | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+        let unblocked =
+            restored
+            |> Result.bind (fun system ->
+                match
+                    UnixSignal.pthreadSigmask
+                        caller
+                        unblock
+                        (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                        system
+                with
+                | Ok (_, system) -> returned "unblocking SIGABRT" system
+                | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+            )
+
+        match unblocked with
+        | Error ended -> ended
+        | Ok system ->
 
         let raised =
             try
@@ -1762,14 +1801,7 @@ module EmulatedKernel =
                 KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
 
         match raised with
-        | Ok (ProcessFate.ProcessEnded (ended, remaining)) ->
-            match EndedProcess.termination ended with
-            | ProcessTermination.Signaled (Signal.SIGABRT, _) ->
-                {
-                    Ended = ended
-                    Remaining = remaining
-                }
-            | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
+        | Ok (ProcessFate.ProcessEnded (ended, remaining)) -> diedOfAbrt ended remaining
         | other ->
             failwith
                 $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"
