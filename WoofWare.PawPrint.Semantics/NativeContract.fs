@@ -98,10 +98,14 @@ type NativeContract =
 /// A method of CoreLib's that CoreCLR implements in native code, as the contract table names it.
 [<RequireQualifiedAccess>]
 type TabulatedNative =
-    /// An FCall: the `InternalCall` method of this name on this top-level type (by namespace and
-    /// name joined with a dot), the only one of that name the type declares, which `vm/ecalllist.h`
-    /// binds to C++ by its name.
+    /// A static FCall: the static `InternalCall` method of this name on this top-level type (by
+    /// namespace and name joined with a dot), the only `InternalCall` of that name the type
+    /// declares, which `vm/ecalllist.h` binds to C++ by its name.
     | FCall of declaringType : string * method : string
+    /// An instance FCall: the `InternalCall` instance method of this name on this top-level type,
+    /// the only `InternalCall` of that name the type declares, which `vm/ecalllist.h` binds to C++
+    /// by its name, and which passes the receiver as the C++ function's first argument.
+    | InstanceFCall of declaringType : string * method : string
     /// A QCall: a P/Invoke into `QCall` with this entry point, the name of the C++ function that
     /// `vm/qcallentrypoints.cpp` lists.
     | QCall of entryPoint : string
@@ -147,11 +151,15 @@ module NativeContractTable =
 
             let native =
                 match kind with
-                | "FCall" ->
+                | "FCall"
+                | "InstanceFCall" ->
                     match name.Split "::" with
                     | [| declaringType ; method |] when declaringType <> "" && method <> "" ->
-                        TabulatedNative.FCall (declaringType, method)
-                    | _ -> fail $"an FCall named %s{name}, not Type::Method"
+                        if kind = "FCall" then
+                            TabulatedNative.FCall (declaringType, method)
+                        else
+                            TabulatedNative.InstanceFCall (declaringType, method)
+                    | _ -> fail $"an %s{kind} named %s{name}, not Type::Method"
                 | "QCall" -> TabulatedNative.QCall name
                 | other -> fail $"unknown kind %s{other}"
 
@@ -312,11 +320,21 @@ module NativeContractTable =
              )
              |> Map.ofList)
 
-    /// The rows for FCalls, by declaring type and method name.
+    /// The rows for static FCalls, by declaring type and method name.
     let fcalls : Lazy<Map<string * string, NativeContractRow>> =
         index (fun row ->
             match row.Native with
             | TabulatedNative.FCall (declaringType, method) -> Some (declaringType, method)
+            | TabulatedNative.InstanceFCall _
+            | TabulatedNative.QCall _ -> None
+        )
+
+    /// The rows for instance FCalls, by declaring type and method name.
+    let instanceFCalls : Lazy<Map<string * string, NativeContractRow>> =
+        index (fun row ->
+            match row.Native with
+            | TabulatedNative.InstanceFCall (declaringType, method) -> Some (declaringType, method)
+            | TabulatedNative.FCall _
             | TabulatedNative.QCall _ -> None
         )
 
@@ -325,5 +343,6 @@ module NativeContractTable =
         index (fun row ->
             match row.Native with
             | TabulatedNative.QCall entryPoint -> Some entryPoint
-            | TabulatedNative.FCall _ -> None
+            | TabulatedNative.FCall _
+            | TabulatedNative.InstanceFCall _ -> None
         )
