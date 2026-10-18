@@ -6727,7 +6727,8 @@ public static class Holder<T> where T : IProbe
                             |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
 
                         yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
-                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                // Its dividend is 1, which no divisor overflows.
+                yield "Hash_HashDivides", Set.singleton dividesByZero, DispatchClaim.Precise
                 yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
                 yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
             ]
@@ -6757,8 +6758,8 @@ public static class Holder<T> where T : IProbe
                 ]
 
         let _, failures =
-            ((analysis, failures), [ "ClosedInside" ; "HashInside" ])
-            ||> List.fold (fun (analysis, failures) name ->
+            ((analysis, failures), [ "ClosedInside", arithmetic ; "HashInside", Set.singleton dividesByZero ])
+            ||> List.fold (fun (analysis, failures) (name, expected) ->
                 let analysis, escapes =
                     EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" name)
 
@@ -6766,12 +6767,12 @@ public static class Holder<T> where T : IProbe
 
                 if
                     escapes.Unknown
-                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> arithmetic
+                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> expected
                 then
                     analysis,
                     failures
                     @ [
-                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected both arithmetic exceptions, and nothing unknown"
+                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected exactly %A{Set.toList expected} of the arithmetic exceptions, and nothing unknown"
                     ]
                 else
                     analysis, failures
@@ -8916,3 +8917,341 @@ public static class Runners
 
         (Set.intersect (fst caught) arithmetic, snd caught)
         |> shouldEqual (Set.empty, false)
+
+    /// Divisions by divisors, and of dividends, that the body says.
+    let private divisionSource =
+        """
+namespace Division;
+
+public static class Cases
+{
+    // A divisor known to be neither zero nor -1 raises neither of division's faults.
+    public static int Halve(int x) => x / 2;
+    public static int Remainder(int x) => x % 3;
+    public static uint HalveUnsigned(uint x) => x / 2u;
+    public static uint RemainderUnsigned(uint x) => x % 7u;
+    public static long Wide(long x) => x / 0x100000000L;
+
+    // Each divisor that reaches the division is one of those.
+    public static int ByEither(int x, bool b) => x / (b ? 2 : 3);
+
+    // -1 is not zero, but overflows the least dividend.
+    public static int ByMinusOne(int x) => x / -1;
+
+    // A divisor that may be zero, and may not be -1.
+    public static int ByEitherOrZero(int x, bool b) => x / (b ? 2 : 0);
+
+    // A dividend known not to be the least overflows under no divisor.
+    public static int Into(int d) => 1000 / d;
+    public static int IntoLeast(int d) => int.MinValue / d;
+
+    public static int By(int x, int d) => x / d;
+}
+"""
+
+    let private divideByZero = "=System.DivideByZeroException"
+    let private overflow = "=System.OverflowException"
+
+    /// What each method of `divisionSource` lets escape.
+    let private divisionExpectations : Expectation list =
+        // The method raises nothing, and so constructs no exception.
+        let neither (name : string) : Expectation =
+            { expect "Division.Cases" name with
+                Excludes = [ divideByZero ; overflow ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+
+        [
+            neither "Halve"
+            neither "Remainder"
+            neither "HalveUnsigned"
+            neither "RemainderUnsigned"
+            neither "Wide"
+            neither "ByEither"
+            { expect "Division.Cases" "ByMinusOne" with
+                Contains = [ overflow ]
+                Excludes = [ divideByZero ]
+                Unknown = Some false
+            }
+            { expect "Division.Cases" "ByEitherOrZero" with
+                Contains = [ divideByZero ]
+                Excludes = [ overflow ]
+                Unknown = Some false
+            }
+            { expect "Division.Cases" "Into" with
+                Contains = [ divideByZero ]
+                Excludes = [ overflow ]
+                Unknown = Some false
+            }
+            { expect "Division.Cases" "IntoLeast" with
+                Contains = [ divideByZero ; overflow ]
+                Unknown = Some false
+            }
+            { expect "Division.Cases" "By" with
+                Contains = [ divideByZero ; overflow ]
+                Unknown = Some false
+            }
+        ]
+
+    [<TestCase false>]
+    [<TestCase true>]
+    let ``a division raises only the faults its known operands allow`` (optimised : bool) : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            if optimised then
+                Roslyn.compileOptimizedAssembly "Division" OutputKind.DynamicallyLinkedLibrary [ divisionSource ]
+            else
+                Roslyn.compileAssembly "Division" OutputKind.DynamicallyLinkedLibrary [] [ divisionSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Division.dll") (new MemoryStream (image))
+
+        match unmet (analysisOver [ fixture ] id) fixture divisionExpectations with
+        | _, [] -> ()
+        | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// A method of `Run` in `emitDivisions`'s image: its body, of one argument of type
+    /// `parameter` that it returns the type of; what the real runtime does when it is passed
+    /// `argument`, the value it returns or the full name of what it raises; and which of division's
+    /// faults must escape it, and which must not.
+    type private EmittedDivision =
+        {
+            Name : string
+            Parameter : Type
+            Body : Emit.ILGenerator -> unit
+            Argument : obj
+            OnRealRuntime : string
+            Contains : string list
+            Excludes : string list
+        }
+
+    /// Divisions C# does not write: by a constant zero, and of one constant by another.
+    let private emittedDivisions : EmittedDivision list =
+        let ops (ops : Emit.OpCode list) (il : Emit.ILGenerator) : unit =
+            for op in ops do
+                il.Emit op
+
+        let ldcI4 (value : int32) (il : Emit.ILGenerator) : unit = il.Emit (Emit.OpCodes.Ldc_I4, value)
+        let ldcI8 (value : int64) (il : Emit.ILGenerator) : unit = il.Emit (Emit.OpCodes.Ldc_I8, value)
+
+        let body (parts : (Emit.ILGenerator -> unit) list) (il : Emit.ILGenerator) : unit =
+            for part in parts do
+                part il
+
+        let case name parameter parts argument onRealRuntime contains excludes =
+            {
+                Name = name
+                Parameter = parameter
+                Body = body parts
+                Argument = argument
+                OnRealRuntime = onRealRuntime
+                Contains = contains
+                Excludes = excludes
+            }
+
+        let arg = ops [ Emit.OpCodes.Ldarg_0 ]
+        let dbz = "System.DivideByZeroException"
+        let ovf = "System.OverflowException"
+
+        [
+            case
+                "ByZero"
+                typeof<int>
+                [ arg ; ldcI4 0 ; ops [ Emit.OpCodes.Div ] ]
+                (box 7)
+                dbz
+                [ divideByZero ]
+                [ overflow ]
+            case
+                "UnsignedByZero"
+                typeof<int>
+                [ arg ; ldcI4 0 ; ops [ Emit.OpCodes.Div_Un ] ]
+                (box 7)
+                dbz
+                [ divideByZero ]
+                []
+            case
+                "RemainderByZero"
+                typeof<int>
+                [ arg ; ldcI4 0 ; ops [ Emit.OpCodes.Rem ] ]
+                (box 7)
+                dbz
+                [ divideByZero ]
+                [ overflow ]
+            case
+                "UnsignedRemainderByZero"
+                typeof<int>
+                [ arg ; ldcI4 0 ; ops [ Emit.OpCodes.Rem_Un ] ]
+                (box 7)
+                dbz
+                [ divideByZero ]
+                []
+            case
+                "LeastByMinusOne"
+                typeof<int>
+                [ ldcI4 Int32.MinValue ; ldcI4 -1 ; ops [ Emit.OpCodes.Div ] ]
+                (box 7)
+                ovf
+                [ overflow ]
+                [ divideByZero ]
+            case
+                "LeastRemainderMinusOne"
+                typeof<int>
+                [ ldcI4 Int32.MinValue ; ldcI4 -1 ; ops [ Emit.OpCodes.Rem ] ]
+                (box 7)
+                ovf
+                [ overflow ]
+                [ divideByZero ]
+            case
+                "FiveByMinusOne"
+                typeof<int>
+                [ ldcI4 5 ; ldcI4 -1 ; ops [ Emit.OpCodes.Div ] ]
+                (box 7)
+                "-5"
+                []
+                [ divideByZero ; overflow ]
+            case
+                "UnsignedByMinusOne"
+                typeof<int>
+                [ arg ; ldcI4 -1 ; ops [ Emit.OpCodes.Div_Un ] ]
+                (box 7)
+                "0"
+                []
+                [ divideByZero ; overflow ]
+            case
+                "ByTwo"
+                typeof<int>
+                [ arg ; ldcI4 2 ; ops [ Emit.OpCodes.Div ] ]
+                (box 7)
+                "3"
+                []
+                [ divideByZero ; overflow ]
+            case
+                "LongByZero"
+                typeof<int64>
+                [ arg ; ldcI8 0L ; ops [ Emit.OpCodes.Div ] ]
+                (box 7L)
+                dbz
+                [ divideByZero ]
+                [ overflow ]
+            case
+                "LongByMinusOne"
+                typeof<int64>
+                [ arg ; ldcI8 -1L ; ops [ Emit.OpCodes.Div ] ]
+                (box Int64.MinValue)
+                ovf
+                [ overflow ]
+                [ divideByZero ]
+            case
+                "LongLeastRemainderMinusOne"
+                typeof<int64>
+                [ ldcI8 Int64.MinValue ; ldcI8 -1L ; ops [ Emit.OpCodes.Rem ] ]
+                (box 7L)
+                ovf
+                [ overflow ]
+                [ divideByZero ]
+            // The least int32 is not the least int64.
+            case
+                "LongOfInt32LeastByMinusOne"
+                typeof<int64>
+                [ ldcI8 (int64 Int32.MinValue) ; ldcI8 -1L ; ops [ Emit.OpCodes.Div ] ]
+                (box 7L)
+                "2147483648"
+                []
+                [ divideByZero ; overflow ]
+            // An int32 divisor of a native int is sign-extended to the native int -1.
+            case
+                "NativeByMinusOne"
+                typeof<nativeint>
+                [ arg ; ldcI4 -1 ; ops [ Emit.OpCodes.Div ] ]
+                (box (
+                    if IntPtr.Size = 8 then
+                        nativeint Int64.MinValue
+                    else
+                        nativeint Int32.MinValue
+                ))
+                ovf
+                [ overflow ]
+                [ divideByZero ]
+        ]
+
+    let private emitDivisions () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Divisions", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Divisions"
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        for case in emittedDivisions do
+            let il =
+                run
+                    .DefineMethod(
+                        case.Name,
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        case.Parameter,
+                        [| case.Parameter |]
+                    )
+                    .GetILGenerator ()
+
+            case.Body il
+            il.Emit Emit.OpCodes.Ret
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// The real runtime is asked first, so that the emitted IL is known to raise what the analysis
+    /// must find.
+    [<Test>]
+    let ``a division in IL C# does not write raises only the faults its known operands allow`` () : unit =
+        let image = emitDivisions ()
+
+        let onRealRuntime =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Divisions", isCollectible = true)
+
+            try
+                let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                emittedDivisions
+                |> List.map (fun case ->
+                    let outcome =
+                        try
+                            $"%O{run.GetMethod(case.Name).Invoke ((null : obj), [| case.Argument |])}"
+                        with :? TargetInvocationException as e ->
+                            e.InnerException.GetType().FullName
+
+                    case.Name, outcome
+                )
+            finally
+                context.Unload ()
+
+        onRealRuntime
+        |> shouldEqual (emittedDivisions |> List.map (fun case -> case.Name, case.OnRealRuntime))
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Divisions.dll") (new MemoryStream (image))
+
+        let expectations =
+            emittedDivisions
+            |> List.map (fun case ->
+                { expect "Run" case.Name with
+                    Contains = case.Contains
+                    Excludes = case.Excludes
+                    Unknown = Some false
+                    // A method that raises neither fault constructs no exception.
+                    Assumes = if case.Contains.IsEmpty then Some [] else None
+                }
+            )
+
+        match unmet (analysisOver [ assembly ] id) assembly expectations with
+        | _, [] -> ()
+        | _, failures -> failures |> String.concat Environment.NewLine |> failwith
