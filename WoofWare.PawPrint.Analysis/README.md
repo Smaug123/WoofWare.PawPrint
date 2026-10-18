@@ -70,7 +70,9 @@ method) may add more:
   `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
   null; or an integer known to be zero or not: a constant an `ldc` pushed, an argument whose
   callers all pass zero or all pass something else, or a load through a `ref` argument whose
-  callers' locals all hold zero or all hold something else. Every other branch is followed both ways. A handler counts only if something in its
+  callers' locals all hold zero or all hold something else; or a call of
+  `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, where the instance says what `T` is, which
+  is a constant however the JIT compiles the method (`GcReferences`). Every other branch is followed both ways. A handler counts only if something in its
   protected block does. Tokens in code left out are still bound, below, which for a capability
   query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
   binds what only the other way reaches;

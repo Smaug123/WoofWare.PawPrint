@@ -122,3 +122,110 @@ module TestOpcodeFaultsOnHost =
             | Some name -> (HostFaultProbe.listed (OpcodeFaults.ofNullary op)).Contains name
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 20000, Prop.forAll (Arb.fromGen case) property)
+
+    /// Whether `argument`, which the host passes as `operand`, is an integer of the value `value`;
+    /// a native int at the host's pointer width.
+    let private hasValue (operand : NumericOpcodeGrid.Operand) (argument : obj) (value : IntegerValue) : bool =
+        match operand with
+        | NumericOpcodeGrid.Operand.Int32 -> IntegerValue.holdsOfInt32 value (unbox<int32> argument)
+        | NumericOpcodeGrid.Operand.Int64 -> IntegerValue.holdsOfInt64 value (unbox<int64> argument)
+        | NumericOpcodeGrid.Operand.NativeInt ->
+            match IntPtr.Size with
+            | 8 -> IntegerValue.holdsOfInt64 value (int64 (unbox<nativeint> argument))
+            | 4 -> IntegerValue.holdsOfInt32 value (int32 (unbox<nativeint> argument))
+            | size -> failwith $"No host has a pointer of %d{size} bytes"
+        | NumericOpcodeGrid.Operand.Float32
+        | NumericOpcodeGrid.Operand.Float64 -> false
+
+    /// How a run of `op` on `arguments`, pushed in order as `operands`, that raised the exception of
+    /// the full name `raised` fails what `OpcodeFaults.requiredOperands` says the fault needs; `None`
+    /// where it meets it, or where the fault is not one the table names.
+    let private unmetRequirement
+        (op : NullaryIlOp)
+        (operands : NumericOpcodeGrid.Operand list)
+        (arguments : obj list)
+        (raised : string)
+        : string option
+        =
+        let fault =
+            FSharp.Reflection.FSharpType.GetUnionCases typeof<OpcodeFault>
+            |> Array.map (fun case -> FSharp.Reflection.FSharpValue.MakeUnion (case, [||]) :?> OpcodeFault)
+            |> Array.tryFind (fun fault -> OpcodeFault.typeName fault = raised)
+
+        match fault with
+        | None -> None
+        | Some fault ->
+            let depth = List.length operands
+
+            OpcodeFaults.requiredOperands (IlOp.Nullary op) fault
+            |> List.tryFind (fun required ->
+                let index = depth - 1 - required.FromTop
+                not (hasValue (List.item index operands) (List.item index arguments) required.Is)
+            )
+            |> Option.map (fun required ->
+                $"%O{op} raised %s{raised} on %A{operands} %A{arguments}, whose operand %d{required.FromTop} is not %O{required.Is}"
+            )
+
+    [<Test>]
+    let ``on boundary operands, an instruction raises a fault only where its operands are what the fault needs``
+        ()
+        : unit
+        =
+        let unmet =
+            [
+                for op, opcode, typing in NumericOpcodeGrid.instructions do
+                    for operands, result in NumericOpcodeGrid.signatures typing do
+                        let method = NumericOpcodeGrid.probe opcode operands result
+
+                        for arguments in HostFaultProbe.cartesian (List.map NumericOpcodeGrid.boundaries operands) do
+                            match HostFaultProbe.raised method arguments with
+                            | Some raised ->
+                                match unmetRequirement op operands arguments raised with
+                                | Some unmet -> yield unmet
+                                | None -> ()
+                            | None -> ()
+            ]
+
+        match unmet with
+        | [] -> ()
+        | unmet -> failwith (String.concat Environment.NewLine unmet)
+
+    [<Test>]
+    let ``on any operands, an instruction raises a fault only where its operands are what the fault needs`` () : unit =
+        // The instructions with a fault that needs something of the operands; the others raise
+        // whatever they raise on any operands.
+        let narrowed =
+            NumericOpcodeGrid.instructions
+            |> List.filter (fun (op, _, _) ->
+                match OpcodeFaults.ofNullary op with
+                | OpcodeFaults.Raises faults ->
+                    faults
+                    |> List.exists (fun fault -> not (OpcodeFaults.requiredOperands (IlOp.Nullary op) fault).IsEmpty)
+                | OpcodeFaults.Unmodelled -> false
+            )
+
+        narrowed |> List.isEmpty |> shouldEqual false
+
+        let case =
+            gen {
+                let! op, opcode, typing = Gen.elements narrowed
+                let! operands, result = Gen.elements (NumericOpcodeGrid.signatures typing)
+                let! arguments = operands |> List.map operandValue |> Gen.sequenceToList
+                return op, opcode, operands, result, arguments
+            }
+
+        let property
+            (
+                op : NullaryIlOp,
+                opcode : OpCode,
+                operands : NumericOpcodeGrid.Operand list,
+                result : NumericOpcodeGrid.Operand,
+                arguments : obj list
+            )
+            : bool
+            =
+            match HostFaultProbe.raised (NumericOpcodeGrid.probe opcode operands result) arguments with
+            | None -> true
+            | Some raised -> (unmetRequirement op operands arguments raised).IsNone
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 20000, Prop.forAll (Arb.fromGen case) property)

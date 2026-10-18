@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsCheck
 open FsUnitTyped
 open NUnit.Framework
@@ -12,8 +13,9 @@ open WoofWare.PosixKernel
 /// bytes are also the `d_name` buffer. The kernel knows nothing of streams: a
 /// `DIR*` reads through a descriptor onto a directory, whose open file
 /// description holds the position. `DirectoryStreamFds` is the mapping from the
-/// one to the other, and these rows hold it to what the shim's `opendir`,
-/// `readdir` and `closedir` do with it.
+/// one to the other. These rows hold `DirectoryStream`, which is all the
+/// `SystemNative_OpenDir` and `SystemNative_CloseDir` handlers do to the
+/// kernel, to what the shim's `opendir`, `readdir` and `closedir` do with it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestDirectoryStreamFds =
@@ -28,7 +30,11 @@ module TestDirectoryStreamFds =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 0
 
     let private seed : Map<DirectoryEntryName, SeedEntry> =
-        Map.ofList [ name "dir", SeedEntry.directory Map.empty ]
+        Map.ofList
+            [
+                name "dir", SeedEntry.directory Map.empty
+                name "file", SeedEntry.file ImmutableArray.Empty
+            ]
 
     let private kernel () : EmulatedKernel =
         EmulatedKernel.initialImage
@@ -39,40 +45,26 @@ module TestDirectoryStreamFds =
             (absolute "/")
         |> EmulatedKernel.boot
 
-    /// Everything `SystemNative_OpenDir` does to kernel state: the library opens
-    /// the directory, and the client allocates the native block standing in for
-    /// the `DIR*` and binds it to the descriptor.
+    let private tryOpenDir (path : string) (kernel : EmulatedKernel) : DirectoryStreamOpen * EmulatedKernel =
+        DirectoryStream.opendir
+            (UnixSystem.leader kernel.System)
+            (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" path)))
+            kernel
+
     let private openDir (kernel : EmulatedKernel) : NativeMemoryBlockId * EmulatedKernel =
-        let fd, system =
-            match
-                UnixNamespace.openPath
-                    (UnixSystem.leader kernel.System)
-                    (OpenFlagsPal.directoryStream kernel.UnixPlatform)
-                    (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/dir")))
-                    0
-                    kernel.System
-            with
-            | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system -> int fd, system
-            | other -> failwith $"could not open the directory: %O{other}"
-
-        let kernel = EmulatedKernel.withUnix system kernel
-
-        let block, pool =
-            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 1024 kernel.NativeMemoryPool
-
-        block,
-        { kernel with
-            NativeMemoryPool = pool
-        }
-        |> EmulatedKernel.withDirectoryStreamFd block fd
+        match tryOpenDir "/dir" kernel with
+        | DirectoryStreamOpen.Opened block, kernel -> block, kernel
+        | DirectoryStreamOpen.Failed error, _ -> failwith $"could not open the directory: %O{error}"
 
     let private closeDir (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
-        let fd = EmulatedKernel.directoryStreamFd block kernel
-        let kernel = EmulatedKernel.withoutDirectoryStream block kernel
+        match DirectoryStream.closedir block kernel with
+        | Ok (), kernel -> kernel
+        | Error error, _ -> failwith $"could not close the stream: %O{error}"
 
-        match KernelSyscall.close fd kernel with
-        | Ok kernel -> kernel
-        | Error error -> failwith $"could not close the stream's descriptor: %O{error}"
+    /// The number `open(2)` would hand out next.
+    let private lowestFree (kernel : EmulatedKernel) : int =
+        let live = FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
+        Seq.initInfinite id |> Seq.find (fun fd -> not (Map.containsKey fd live))
 
     /// Where the stream `block` names is positioned, which is its descriptor's
     /// open file description's position.
@@ -123,15 +115,58 @@ module TestDirectoryStreamFds =
         |> shouldEqual (DirectoryPosition.Cursor DirectoryCursor.Start)
 
     [<Test>]
-    let ``closing forgets the block and closes its descriptor`` () : unit =
+    let ``opening allocates the block a name fits in`` () : unit =
+        let block, kernel = kernel () |> openDir
+
+        NativeMemoryPool.blockSize block kernel.NativeMemoryPool
+        |> shouldEqual DirectoryStream.nameBufferBytes
+
+    [<Test>]
+    let ``a failed open leaves no stream and no block behind`` () : unit =
+        let kernel = kernel ()
+
+        for path, expected in [ "/file", UnixError.ENOTDIR ; "/nx", UnixError.ENOENT ] do
+            match tryOpenDir path kernel with
+            | DirectoryStreamOpen.Failed error, after ->
+                error |> shouldEqual expected
+                after.DirectoryStreamFds |> shouldBeEmpty
+
+                NativeMemoryPool.liveBlockCount after.NativeMemoryPool
+                |> shouldEqual (NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool)
+
+                lowestFree after |> shouldEqual (lowestFree kernel)
+            | DirectoryStreamOpen.Opened block, _ -> failwith $"opening %s{path} gave stream %O{block}"
+
+    [<Test>]
+    let ``closing forgets the block, frees it and closes its descriptor`` () : unit =
         let block, kernel = kernel () |> openDir
         let fd = EmulatedKernel.directoryStreamFd block kernel
         let kernel = closeDir block kernel
 
         kernel.DirectoryStreamFds |> shouldBeEmpty
+        NativeMemoryPool.isLive block kernel.NativeMemoryPool |> shouldEqual false
 
         // `fcntl(F_GETFL)` of a closed descriptor is EBADF.
         UnixDescriptor.isNonBlocking fd kernel.System |> shouldEqual None
+
+    [<Test>]
+    let ``closing a stream whose descriptor is already closed answers EBADF and still releases it`` () : unit =
+        // `closedir` frees the `DIR` whatever `close` answers, so the stream is
+        // gone either way.
+        let block, kernel = kernel () |> openDir
+        let fd = EmulatedKernel.directoryStreamFd block kernel
+
+        let kernel =
+            match KernelSyscall.close fd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"%O{error}"
+
+        match DirectoryStream.closedir block kernel with
+        | Error error, kernel ->
+            error |> shouldEqual UnixError.EBADF
+            kernel.DirectoryStreamFds |> shouldBeEmpty
+            NativeMemoryPool.isLive block kernel.NativeMemoryPool |> shouldEqual false
+        | Ok (), _ -> failwith "closing a stream whose descriptor was already closed succeeded"
 
     [<Test>]
     let ``a DIR* this kernel never issued is refused loudly`` () : unit =
@@ -189,6 +224,32 @@ module TestDirectoryStreamFds =
 
         EmulatedKernel.directoryStreamFd second kernel |> shouldEqual fd
         EmulatedKernel.checkInvariants kernel |> shouldBeEmpty
+
+    [<Test>]
+    let ``opening takes the lowest free descriptor, holes included`` () : unit =
+        // `opendir(3)` is an `open(2)`, so its descriptor is the lowest number
+        // not in use -- including one below the top that an earlier close left.
+        // A close names a live stream by its index modulo the count, so closes
+        // land anywhere in the table rather than only at its top.
+        let property (operations : int option list) : unit =
+            let mutable kernel = kernel ()
+            let mutable live : NativeMemoryBlockId list = []
+
+            for operation in operations do
+                match operation, live with
+                | Some index, _ :: _ ->
+                    let block = live.[abs (index % live.Length)]
+                    kernel <- closeDir block kernel
+                    live <- live |> List.filter (fun other -> other <> block)
+                | Some _, [] -> ()
+                | None, _ ->
+                    let expected = lowestFree kernel
+                    let block, next = openDir kernel
+                    EmulatedKernel.directoryStreamFd block next |> shouldEqual expected
+                    kernel <- next
+                    live <- live @ [ block ]
+
+        Check.One (config, property)
 
     [<Test>]
     let ``the map follows any sequence of opens and closes`` () : unit =
