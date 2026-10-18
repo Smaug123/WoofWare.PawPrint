@@ -556,9 +556,10 @@ public static class Driver
                 throwingConstructorDriverSource
                 0
         | EmulatedRuntime.Net11 ->
-            // Real .NET 11 does not survive this culture, which throws on every read
-            // (`Net11Frontier.nonExceptionWrapping`), and PawPrint refuses any exception the
-            // wrapper's constructor raises on .NET 11.
+            // Real .NET 11 does not survive this culture, which throws on every read: preserving
+            // the trace of each exception it raises raises another, until the stack overflows
+            // (`Net11Frontier.nonExceptionWrapping`). PawPrint follows a bounded number of them and
+            // then refuses.
             let onHost, onPawPrint =
                 FabricatedGuest.runOnBoth
                     "Thrower"
@@ -566,12 +567,13 @@ public static class Driver
                     "ThrowingWrapperConstructorDriver"
                     throwingConstructorDriverSource
 
-            match onHost with
-            | RealRuntimeResult.NormalExit 0 -> failwith "real .NET 11 survived a raising wrapper constructor"
-            | _ -> ()
+            // The overflow aborts the process (SIGABRT), which the oracle reports as exit 134.
+            onHost |> shouldEqual (RealRuntimeResult.NormalExit 134)
 
             match onPawPrint with
-            | FabricatedOutcome.Failed e -> e.ToString () |> shouldContainText "RuntimeWrappedException"
+            | FabricatedOutcome.Failed e ->
+                e.ToString ()
+                |> shouldContainText "Exception.InternalPreserveStackTrace raised more than 16 times running"
             | FabricatedOutcome.Exited code ->
                 failwith $"PawPrint ran on past a raising wrapper constructor on .NET 11, exiting %d{code}"
 
@@ -753,3 +755,256 @@ public static class Driver
             "OneShotCultureWrapperConstructorDriver"
             oneShotCultureDriverSource
             0
+
+    /// Throws a string while the current UI culture's name throws a `CountingException` of index 0
+    /// on its first read alone, so that the wrapper's constructor raises it, and while each
+    /// `CountingException`'s `Source` throws one of the next index until `reraises` have been
+    /// thrown. Returns 0 if what the caller caught, and the order its clauses ran in, are what the
+    /// runtime's handling gives; the row's code otherwise.
+    ///
+    /// On .NET 11 the runtime preserves the trace of what the constructor raised
+    /// (`Exception.InternalPreserveStackTrace`, which reads `Source`), and preserves in turn each
+    /// exception that preserving raises, so that exactly `reraises` preserves raise and the one
+    /// caught is the last, of index `reraises`. On .NET 10 the constructor's exception is the one
+    /// caught, and nothing reads `Source`.
+    let private countingSourceDriverSource (reraises : int) : string =
+        """
+using System;
+using System.Globalization;
+using System.Reflection;
+
+sealed class CountingException : Exception
+{
+    public static int Budget;
+    public readonly int Index;
+    public CountingException(int index) : base("counting") { Index = index; }
+    public override string Source
+    {
+        get
+        {
+            if (Budget > 0)
+            {
+                Budget--;
+                try
+                {
+                    throw new CountingException(Index + 1);
+                }
+                finally
+                {
+                    Driver.Order = Driver.Order + "source finally;";
+                }
+            }
+            return base.Source;
+        }
+    }
+}
+
+sealed class OneShotCountingCulture : CultureInfo
+{
+    public OneShotCountingCulture() : base("") { }
+    public bool Armed;
+    public override string Name
+    {
+        get
+        {
+            if (Armed)
+            {
+                Armed = false;
+                try
+                {
+                    throw new CountingException(0);
+                }
+                finally
+                {
+                    Driver.Order = Driver.Order + "name finally;";
+                }
+            }
+            return base.Name;
+        }
+    }
+}
+
+public static class Driver
+{
+    public static string Order = "";
+
+    static int IndexOf(string haystack, string needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool matches = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    static bool IsPrefix(string prefix, string s)
+    {
+        if (prefix.Length > s.Length) return false;
+        for (int i = 0; i < prefix.Length; i++)
+        {
+            if (prefix[i] != s[i]) return false;
+        }
+        return true;
+    }
+
+    static bool Observe()
+    {
+        Order = Order + "filter;";
+        return true;
+    }
+
+    public static int Main(string[] args)
+    {
+        int reraises = RERAISES;
+        CountingException.Budget = reraises;
+        var culture = new OneShotCountingCulture();
+        CultureInfo.CurrentUICulture = culture;
+        culture.Armed = true;
+
+        Exception caught = null;
+        try
+        {
+            try
+            {
+                Thrower.Throw();
+                return 1;
+            }
+            finally
+            {
+                Order = Order + "finally;";
+            }
+        }
+        catch (Exception e) when (Observe())
+        {
+            Order = Order + "catch;";
+            caught = e;
+        }
+
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+
+        if (culture.Armed) return 2;
+        CountingException counted = caught as CountingException;
+        if (counted == null) return 3;
+
+        string remote = (string)typeof(Exception).GetField("_remoteStackTraceString", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(caught);
+        string trace = caught.StackTrace;
+
+        if (Environment.Version.Major == 10)
+        {
+            // .NET 10 lets the constructor's exception escape the `throw`, and preserves nothing.
+            if (counted.Index != 0) return 20;
+            if (CountingException.Budget != reraises) return 21;
+            if (Order != "name finally;filter;finally;catch;") return 22;
+            if (remote != null) return 23;
+            if (caught.TargetSite == null || caught.TargetSite.Name != "get_Name") return 24;
+            return 0;
+        }
+
+        if (counted.Index != reraises) return 4;
+        if (CountingException.Budget != 0) return 5;
+
+        string expectedOrder = "name finally;";
+        for (int i = 0; i < reraises; i++)
+        {
+            expectedOrder = expectedOrder + "source finally;";
+        }
+        expectedOrder = expectedOrder + "filter;finally;catch;";
+        if (Order != expectedOrder) return 6;
+
+        // Preserving read `Source`, which read `TargetSite` while the trace still began where the
+        // exception was thrown, and both keep what they read.
+        string thrownIn = reraises == 0 ? "get_Name" : "get_Source";
+        if (caught.TargetSite == null || caught.TargetSite.Name != thrownIn) return 7;
+        if (caught.Source != "CountingSourceWrapperConstructorDriver") return 8;
+
+        if (remote == null) return 9;
+        if (remote.Length == 0 || remote[remote.Length - 1] != '\n') return 10;
+
+        // The preserved trace runs from where the caught exception was thrown to the helper that
+        // caught it, and stops there.
+        if (reraises == 0)
+        {
+            int name = IndexOf(remote, "OneShotCountingCulture.get_Name");
+            int ctor = IndexOf(remote, "RuntimeWrappedException..ctor");
+            int helper = IndexOf(remote, "Exception.CreateRuntimeWrappedException");
+            if (name < 0) return 11;
+            if (ctor < name) return 12;
+            if (helper < ctor) return 13;
+        }
+        else
+        {
+            int source = IndexOf(remote, "CountingException.get_Source");
+            int preserve = IndexOf(remote, "Exception.InternalPreserveStackTrace");
+            if (source < 0) return 14;
+            if (preserve < source) return 15;
+            if (IndexOf(remote, "RuntimeWrappedException..ctor") >= 0) return 16;
+            if (IndexOf(remote, "CreateRuntimeWrappedException") >= 0) return 17;
+        }
+        if (IndexOf(remote, "Thrower.Throw") >= 0) return 18;
+        if (IndexOf(remote, "Driver.Main") >= 0) return 19;
+
+        // The trace a reader sees is that prefix and then the `throw`'s raise, begun afresh.
+        if (trace == null || !IsPrefix(remote, trace)) return 30;
+        string fresh = trace.Substring(remote.Length);
+        if (!IsPrefix("   at Thrower.Throw()", fresh)) return 31;
+        if (IndexOf(fresh, "Driver.Main") < 0) return 32;
+        if (IndexOf(fresh, "InternalPreserveStackTrace") >= 0) return 33;
+        if (IndexOf(fresh, "CreateRuntimeWrappedException") >= 0) return 34;
+
+        return 0;
+    }
+}
+"""
+            .Replace ("RERAISES", string reraises)
+
+    [<TestCase 0>]
+    [<TestCase 1>]
+    [<TestCase 2>]
+    [<TestCase 16>]
+    let ``what preserving the trace of what wrapping raised raises is preserved in turn, as the real runtime does``
+        (reraises : int)
+        : unit
+        =
+        FabricatedGuest.run
+            "Thrower"
+            (fabricate ())
+            "CountingSourceWrapperConstructorDriver"
+            (countingSourceDriverSource reraises)
+            0
+
+    /// One more re-raise than PawPrint follows: real .NET 11 follows it, and PawPrint refuses.
+    [<Test>]
+    let ``PawPrint refuses a seventeenth raise from preserving what wrapping raised`` () : unit =
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth
+                "Thrower"
+                (fabricate ())
+                "CountingSourceWrapperConstructorDriver"
+                (countingSourceDriverSource 17)
+
+        onHost |> shouldEqual (RealRuntimeResult.NormalExit 0)
+
+        match FrameworkUnderTest.runtime (), onPawPrint with
+        | EmulatedRuntime.Net10, FabricatedOutcome.Exited code -> code |> shouldEqual 0
+        | EmulatedRuntime.Net10, FabricatedOutcome.Failed e ->
+            raise (Exception ("PawPrint did not run the guest to completion", e))
+        | EmulatedRuntime.Net11, FabricatedOutcome.Failed e ->
+            e.ToString ()
+            |> shouldContainText "Exception.InternalPreserveStackTrace raised more than 16 times running"
+        | EmulatedRuntime.Net11, FabricatedOutcome.Exited code ->
+            failwith
+                $"PawPrint followed more re-raises from preserving a trace than it bounds itself to, exiting %d{code}"
