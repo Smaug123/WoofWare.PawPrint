@@ -611,7 +611,10 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
 
-    /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes.
+    /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes: the one
+    /// of its name taking an argument per one the call spells. A CoreLib may declare others of the
+    /// name, as .NET 11's declares an `UnmanagedCallersOnly` overload of
+    /// `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which its VM calls instead.
     let private nativeCall (state : EscapeAnalysisState) (call : ManagedCall) : MethodKey * SpelledArgument list =
         let corelib = state.BaseTypes.Corelib
 
@@ -625,16 +628,15 @@ module EscapeAnalysis =
             |> Option.toList
             |> List.collect (fun ty ->
                 ty.Methods
-                |> List.filter (fun m -> m.Name = call.Method)
+                |> List.filter (fun m ->
+                    m.Name = call.Method
+                    && (if m.IsStatic then 0 else 1) + m.Signature.ParameterTypes.Length = call.Arguments.Length
+                )
                 |> List.choose (fun m -> m.TryMetadata |> Option.map (fun facts -> ty, m, facts))
             )
 
         match found with
-        | [ ty, method, facts ] when
-            ty.Generics.IsEmpty
-            && method.Signature.GenericParameterCount = 0
-            && (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length = call.Arguments.Length
-            ->
+        | [ ty, method, facts ] when ty.Generics.IsEmpty && method.Signature.GenericParameterCount = 0 ->
             let passes =
                 call.Arguments
                 |> List.map (fun argument ->
@@ -645,7 +647,7 @@ module EscapeAnalysis =
             MethodKey.make corelib facts.Handle, passes
         | found ->
             failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name"
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name and arity"
 
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
     /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
