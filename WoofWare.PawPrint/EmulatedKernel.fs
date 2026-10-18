@@ -2779,7 +2779,16 @@ module MachineConfig =
         |> fun system ->
             match machine.PidMax with
             | None -> system
-            | Some pidMax -> UnixSystem.writePidMaxSysctl $"%s{machineKnobs}.PidMax" pidMax system
+            | Some pidMax ->
+                // The kernel names neither knob in its refusals: a Darwin machine has no such
+                // setting, and Linux's sysctl refuses a value outside its range.
+                try
+                    UnixSystem.writePidMaxSysctl pidMax system
+                with
+                | :? System.PlatformNotSupportedException as e ->
+                    failwith $"%s{machineKnobs}.PidMax is %d{pidMax}, but %s{e.Message}"
+                | :? System.ArgumentOutOfRangeException as e ->
+                    failwith $"%s{machineKnobs}.PidMax is %d{pidMax}, but %s{e.Message}"
 
     /// The kernel of the first process on the machine `machine` describes,
     /// launched as `firstProcess` describes it: `bootSystem`, then
