@@ -2651,6 +2651,121 @@ public static class Cases
         |> List.map (fun expectation -> snd expectation.Method)
         |> makesTheCalls analysis fixture
 
+    /// A client asking whether a `typeof` is a value type, of classes whose base classes are in an
+    /// assembly the analysis can find but has not loaded: `Derived`, whose base the provider has,
+    /// and `DerivedFromGone`, whose base the provider no longer has.
+    [<Test>]
+    let ``asking whether a typeof is a value type loads its base classes`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (withGone : bool) : string =
+            "namespace Provider; public class Base { }"
+            + (if withGone then " public class GoneType { }" else "")
+
+        let client =
+            """
+using System;
+
+namespace Client;
+
+public class Value : Exception { }
+
+public class Reference : Exception { }
+
+public class Derived : Provider.Base { }
+
+public class DerivedFromGone : Provider.GoneType { }
+
+public static class Cases
+{
+    static void Generic<T>()
+    {
+        if (typeof(T).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void OfDerived()
+    {
+        if (typeof(Derived).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void WithDerived() => Generic<Derived>();
+
+    public static void OfDerivedFromGone()
+    {
+        if (typeof(DerivedFromGone).IsValueType) throw new Value();
+        throw new Reference();
+    }
+
+    public static void WithDerivedFromGone() => Generic<DerivedFromGone>();
+}
+"""
+
+        let providerImage (withGone : bool) : byte[] =
+            Roslyn.compileOptimizedAssembly "Provider" OutputKind.DynamicallyLinkedLibrary [ provider withGone ]
+
+        let clientImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (providerImage true))
+                ]
+                [ client ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
+
+        // The provider is where the analysis looks for assemblies, but not loaded.
+        let directory = Directory.CreateTempSubdirectory "escape-analysis-provider"
+
+        try
+            File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), providerImage false)
+
+            let analysis =
+                analysisOf
+                    (hostCoreLib ())
+                    (Seq.append [ directory.FullName ] (FrameworkUnderTest.runtimeDirs ()))
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    Assumption.all
+                    [ fixture ]
+                    id
+
+            let value = "=Client.Value"
+            let reference = "=Client.Reference"
+
+            let analysis, failures =
+                unmet
+                    analysis
+                    fixture
+                    [
+                        { expect "Client.Cases" "OfDerived" with
+                            Contains = [ reference ]
+                            Excludes = [ value ]
+                        }
+                        { expect "Client.Cases" "WithDerived" with
+                            Contains = [ reference ]
+                            Excludes = [ value ]
+                        }
+                    ]
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+
+            let mutable analysis = analysis
+
+            // CoreCLR cannot load `DerivedFromGone`, so no instance asking of it runs. Answering at
+            // all is the claim: it is a summary rather than a crash.
+            for name in [ "OfDerivedFromGone" ; "WithDerivedFromGone" ] do
+                let next, _ =
+                    EscapeAnalysis.escapes analysis (methodNamed fixture "Client.Cases" name)
+
+                analysis <- next
+        finally
+            directory.Delete true
+
     /// Code that compares two `typeof`s, which C# compiles to `ldtoken; call GetTypeFromHandle`
     /// twice, then `call op_Equality` or `op_Inequality`.
     let private typeEqualitySource =
