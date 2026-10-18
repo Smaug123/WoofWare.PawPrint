@@ -6363,7 +6363,8 @@ public static class Holder<T> where T : IProbe
                             |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
 
                         yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
-                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                // Its dividend is 1, which no divisor overflows.
+                yield "Hash_HashDivides", Set.singleton dividesByZero, DispatchClaim.Precise
                 yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
                 yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
             ]
@@ -6393,8 +6394,8 @@ public static class Holder<T> where T : IProbe
                 ]
 
         let _, failures =
-            ((analysis, failures), [ "ClosedInside" ; "HashInside" ])
-            ||> List.fold (fun (analysis, failures) name ->
+            ((analysis, failures), [ "ClosedInside", arithmetic ; "HashInside", Set.singleton dividesByZero ])
+            ||> List.fold (fun (analysis, failures) (name, expected) ->
                 let analysis, escapes =
                     EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" name)
 
@@ -6402,12 +6403,12 @@ public static class Holder<T> where T : IProbe
 
                 if
                     escapes.Unknown
-                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> arithmetic
+                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> expected
                 then
                     analysis,
                     failures
                     @ [
-                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected both arithmetic exceptions, and nothing unknown"
+                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected exactly %A{Set.toList expected} of the arithmetic exceptions, and nothing unknown"
                     ]
                 else
                     analysis, failures
