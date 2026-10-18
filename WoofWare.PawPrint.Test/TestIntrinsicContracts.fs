@@ -299,7 +299,7 @@ unsafe class Program
     /// PawPrint's virtual CPU never requires alignment, so only the null faults are compared.
     [<Test>]
     let ``PawPrint raises exactly the faults each primitive it implements has in its contract`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
+        Net11Frontier.park Net11Frontier.isAsyncMethod
 
         let implemented =
             calls
@@ -332,8 +332,6 @@ unsafe class Program
     /// optimised caller has these atomics expanded in its own body, and loses the frame).
     [<Test>]
     let ``a primitive's fault comes from the frame of the method that performs it`` () : unit =
-        Net11Frontier.park Net11Frontier.runtimeMethodInfoValue
-
         let source =
             """
 using System;

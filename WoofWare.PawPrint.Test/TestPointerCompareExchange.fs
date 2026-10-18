@@ -10,8 +10,8 @@ open WoofWare.PawPrint
 
 /// `Interlocked.CompareExchange(int*, int, int)`, .NET 11's compare-exchange on an object's header,
 /// performed by `Intrinsics.performPrimitive` directly. Every guest `lock` on .NET 11 reaches it
-/// through `ObjectHeader`; `InterlockedCompareExchangePointer.cs`, which calls it on other storage,
-/// finds the internal overload by reflection, which stops first (`Net11Frontier.runtimeMethodInfoValue`).
+/// through `ObjectHeader`, and `InterlockedCompareExchangePointer.cs` calls it on other storage,
+/// finding the internal overload by reflection.
 ///
 /// The pointer's provenance never decides the access's width: an `int*` taken from a byte buffer
 /// addresses four bytes, as `ldind.i4` and `stind.i4` through the same pointer do. And the pointer
