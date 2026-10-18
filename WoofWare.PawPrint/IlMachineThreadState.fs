@@ -163,6 +163,9 @@ module IlMachineThreadState =
                 | ReturnValueDisposition.DispatchAsException _ ->
                     failwith
                         $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
+                | ReturnValueDisposition.ResumeNonExceptionWrap _ ->
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly carried a step of the runtime's wrapping of a thrown non-exception"
                 | ReturnValueDisposition.Discard ->
                     // A trampoline has no value of its own to discard: the concrete callee it
                     // dispatches to produces the return value, and does so into the caller this
@@ -273,6 +276,9 @@ module IlMachineThreadState =
                 // dispatch should occur.
                 let constructed = ManagedHeap.get constructing state.ManagedHeap
                 ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, making)
+            | ReturnValueDisposition.ResumeNonExceptionWrap _ ->
+                failwith
+                    $"logic error: %s{returningMethodState.ExecutingMethod.Name} was constructing an object, but its frame carried a step of the runtime's wrapping of a thrown non-exception, which only the runtime's void helpers carry"
             | ReturnValueDisposition.Discard ->
                 // A constructor's product is the object, and it is already allocated and reachable
                 // from `Constructing` — there is nothing here to throw away, and the caller
@@ -310,11 +316,17 @@ module IlMachineThreadState =
             // throw the runtime had decided on.
             failwith
                 $"logic error: %s{returningMethodState.ExecutingMethod.Name} was not constructing an object, but its frame asked for its product to be dispatched as an exception"
+        | ReturnValueDisposition.ResumeNonExceptionWrap step ->
+            match returned with
+            | None -> ReturnFrameResult.ResumeNonExceptionWrap (state, step)
+            | Some _ ->
+                failwith
+                    $"logic error: %s{returningMethodState.ExecutingMethod.Name} returned a value, but its frame carried a step of the runtime's wrapping of a thrown non-exception, which only the runtime's void helpers carry"
         | ReturnValueDisposition.Discard ->
             // The caller is mid-instruction and will re-execute it; its evaluation stack still
             // holds that instruction's operands, so there is nowhere to put this value that would
             // not be mistaken for one of them.
-            state
+            state |> ReturnFrameResult.NormalReturn
         | ReturnValueDisposition.PushToCaller ->
             match returned with
             | None -> state
@@ -325,7 +337,7 @@ module IlMachineThreadState =
                 let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
                 state |> pushToEvalStack toPush currentThread
-        |> ReturnFrameResult.NormalReturn
+            |> ReturnFrameResult.NormalReturn
 
     let initial
         (lf : ILoggerFactory)

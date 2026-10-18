@@ -301,6 +301,8 @@ module AbstractMachine =
             match state |> IlMachineState.returnFromSyntheticStackFrame thread with
             | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
             | ReturnFrameResult.DispatchException _ -> failwith "unexpected exception dispatch from delegate frame pop"
+            | ReturnFrameResult.ResumeNonExceptionWrap _ ->
+                failwith "unexpected step of a thrown non-exception's wrapping from delegate frame pop"
             | ReturnFrameResult.NormalReturn state ->
 
             // Every failure below happens *after* the delegate's synthetic `Invoke` frame is
