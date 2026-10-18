@@ -137,34 +137,25 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
             yield!
                 [
-                    "DelegateBindOpenGenericDefinitionFormalSignature.cs"
-                    "DelegateBindOpenGenericDefinitionMethod.cs"
-                    "DelegateBindOpenVirtual.cs"
-                    "DelegateFindMethodHandleOpenInstanceGeneric.cs"
-                    "DelegateOverGenericMethodNewarr.cs"
-                    "DelegateToAbstractMethodOverNull.cs"
-                    "DelegateToIntrinsicTypeMember.cs"
-                    "IndirectCallToMethodLevelIntrinsic.cs"
-                    "OpenDelegateSpanClearOverReferenceLocal.cs"
-                    "UnmanagedCallersOnlyFunctionPointer.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
-            yield!
-                [
                     "ExpressionInterpreterByRefCall.cs"
                     "ReflectionInvokeConstructor.cs"
                     "ReflectionOpenConstructedMethods.cs"
                     "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
-            "DelegateMulticastInvoke.cs",
-            """On .NET 11, `Delegate.Method` of a multicast delegate makes its `MethodInfo` through the `Delegate_CreateMethodInfo` QCall, which PawPrint does not implement: "Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)". Un-park when it is answered."""
+            yield!
+                [
+                    "DelegateFindMethodHandleOpenInstanceGeneric.cs"
+                    "DelegateMulticastInvoke.cs"
+                    "UnmanagedCallersOnlyFunctionPointer.cs"
+                ]
+                |> List.map (fun case -> case, Net11Frontier.delegateCreateMethodInfo)
             "DelegateOpenInstanceRepresentation.cs",
-            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "DelegateBindToMetadataMethod.cs",
-            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "DelegateBindStaticAbstractInterfaceMethod.cs",
-            """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `BadImageFormatException` from `CreateDelegate` over the static abstract method, which .NET 10 binds. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
+            """Parked behind `Net11Frontier.delegateCreateMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 dies of the `BadImageFormatException` that invoking the delegate over the static abstract method raises, where .NET 10 raises `EntryPointNotFoundException` (`DelegateOpenStaticVirtualInvoke.cs` checks both). Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             yield!
                 [
                     "AdvancedStructLayout.cs"
@@ -255,8 +246,6 @@ module TestPureCases =
                     "StringCtorArgumentValidation.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
-            "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
-            """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Real .NET 11 refuses the bind with `InvalidOperationException` ("Could not execute the method because either the method itself or the containing type is not fully instantiated"), measured on RC1, where .NET 10 binds it. PawPrint refuses it on every runtime, as a `TODO`: "Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when the bind raises what RC1 raises. Verified to end in that unhandled exception on real .NET 11."""
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
         ]
@@ -264,7 +253,10 @@ module TestPureCases =
 
     /// How each case ends on .NET 10 alone, when that is not a normal exit with code 0.
     let endingsOnNet10 : Map<string, GuestEnding> =
-        [ "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11 ]
+        [
+            "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11
+            "DelegateOpenStaticVirtualInvoke.cs", GuestEnding.ExitCode 10
+        ]
         |> Map.ofList
 
     /// How each case ends on .NET 11 alone, when that is not a normal exit with code 0.
