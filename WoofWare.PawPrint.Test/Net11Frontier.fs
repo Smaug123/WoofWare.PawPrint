@@ -41,10 +41,6 @@ module Net11Frontier =
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."
 
-    /// `System.GCMemoryInfoData`'s layout changed.
-    let gcMemoryInfo : string =
-        "On .NET 11, `System.GCMemoryInfoData` has no `_generationInfo0` field, which `GC.GetMemoryInfo`'s native filler writes: \"System.GCMemoryInfoData does not declare expected instance field '_generationInfo0'\". Un-park when the native filler writes .NET 11's layout."
-
     /// The checked-in hardware-intrinsic table is .NET 10's.
     let hardwareIntrinsicTable : string =
         "`HardwareIntrinsicTable.tsv` reproduces .NET 10's JIT tables. .NET 11's `hwintrinsiclistarm64.h` has rows of a shape the reader does not parse, and .NET 11 adds instruction sets no row covers (Arm `Sha3`, x64 `Avx512Bmm`, `AvxVnni.V512`, `X86Base.X64.BigMul`). Un-park when the table is kept per runtime."
