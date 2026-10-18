@@ -27,10 +27,14 @@ module TestSocketEventsWait =
     /// record must carry description id 3 and not the descriptor the guest passed. Waiting on
     /// fd 3 directly could not tell the two apart, since a fresh registry hands out
     /// description id 3 to the first port and that is also its descriptor number.
+    ///
+    /// A second thread sleeps for ever outside the kernel, so that a test has a thread to make
+    /// calls as while the entry thread is parked.
     let private source : string =
         """
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 class WaitsOnADuplicatedPort
 {
@@ -51,6 +55,10 @@ class WaitsOnADuplicatedPort
 
         IntPtr alias = Dup(port);
         if ((long)alias != 4) return 3;
+
+        var sleeper = new Thread(() => Thread.Sleep(Timeout.Infinite));
+        sleeper.IsBackground = true;
+        sleeper.Start();
 
         byte* buffer = stackalloc byte[32];
         int count = 1;
@@ -200,13 +208,24 @@ class WaitsOnADuplicatedPort
     ///
     /// Reached by finishing a genuinely parked thread's wait in the kernel without telling the
     /// scheduler, because that is the shape a real regression would have: a completion on the
-    /// wrong path, which clears the record and leaves the status. A caught signal is what lets
-    /// the finishing call return (`EINTR`) on a port nothing will make ready, and is discarded
-    /// afterwards.
+    /// wrong path, which clears the record and leaves the status. A caught signal, which the
+    /// guest's sleeping thread sends, is what lets the finishing call return on a port nothing
+    /// will make ready: the wait is interrupted, and the parked thread's return to user mode
+    /// ends it. The signal's disposition is put back afterwards.
     [<Test>]
     let ``a socket waiter whose record has gone is refused`` () : unit =
         let prepared, _ = deadlock.Force ()
         let thread, _ = parkedThread prepared.State
+
+        let sleeper =
+            prepared.State.ThreadState
+            |> Map.toList
+            |> List.choose (fun (tid, ts) ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnSleep None -> Some tid
+                | _ -> None
+            )
+            |> List.exactlyOne
 
         let stripped =
             prepared.WithState (
@@ -214,28 +233,54 @@ class WaitsOnADuplicatedPort
                     let numbering =
                         SimulatedUnixPlatform.signalNumbering (UnixSystem.platform kernel.System)
 
+                    let sigusr1 = Signal.toRawSignoUnder numbering Signal.SIGUSR1
+
+                    let setDisposition
+                        (disposition : SignalDisposition<NativeSignalHandler>)
+                        (system : UnixSystem<ThreadId, NativeSignalHandler>)
+                        : UnixSystem<ThreadId, NativeSignalHandler>
+                        =
+                        match
+                            UnixSignal.sigactionSyscall (kernel.Caller sleeper) sigusr1 (Some disposition) system
+                        with
+                        | Ok (_, system) -> system
+                        | Error errno -> failwith $"sigaction answered %O{errno}"
+
                     let caught =
                         kernel.System
-                        |> KernelSignals.setDisposition
-                            Signal.SIGUSR1
-                            (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
+                        |> setDisposition (
+                            SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative)
+                        )
 
-                    let interrupted =
-                        match
-                            UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
-                        with
+                    let sent =
+                        match UnixSignal.pthreadKill (kernel.Caller sleeper) thread sigusr1 caught with
                         | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
                         | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
-                    match UnixPoll.finishEpollWait thread interrupted with
-                    | EpollWaitOutcome.Failed UnixError.EINTR, system ->
-                        // The signal has done its work; ignoring it discards it, so the
-                        // step below meets the waiter rather than the signal.
+                    let woken =
+                        match UnixWait.wake sent with
+                        | [ woken, _ ], system when woken = kernel.Caller thread -> system
+                        | other -> failwith $"expected the signal to wake %O{thread} alone, got %A{fst other}"
+
+                    let interrupted =
+                        match UnixPoll.finishEpollWait (kernel.Caller thread) woken with
+                        | EpollWaitOutcome.Interrupted, system -> system
+                        | other -> failwith $"expected the wait to be interrupted, got %A{other}"
+
+                    // The return to user mode ends the call, and pushes the handler's frame,
+                    // which returns at once.
+                    let returned =
+                        match UnixSignal.onReturnToUser (kernel.Caller thread) interrupted with
+                        | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers ([ frame ], Some _), system) ->
+                            UnixSignal.sigreturn (kernel.Caller thread) frame.Id system
+                        | other -> failwith $"expected one handler frame at the return, got %A{other}"
+
+                    match UnixSignal.onReturnToUser (kernel.Caller thread) returned with
+                    | ProcessFate.Continues (ReturnToUserOutcome.Resumes None, system) ->
                         system
-                        |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Ignore
-                        |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Default
+                        |> setDisposition SignalDisposition.Default
                         |> fun system -> EmulatedKernel.withUnix system kernel
-                    | other -> failwith $"expected the wait to be interrupted, got %A{other}"
+                    | other -> failwith $"expected the return to end, got %A{other}"
                 )
             )
 
@@ -499,6 +544,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)
+                | Some (ParkedSyscall.Futex _)
                 | None -> None
             | _ -> None
         )
@@ -676,7 +722,7 @@ class ClosesAParkedPort
             let unix = state.Kernel.System
 
             let ports =
-                UnixSystem.threads unix
+                UnixSystem.threads (LoneProcess.pid unix) unix
                 |> Map.toList
                 |> List.choose (fun (_, task) ->
                     match UnixThreadState.park task with
@@ -693,7 +739,7 @@ class ClosesAParkedPort
             |> Map.containsKey ports.Head
             |> shouldEqual true
 
-            FileDescriptorRegistry.fds (UnixSystem.fileDescriptors unix)
+            FileDescriptorRegistry.fds (UnixSystem.fileDescriptors (LoneProcess.pid unix) unix)
             |> Map.exists (fun _ id -> id = ports.Head)
             |> shouldEqual false
         | other -> failwith $"expected the guest to exit, got %O{other}"

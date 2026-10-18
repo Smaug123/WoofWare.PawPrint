@@ -194,7 +194,7 @@ module TestOpenFlagsPal =
             for word in words do
                 match
                     UnixNamespace.openPath
-                        (UnixSystem.leader system)
+                        (LoneProcess.leader system)
                         word
                         (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/")))
                         0o644

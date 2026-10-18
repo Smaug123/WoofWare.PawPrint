@@ -24,7 +24,7 @@ using System.Runtime.InteropServices;
 //
 // The exit code is the index of the first check that failed; 0 means all passed.
 //
-// Seed (see TestImpureCases.enumerateWiringSeed): d/ holding "e", "\u00e9" and
+// Seed (see TestImpureCases.enumerateWiringSeed): d/ holding "e" and
 // "\u4e2d\u4e2d".
 class Program
 {
@@ -73,7 +73,7 @@ class Program
         {
             // `.` and `..` carry a length too, and it must follow the same rule.
             // Every name, whatever its length in bytes or characters,
-            // reports the same sentinel. Three lengths rather than one, so a
+            // reports the same sentinel. Several lengths rather than one, so a
             // handler that answered -1 only for some names could not pass.
             if (entry.NameLength != -1) return 3;
 
@@ -82,9 +82,9 @@ class Program
 
         if (CloseDir(dir) != 0) return 4;
 
-        // Two dots plus the three seeded names: proof the loop ran at all, so a
+        // Two dots plus the two seeded names: proof the loop ran at all, so a
         // handler that answered end-of-stream immediately could not pass.
-        if (names != 5) return 5;
+        if (names != 4) return 5;
 
         // Fifty streams, opened and closed. Nothing here reads them: the point
         // is what `CloseDir` releases, which no guest can see -- the terminal

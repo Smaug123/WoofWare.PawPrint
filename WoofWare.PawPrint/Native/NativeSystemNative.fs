@@ -132,7 +132,7 @@ type NonCanceledPosixSignal =
     /// the state is the machine as it stood when the signal was re-raised, and
     /// `ended` the kernel's answer to the re-raise, whose `EndedProcess.termination` is
     /// `ProcessTermination.Signaled`.
-    | Terminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
+    | Terminated of IlMachineState * ended : ProcessEnd
 
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
@@ -210,11 +210,11 @@ module NativeSystemNative =
         | SimulatedUnixFlavour.Darwin -> $"If the kernel names an unmeasured Darwin row: %s{unmeasuredDarwinRow}"
         | SimulatedUnixFlavour.Linux -> ""
 
-    /// The socket `fd` names in `system`, if it names one: what a handler reads
+    /// The socket `fd` names in `kernel`'s process, if it names one: what a handler reads
     /// to say how a guest came to hold the socket a call was refused for.
-    let private socketOf (fd : int) (system : UnixSystem<ThreadId, NativeSignalHandler>) : SocketDescription option =
-        match UnixSystem.descriptorTarget fd system with
-        | Some (OpenFileTarget.Socket socket) -> UnixSystem.socket socket system
+    let private socketOf (fd : int) (kernel : EmulatedKernel) : SocketDescription option =
+        match UnixSystem.descriptorTarget kernel.ProcessId fd kernel.System with
+        | Some (OpenFileTarget.Socket socket) -> UnixSystem.socket socket kernel.System
         | Some _
         | None -> None
 
@@ -228,9 +228,11 @@ module NativeSystemNative =
         (fd : int)
         (buffer : BufferPointer)
         (palFlags : int option)
-        (system : UnixSystem<ThreadId, NativeSignalHandler>)
+        (kernel : EmulatedKernel)
         : string
         =
+        let system = kernel.System
+
         KernelRefusal.advising
             [
                 BufferPointer.unmodelledHint buffer
@@ -245,7 +247,7 @@ module NativeSystemNative =
                     $"The guest passed SocketFlags 0x%x{flags}, which CoreLib passes through from the caller's Socket.%s{entryPoint}."
                 | Some _
                 | None -> ""
-                match UnixSystem.descriptorTarget fd system with
+                match UnixSystem.descriptorTarget kernel.ProcessId fd system with
                 | Some (OpenFileTarget.Socket socket) ->
                     match UnixSystem.socket socket system with
                     | Some description when (SocketPhase.connectionEnd description.Phase).IsNone ->
@@ -254,7 +256,7 @@ module NativeSystemNative =
                     | None -> ""
                 | Some _
                 | None -> ""
-                if ProcessId.toInt32 (UnixSystem.processId system) = 1 then
+                if ProcessId.toInt32 kernel.ProcessId = 1 then
                     "If the kernel names the init process: configure a process ID other than 1 (KernelConfig.ProcessId)."
                 else
                     ""
@@ -263,9 +265,11 @@ module NativeSystemNative =
 
     /// What lifts a refusal of a privileged caller's row on Darwin, which
     /// nobody has measured, said only where the process is such a caller.
-    let private privilegedDarwinAdvice (system : UnixSystem<ThreadId, NativeSignalHandler>) : string =
-        match SimulatedUnixPlatform.flavour (UnixSystem.platform system) with
-        | SimulatedUnixFlavour.Darwin when (UnixSystem.credentials system).EffectiveUser = UserId.root ->
+    let private privilegedDarwinAdvice (kernel : EmulatedKernel) : string =
+        match SimulatedUnixPlatform.flavour kernel.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin when
+            (UnixSystem.credentials kernel.ProcessId kernel.System).EffectiveUser = UserId.root
+            ->
             "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
         | SimulatedUnixFlavour.Darwin
         | SimulatedUnixFlavour.Linux -> ""
@@ -333,14 +337,7 @@ module NativeSystemNative =
         =
         state.MapKernel (EmulatedKernel.withUnix system)
 
-    /// How a syscall a signal interrupted ends, from where a shim function that
-    /// made it stands: failed with `EINTR`, or restarted by the kernel.
-    [<RequireQualifiedAccess>]
-    type private Interrupted =
-        | Eintr
-        | Restarted
-
-    /// A sleeping syscall that a signal ended (see `SyscallInterruption`), made
+    /// A sleeping syscall that a signal interrupted (an `Interrupted` answer), made
     /// by a shim function that calls it again: every one that sleeps does, in a
     /// `while ((rv = call(...)) < 0 && errno == EINTR);` loop, and a kernel
     /// restart has the same effect without the `EINTR`. So the guest never sees
@@ -348,32 +345,31 @@ module NativeSystemNative =
     /// and keeps it if the call then succeeds.
     ///
     /// Writes `system` back, with the park the interruption cleared, and leaves
-    /// the thread Runnable to issue the call again from the top. The signal's
-    /// handlers run before that, as the leader returns to user mode between two
-    /// steps (`SignalDispatch.poll`). A re-entered handler finds no park and
-    /// makes the call again. It reads its arguments again, as the shim does,
-    /// except `locals`: what the shim read from guest memory once, before its
-    /// loop, which the frame keeps for the handler to use instead.
+    /// the thread Runnable to issue the call again from the top. The thread owes
+    /// its return to user mode, which the leader makes between two steps
+    /// (`SignalDispatch.poll`): that runs the signal's handlers, and ends the
+    /// call, writing `EINTR` to errno if it fails with it. A re-entered handler
+    /// finds no park and makes the call again. It reads its arguments again, as
+    /// the shim does, except `locals`: what the shim read from guest memory
+    /// once, before its loop, which the frame keeps for the handler to use
+    /// instead.
     let private callAgainAfterSignal
         (ctx : NativeCallContext)
         (operation : string)
-        (interrupted : Interrupted)
         (locals : NativeLocals option)
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
         (state : IlMachineState)
         : NativeHandlerResult option
         =
         // Only the leader takes a signal (`SignalDispatch.poll`), so only the
-        // leader's handlers run before the call is made again; another thread
-        // interrupted would make it again at once, and sleep and wake for ever.
+        // leader returns to user mode before the call is made again; another
+        // thread interrupted would make its next call owing that return.
         if ctx.Thread <> state.Kernel.Leader then
             failwith
-                $"%s{operation}: a signal interrupted thread %O{ctx.Thread}'s sleeping call, but PawPrint runs signal handlers on the leader %O{state.Kernel.Leader} alone. Nothing PawPrint answers directs a signal at any other thread (this is an interpreter bug)."
+                $"%s{operation}: a signal interrupted thread %O{ctx.Thread}'s sleeping call, but PawPrint returns only the leader %O{state.Kernel.Leader} to user mode. Nothing PawPrint answers directs a signal at any other thread (this is an interpreter bug)."
 
         let state =
-            match interrupted with
-            | Interrupted.Eintr -> withErrno ctx UnixError.EINTR system state
-            | Interrupted.Restarted -> withAnswered system state
+            withAnswered system state
             |> IlMachineState.mapFrame
                 ctx.Thread
                 state.ThreadState.[ctx.Thread].ActiveMethodState
@@ -385,13 +381,15 @@ module NativeSystemNative =
     /// default, which no managed handler cancelled, as System.Native does.
     /// The BCL calls it from managed code, and the shim's dispatcher calls it
     /// itself for a signal it finds no registration for, or whose callback
-    /// reported it unhandled. `operation` names the caller, for a refusal.
+    /// reported it unhandled. `operation` names the caller, for a refusal, and
+    /// `thread` is the thread that makes the call.
     ///
     /// Which signal a signo names, and so which arm it takes, is read under
     /// the configured platform's numbering: 29 is SIGIO on Linux and
     /// terminates, and SIGINFO on Darwin and is discarded.
     let handleNonCanceledPosixSignal
         (operation : string)
+        (thread : ThreadId)
         (signo : int)
         (state : IlMachineState)
         : NonCanceledPosixSignal
@@ -470,7 +468,12 @@ module NativeSystemNative =
             let restored =
                 state.MapKernel (fun kernel ->
                     let system, shim, _ =
-                        PosixSignalShim.restoreHandler numbering signal kernel.System kernel.PosixSignalShim
+                        PosixSignalShim.restoreHandler
+                            numbering
+                            signal
+                            (kernel.Caller thread)
+                            kernel.System
+                            kernel.PosixSignalShim
 
                     { EmulatedKernel.withUnix system kernel with
                         PosixSignalShim = shim
@@ -479,7 +482,7 @@ module NativeSystemNative =
 
             // Asked of the kernel rather than through the C library, which will
             // not report Linux's 33.
-            match UnixSignal.sigactionSyscall signo None restored.Kernel.System with
+            match UnixSignal.sigactionSyscall (state.Kernel.Caller thread) signo None restored.Kernel.System with
             | Ok (SignalDisposition.Catch action, _) ->
                 // Linux's 33, whose handler is glibc's own.
                 failwith
@@ -491,12 +494,21 @@ module NativeSystemNative =
 
             let system = restored.Kernel.System
 
-            match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
+            match
+                UnixSignal.kill (state.Kernel.Caller thread) (ProcessId.toInt32 state.Kernel.ProcessId) signo system
+            with
             | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, after)) ->
                 NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
-            | Ok (ProcessFate.ProcessEnded ended) ->
+            | Ok (ProcessFate.ProcessEnded (ended, remaining)) ->
                 match EndedProcess.termination ended with
-                | ProcessTermination.Signaled _ -> NonCanceledPosixSignal.Terminated (restored, ended)
+                | ProcessTermination.Signaled _ ->
+                    NonCanceledPosixSignal.Terminated (
+                        restored,
+                        {
+                            Ended = ended
+                            Remaining = remaining
+                        }
+                    )
                 | ProcessTermination.Exited _ ->
                     failwith
                         $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
@@ -541,7 +553,7 @@ module NativeSystemNative =
 
         let created =
             try
-                UnixPipe.pipe2 flags UserBuffer.Mapped state.Kernel.System
+                UnixPipe.pipe2 (state.Kernel.Caller thread) flags UserBuffer.Mapped state.Kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"%s{operation}: the kernel will not make System.Native's signal pipe" e
 
@@ -551,7 +563,9 @@ module NativeSystemNative =
         | Pipe2Answer.Created (readFd, writeFd), system ->
 
         let readDescription =
-            match FileDescriptorRegistry.tryFindId readFd (UnixSystem.fileDescriptors system) with
+            match
+                FileDescriptorRegistry.tryFindId readFd (UnixSystem.fileDescriptors state.Kernel.ProcessId system)
+            with
             | Some id -> id
             | None ->
                 failwith
@@ -566,7 +580,7 @@ module NativeSystemNative =
             { kernel with
                 PosixSignalShim =
                     kernel.PosixSignalShim
-                    |> PosixSignalShim.saveConsoleSignals numbering kernel.System
+                    |> PosixSignalShim.saveConsoleSignals numbering (kernel.Caller thread) kernel.System
                     |> PosixSignalShim.markInitialized
                         dispatcher
                         {
@@ -1222,8 +1236,8 @@ module NativeSystemNative =
 
     /// PawPrint's half of a refused `fstat` of `fd`, which it derives from what
     /// `fd` names: what PawPrint would have to decide to answer for it.
-    let private fstatAdvice (fd : int) (system : UnixSystem<ThreadId, NativeSignalHandler>) : string =
-        match UnixSystem.descriptorTarget fd system with
+    let private fstatAdvice (fd : int) (kernel : EmulatedKernel) : string =
+        match UnixSystem.descriptorTarget kernel.ProcessId fd kernel.System with
         | Some (OpenFileTarget.Pipe _) ->
             "PawPrint launches every guest with its standard streams on pipes, and does not say who made them or when. The BCL reaches FStat on a standard stream only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision about the launcher's owner and timestamps rather than a guess."
         | Some (OpenFileTarget.Socket _)
@@ -1232,7 +1246,7 @@ module NativeSystemNative =
         | Some (OpenFileTarget.Inotify _) ->
             "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
         | Some (OpenFileTarget.Directory _) when
-            EmulatedMount.fileSystemType (UnixSystem.mount system) = EmulatedFileSystemType.Nfs
+            EmulatedMount.fileSystemType (UnixSystem.mount kernel.System) = EmulatedFileSystemType.Nfs
             ->
             nfsDirectoryReachability
         | Some (OpenFileTarget.Directory _)
@@ -1367,7 +1381,7 @@ module NativeSystemNative =
 
         let outcome =
             try
-                match UnixNamespace.renameat atFdCwd source atFdCwd system with
+                match UnixNamespace.renameat (state.Kernel.Caller ctx.Thread) atFdCwd source atFdCwd system with
                 | CallProgress.Answered outcome -> outcome
                 | CallProgress.NeedsCopyIn paused ->
                     pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
@@ -1400,7 +1414,7 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.link source state.Kernel.System with
+        match UnixNamespace.link (state.Kernel.Caller ctx.Thread) source state.Kernel.System with
         | CallProgress.Answered outcome -> answer outcome
         | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state
@@ -1430,7 +1444,7 @@ module NativeSystemNative =
         let target =
             pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.symlink target state.Kernel.System with
+        match UnixNamespace.symlink (state.Kernel.Caller ctx.Thread) target state.Kernel.System with
         | CallProgress.Answered outcome -> answer outcome
         | CallProgress.NeedsCopyIn paused ->
             pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state
@@ -1538,7 +1552,10 @@ module NativeSystemNative =
                 state
             else
 
-            withErrnoOnly ctx (UnixDescriptor.fileClone destination source (system state)) state
+            withErrnoOnly
+                ctx
+                (UnixDescriptor.fileClone (state.Kernel.Caller ctx.Thread) destination source (system state))
+                state
 
         // 2. `SupportsCopyFileRange()`, cached in the shim's static for the
         // life of the process. The probe, `copy_file_range(-1, -1, 0)`, leaves
@@ -1553,7 +1570,9 @@ module NativeSystemNative =
 
                 let supported, state =
                     if major > 5u || (major = 5u && minor >= 3u) then
-                        match UnixReadWrite.copyFileRange -1 -1 0UL 0 (system state) with
+                        match
+                            UnixReadWrite.copyFileRange (state.Kernel.Caller ctx.Thread) -1 -1 0UL 0 (system state)
+                        with
                         | SyscallAnswer.Failed error, _ -> error <> UnixError.ENOSYS, withErrnoOnly ctx error state
                         | other ->
                             failwith
@@ -1586,7 +1605,9 @@ module NativeSystemNative =
                 else
                     uint64 remaining
 
-            match UnixReadWrite.copyFileRange source destination length 0 (system state) with
+            match
+                UnixReadWrite.copyFileRange (state.Kernel.Caller ctx.Thread) source destination length 0 (system state)
+            with
             | SyscallAnswer.Failed error, system -> remaining, false, withErrno ctx error system state
             | SyscallAnswer.Completed 0L, system -> remaining, false, withAnswered system state
             | SyscallAnswer.Completed sent, system ->
@@ -1638,7 +1659,12 @@ module NativeSystemNative =
             // what it takes of it from the bytes the read produced.
             let fate =
                 match
-                    UnixReadWrite.write ctx.Thread destination UserBuffer.Mapped (uint64 bytes.Length) (system state)
+                    UnixReadWrite.write
+                        (state.Kernel.Caller ctx.Thread)
+                        destination
+                        UserBuffer.Mapped
+                        (uint64 bytes.Length)
+                        (system state)
                 with
                 | CallProgress.Answered fate -> fate
                 | CallProgress.NeedsCopyIn paused ->
@@ -1652,15 +1678,15 @@ module NativeSystemNative =
             | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, signal), _) ->
                 failwith
                     $"%s{operation}: writing the destination answered %A{answer} and raised %A{signal}, but a destination opened by path is never a pipe"
-            | ProcessFate.ProcessEnded ended ->
+            | ProcessFate.ProcessEnded (ended, _) ->
                 failwith
                     $"%s{operation}: writing the destination ended the process (%A{EndedProcess.termination ended}), but a destination opened by path is never a pipe"
             | ProcessFate.Continues (WriteOutcome.WouldBlock condition, _) ->
                 failwith
                     $"%s{operation}: writing the destination would sleep until %A{condition}, but a destination opened by path is never a pipe"
-            | ProcessFate.Continues (WriteOutcome.Restarts, _) ->
+            | ProcessFate.Continues (WriteOutcome.Interrupted, _) ->
                 failwith
-                    $"%s{operation}: writing the destination restarted after a signal, but only a sleeping write restarts, and a destination opened by path is never a pipe"
+                    $"%s{operation}: writing the destination was interrupted by a signal, but only a sleeping write is, and a destination opened by path is never a pipe"
             | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed error), system) ->
                 Error (withErrno ctx error system state)
             | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed written), system) ->
@@ -1671,13 +1697,15 @@ module NativeSystemNative =
         let rec readWrite (state : IlMachineState) : Result<IlMachineState, IlMachineState> =
             // As for the write: the source was opened by path, and only a
             // pipe's read sleeps.
-            match UnixReadWrite.read ctx.Thread source UserBuffer.Mapped bufferLength (system state) with
+            match
+                UnixReadWrite.read (state.Kernel.Caller ctx.Thread) source UserBuffer.Mapped bufferLength (system state)
+            with
             | ReadOutcome.WouldBlock condition, _ ->
                 failwith
                     $"%s{operation}: reading the source would sleep until %A{condition}, but a source opened by path is never a pipe"
-            | ReadOutcome.Restarts, _ ->
+            | ReadOutcome.Interrupted, _ ->
                 failwith
-                    $"%s{operation}: reading the source restarted after a signal, but only a sleeping read restarts, and a source opened by path is never a pipe"
+                    $"%s{operation}: reading the source was interrupted by a signal, but only a sleeping read is, and a source opened by path is never a pipe"
             | ReadOutcome.Answered (ReadFailed error), system -> Error (withErrno ctx error system state)
             | ReadOutcome.Answered (Moved bytes), system ->
                 let state = withAnswered system state
@@ -1696,7 +1724,7 @@ module NativeSystemNative =
                     // other thread could interrupt, so it is refused instead.
                     // A round that fails, as a write to a closed destination
                     // does, still returns its errno.
-                    match UnixSystem.descriptorTarget source state.Kernel.System with
+                    match UnixSystem.descriptorTarget state.Kernel.ProcessId source state.Kernel.System with
                     | Some (OpenFileTarget.CharacterDevice (_, CharacterDevice.URandom, _)) ->
                         failwith
                             $"%s{operation}: fd %d{source} is /dev/urandom, which never reaches end-of-file, so the shim's read/write loop would copy for ever inside one native call."
@@ -1711,7 +1739,7 @@ module NativeSystemNative =
 
         // 6. The source's times onto the destination, ignoring EPERM: a
         // destination someone else owns keeps its own.
-        match UnixPathResolution.fstat source (system state) with
+        match UnixPathResolution.fstat (state.Kernel.Caller ctx.Thread) source (system state) with
         | FileStatusAnswer.Failed error ->
             if error = UnixError.EPERM then
                 // The shim would go on to fchmod with a mode its failed fstat
@@ -1733,7 +1761,15 @@ module NativeSystemNative =
             TimesArgument.Fields (fieldsOf status.AccessTime, fieldsOf status.ModificationTime)
 
         let timesFailed, state =
-            match UnixPathResolution.utimensat destination NullablePathArgument.Null times 0 (system state) with
+            match
+                UnixPathResolution.utimensat
+                    (state.Kernel.Caller ctx.Thread)
+                    destination
+                    NullablePathArgument.Null
+                    times
+                    0
+                    (system state)
+            with
             | SyscallAnswer.Failed error, system -> Some error, withErrno ctx error system state
             | SyscallAnswer.Completed _, system -> None, withAnswered system state
 
@@ -1744,7 +1780,13 @@ module NativeSystemNative =
 
         // 7. The source's permission bits, without its set-ID and sticky bits,
         // again ignoring EPERM.
-        match UnixPathResolution.fchmod destination (status.Mode &&& 0o777) (system state) with
+        match
+            UnixPathResolution.fchmod
+                (state.Kernel.Caller ctx.Thread)
+                destination
+                (status.Mode &&& 0o777)
+                (system state)
+        with
         | SyscallAnswer.Failed error, system ->
             let state = withErrno ctx error system state
             returning (if error = UnixError.EPERM then 0 else -1) state
@@ -1786,7 +1828,7 @@ module NativeSystemNative =
 
         let status =
             try
-                UnixPathResolution.stat policy path state.Kernel.System
+                UnixPathResolution.stat (state.Kernel.Caller ctx.Thread) policy path state.Kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.failAdvising
                     operation
@@ -2752,7 +2794,11 @@ module NativeSystemNative =
             // Read-only: the scheduler is the sole writer of the clock.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.lowResolutionTimestampMs state.Kernel.System)))
+                (EvalStackValue.Int64 (
+                    Int64Source.Verbatim (
+                        ClockPal.lowResolutionTimestampMs (state.Kernel.Caller ctx.Thread) state.Kernel.System
+                    )
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2799,7 +2845,7 @@ module NativeSystemNative =
             | SimulatedUnixFlavour.Linux ->
                 let answer =
                     try
-                        UnixScheduling.getcpu ctx.Thread state.Kernel.System
+                        UnixScheduling.getcpu (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail
                             "SystemNative_SchedGetCpu: the Linux-flavoured kernel refused getcpu (this is a bug in PawPrint)"
@@ -2869,7 +2915,11 @@ module NativeSystemNative =
             // sole writer of the clock.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.monotonicTimestampNanos state.Kernel.System)))
+                (EvalStackValue.Int64 (
+                    Int64Source.Verbatim (
+                        ClockPal.monotonicTimestampNanos (state.Kernel.Caller ctx.Thread) state.Kernel.System
+                    )
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2886,7 +2936,11 @@ module NativeSystemNative =
             // and the boot instant never changes after configuration.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.systemTimeAsTicks state.Kernel.System)))
+                (EvalStackValue.Int64 (
+                    Int64Source.Verbatim (
+                        ClockPal.systemTimeAsTicks (state.Kernel.Caller ctx.Thread) state.Kernel.System
+                    )
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -3075,6 +3129,7 @@ module NativeSystemNative =
             let cwd =
                 try
                     UnixPathResolution.getcwd
+                        (state.Kernel.Caller ctx.Thread)
                         (BufferPointer.toUserBuffer bufferPointer)
                         (uint64 bufferSize)
                         state.Kernel.System
@@ -3126,7 +3181,7 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_GetPid(void)` (pal_process.c:684) is
             // `return getpid();`, infallible as `getpid(2)` is.
-            let pid = UnixSystem.processId state.Kernel.System
+            let pid = UnixSystem.processId (state.Kernel.Caller ctx.Thread) state.Kernel.System
 
             state
             |> IlMachineState.pushToEvalStack
@@ -3168,7 +3223,8 @@ module NativeSystemNative =
             // `FileStatus.IsModeReadOnlyCore` (FileStatus.Unix.cs:106), and asks
             // `GetEGid` and `GetGroups` below only for a file this user does not
             // own.
-            let uid = UserId.toUInt32 (UnixDescriptor.effectiveUserId state.Kernel.System)
+            let uid =
+                UserId.toUInt32 (UnixDescriptor.effectiveUserId (state.Kernel.Caller ctx.Thread) state.Kernel.System)
 
             state
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread
@@ -3181,7 +3237,8 @@ module NativeSystemNative =
             // `return getegid();`, infallible as `getegid(2)` is. CoreLib's
             // `Interop.Sys.IsMemberOfGroup` asks it first, and asks `GetGroups`
             // only for a group that is not this one.
-            let gid = GroupId.toUInt32 (UnixDescriptor.effectiveGroupId state.Kernel.System)
+            let gid =
+                GroupId.toUInt32 (UnixDescriptor.effectiveGroupId (state.Kernel.Caller ctx.Thread) state.Kernel.System)
 
             state
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 gid) ctx.Thread
@@ -3209,20 +3266,15 @@ module NativeSystemNative =
 
             let groups =
                 try
-                    UnixDescriptor.getgroups (BufferPointer.toUserBuffer buffer) size state.Kernel.System
+                    UnixDescriptor.getgroups
+                        (state.Kernel.Caller ctx.Thread)
+                        (BufferPointer.toUserBuffer buffer)
+                        size
+                        state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         operation
-                        (KernelRefusal.advising
-                            [
-                                BufferPointer.unmodelledHint buffer
-                                (match buffer with
-                                 | BufferPointer.Storage _ ->
-                                     "CoreLib reaches an unmeasured group list from `File.GetAttributes` and every other read-only check, for a file this user does not own whose group is not its effective group: on Darwin, that is a seeded entry owned by another user and group (`KernelConfig.FileSystem`)."
-                                 | BufferPointer.RawAddress _
-                                 | BufferPointer.Symbolic _
-                                 | BufferPointer.Unstatable _ -> "")
-                            ])
+                        (KernelRefusal.advising [ BufferPointer.unmodelledHint buffer ])
                         e
 
             match groups with
@@ -3312,7 +3364,7 @@ module NativeSystemNative =
 
             let opened =
                 try
-                    UnixNamespace.openPath ctx.Thread openFlags path mode state.Kernel.System
+                    UnixNamespace.openPath (state.Kernel.Caller ctx.Thread) openFlags path mode state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising operation (darwinRowAdvice state.Kernel.UnixPlatform) e
 
@@ -3320,9 +3372,9 @@ module NativeSystemNative =
             | SyscallOutcome.WouldBlock condition, _ ->
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread}'s open would sleep until %A{condition}, and PawPrint does not yet park a thread in an open."
-            | SyscallOutcome.Restarts, _ ->
+            | SyscallOutcome.Interrupted, _ ->
                 failwith
-                    $"%s{operation}: thread %O{ctx.Thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+                    $"%s{operation}: thread %O{ctx.Thread}'s open was interrupted by a signal, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
             | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
@@ -3359,7 +3411,7 @@ module NativeSystemNative =
                     let atFdCwd =
                         AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
 
-                    UnixNamespace.mkdirat atFdCwd path mode system
+                    UnixNamespace.mkdirat (state.Kernel.Caller ctx.Thread) atFdCwd path mode system
                 )
                 state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
@@ -3379,7 +3431,7 @@ module NativeSystemNative =
                     let atFdCwd =
                         AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
 
-                    UnixNamespace.unlinkat atFdCwd path 0 system
+                    UnixNamespace.unlinkat (state.Kernel.Caller ctx.Thread) atFdCwd path 0 system
                 )
                 state
         // `int32_t SystemNative_ChDir(const char* path)` (pal_io.c): `chdir(2)`
@@ -3389,7 +3441,12 @@ module NativeSystemNative =
         | Some "SystemNative_ChDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_ChDir" "" (fun path system -> UnixPathResolution.chdir path system) state
+            pathSyscall
+                ctx
+                "SystemNative_ChDir"
+                ""
+                (fun path system -> UnixPathResolution.chdir (state.Kernel.Caller ctx.Thread) path system)
+                state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, which is `unlinkat(2)`
         // from `AT_FDCWD` with `AT_REMOVEDIR`, taking a UTF-8 path exactly as
@@ -3405,6 +3462,7 @@ module NativeSystemNative =
                     let flavour = SimulatedUnixPlatform.flavour (UnixSystem.platform system)
 
                     UnixNamespace.unlinkat
+                        (state.Kernel.Caller ctx.Thread)
                         (AtDirectory.atFdCwd flavour)
                         path
                         (UnlinkAtRules.atRemoveDir flavour)
@@ -3431,8 +3489,10 @@ module NativeSystemNative =
             pathSyscall
                 ctx
                 operation
-                (privilegedDarwinAdvice state.Kernel.System)
-                (fun path system -> UnixPathResolution.fchmodat atFdCwd path mode 0 system)
+                (privilegedDarwinAdvice state.Kernel)
+                (fun path system ->
+                    UnixPathResolution.fchmodat (state.Kernel.Caller ctx.Thread) atFdCwd path mode 0 system
+                )
                 state
         // `int32_t SystemNative_Access(const char* path, int32_t mode)`
         // (pal_io.c): `access(2)` and nothing else. The shim's `AccessMode`
@@ -3458,7 +3518,7 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    match UnixPathResolution.access mode state.Kernel.System with
+                    match UnixPathResolution.access (state.Kernel.Caller ctx.Thread) mode state.Kernel.System with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused ->
                         // Read only now: a pointer this interpreter cannot
@@ -3480,7 +3540,7 @@ module NativeSystemNative =
 
                     KernelRefusal.failAdvising
                         operation
-                        (String.concat " " [ privilegedDarwinAdvice state.Kernel.System ; extendedRights ])
+                        (String.concat " " [ privilegedDarwinAdvice state.Kernel ; extendedRights ])
                         e
 
             match answer with
@@ -3604,7 +3664,7 @@ module NativeSystemNative =
 
             let answer, system =
                 try
-                    UnixNamespace.readDirectoryEntry fd state.Kernel.System
+                    UnixNamespace.readDirectoryEntry (state.Kernel.Caller ctx.Thread) fd state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: the DIR* reads through fd %d{fd}"
@@ -3648,7 +3708,7 @@ module NativeSystemNative =
             | ReadDirectoryAnswer.Entry record ->
 
             let nameBytes =
-                (DirectoryStreamName.toByteString record.Name |> UnixByteString.toBytes).AsSpan().ToArray ()
+                (PathComponent.toByteString record.Name |> UnixByteString.toBytes).AsSpan().ToArray ()
 
             let kind = record.Kind
 
@@ -3715,7 +3775,7 @@ module NativeSystemNative =
                     (NativeCall.managedPointerOfPointerArgument operation "dir" instruction.Arguments.[0])
 
             let state, result =
-                match DirectoryStream.closedir block state.Kernel with
+                match DirectoryStream.closedir ctx.Thread block state.Kernel with
                 | Ok (), kernel -> state.WithKernel kernel, 0
                 | Error error, kernel -> withErrno ctx error kernel.System (state.WithKernel kernel), -1
 
@@ -3750,7 +3810,7 @@ module NativeSystemNative =
             // always states. Deliberately no per-descriptor arms here: a
             // mutation swapping two rows would have somewhere to hide if the
             // classification were re-done in the handler.
-            match UnixPathResolution.fstatfs fd state.Kernel.System with
+            match UnixPathResolution.fstatfs (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
             | FileSystemStatisticsAnswer.Reported statistics ->
                 // errno untouched on success, as `fstatfs` leaves it.
                 let answer = FileSystemTypePal.ofFields (FileSystemStatistics.typeFields statistics)
@@ -3799,7 +3859,7 @@ module NativeSystemNative =
 
             let truncated =
                 try
-                    UnixDescriptor.ftruncate fd length state.Kernel.System
+                    UnixDescriptor.ftruncate (state.Kernel.Caller ctx.Thread) fd length state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}" (darwinRowAdvice state.Kernel.UnixPlatform) e
 
@@ -3829,14 +3889,14 @@ module NativeSystemNative =
 
             let changed =
                 try
-                    UnixPathResolution.fchmod fd mode state.Kernel.System
+                    UnixPathResolution.fchmod (state.Kernel.Caller ctx.Thread) fd mode state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
                         (KernelRefusal.advising
                             [
-                                privilegedDarwinAdvice state.Kernel.System
-                                (match UnixSystem.descriptorTarget fd state.Kernel.System with
+                                privilegedDarwinAdvice state.Kernel
+                                (match UnixSystem.descriptorTarget state.Kernel.ProcessId fd state.Kernel.System with
                                  | Some (OpenFileTarget.Pipe _)
                                  | Some (OpenFileTarget.Socket _) ->
                                      "The BCL reaches FChMod only through a SafeFileHandle, which a guest can wrap around a standard stream or a socket by hand; decide who owns them (issue #956) rather than guessing."
@@ -3907,7 +3967,13 @@ module NativeSystemNative =
 
                 let answer =
                     try
-                        UnixDescriptor.posixFadvise fd offset length advice state.Kernel.System
+                        UnixDescriptor.posixFadvise
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            offset
+                            length
+                            advice
+                            state.Kernel.System
                     with :? PlatformNotSupportedException as e ->
                         KernelRefusal.fail
                             $"%s{operation}: the library refused posix_fadvise as not provided on %O{state.Kernel.UnixPlatform}, but this handler answered that platform's missing call itself (ENOTSUP) before asking. The two disagree about which platforms provide it; this is a bug in PawPrint"
@@ -3934,9 +4000,9 @@ module NativeSystemNative =
 
             let status =
                 try
-                    UnixPathResolution.fstat fd state.Kernel.System
+                    UnixPathResolution.fstat (state.Kernel.Caller ctx.Thread) fd state.Kernel.System
                 with :? UnmodelledException as e ->
-                    KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}" (fstatAdvice fd state.Kernel.System) e
+                    KernelRefusal.failAdvising $"%s{operation}: fd %d{fd}" (fstatAdvice fd state.Kernel) e
 
             match status with
             | FileStatusAnswer.Failed error ->
@@ -4047,14 +4113,15 @@ module NativeSystemNative =
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
-            | Some (ParkedSyscall.ConnectionWrite _ as other) ->
+            | Some (ParkedSyscall.ConnectionWrite _ as other)
+            | Some (ParkedSyscall.Futex _ as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
                 let outcome =
                     try
-                        UnixDescriptor.flockAcquire ctx.Thread state.Kernel.System
+                        UnixDescriptor.flockAcquire (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing e
 
@@ -4071,10 +4138,7 @@ module NativeSystemNative =
                     granted system
                 // A signal ended the sleep. The shim's `flock` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
-                | SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), system ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | SyscallOutcome.Restarts, system ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | SyscallOutcome.Interrupted, system -> callAgainAfterSignal ctx operation None system state
                 | SyscallOutcome.Answered (SyscallAnswer.Failed error), _ ->
                     failwith
                         $"%s{operation}: finishing a parked acquisition on %O{parked.Requester} answered %O{error}. A resume acquires on a description the close path is obliged to keep alive, so it can only be granted, still blocked, or ended by a signal (this is an interpreter bug)."
@@ -4082,7 +4146,7 @@ module NativeSystemNative =
 
             let outcome =
                 try
-                    UnixDescriptor.flock ctx.Thread fd request state.Kernel.System
+                    UnixDescriptor.flock (state.Kernel.Caller ctx.Thread) fd request state.Kernel.System
                 with :? UnmodelledException as e ->
                     refusing e
 
@@ -4101,9 +4165,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
             | SyscallOutcome.Answered (SyscallAnswer.Completed _), system -> granted system
-            | SyscallOutcome.Restarts, _ ->
+            | SyscallOutcome.Interrupted, _ ->
                 failwith
-                    $"%s{operation}: fd %d{fd}: a first `flock` answered a restart, which only a finishing call answers (this is an interpreter bug)."
+                    $"%s{operation}: fd %d{fd}: a first `flock` was interrupted by a signal, which only a finishing call answers (this is an interpreter bug)."
         // `int32_t SystemNative_PRead(intptr_t fd, void* buffer, int32_t
         // bufferSize, int64_t fileOffset)` (pal_io.c:1832): `pread(2)` verbatim,
         // with an EINTR retry and — unlike `SystemNative_Read`, which goes
@@ -4152,7 +4216,7 @@ module NativeSystemNative =
             let answer =
                 try
                     UnixReadWrite.pread
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -4245,7 +4309,7 @@ module NativeSystemNative =
             let progress =
                 try
                     UnixReadWrite.pwrite
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -4322,7 +4386,12 @@ module NativeSystemNative =
                 match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
                 | SimulatedUnixFlavour.Darwin -> -1L, withErrnoOnly ctx UnixError.ENOTSUP state
                 | SimulatedUnixFlavour.Linux ->
-                    match UnixInotify.inotifyInit1 InotifyInitFlags.CloseOnExec state.Kernel.System with
+                    match
+                        UnixInotify.inotifyInit1
+                            (state.Kernel.Caller ctx.Thread)
+                            InotifyInitFlags.CloseOnExec
+                            state.Kernel.System
+                    with
                     | Ok (fd, system) -> int64 fd, withAnswered system state
                     | Error error -> -1L, withErrnoOnly ctx error state
 
@@ -4359,7 +4428,9 @@ module NativeSystemNative =
 
                 let answer =
                     try
-                        match UnixInotify.inotifyAddWatch fd mask state.Kernel.System with
+                        match
+                            UnixInotify.inotifyAddWatch (state.Kernel.Caller ctx.Thread) fd mask state.Kernel.System
+                        with
                         | CallProgress.Answered outcome -> outcome
                         | CallProgress.NeedsCopyIn paused ->
                             // Read only now: Linux answers a bad mask and every
@@ -4408,7 +4479,7 @@ module NativeSystemNative =
                 let fd = fdArgument operation instruction.Arguments.[0]
                 let watch = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-                match UnixInotify.inotifyRmWatch fd watch state.Kernel.System with
+                match UnixInotify.inotifyRmWatch (state.Kernel.Caller ctx.Thread) fd watch state.Kernel.System with
                 | SyscallAnswer.Completed _, system -> 0, withAnswered system state
                 | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
 
@@ -4459,7 +4530,7 @@ module NativeSystemNative =
             // could have reached the call, which is a fact about CoreLib.
             let refusing (buffer : BufferPointer) (e : exn) : 'a =
                 let reachability =
-                    match UnixSystem.descriptorTarget fd state.Kernel.System with
+                    match UnixSystem.descriptorTarget state.Kernel.ProcessId fd state.Kernel.System with
                     | Some (OpenFileTarget.Socket _) ->
                         "Nothing in the BCL reaches this: CoreLib reads a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                     | Some (OpenFileTarget.Directory _) ->
@@ -4498,10 +4569,7 @@ module NativeSystemNative =
                     |> Some
                 // A signal ended the sleep. `Common_Read` calls `read` again after
                 // EINTR, and a restart calls again with no EINTR.
-                | ReadOutcome.Restarts, system ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
-                | ReadOutcome.Answered (ReadFailed UnixError.EINTR), system ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | ReadOutcome.Interrupted, system -> callAgainAfterSignal ctx operation None system state
                 | ReadOutcome.Answered (ReadFailed error), system ->
                     withErrno ctx error system state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -4543,7 +4611,7 @@ module NativeSystemNative =
 
                 let outcome =
                     try
-                        UnixReadWrite.finishRead ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishRead (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing buffer e
 
@@ -4578,7 +4646,7 @@ module NativeSystemNative =
             let outcome =
                 try
                     UnixReadWrite.read
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -4610,14 +4678,14 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    UnixDescriptor.lseek fd offset whence state.Kernel.System
+                    UnixDescriptor.lseek (state.Kernel.Caller ctx.Thread) fd offset whence state.Kernel.System
                 with :? UnmodelledException as e ->
                     // The kernel's half of the message is the library's, because
                     // it is what that library measured; which managed caller
                     // could have sent this is PawPrint's, because CoreLib is a
                     // fact about the client rather than about any kernel.
                     let reachability =
-                        match UnixSystem.descriptorTarget fd state.Kernel.System with
+                        match UnixSystem.descriptorTarget state.Kernel.ProcessId fd state.Kernel.System with
                         | Some (OpenFileTarget.Directory _) ->
                             "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir, whose descriptor no CoreLib code asks for."
                         | _ when whence < 0 || whence > 2 ->
@@ -4705,7 +4773,12 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    UnixNamespace.readlink path (BufferPointer.toUserBuffer destination) bufferSize state.Kernel.System
+                    UnixNamespace.readlink
+                        (state.Kernel.Caller ctx.Thread)
+                        path
+                        (BufferPointer.toUserBuffer destination)
+                        bufferSize
+                        state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising operation (BufferPointer.unmodelledHint destination) e
 
@@ -4841,7 +4914,7 @@ module NativeSystemNative =
             let resultFd, state =
                 let answer =
                     try
-                        UnixDescriptor.fcntl oldFd command 0 state.Kernel.System
+                        UnixDescriptor.fcntl (state.Kernel.Caller ctx.Thread) oldFd command 0 state.Kernel.System
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail $"%s{operation}: fcntl(%d{oldFd}, F_DUPFD_CLOEXEC, 0) was refused" e
 
@@ -4867,7 +4940,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let resultCode, state =
-                match UnixDescriptor.close fd state.Kernel.System with
+                match UnixDescriptor.close (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
                 | SyscallAnswer.Completed _, system -> 0, withAnswered system state
                 | SyscallAnswer.Failed error, system -> -1, withErrno ctx error system state
 
@@ -4899,7 +4972,11 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    UnixPipe.pipe2 kernelFlags (BufferPointer.toUserBuffer pipeFds) state.Kernel.System
+                    UnixPipe.pipe2
+                        (state.Kernel.Caller ctx.Thread)
+                        kernelFlags
+                        (BufferPointer.toUserBuffer pipeFds)
+                        state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         operation
@@ -4956,7 +5033,12 @@ module NativeSystemNative =
             let code, state =
                 let answer =
                     try
-                        UnixDescriptor.fcntl fd FcntlNumbering.SetDescriptorFlags argument state.Kernel.System
+                        UnixDescriptor.fcntl
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            FcntlNumbering.SetDescriptorFlags
+                            argument
+                            state.Kernel.System
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail $"%s{operation}: fcntl(%d{fd}, F_SETFD, 0x%x{argument}) was refused" e
 
@@ -4982,7 +5064,12 @@ module NativeSystemNative =
             let code, state =
                 let answer =
                     try
-                        UnixDescriptor.fcntl fd FcntlNumbering.GetDescriptorFlags 0 state.Kernel.System
+                        UnixDescriptor.fcntl
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            FcntlNumbering.GetDescriptorFlags
+                            0
+                            state.Kernel.System
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail $"%s{operation}: fcntl(%d{fd}, F_GETFD) was refused" e
 
@@ -5024,7 +5111,7 @@ module NativeSystemNative =
                 |> Some
 
             let answer, unix =
-                UnixDescriptor.setNonBlocking fd isNonBlocking state.Kernel.System
+                UnixDescriptor.setNonBlocking (state.Kernel.Caller ctx.Thread) fd isNonBlocking state.Kernel.System
 
             // The system comes back on the failing arm too: on one flavour the
             // event port's bit toggles and the call reports a failure anyway.
@@ -5070,7 +5157,7 @@ module NativeSystemNative =
                 writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
 
             // `fcntl(F_GETFL)`, and its `O_NONBLOCK`.
-            match UnixDescriptor.isNonBlocking fd state.Kernel.System with
+            match UnixDescriptor.isNonBlocking (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
             | None ->
                 // The C stores 0 through the pointer before returning -1, and the
                 // only failure the modelled targets can produce is EBADF.
@@ -5155,7 +5242,7 @@ module NativeSystemNative =
 
             let created =
                 try
-                    UnixSocket.socket domain socketType protocol state.Kernel.System
+                    UnixSocket.socket (state.Kernel.Caller ctx.Thread) domain socketType protocol state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, so a real run would call socket(%d{domain}, 0x%x{socketType}, %d{protocol}), and WoofWare.PosixKernel has no answer"
@@ -5181,7 +5268,12 @@ module NativeSystemNative =
                 | SimulatedUnixFlavour.Darwin ->
                     let answer =
                         try
-                            UnixDescriptor.fcntl fd FcntlNumbering.SetDescriptorFlags FcntlNumbering.CloseOnExec unix
+                            UnixDescriptor.fcntl
+                                (state.Kernel.Caller ctx.Thread)
+                                fd
+                                FcntlNumbering.SetDescriptorFlags
+                                FcntlNumbering.CloseOnExec
+                                unix
                         with :? UnmodelledException as e ->
                             KernelRefusal.fail $"%s{operation}: fcntl(%d{fd}, F_SETFD, FD_CLOEXEC) was refused" e
 
@@ -5243,7 +5335,7 @@ module NativeSystemNative =
             // rather than about any kernel.
             let refusing (e : exn) : 'a =
                 let reachedBy =
-                    match socketOf fd state.Kernel.System with
+                    match socketOf fd state.Kernel with
                     | Some socket when socket.Domain = SocketDomain.Unix ->
                         "That belongs with the filesystem work (issue #956), not here."
                     | Some _
@@ -5275,7 +5367,16 @@ module NativeSystemNative =
                 // answers EINVAL.
                 let answer =
                     try
-                        match UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt unix with
+                        match
+                            UnixSocket.setsockopt
+                                (state.Kernel.Caller ctx.Thread)
+                                fd
+                                level
+                                optionName
+                                UserBuffer.Mapped
+                                sizeOfInt
+                                unix
+                        with
                         | CallProgress.Answered answer -> answer
                         | CallProgress.NeedsCopyIn paused ->
                             UnixSocket.setsockoptWithValue
@@ -5307,6 +5408,7 @@ module NativeSystemNative =
                 try
                     match
                         UnixSocket.bind
+                            (state.Kernel.Caller ctx.Thread)
                             fd
                             (BufferPointer.toUserBuffer addressArgument)
                             (uint32 declaredLength)
@@ -5348,13 +5450,13 @@ module NativeSystemNative =
 
             let answer, unix =
                 try
-                    UnixSocket.listen fd backlog state.Kernel.System
+                    UnixSocket.listen (state.Kernel.Caller ctx.Thread) fd backlog state.Kernel.System
                 with :? UnmodelledException as e ->
                     // The library says why no kernel answer exists; PawPrint
                     // says how a guest could be holding such a socket, which
                     // is a fact about CoreLib rather than about any kernel.
                     let reachedBy =
-                        match socketOf fd state.Kernel.System with
+                        match socketOf fd state.Kernel with
                         | Some socket when socket.Domain = SocketDomain.Inet6 ->
                             "A managed guest reaches an IPv6 listener by listening on an IPv6 or dual-mode `Socket`, such as one bound to IPAddress.IPv6Any; one bound to an IPv4 address is an IPv4 socket, which listens."
                         | Some socket when socket.Domain = SocketDomain.Unix ->
@@ -5416,7 +5518,7 @@ module NativeSystemNative =
                 |> ignore<ManagedPointerSource>
 
                 let reachedBy =
-                    match socketOf fd state.Kernel.System with
+                    match socketOf fd state.Kernel with
                     | Some socket when socket.Domain = SocketDomain.Inet6 ->
                         "A managed guest reaches this by accepting on an IPv6 or dual-mode `Socket`, which cannot be listening here: `SystemNative_Listen` refuses an IPv6 socket."
                     | Some socket when socket.Domain = SocketDomain.Unix ->
@@ -5460,8 +5562,7 @@ module NativeSystemNative =
                 // either is still in `accept4` or calls it again.
                 match outcome with
                 | AcceptOutcome.WouldBlock _, _
-                | AcceptOutcome.Restarts, _
-                | AcceptOutcome.Failed UnixError.EINTR, _ -> ()
+                | AcceptOutcome.Interrupted, _ -> ()
                 | AcceptOutcome.Failed _, _
                 | AcceptOutcome.DroppedConnection _, _
                 | AcceptOutcome.Accepted _, _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
@@ -5482,19 +5583,10 @@ module NativeSystemNative =
                 match outcome with
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
-                | AcceptOutcome.Failed UnixError.EINTR, system ->
+                | AcceptOutcome.Interrupted, system ->
                     callAgainAfterSignal
                         ctx
                         operation
-                        Interrupted.Eintr
-                        (Some (NativeLocals.AcceptAddressLength declaredLength))
-                        system
-                        state
-                | AcceptOutcome.Restarts, system ->
-                    callAgainAfterSignal
-                        ctx
-                        operation
-                        Interrupted.Restarted
                         (Some (NativeLocals.AcceptAddressLength declaredLength))
                         system
                         state
@@ -5531,6 +5623,7 @@ module NativeSystemNative =
                 let unix =
                     match
                         UnixDescriptor.fcntl
+                            (state.Kernel.Caller ctx.Thread)
                             acceptedFd
                             FcntlNumbering.SetDescriptorFlags
                             FcntlNumbering.CloseOnExec
@@ -5550,7 +5643,7 @@ module NativeSystemNative =
                 // socket if the `fcntl` fails, which it cannot on a socket the
                 // kernel has just made.
                 let unix =
-                    match UnixDescriptor.setNonBlocking acceptedFd false unix with
+                    match UnixDescriptor.setNonBlocking (state.Kernel.Caller ctx.Thread) acceptedFd false unix with
                     | SetNonBlockingAnswer.Set, unix -> unix
                     | SetNonBlockingAnswer.Failed error, _ ->
                         failwith
@@ -5597,7 +5690,7 @@ module NativeSystemNative =
 
                 let outcome =
                     try
-                        UnixConnection.finishAccept ctx.Thread state.Kernel.System
+                        UnixConnection.finishAccept (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing fd e
 
@@ -5619,7 +5712,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)
-            | Some (ParkedSyscall.ConnectionWrite _) ->
+            | Some (ParkedSyscall.ConnectionWrite _)
+            | Some (ParkedSyscall.Futex _) ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -5646,7 +5740,9 @@ module NativeSystemNative =
                 match ctx.Instruction.NativeLocals with
                 | Some (NativeLocals.AcceptAddressLength declaredLength) -> declaredLength
                 | Some (NativeLocals.PollEntries _)
-                | Some NativeLocals.SocketEventWaitLoop ->
+                | Some NativeLocals.SocketEventWaitLoop
+                | Some NativeLocals.AwaitingReturnToUser
+                | Some (NativeLocals.ReturnedToUser _) ->
                     failwith
                         $"%s{operation}: thread %O{ctx.Thread}'s accept frame keeps another call's locals (this is an interpreter bug)."
                 | None ->
@@ -5667,7 +5763,7 @@ module NativeSystemNative =
             let outcome =
                 try
                     UnixConnection.accept
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer addressArgument)
                         (uint32 declaredLength)
@@ -5729,7 +5825,7 @@ module NativeSystemNative =
             // ordinary `Socket.Connect`.
             let refusing (e : exn) : 'a =
                 let reachedBy =
-                    match socketOf fd state.Kernel.System with
+                    match socketOf fd state.Kernel with
                     | Some socket when socket.Domain = SocketDomain.Unix ->
                         "That belongs with the filesystem work (issue #956), not here."
                     | Some _
@@ -5748,9 +5844,9 @@ module NativeSystemNative =
                 | SyscallOutcome.WouldBlock condition ->
                     failwith
                         $"%s{operation}: thread %O{ctx.Thread}'s connect would sleep until %A{condition}, and PawPrint does not yet park a thread in a connect."
-                | SyscallOutcome.Restarts ->
+                | SyscallOutcome.Interrupted ->
                     failwith
-                        $"%s{operation}: thread %O{ctx.Thread}'s connect answered a restart, which only a finishing call answers, and a first connect is not one (this is a bug in the kernel library)."
+                        $"%s{operation}: thread %O{ctx.Thread}'s connect was interrupted by a signal, which only a finishing call answers, and a first connect is not one (this is a bug in the kernel library)."
 
             // The call stops before the kernel copies the caller's sockaddr,
             // so the pointer is resolved only then: a call whose copy takes no
@@ -5760,7 +5856,7 @@ module NativeSystemNative =
                 try
                     match
                         UnixConnection.connect
-                            ctx.Thread
+                            (state.Kernel.Caller ctx.Thread)
                             fd
                             (BufferPointer.toUserBuffer addressArgument)
                             (uint32 declaredLength)
@@ -5841,13 +5937,18 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    syscall fd (BufferPointer.toUserBuffer addressArgument) (uint32 declaredLength) state.Kernel.System
+                    syscall
+                        (state.Kernel.Caller ctx.Thread)
+                        fd
+                        (BufferPointer.toUserBuffer addressArgument)
+                        (uint32 declaredLength)
+                        state.Kernel.System
                 with :? UnmodelledException as e ->
                     // The library says why no kernel answer exists; PawPrint
                     // says how a guest could be holding such a socket, which
                     // is a fact about CoreLib rather than about any kernel.
                     let reachedBy =
-                        match socketOf fd state.Kernel.System with
+                        match socketOf fd state.Kernel with
                         | Some socket when socket.Domain = SocketDomain.Unix ->
                             "That belongs with the filesystem work (issue #956), not here."
                         | Some socket when socket.Domain = SocketDomain.Inet6 && socket.Kind <> SocketKind.Stream ->
@@ -5928,7 +6029,16 @@ module NativeSystemNative =
             // length cell holds `sizeof(int)`.
             let answer =
                 try
-                    match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
+                    match
+                        UnixSocket.getsockopt
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            level
+                            optionName
+                            UserBuffer.Mapped
+                            UserBuffer.Mapped
+                            unix
+                    with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 4u paused
                 with :? UnmodelledException as e ->
@@ -6006,11 +6116,11 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    UnixConnection.shutdown fd how state.Kernel.System
+                    UnixConnection.shutdown (state.Kernel.Caller ctx.Thread) fd how state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
-                        (match socketOf fd state.Kernel.System with
+                        (match socketOf fd state.Kernel with
                          | Some socket when SocketPhase.isListening socket.Phase ->
                              "A managed guest reaches this by calling Socket.Shutdown on a listening Socket."
                          | Some socket when socket.Domain = SocketDomain.Unix ->
@@ -6098,11 +6208,7 @@ module NativeSystemNative =
 
                 KernelRefusal.failAdvising
                     $"%s{operation}: fd %d{fd}"
-                    (KernelRefusal.advising
-                        [
-                            transferAdvice "Receive" fd buffer (Some palFlags) state.Kernel.System
-                            slept
-                        ])
+                    (KernelRefusal.advising [ transferAdvice "Receive" fd buffer (Some palFlags) state.Kernel ; slept ])
                     e
 
             // Answer the call from the library's outcome, which a first entry
@@ -6119,10 +6225,7 @@ module NativeSystemNative =
                     |> Some
                 // A signal ended the sleep: the shim calls `recv` again after
                 // EINTR, and a restart calls again with no EINTR.
-                | ReadOutcome.Restarts, system ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
-                | ReadOutcome.Answered (ReadFailed UnixError.EINTR), system ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | ReadOutcome.Interrupted, system -> callAgainAfterSignal ctx operation None system state
                 | ReadOutcome.Answered (ReadFailed error), system ->
                     withErrno ctx error system state
                     |> storeReceived 0
@@ -6154,7 +6257,7 @@ module NativeSystemNative =
 
                 let outcome =
                     try
-                        UnixReadWrite.finishRead ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishRead (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing fd true e
 
@@ -6184,7 +6287,7 @@ module NativeSystemNative =
             let outcome =
                 try
                     UnixReadWrite.recv
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferLen)
@@ -6250,8 +6353,7 @@ module NativeSystemNative =
 
                 KernelRefusal.failAdvising
                     $"%s{operation}: fd %d{fd}"
-                    (KernelRefusal.advising
-                        [ transferAdvice "Send" fd buffer (Some palFlags) state.Kernel.System ; slept ])
+                    (KernelRefusal.advising [ transferAdvice "Send" fd buffer (Some palFlags) state.Kernel ; slept ])
                     e
 
             /// What `fate` leaves the guest with, as `SystemNative_Write`'s
@@ -6269,10 +6371,8 @@ module NativeSystemNative =
                         |> complete UnixErrorPal.palSuccess
 
                 match fate with
-                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR), system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | ProcessFate.Continues (WriteOutcome.Restarts, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | ProcessFate.Continues (WriteOutcome.Interrupted, system) ->
+                    callAgainAfterSignal ctx operation None system state
                 | ProcessFate.Continues (WriteOutcome.WouldBlock _, system) ->
                     state.MapKernel (EmulatedKernel.withUnix system)
                     |> Scheduler.parkInSyscall ctx.Thread
@@ -6285,7 +6385,7 @@ module NativeSystemNative =
                     match
                         NativeLibc.screenRaisedSignal
                             state.Kernel.UnixPlatform
-                            ctx.Thread
+                            (state.Kernel.Caller ctx.Thread)
                             state.Kernel.Leader
                             state.Kernel.PosixSignalShim
                             state.Kernel.System
@@ -6296,10 +6396,16 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: fd %d{fd}: the send raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
                     | None -> answered answer system
-                | ProcessFate.ProcessEnded ended ->
+                | ProcessFate.ProcessEnded (ended, remaining) ->
                     match EndedProcess.termination ended with
                     | ProcessTermination.Signaled _ ->
-                        ExecutionResult.SignalTerminated (state, ended)
+                        ExecutionResult.SignalTerminated (
+                            state,
+                            {
+                                Ended = ended
+                                Remaining = remaining
+                            }
+                        )
                         |> NativeHandlerResult.ofExecutionResult
                         |> Some
                     | ProcessTermination.Exited _ ->
@@ -6321,12 +6427,13 @@ module NativeSystemNative =
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Write`, which finishes a send as it finishes a write.
             match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
-            | Some (ParkedSyscall.ConnectionWrite _) ->
+            | Some (ParkedSyscall.ConnectionWrite _)
+            | Some (ParkedSyscall.Futex _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
                 let progress =
                     try
-                        UnixReadWrite.finishWrite ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishWrite (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing fd true e
 
@@ -6362,7 +6469,7 @@ module NativeSystemNative =
             let progress =
                 try
                     UnixReadWrite.send
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferLen)
@@ -6372,9 +6479,9 @@ module NativeSystemNative =
                     refusing fd false e
 
             match progress with
-            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Restarts, _) as fate) ->
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Interrupted, _) as fate) ->
                 failwith
-                    $"%s{operation}: fd %d{fd}: a send that never slept answered %A{fate}; only a finishing call restarts (this is a bug in the kernel library)."
+                    $"%s{operation}: fd %d{fd}: a send that never slept answered %A{fate}; only a finishing call is interrupted (this is a bug in the kernel library)."
             | CallProgress.Answered fate -> finish fd fate
             // The bytes the connection takes now are read now; a blocking send
             // with room for only part of them sleeps, and the rest is read only
@@ -6428,7 +6535,11 @@ module NativeSystemNative =
             // The ioctl writes the shim's own stack `int`, which is mapped.
             let answer =
                 try
-                    UnixDescriptor.bytesAvailable fd UserBuffer.Mapped state.Kernel.System
+                    UnixDescriptor.bytesAvailable
+                        (state.Kernel.Caller ctx.Thread)
+                        fd
+                        UserBuffer.Mapped
+                        state.Kernel.System
                 with :? UnmodelledException as e ->
                     KernelRefusal.failAdvising
                         $"%s{operation}: fd %d{fd}"
@@ -6508,7 +6619,16 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    match UnixSocket.setsockopt fd level name value (uint32 optionLength) unix with
+                    match
+                        UnixSocket.setsockopt
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            level
+                            name
+                            value
+                            (uint32 optionLength)
+                            unix
+                    with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused ->
                         let storage =
@@ -6626,7 +6746,16 @@ module NativeSystemNative =
             // storage holding what the caller's held.
             let answer =
                 try
-                    match UnixSocket.getsockopt fd level name value UserBuffer.Mapped unix with
+                    match
+                        UnixSocket.getsockopt
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            level
+                            name
+                            value
+                            UserBuffer.Mapped
+                            unix
+                    with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength (uint32 declared) paused
                 with :? UnmodelledException as e ->
@@ -6714,7 +6843,9 @@ module NativeSystemNative =
             // The `struct linger` is the shim's own local, and it passes its size.
             let answer =
                 try
-                    match UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u unix with
+                    match
+                        UnixSocket.setsockopt (state.Kernel.Caller ctx.Thread) fd level name UserBuffer.Mapped 8u unix
+                    with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused ->
                         let range = PausedSetSockOpt.copyRange paused
@@ -6775,7 +6906,16 @@ module NativeSystemNative =
 
             let answer =
                 try
-                    match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
+                    match
+                        UnixSocket.getsockopt
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            level
+                            name
+                            UserBuffer.Mapped
+                            UserBuffer.Mapped
+                            unix
+                    with
                     | CallProgress.Answered answer -> answer
                     | CallProgress.NeedsCopyIn paused -> UnixSocket.getsockoptWithLength 8u paused
                 with :? UnmodelledException as e ->
@@ -6860,13 +7000,20 @@ module NativeSystemNative =
             let fd, state =
                 match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
                 | SimulatedUnixFlavour.Linux ->
-                    match UnixPoll.epollCreate1 EpollCreateFlags.CloseOnExec state.Kernel.System with
+                    match
+                        UnixPoll.epollCreate1
+                            (state.Kernel.Caller ctx.Thread)
+                            EpollCreateFlags.CloseOnExec
+                            state.Kernel.System
+                    with
                     | Ok (fd, system) -> fd, state.MapKernel (EmulatedKernel.withUnix system)
                     | Error error ->
                         failwith
                             $"%s{operation}: epoll_create1(EPOLL_CLOEXEC) answered %O{error}, which the kernel gives only for a flag other than EPOLL_CLOEXEC (this is an interpreter bug)."
                 | SimulatedUnixFlavour.Darwin ->
-                    let fd, system = UnixKqueue.kqueue state.Kernel.System
+                    let fd, system =
+                        UnixKqueue.kqueue (state.Kernel.Caller ctx.Thread) state.Kernel.System
+
                     fd, state.MapKernel (EmulatedKernel.withUnix system)
 
             // `*port = fd`, as an `intptr_t`: eight bytes on every platform
@@ -6907,7 +7054,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let error, state =
-                match UnixDescriptor.close fd state.Kernel.System with
+                match UnixDescriptor.close (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
                 | SyscallAnswer.Completed _, system -> UnixErrorPal.palSuccess, withAnswered system state
                 | SyscallAnswer.Failed error, system -> UnixErrorPal.toPal error, withErrno ctx error system state
 
@@ -7173,7 +7320,7 @@ module NativeSystemNative =
 
                 let kevent (changes : Kevent list) =
                     UnixKqueue.kevent
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         portFd
                         (List.length changes)
                         changes
@@ -7227,6 +7374,7 @@ module NativeSystemNative =
 
             match
                 SocketEventsPal.tryChangeSocketEventRegistration
+                    (state.Kernel.Caller ctx.Thread)
                     portFd
                     targetFd
                     currentEvents
@@ -7406,8 +7554,8 @@ module NativeSystemNative =
 
             // Park re-entrantly: leave the native frame on the stack and the
             // caller's program counter naming the call, so that a wake —
-            // `Program`'s sweep flipping this thread back to Runnable once
-            // `UnixWait.wakes` says so — re-enters this handler, which finishes
+            // the driver's sweep flipping this thread back to Runnable once
+            // `UnixWait.wake` wakes it — re-enters this handler, which finishes
             // the call from the task's park record and writes the event batch
             // through the caller's own `buffer`, rather than the wake having to
             // reach into a frame it does not own from some other thread's step.
@@ -7426,14 +7574,8 @@ module NativeSystemNative =
                 match outcome with
                 // A signal ended the sleep, and the shim's `epoll_wait` and
                 // `kevent` loops call again after EINTR.
-                | EpollWaitOutcome.Failed UnixError.EINTR ->
-                    callAgainAfterSignal
-                        ctx
-                        operation
-                        Interrupted.Eintr
-                        (Some NativeLocals.SocketEventWaitLoop)
-                        system
-                        state
+                | EpollWaitOutcome.Interrupted ->
+                    callAgainAfterSignal ctx operation (Some NativeLocals.SocketEventWaitLoop) system state
                 | EpollWaitOutcome.Failed error -> failFromSyscall error
                 | EpollWaitOutcome.Answered delivered ->
                     deliver delivered (state.MapKernel (EmulatedKernel.withUnix system))
@@ -7450,14 +7592,8 @@ module NativeSystemNative =
                 : NativeHandlerResult option
                 =
                 match outcome with
-                | KeventOutcome.Failed UnixError.EINTR ->
-                    callAgainAfterSignal
-                        ctx
-                        operation
-                        Interrupted.Eintr
-                        (Some NativeLocals.SocketEventWaitLoop)
-                        system
-                        state
+                | KeventOutcome.Interrupted ->
+                    callAgainAfterSignal ctx operation (Some NativeLocals.SocketEventWaitLoop) system state
                 // EBADF from a finishing call, whose system no longer holds the
                 // park, as well as from a first one, whose system is unchanged.
                 | KeventOutcome.Failed error ->
@@ -7562,7 +7698,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.EpollWait _) ->
                 let outcome, system =
                     try
-                        UnixPoll.finishEpollWait ctx.Thread state.Kernel.System
+                        UnixPoll.finishEpollWait (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing e
 
@@ -7570,7 +7706,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Kevent _) ->
                 let outcome, system =
                     try
-                        UnixKqueue.finishKevent ctx.Thread state.Kernel.System
+                        UnixKqueue.finishKevent (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing e
 
@@ -7604,7 +7740,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.FifoOpen _ as other)
             | Some (ParkedSyscall.InotifyRead _ as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
-            | Some (ParkedSyscall.ConnectionWrite _ as other) ->
+            | Some (ParkedSyscall.ConnectionWrite _ as other)
+            | Some (ParkedSyscall.Futex _ as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -7637,7 +7774,13 @@ module NativeSystemNative =
                 // for ever.
                 let outcome, system =
                     try
-                        UnixPoll.epollWait ctx.Thread fd requestedCount (BufferPointer.toUserBuffer buffer) -1 system
+                        UnixPoll.epollWait
+                            (state.Kernel.Caller ctx.Thread)
+                            fd
+                            requestedCount
+                            (BufferPointer.toUserBuffer buffer)
+                            -1
+                            system
                     with :? UnmodelledException as e ->
                         refusing e
 
@@ -7649,7 +7792,7 @@ module NativeSystemNative =
             let outcome, system =
                 try
                     UnixKqueue.kevent
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         0
                         []
@@ -7818,7 +7961,7 @@ module NativeSystemNative =
                     let eventQueue =
                         entries
                         |> List.exists (fun (entry : PollEntry) ->
-                            match UnixSystem.descriptorTarget entry.Fd state.Kernel.System with
+                            match UnixSystem.descriptorTarget state.Kernel.ProcessId entry.Fd state.Kernel.System with
                             | Some (OpenFileTarget.Epoll _)
                             | Some (OpenFileTarget.Kqueue _)
                             | Some (OpenFileTarget.Inotify _) -> true
@@ -7857,14 +8000,8 @@ module NativeSystemNative =
                     answer reported triggeredCount (state.MapKernel (EmulatedKernel.withUnix system))
                 // A signal ended the sleep, and `Common_Poll`'s loop calls again
                 // after EINTR, with the same timeout in full.
-                | PollOutcome.Failed UnixError.EINTR, system ->
-                    callAgainAfterSignal
-                        ctx
-                        operation
-                        Interrupted.Eintr
-                        (Some (NativeLocals.PollEntries entries))
-                        system
-                        state
+                | PollOutcome.Interrupted, system ->
+                    callAgainAfterSignal ctx operation (Some (NativeLocals.PollEntries entries)) system state
                 // Any other failure is `poll(2)`'s own, which `Common_Poll`
                 // returns converted, having stored 0 through `triggered` and left
                 // every entry's `TriggeredEvents` alone, with `errno` as the
@@ -7918,7 +8055,11 @@ module NativeSystemNative =
                             }
                     )
 
-                settle entries (polling entries (fun () -> PollEventsPal.finish ctx.Thread state.Kernel.System))
+                settle
+                    entries
+                    (polling
+                        entries
+                        (fun () -> PollEventsPal.finish (state.Kernel.Caller ctx.Thread) state.Kernel.System))
             | Some (ParkedSyscall.KqueuePoll parked) ->
                 if List.length parked.Entries <> int eventCount then
                     failwith
@@ -7926,7 +8067,9 @@ module NativeSystemNative =
 
                 settle
                     parked.Entries
-                    (polling parked.Entries (fun () -> PollEventsPal.finish ctx.Thread state.Kernel.System))
+                    (polling
+                        parked.Entries
+                        (fun () -> PollEventsPal.finish (state.Kernel.Caller ctx.Thread) state.Kernel.System))
             | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
@@ -7943,7 +8086,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.FifoOpen _)
             | Some (ParkedSyscall.InotifyRead _)
             | Some (ParkedSyscall.ConnectionRead _)
-            | Some (ParkedSyscall.ConnectionWrite _) ->
+            | Some (ParkedSyscall.ConnectionWrite _)
+            | Some (ParkedSyscall.Futex _) ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -7959,9 +8103,15 @@ module NativeSystemNative =
             | Some (NativeLocals.PollEntries entries) ->
                 settle
                     entries
-                    (polling entries (fun () -> PollEventsPal.pollConverted ctx.Thread entries milliseconds system))
+                    (polling
+                        entries
+                        (fun () ->
+                            PollEventsPal.pollConverted (state.Kernel.Caller ctx.Thread) entries milliseconds system
+                        ))
             | Some (NativeLocals.AcceptAddressLength _)
-            | Some NativeLocals.SocketEventWaitLoop ->
+            | Some NativeLocals.SocketEventWaitLoop
+            | Some NativeLocals.AwaitingReturnToUser
+            | Some (NativeLocals.ReturnedToUser _) ->
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread}'s poll frame keeps another call's locals (this is an interpreter bug)."
             | None ->
@@ -8004,7 +8154,9 @@ module NativeSystemNative =
 
             settle
                 entries
-                (polling entries (fun () -> PollEventsPal.pollConverted ctx.Thread entries milliseconds system))
+                (polling
+                    entries
+                    (fun () -> PollEventsPal.pollConverted (state.Kernel.Caller ctx.Thread) entries milliseconds system))
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -8021,7 +8173,7 @@ module NativeSystemNative =
             let fd = fdArgument "SystemNative_IsATty" instruction.Arguments.[0]
 
             let error =
-                match UnixDescriptor.terminalAttributes fd state.Kernel.System with
+                match UnixDescriptor.terminalAttributes (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
                 | TerminalAttributesAnswer.NotATerminal error -> error
 
             // In the simulated flavour's own numbering: Darwin's EOPNOTSUPP for a
@@ -8056,7 +8208,7 @@ module NativeSystemNative =
             // caller could have reached it, as it can tell from what `fd` names.
             let refusing (buffer : BufferPointer) (e : exn) : 'a =
                 let reachability =
-                    match UnixSystem.descriptorTarget fd state.Kernel.System with
+                    match UnixSystem.descriptorTarget state.Kernel.ProcessId fd state.Kernel.System with
                     | Some (OpenFileTarget.Socket _) ->
                         "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                     | Some (OpenFileTarget.File _) ->
@@ -8076,7 +8228,7 @@ module NativeSystemNative =
                         [
                             BufferPointer.unmodelledHint buffer
                             reachability
-                            if ProcessId.toInt32 (UnixSystem.processId state.Kernel.System) = 1 then
+                            if ProcessId.toInt32 state.Kernel.ProcessId = 1 then
                                 "If the kernel names the init process: configure a process ID other than 1 (KernelConfig.ProcessId)."
                             else
                                 ""
@@ -8104,7 +8256,7 @@ module NativeSystemNative =
                 match
                     NativeLibc.screenRaisedSignal
                         state.Kernel.UnixPlatform
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         state.Kernel.Leader
                         state.Kernel.PosixSignalShim
                         state.Kernel.System
@@ -8135,10 +8287,8 @@ module NativeSystemNative =
                 // A signal ended the sleep with nothing written. `Common_Write`
                 // calls `write` again after EINTR, and a restart calls again
                 // with no EINTR.
-                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR), system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | ProcessFate.Continues (WriteOutcome.Restarts, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | ProcessFate.Continues (WriteOutcome.Interrupted, system) ->
+                    callAgainAfterSignal ctx operation None system state
                 | ProcessFate.Continues (WriteOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Read` does: a wake
                     // re-enters this handler, which finishes the write from the
@@ -8155,10 +8305,16 @@ module NativeSystemNative =
                     screenRaised raised system
                     let result, state = answered answer system state
                     returning result (effectOf system) state
-                | ProcessFate.ProcessEnded ended ->
+                | ProcessFate.ProcessEnded (ended, remaining) ->
                     match EndedProcess.termination ended with
                     | ProcessTermination.Signaled _ ->
-                        ExecutionResult.SignalTerminated (state, ended)
+                        ExecutionResult.SignalTerminated (
+                            state,
+                            {
+                                Ended = ended
+                                Remaining = remaining
+                            }
+                        )
                         |> NativeHandlerResult.ofExecutionResult
                         |> Some
                     | ProcessTermination.Exited _ ->
@@ -8186,12 +8342,13 @@ module NativeSystemNative =
             // real write copies it only as room appears.
             match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.PipeWrite _)
-            | Some (ParkedSyscall.ConnectionWrite _) ->
+            | Some (ParkedSyscall.ConnectionWrite _)
+            | Some (ParkedSyscall.Futex _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
                 let progress =
                     try
-                        UnixReadWrite.finishWrite ctx.Thread state.Kernel.System
+                        UnixReadWrite.finishWrite (state.Kernel.Caller ctx.Thread) state.Kernel.System
                     with :? UnmodelledException as e ->
                         refusing buffer e
 
@@ -8249,7 +8406,7 @@ module NativeSystemNative =
                 | [] -> StepEffect.NoEffect
                 | [ delivery ] ->
                     StepEffect.WroteToFd (
-                        StandardStreams.roleOf (UnixSystem.processId system) delivery.Endpoint,
+                        StandardStreams.roleOf state.Kernel.ProcessId delivery.Endpoint,
                         delivery.Bytes
                     )
                 | delivered ->
@@ -8259,7 +8416,7 @@ module NativeSystemNative =
             let progress =
                 try
                     UnixReadWrite.write
-                        ctx.Thread
+                        (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -8268,9 +8425,9 @@ module NativeSystemNative =
                     refusing buffer e
 
             match progress with
-            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Restarts, _) as fate) ->
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.Interrupted, _) as fate) ->
                 failwith
-                    $"%s{operation}: fd %d{fd}: a write that never slept answered %A{fate}; only a finishing call restarts (this is a bug in the kernel library)."
+                    $"%s{operation}: fd %d{fd}: a write that never slept answered %A{fate}; only a finishing call is interrupted (this is a bug in the kernel library)."
             | CallProgress.Answered fate -> finish fate noEffect
             // The bytes the object takes now are read now; a blocking write into
             // a pipe with room for only part of them sleeps, and the rest is
@@ -8407,7 +8564,7 @@ module NativeSystemNative =
                     state
                 else
 
-                match UnixDescriptor.terminalAttributes 0 state.Kernel.System with
+                match UnixDescriptor.terminalAttributes (state.Kernel.Caller ctx.Thread) 0 state.Kernel.System with
                 | TerminalAttributesAnswer.NotATerminal error -> withErrnoOnly ctx error state
 
             let state, result =
@@ -8477,7 +8634,12 @@ module NativeSystemNative =
             | ValueSome signal ->
 
             let installed, shim =
-                PosixSignalShim.enable numbering signal state.Kernel.System state.Kernel.PosixSignalShim
+                PosixSignalShim.enable
+                    numbering
+                    signal
+                    (state.Kernel.Caller ctx.Thread)
+                    state.Kernel.System
+                    state.Kernel.PosixSignalShim
 
             match installed with
             | Error error ->
@@ -8537,7 +8699,7 @@ module NativeSystemNative =
             let operation = "SystemNative_HandleNonCanceledPosixSignal"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
 
-            match handleNonCanceledPosixSignal operation signo state with
+            match handleNonCanceledPosixSignal operation ctx.Thread signo state with
             | NonCanceledPosixSignal.Continues state -> NativeHandlerResult.completed state |> Some
             | NonCanceledPosixSignal.ContinuesWithErrno (state, error) ->
                 withErrnoOnly ctx error state |> NativeHandlerResult.completed |> Some
@@ -8570,7 +8732,12 @@ module NativeSystemNative =
                 |> Some
             | ValueSome signal ->
                 let system, shim, refused =
-                    PosixSignalShim.disable numbering signal state.Kernel.System state.Kernel.PosixSignalShim
+                    PosixSignalShim.disable
+                        numbering
+                        signal
+                        (state.Kernel.Caller ctx.Thread)
+                        state.Kernel.System
+                        state.Kernel.PosixSignalShim
 
                 let state =
                     state.MapKernel (fun kernel ->

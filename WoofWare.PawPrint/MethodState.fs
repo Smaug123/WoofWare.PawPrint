@@ -185,10 +185,11 @@ type ExceptionEscape =
     /// runtime would never have shown it to.
     | UnhandledAtNativeCaller of runtimeCaller : string
 
-/// What a C function in the runtime's native shim, which PawPrint implements, read from
-/// guest memory once, before a loop that makes a syscall again: the values a call made
-/// again must use, where reading the guest's memory afresh would see whatever another
-/// thread has written there since.
+/// What a native frame PawPrint implements keeps between its entries: what a C function
+/// in the runtime's native shim read from guest memory once, before a loop that makes a
+/// syscall again, which a call made again must use, where reading the guest's memory
+/// afresh would see whatever another thread has written there since; or how far a call a
+/// signal interrupted has got towards its end.
 [<RequireQualifiedAccess>]
 type NativeLocals =
     /// `SystemNative_Accept`'s `socklen_t addrLen`, read from `*socketAddressLen` before
@@ -201,6 +202,13 @@ type NativeLocals =
     /// past the wrapper's screens, which a call made again does not run: `*count` is
     /// read again, by the syscall alone.
     | SocketEventWaitLoop
+    /// The `sigsuspend` or `pause` this native frame made was interrupted by a signal (an
+    /// `Interrupted` answer), and the thread has yet to return to user mode, where the kernel
+    /// ends the call (`UnixSignal.onReturnToUser`).
+    | AwaitingReturnToUser
+    /// The thread has returned to user mode from the `sigsuspend` or `pause` this native frame
+    /// made, which a signal interrupted, and the return ended the call as `ended` says.
+    | ReturnedToUser of ended : WoofWare.PosixKernel.InterruptedCall
 
 type MethodReturnState =
     {

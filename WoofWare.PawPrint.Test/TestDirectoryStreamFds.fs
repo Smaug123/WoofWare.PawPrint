@@ -47,7 +47,7 @@ module TestDirectoryStreamFds =
 
     let private tryOpenDir (path : string) (kernel : EmulatedKernel) : DirectoryStreamOpen * EmulatedKernel =
         DirectoryStream.opendir
-            (UnixSystem.leader kernel.System)
+            kernel.Leader
             (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" path)))
             kernel
 
@@ -57,13 +57,13 @@ module TestDirectoryStreamFds =
         | DirectoryStreamOpen.Failed error, _ -> failwith $"could not open the directory: %O{error}"
 
     let private closeDir (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
-        match DirectoryStream.closedir block kernel with
+        match DirectoryStream.closedir kernel.Leader block kernel with
         | Ok (), kernel -> kernel
         | Error error, _ -> failwith $"could not close the stream: %O{error}"
 
     /// The number `open(2)` would hand out next.
     let private lowestFree (kernel : EmulatedKernel) : int =
-        let live = FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
+        let live = FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.ProcessId kernel.System)
         Seq.initInfinite id |> Seq.find (fun fd -> not (Map.containsKey fd live))
 
     /// Where the stream `block` names is positioned, which is its descriptor's
@@ -71,7 +71,7 @@ module TestDirectoryStreamFds =
     let private positionOf (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryPosition =
         let fd = EmulatedKernel.directoryStreamFd block kernel
 
-        match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors kernel.System) with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors kernel.ProcessId kernel.System) with
         | Some (OpenFileTarget.Directory (_, position)) -> position
         | other -> failwith $"the stream's fd %d{fd} names %O{other}, not a directory"
 
@@ -103,7 +103,7 @@ module TestDirectoryStreamFds =
         let kernel =
             EmulatedKernel.mapUnix
                 (fun system ->
-                    match UnixNamespace.readDirectoryEntry firstFd system with
+                    match UnixNamespace.readDirectoryEntry (LoneProcess.leader system) firstFd system with
                     | _, system -> system
                 )
                 kernel
@@ -147,7 +147,8 @@ module TestDirectoryStreamFds =
         NativeMemoryPool.isLive block kernel.NativeMemoryPool |> shouldEqual false
 
         // `fcntl(F_GETFL)` of a closed descriptor is EBADF.
-        UnixDescriptor.isNonBlocking fd kernel.System |> shouldEqual None
+        UnixDescriptor.isNonBlocking (kernel.Caller kernel.Leader) fd kernel.System
+        |> shouldEqual None
 
     [<Test>]
     let ``closing a stream whose descriptor is already closed answers EBADF and still releases it`` () : unit =
@@ -161,7 +162,7 @@ module TestDirectoryStreamFds =
             | Ok kernel -> kernel
             | Error error -> failwith $"%O{error}"
 
-        match DirectoryStream.closedir block kernel with
+        match DirectoryStream.closedir kernel.Leader block kernel with
         | Error error, kernel ->
             error |> shouldEqual UnixError.EBADF
             kernel.DirectoryStreamFds |> shouldBeEmpty

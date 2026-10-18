@@ -147,7 +147,7 @@ module TestSocketCreation =
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             try
-                match UnixSocket.socket domain socketType protocol system with
+                match UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system with
                 | Ok _ -> "Ok"
                 | Error error -> string<UnixError> error
             with :? UnmodelledException ->
@@ -324,10 +324,12 @@ module TestSocketCreation =
             | Ok arguments -> arguments
             | Error screen -> failwith $"expected the screens to pass, got %O{screen}"
 
-        match UnixSocket.socket domain socketType protocol system with
+        match UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system with
         | Ok (fd, system) ->
             let socket =
-                match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors system) with
+                match
+                    FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors (LoneProcess.pid system) system)
+                with
                 | Some (OpenFileTarget.Socket socketId) ->
                     match UnixSystem.socket socketId system with
                     | Some socket -> socket
@@ -339,7 +341,8 @@ module TestSocketCreation =
             sprintf "%O" socket.Protocol |> shouldEqual expectedProtocol
             // The shim's `SOCK_CLOEXEC` has nothing to change, and nothing asked
             // for `SOCK_NONBLOCK`.
-            UnixDescriptor.isNonBlocking fd system |> shouldEqual (Some false)
+            UnixDescriptor.isNonBlocking (LoneProcess.leader system) fd system
+            |> shouldEqual (Some false)
         | other -> failwith $"expected a socket, got %A{other}"
 
     /// The `socket(2)` arguments the shim passes, stated independently of the
@@ -497,14 +500,12 @@ module TestSocketCreation =
                             // A triple the kernel will not answer has no row to
                             // compare with the host's.
                             try
+                                let system : UnixSystem<int, string> =
+                                    UnixSystem.initial platform
+                                    |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
                                 match
-                                    UnixSocket.socket
-                                        domain
-                                        socketType
-                                        protocol
-                                        (UnixSystem.initial platform
-                                         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                                        : UnixSystem<int, string>)
+                                    UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system
                                 with
                                 | Error error -> Some (UnixErrorPal.toPal error)
                                 | Ok _ -> None

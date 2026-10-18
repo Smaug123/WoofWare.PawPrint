@@ -372,6 +372,15 @@ module DebuggerServer =
             | Some (ParkedSyscall.DatagramReceive _) -> writer.WriteString ("kind", "blockedInDatagramReceive")
             | Some (ParkedSyscall.DatagramSend _) -> writer.WriteString ("kind", "blockedInDatagramSend")
             | Some (ParkedSyscall.Connect _) -> writer.WriteString ("kind", "blockedInConnect")
+            | Some (ParkedSyscall.Futex parked) ->
+                writer.WriteString ("kind", "blockedInFutex")
+                writer.WriteNumber ("address", parked.FutexAddress)
+
+                match parked.FutexTimeout with
+                | FutexTimeout.Until deadline ->
+                    writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
+                | FutexTimeout.Untimed
+                | FutexTimeout.Unbounded -> ()
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

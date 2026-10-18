@@ -13,9 +13,10 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module KernelSyscall =
 
-    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
-    /// guest; an errno comes back, because that is an answer.
+    /// `close(2)`, made by the leader. A refusal crashes, as it does in the
+    /// handlers that serve a guest; an errno comes back, because that is an
+    /// answer.
     let close (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, UnixError> =
-        match UnixDescriptor.close fd kernel.System with
+        match UnixDescriptor.close (kernel.Caller kernel.Leader) fd kernel.System with
         | SyscallAnswer.Failed error, _ -> Error error
         | SyscallAnswer.Completed _, system -> Ok (EmulatedKernel.withUnix system kernel)

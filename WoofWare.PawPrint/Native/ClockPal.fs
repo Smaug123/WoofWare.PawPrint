@@ -88,12 +88,13 @@ module ClockPal =
     let private read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (entryPoint : string)
         (clockId : int)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTimestamp
         =
         let answer =
             try
-                UnixClock.clockGettime clockId system
+                UnixClock.clockGettime caller clockId system
             with :? UnmodelledException as e ->
                 KernelRefusal.fail
                     $"%s{entryPoint}: the kernel will not answer clock_gettime(%d{clockId}), which the real shim reads, so PawPrint cannot answer without it"
@@ -115,10 +116,11 @@ module ClockPal =
     /// values. Real `clock_gettime(CLOCK_REALTIME)` makes no uniqueness guarantee
     /// either.
     let systemTimeAsTicks<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : int64
         =
-        let reading = read "SystemNative_GetSystemTimeAsTicks" clockRealtime system
+        let reading = read "SystemNative_GetSystemTimeAsTicks" clockRealtime caller system
         let seconds = UnixTimestamp.seconds reading
 
         // Unreachable: the kernel refuses a boot instant before the epoch, and
@@ -151,6 +153,7 @@ module ClockPal =
     /// Not offset by the boot instant: the monotonic clock counts from boot, and
     /// CoreLib only ever subtracts two readings of it.
     let monotonicTimestampNanos<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : int64
         =
@@ -159,7 +162,7 @@ module ClockPal =
             | SimulatedUnixFlavour.Linux -> linuxClockMonotonic
             | SimulatedUnixFlavour.Darwin -> darwinClockUptimeRaw
 
-        let reading = read "SystemNative_GetTimestamp" clockId system
+        let reading = read "SystemNative_GetTimestamp" clockId caller system
 
         // Both clocks report to the nanosecond, so this is the machine's uptime
         // exactly, which is an int64 of nanoseconds and so cannot overflow here.
@@ -173,6 +176,7 @@ module ClockPal =
     /// upstream: a guest comparing `Environment.TickCount64` against a
     /// `Stopwatch` must not see them disagree about how much time has passed.
     let lowResolutionTimestampMs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : int64
         =
@@ -183,12 +187,12 @@ module ClockPal =
         // `clock_gettime_nsec_np`'s nanoseconds.
         match SimulatedUnixPlatform.flavour (UnixSystem.platform system) with
         | SimulatedUnixFlavour.Linux ->
-            let reading = read entryPoint linuxClockMonotonicCoarse system
+            let reading = read entryPoint linuxClockMonotonicCoarse caller system
 
             UnixTimestamp.seconds reading * 1000L
             + int64 (UnixTimestamp.nanoseconds reading) / nanosecondsPerMillisecond
         | SimulatedUnixFlavour.Darwin ->
-            let reading = read entryPoint darwinClockUptimeRaw system
+            let reading = read entryPoint darwinClockUptimeRaw caller system
 
             (UnixTimestamp.seconds reading * nanosecondsPerSecond
              + int64 (UnixTimestamp.nanoseconds reading))

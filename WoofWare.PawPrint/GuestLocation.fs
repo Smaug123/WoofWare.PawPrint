@@ -417,6 +417,8 @@ module GuestLocation =
                                 $"in an open of a FIFO, for its other end to be opened, holding open file description %O{parked.Opener} for fd %d{parked.Descriptor}"
                         | Some (ParkedSyscall.InotifyRead parked) ->
                             Some $"in a read of the inotify instance of open file description %O{parked.Instance}"
+                        | Some (ParkedSyscall.Futex parked) ->
+                            Some $"in a futex wait on address 0x%x{parked.FutexAddress} (%O{parked.FutexTimeout})"
                         | Some (ParkedSyscall.Select _) -> Some "in select or pselect"
                         | Some (ParkedSyscall.SignalWait parked) ->
                             let until =

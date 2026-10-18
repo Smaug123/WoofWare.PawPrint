@@ -146,8 +146,8 @@ static class Out
 
                 go next (count + 1) (tick :: ticks) ended
             | MultiStepOutcome.Finished (ends, machine) ->
-                SimulatedMachine.processIds machine |> shouldEqual Set.empty
-                SimulatedMachine.checkInvariants machine |> shouldEqual []
+                UnixSystem.processIds machine |> shouldEqual Set.empty
+                UnixSystem.checkInvariants machine |> shouldEqual []
 
                 {
                     Ticks = List.rev ticks

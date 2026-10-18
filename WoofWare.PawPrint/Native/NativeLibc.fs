@@ -90,6 +90,46 @@ module NativeLibc =
             | SimulatedUnixArchitecture.Arm64 -> false
         | SimulatedUnixFlavour.Linux, _ -> false
 
+    /// `signo`'s disposition in the process of `asker`, as the `sigaction(2)` system call
+    /// reports it in `system`: `None` where the kernel will not report it (Darwin's SIGKILL and
+    /// SIGSTOP, which nothing can catch). Asked by `asker` if it may make a call, and otherwise
+    /// by the first thread of its process that may: a disposition is the process's, so which
+    /// thread asks changes nothing, and `asker` may be parked in the call that raised the signal.
+    ///
+    /// Fails loudly if no thread of the process may make a call.
+    let private dispositionAsked<'Task when 'Task : comparison>
+        (asker : Caller<'Task>)
+        (signo : int)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        : SignalDisposition<NativeSignalHandler> option
+        =
+        let pid = Caller.processId asker
+        let threads = UnixSystem.threads pid system
+
+        let mayCall (caller : Caller<'Task>) : bool =
+            match Map.tryFind (Caller.thread caller) threads with
+            | Some task ->
+                (UnixThreadState.parkedIn task).IsNone
+                && not (UnixSignal.owesReturn caller system)
+            | None -> false
+
+        let caller =
+            if mayCall asker then
+                asker
+            else
+                threads
+                |> Map.toSeq
+                |> Seq.map (fun (thread, _) -> Caller.make pid thread)
+                |> Seq.tryFind mayCall
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"NativeLibc: no thread of process %O{pid} may make a call, so none can ask sigaction for signal %d{signo}'s disposition (this is a bug in PawPrint)."
+                )
+
+        match UnixSignal.sigactionSyscall caller signo None system with
+        | Ok (disposition, _) -> Some disposition
+        | Error _ -> None
+
     /// Whether PawPrint's kernel model can answer a signal that `sender` sends
     /// within its own process, on `platform`, given the system and
     /// System.Native's state before it is sent. `None` if it can. `receiver` is
@@ -101,7 +141,7 @@ module NativeLibc =
     /// kernel model before this matters.
     let screenSelfSignal<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
-        (sender : 'Task)
+        (sender : Caller<'Task>)
         (receiver : 'Task)
         (shim : PosixSignalShim)
         (system : UnixSystem<'Task, NativeSignalHandler>)
@@ -116,7 +156,7 @@ module NativeLibc =
         // (see `NativeSignalHandler.CoreClrPalFault`). Over an ignore it aborts
         // the process there and then, so no later fault meets the default.
         let faultHandler (replaced : PalReplacedDisposition) : UnmodelledSelfSignal option =
-            if sender <> receiver then
+            if Caller.thread sender <> receiver then
                 Some (UnmodelledSelfSignal.FaultSignalFromOtherThread signal)
             else
                 match replaced with
@@ -129,11 +169,11 @@ module NativeLibc =
 
         // Asked of the kernel rather than through the C library, which will not
         // report Linux's 33, whose handler is glibc's own.
-        match UnixSignal.sigactionSyscall (Signal.toRawSignoUnder numbering signal) None system with
+        match dispositionAsked sender (Signal.toRawSignoUnder numbering signal) system with
         // Darwin will not report SIGKILL or SIGSTOP, which nothing can catch,
         // so no native code runs for either.
-        | Error _ -> None
-        | Ok (disposition, _) ->
+        | None -> None
+        | Some disposition ->
 
         match disposition with
         | SignalDisposition.Catch {
@@ -166,7 +206,7 @@ module NativeLibc =
     /// `leader`, which nothing delivers, is refused.
     let screenRaisedSignal<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
-        (sender : 'Task)
+        (sender : Caller<'Task>)
         (leader : 'Task)
         (shim : PosixSignalShim)
         (before : UnixSystem<'Task, NativeSignalHandler>)
@@ -186,7 +226,7 @@ module NativeLibc =
         match raised.Target with
         | ValueSome target when
             target <> leader
-            && List.contains raised (SignalState.pending (UnixSystem.signals after))
+            && List.contains raised (SignalState.pending (UnixSystem.signals (Caller.processId sender) after))
             ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _
@@ -210,9 +250,9 @@ module NativeLibc =
 
         let answer =
             try
-                UnixSignal.kill pid signo system
+                UnixSignal.kill (state.Kernel.Caller ctx.Thread) pid signo system
             with :? UnmodelledException as e ->
-                let ownPid = ProcessId.toInt32 (UnixSystem.processId system)
+                let ownPid = ProcessId.toInt32 state.Kernel.ProcessId
 
                 let remedy =
                     if pid = ownPid then
@@ -237,7 +277,7 @@ module NativeLibc =
             |> ValueOption.bind (fun sent ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
                     system
@@ -254,11 +294,17 @@ module NativeLibc =
         match outcome with
         | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
             state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | ProcessFate.ProcessEnded ended ->
+        | ProcessFate.ProcessEnded (ended, remaining) ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
-                ExecutionResult.SignalTerminated (state, ended)
+                ExecutionResult.SignalTerminated (
+                    state,
+                    {
+                        Ended = ended
+                        Remaining = remaining
+                    }
+                )
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith
@@ -285,10 +331,10 @@ module NativeLibc =
 
         let answer =
             try
-                UnixSignal.pthreadKill ctx.Thread signo system
+                UnixSignal.pthreadKill (state.Kernel.Caller ctx.Thread) ctx.Thread signo system
             with :? UnmodelledException as e ->
                 KernelRefusal.fail
-                    $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{UnixSystem.processId system} is not modelled"
+                    $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{state.Kernel.ProcessId} is not modelled"
                     e
 
         match answer with
@@ -306,7 +352,7 @@ module NativeLibc =
             | ValueSome sent, ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
                 screenRaisedSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
                     system
@@ -318,7 +364,7 @@ module NativeLibc =
             | ValueSome sent, _ ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     ctx.Thread
                     state.Kernel.PosixSignalShim
                     system
@@ -333,11 +379,17 @@ module NativeLibc =
         match outcome with
         | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
             state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | ProcessFate.ProcessEnded ended ->
+        | ProcessFate.ProcessEnded (ended, remaining) ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
-                ExecutionResult.SignalTerminated (state, ended)
+                ExecutionResult.SignalTerminated (
+                    state,
+                    {
+                        Ended = ended
+                        Remaining = remaining
+                    }
+                )
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith

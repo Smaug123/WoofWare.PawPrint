@@ -35,7 +35,8 @@ module TestNativeLibc =
         =
         UnixSystem.initial (platformOf numbering)
         |> Launched.boot UnixSystem.pipedStandardStreams leader (CpuId 0)
-        |> StartupSignalDispositions.install "test" numbering inheritedIgnores
+        |> fun system ->
+            StartupSignalDispositions.install "test" numbering inheritedIgnores (LoneProcess.leader system) system
 
     let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =
         launched numbering Set.empty
@@ -49,7 +50,7 @@ module TestNativeLibc =
         (system : UnixSystem<int, NativeSignalHandler>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        match UnixThreadLifecycle.spawn leader task (CpuId 0) system with
+        match UnixThreadLifecycle.spawn (LoneProcess.caller leader system) task (CpuId 0) system with
         | SpawnAnswer.Spawned _, system -> system
         | SpawnAnswer.Failed error, _ -> failwith $"spawning task %d{task} failed with %O{error}"
 
@@ -61,9 +62,11 @@ module TestNativeLibc =
 
         let outcome =
             match entry.Target with
-            | ValueSome target -> UnixSignal.pthreadKill target signo system |> Result.mapError (sprintf "%A")
+            | ValueSome target ->
+                UnixSignal.pthreadKill (LoneProcess.leader system) target signo system
+                |> Result.mapError (sprintf "%A")
             | ValueNone ->
-                UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system
+                UnixSignal.kill (LoneProcess.leader system) (ProcessId.toInt32 (LoneProcess.pid system)) signo system
                 |> Result.mapError (sprintf "%A")
 
         match outcome with
@@ -88,7 +91,7 @@ module TestNativeLibc =
         (system : UnixSystem<int, NativeSignalHandler>, shim : PosixSignalShim)
         : UnixSystem<int, NativeSignalHandler> * PosixSignalShim
         =
-        match PosixSignalShim.installHandler numbering sent system shim with
+        match PosixSignalShim.installHandler numbering sent (LoneProcess.leader system) system shim with
         | Ok installed -> installed
         | Error errno -> failwith $"installing System.Native's handler for %O{sent} failed with %O{errno}"
 
@@ -100,7 +103,7 @@ module TestNativeLibc =
         (sent : Signal)
         : UnmodelledSelfSignal option
         =
-        NativeLibc.screenSelfSignal platform sender leader shim system sent
+        NativeLibc.screenSelfSignal platform (LoneProcess.caller sender system) leader shim system sent
 
     let private everyPlatform : SimulatedUnixPlatform list =
         [
@@ -320,14 +323,11 @@ module TestNativeLibc =
                 let expected =
                     Some (UnmodelledSelfSignal.FaultSignalFromOtherThread (signal numbering signo))
 
-                screenOn platform 1 (fresh numbering) (signal numbering signo)
-                |> shouldEqual expected
+                let withSender = withTask 1 (initial numbering), PosixSignalShim.initial
 
-                screenOn
-                    platform
-                    1
-                    (register numbering (signal numbering signo) (fresh numbering))
-                    (signal numbering signo)
+                screenOn platform 1 withSender (signal numbering signo) |> shouldEqual expected
+
+                screenOn platform 1 (register numbering (signal numbering signo) withSender) (signal numbering signo)
                 |> shouldEqual expected
 
     [<Test>]
@@ -375,8 +375,13 @@ module TestNativeLibc =
                             action.Restart |> shouldEqual true
                         | other -> failwith $"expected System.Native's handler, got %A{other}"
 
-                        // Caught, so it waits for the return to user mode.
-                        let registered = send (processDirected sent) signals, shim
+                        // Blocked, so it stays pending rather than being
+                        // delivered as the leader returns to user mode.
+                        let registered =
+                            signals
+                            |> SignalFrames.enterSystem leader (Set.singleton sent)
+                            |> send (processDirected sent),
+                            shim
 
                         screen registered (signal numbering signo)
                         |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
@@ -397,7 +402,7 @@ module TestNativeLibc =
 
             // Unregistering restores the ignore the shim saved.
             let restored, _, refused =
-                PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
+                PosixSignalShim.restoreHandler numbering Signal.SIGPIPE (LoneProcess.leader signals) signals shim
 
             refused |> shouldEqual None
 
@@ -447,7 +452,14 @@ module TestNativeLibc =
                             Some (UnmodelledSelfSignal.PendingOnOtherThread Signal.SIGPIPE)
                         | _ -> None
 
-                    NativeLibc.screenRaisedSignal platform sender leader PosixSignalShim.initial before raised after
+                    NativeLibc.screenRaisedSignal
+                        platform
+                        (LoneProcess.caller sender before)
+                        leader
+                        PosixSignalShim.initial
+                        before
+                        raised
+                        after
                     |> shouldEqual expected
 
     /// `raise(3)` aims the signal at the thread that raises it, which takes it
@@ -482,7 +494,14 @@ module TestNativeLibc =
 
                 (platform,
                  raiser,
-                 NativeLibc.screenRaisedSignal platform raiser leader PosixSignalShim.initial before raised after)
+                 NativeLibc.screenRaisedSignal
+                     platform
+                     (LoneProcess.caller raiser before)
+                     leader
+                     PosixSignalShim.initial
+                     before
+                     raised
+                     after)
                 |> shouldEqual (platform, raiser, expected)
 
     [<Test>]
@@ -507,7 +526,12 @@ module TestNativeLibc =
             shimAgain |> shouldEqual shim
 
             let restored, shimRestored, refused =
-                PosixSignalShim.restoreHandler numbering sigill restoredByRuntime shim
+                PosixSignalShim.restoreHandler
+                    numbering
+                    sigill
+                    (LoneProcess.leader restoredByRuntime)
+                    restoredByRuntime
+                    shim
 
             refused |> shouldEqual None
 
@@ -610,10 +634,17 @@ module TestNativeLibc =
             Prop.forAll (Arb.fromGen gen) (fun (numbering, mask, pending) -> property numbering mask pending)
         )
 
-        // The same signal, pending while registered.
+        // The same signal, pending while registered, which the leader blocks so
+        // that it is not delivered as the leader returns to user mode.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
-            let pending = send (processDirected Signal.SIGTERM) signals, shim
+
+            let pending =
+                signals
+                |> SignalFrames.enterSystem leader (Set.singleton Signal.SIGTERM)
+                |> send (processDirected Signal.SIGTERM),
+                shim
+
             screen pending Signal.SIGTERM |> shouldEqual None
 
     [<Test>]

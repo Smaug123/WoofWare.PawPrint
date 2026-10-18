@@ -142,7 +142,8 @@ class LockAndPortWaiters
         | ParkedSyscall.DatagramSend _
         | ParkedSyscall.Connect _
         | ParkedSyscall.ConnectionRead _
-        | ParkedSyscall.ConnectionWrite _ -> false
+        | ParkedSyscall.ConnectionWrite _
+        | ParkedSyscall.Futex _ -> false
 
     /// The exit code a cleanly terminated guest latched.
     let private exitCodeOf (outcome : RunOutcome) : int =

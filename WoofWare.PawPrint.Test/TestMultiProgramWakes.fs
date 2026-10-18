@@ -362,8 +362,7 @@ public static class Program
     let private programs (driver : MultiProgram) : (ProcessId * RunningProgram) list =
         let current = driver.Current
 
-        (UnixSystem.processId current.State.Kernel.System, current)
-        :: Map.toList driver.Idle
+        (current.State.Kernel.ProcessId, current) :: Map.toList driver.Idle
 
     /// The threads of each program parked in `BlockedInSyscall`, as its state shows them.
     let private waiters (driver : MultiProgram) : Map<ProcessId, Set<ThreadId>> =
@@ -371,23 +370,19 @@ public static class Program
         |> List.map (fun (pid, program) -> pid, Set.ofList (Scheduler.syscallWaiters program.State))
         |> Map.ofList
 
-    /// What a sweep of `driver`'s machine wakes, asked about the threads each program's state shows
-    /// asleep in the kernel, of every program with a thread parked in `BlockedInSyscall`: the
-    /// question the driver's preamble asks.
+    /// What a sweep of `driver`'s machine wakes, where some program has a thread parked in
+    /// `BlockedInSyscall`: the question the driver's preamble asks.
     let private unwoken (driver : MultiProgram) : ((ProcessId * ThreadId) * Set<WakePrimitive>) list =
-        let asleep =
+        let anyWaiter =
             programs driver
-            |> List.choose (fun (pid, program) ->
-                match Scheduler.syscallWaiters program.State with
-                | [] -> None
-                | _ -> Some (pid, Scheduler.asleepInSyscall program.State)
-            )
-            |> Map.ofList
+            |> List.exists (fun (_, program) -> not (List.isEmpty (Scheduler.syscallWaiters program.State)))
 
-        if asleep.IsEmpty then
+        if not anyWaiter then
             []
         else
-            SimulatedMachine.wakes asleep (SimulatedMachine.unfocus driver.Current.State.Kernel.System driver.Machine)
+            UnixWait.wake driver.Current.State.Kernel.System
+            |> fst
+            |> List.map (fun (caller, fired) -> (Caller.processId caller, Caller.thread caller), fired)
 
     /// How a run went: its trace, how many threads its preambles woke, how many of those were in a
     /// program not checked out at the time, and each program's exit code in launch order.
@@ -434,7 +429,7 @@ public static class Program
                 Scheduler.checkSyscallSleepers program.State
 
             let after = waiters advanced
-            let currentPid = UnixSystem.processId advanced.Current.State.Kernel.System
+            let currentPid = advanced.Current.State.Kernel.ProcessId
 
             let wokenNow =
                 before
@@ -472,7 +467,7 @@ public static class Program
 
                 go next (ticks + 1) (line :: trace) woken wokenIdle
             | MultiStepOutcome.Finished (ends, machine) ->
-                SimulatedMachine.checkInvariants machine |> shouldEqual []
+                UnixSystem.checkInvariants machine |> shouldEqual []
 
                 let exitCodes =
                     ends

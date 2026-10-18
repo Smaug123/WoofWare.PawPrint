@@ -22,6 +22,10 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestSystemTimeAsTicks =
 
+    /// `ClockPal.systemTimeAsTicks`, read by the leader of `system`'s one process.
+    let private systemTimeAsTicks (system : UnixSystem<ThreadId, NativeSignalHandler>) : int64 =
+        ClockPal.systemTimeAsTicks (LoneProcess.leader system) system
+
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private maxEpochMs : int64 = ClockPal.maxWallClockEpochMs
@@ -62,7 +66,7 @@ module TestSystemTimeAsTicks =
     /// the range-*checking* `DateTime` ctor, so a reading the private ctor would
     /// have silently corrupted surfaces here as an exception instead.
     let private guestUtcNow (machine : UnixSystem<ThreadId, NativeSignalHandler>) : DateTime =
-        DateTime (DateTime.UnixEpoch.Ticks + ClockPal.systemTimeAsTicks machine, DateTimeKind.Utc)
+        DateTime (DateTime.UnixEpoch.Ticks + systemTimeAsTicks machine, DateTimeKind.Utc)
 
     /// Draw an epoch (ms) and a virtual-clock reading (100 ns ticks) whose
     /// combination is still representable — i.e. exactly the states a
@@ -119,7 +123,7 @@ module TestSystemTimeAsTicks =
     let ``a default kernel boots at the Unix epoch`` () =
         // The replay contract: change this and every recorded trace's timestamps
         // change with it.
-        ClockPal.systemTimeAsTicks initialMachine |> shouldEqual 0L
+        systemTimeAsTicks initialMachine |> shouldEqual 0L
 
         guestUtcNow initialMachine |> shouldEqual DateTime.UnixEpoch
 
@@ -164,7 +168,7 @@ module TestSystemTimeAsTicks =
             let wholeMs = clockTicks / ClockPal.ticksPerMillisecond
             let remainder = clockTicks % ClockPal.ticksPerMillisecond
 
-            ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks) = ClockPal.systemTimeAsTicks (
+            systemTimeAsTicks (machineWith epochMs clockTicks) = systemTimeAsTicks (
                 machineWith (epochMs + wholeMs) remainder
             )
 
@@ -181,9 +185,9 @@ module TestSystemTimeAsTicks =
             let first = intoRange headroom firstSeed
             let second = intoRange headroom secondSeed
 
-            let firstTicks = ClockPal.systemTimeAsTicks (machineWith epochMs first)
+            let firstTicks = systemTimeAsTicks (machineWith epochMs first)
 
-            let secondTicks = ClockPal.systemTimeAsTicks (machineWith epochMs second)
+            let secondTicks = systemTimeAsTicks (machineWith epochMs second)
 
             compare firstTicks secondTicks = compare first second
 
@@ -199,7 +203,7 @@ module TestSystemTimeAsTicks =
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
 
-            let ticks = ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)
+            let ticks = systemTimeAsTicks (machineWith epochMs clockTicks)
 
             ticks % ClockPal.ticksPerMillisecond = clockTicks % ClockPal.ticksPerMillisecond
 
@@ -219,7 +223,7 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
             let machine = machineWith epochMs clockTicks
 
-            let ticks = ClockPal.systemTimeAsTicks machine
+            let ticks = systemTimeAsTicks machine
             let stamp = UnixSystem.realtime machine
 
             // Reassembled with the BCL's own arithmetic rather than by inverting
@@ -282,7 +286,7 @@ module TestSystemTimeAsTicks =
             // Strictly past the representable end of time.
             let clockTicks = headroom + 1L + intoRange 1_000_000L overshootSeed
 
-            not (succeeds (fun () -> ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)))
+            not (succeeds (fun () -> systemTimeAsTicks (machineWith epochMs clockTicks)))
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -295,9 +299,9 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
 
             let darwin =
-                ClockPal.systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 epochMs clockTicks)
+                systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 epochMs clockTicks)
 
-            let linux = ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)
+            let linux = systemTimeAsTicks (machineWith epochMs clockTicks)
 
             darwin = linux - linux % 10L
 
@@ -305,10 +309,10 @@ module TestSystemTimeAsTicks =
 
         // Pinned where the two differ, so the property is not vacuously true of a
         // Darwin flavour that happened to read the Linux clock.
-        ClockPal.systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
+        systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
         |> shouldEqual 10L
 
-        ClockPal.systemTimeAsTicks (machineWith 0L 17L) |> shouldEqual 17L
+        systemTimeAsTicks (machineWith 0L 17L) |> shouldEqual 17L
 
     /// The inode stamp is the kernel's own realtime clock, which is not truncated
     /// on Darwin: only `clock_gettime` reports whole microseconds.

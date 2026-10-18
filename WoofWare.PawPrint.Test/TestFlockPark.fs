@@ -133,6 +133,7 @@ class Program
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)
+                | Some (ParkedSyscall.Futex _)
                 | None -> None
         )
 
@@ -558,7 +559,8 @@ class Program
 
         // `b`'s description holds nothing: the conversion dropped its shared lock before
         // discovering it could not have the exclusive one.
-        let registry = (UnixSystem.fileDescriptors state.Kernel.System)
+        let registry =
+            (UnixSystem.fileDescriptors state.Kernel.ProcessId state.Kernel.System)
 
         match FileDescriptorRegistry.tryFind 4 registry with
         | Some description -> description.Flock |> shouldEqual None

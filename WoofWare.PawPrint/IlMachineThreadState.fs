@@ -429,7 +429,7 @@ module IlMachineThreadState =
         =
         let answer =
             try
-                UnixThreadLifecycle.spawn parent thread cpu kernel.System
+                UnixThreadLifecycle.spawn (kernel.Caller parent) thread cpu kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"%O{parent} creating %O{thread}: the kernel refused clone" e
 

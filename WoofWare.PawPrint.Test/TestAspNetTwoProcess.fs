@@ -237,11 +237,11 @@ module TestAspNetTwoProcess =
             match MultiProgram.step loggerFactory logger driver with
             | MultiStepOutcome.Stepped (driver, _, _) -> go driver
             | MultiStepOutcome.Finished (ends, machine) ->
-                match SimulatedMachine.processIds machine |> Set.toList with
+                match UnixSystem.processIds machine |> Set.toList with
                 | [] -> ()
                 | left -> failwith $"PawPrint: both programs ended, but the machine still holds processes %A{left}"
 
-                match SimulatedMachine.checkInvariants machine with
+                match UnixSystem.checkInvariants machine with
                 | [] -> ()
                 | broken ->
                     failwith $"PawPrint: both programs ended, but the machine's invariants do not hold: %A{broken}"

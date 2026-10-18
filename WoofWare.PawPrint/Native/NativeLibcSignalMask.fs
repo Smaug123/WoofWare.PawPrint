@@ -124,7 +124,7 @@ module NativeLibcSignalMask =
         (operation : string)
         (convention : SignalNumbering -> ErrorConvention)
         (call :
-            ThreadId
+            Caller<ThreadId>
                 -> int
                 -> SignalMask option
                 -> UnixSystem<ThreadId, NativeSignalHandler>
@@ -137,7 +137,7 @@ module NativeLibcSignalMask =
         let how = NativeCall.int32Argument operation arguments.[0]
         let set = readSet ctx operation numbering arguments.[1] state
 
-        match call ctx.Thread how set state.Kernel.System with
+        match call (state.Kernel.Caller ctx.Thread) how set state.Kernel.System with
         | Ok (old, system) ->
             NativeSystemNative.withAnswered system state
             |> writeSet ctx operation "oldset" numbering arguments.[2] old
@@ -171,22 +171,26 @@ module NativeLibcSignalMask =
                 $"%s{operation}: `set` is NULL. Linux answers EFAULT and what Darwin does has not been measured; PawPrint models neither. Pass a real sigset_t."
         | _ ->
 
-        let pending = UnixSignal.sigpending ctx.Thread state.Kernel.System
+        let pending =
+            UnixSignal.sigpending (state.Kernel.Caller ctx.Thread) state.Kernel.System
 
         state
         |> writeSet ctx operation "set" numbering argument pending
         |> pushInt32 ctx 0
 
     /// `sigsuspend(mask)`, or `pause()` when `mask` is `None`: wait, under a
-    /// temporary mask, for a signal that runs a handler. The call fails with
-    /// EINTR (-1, with errno EINTR) once the handlers have run, which they do
-    /// as the leader returns to user mode (`SignalDispatch.poll`), and the mask
-    /// is then what it was before the call.
+    /// temporary mask, for a signal that runs a handler. A signal interrupts
+    /// the call, and the leader's return to user mode (`SignalDispatch.poll`)
+    /// runs the handlers and ends it: it fails with EINTR (-1, with errno
+    /// EINTR), and the mask is then what it was before the call; or, where no
+    /// handler ran, it restarts.
     ///
     /// A first entry makes the call, and either answers at once or parks
     /// re-entrantly, as `SystemNative_Poll` does: the frame stays and the
     /// caller's program counter still names the call, so a wake re-enters this
-    /// handler, which finishes the call from the task's park record.
+    /// handler, which finishes the call from the task's park record. An
+    /// interrupted call re-enters too, once the thread has returned to user
+    /// mode, and answers as the return ended it (`NativeLocals.ReturnedToUser`).
     ///
     /// Refused on a thread other than the leader: PawPrint delivers signals to
     /// the leader alone (`SignalDispatch`), so nothing could end such a wait.
@@ -197,9 +201,42 @@ module NativeLibcSignalMask =
             failwith
                 $"%s{operation}: thread %O{ctx.Thread} waits for a signal, but PawPrint delivers signals to the leader %O{state.Kernel.Leader} alone, so nothing could end the wait. Make the call on the main thread."
 
+        let withLocals (locals : NativeLocals option) (state : IlMachineState) : IlMachineState =
+            state
+            |> IlMachineState.mapFrame
+                ctx.Thread
+                state.ThreadState.[ctx.Thread].ActiveMethodState
+                (MethodState.withNativeLocals locals)
+
+        // An interrupted call is ended by the return to user mode, which must have
+        // run before the thread runs again.
+        let restarted =
+            match ctx.Instruction.NativeLocals with
+            | None -> Ok false
+            | Some (NativeLocals.ReturnedToUser InterruptedCall.Restarts) -> Ok true
+            | Some (NativeLocals.ReturnedToUser InterruptedCall.FailsWithEintr) -> Error ()
+            | Some NativeLocals.AwaitingReturnToUser ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} re-entered its interrupted call before it returned to user mode, which ends the call (this is an interpreter bug)."
+            | Some (NativeLocals.AcceptAddressLength _)
+            | Some (NativeLocals.PollEntries _)
+            | Some NativeLocals.SocketEventWaitLoop ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s sigsuspend frame keeps another call's locals (this is an interpreter bug)."
+
+        match restarted with
+        | Error () ->
+            withLocals None state
+            |> NativeSystemNative.withErrnoOnly ctx UnixError.EINTR
+            |> pushInt32 ctx -1
+        | Ok restarted ->
+
+        let state = if restarted then withLocals None state else state
+
         let answered =
             match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
-            | Some ParkedSyscall.SigSuspend -> UnixSignal.finishSigsuspend ctx.Thread state.Kernel.System
+            | Some ParkedSyscall.SigSuspend ->
+                UnixSignal.finishSigsuspend (state.Kernel.Caller ctx.Thread) state.Kernel.System
             | Some other ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
@@ -208,12 +245,12 @@ module NativeLibcSignalMask =
                     $"%s{operation}: thread %O{ctx.Thread} entered the call while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
                 match mask with
-                | None -> UnixSignal.pause ctx.Thread state.Kernel.System
+                | None -> UnixSignal.pause (state.Kernel.Caller ctx.Thread) state.Kernel.System
                 | Some argument ->
                     let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
                     match readSet ctx operation numbering argument state with
-                    | Some mask -> UnixSignal.sigsuspend ctx.Thread mask state.Kernel.System
+                    | Some mask -> UnixSignal.sigsuspend (state.Kernel.Caller ctx.Thread) mask state.Kernel.System
                     | None ->
                         failwith
                             $"%s{operation}: `mask` is NULL. The kernel answers EFAULT, which PawPrint does not model. Pass a real sigset_t."
@@ -225,6 +262,10 @@ module NativeLibcSignalMask =
             NativeSystemNative.withAnswered system state
             |> Scheduler.parkInSyscall ctx.Thread
             |> NativeHandlerResult.blockedRetainingFrame
+        | SigsuspendOutcome.Interrupted, system ->
+            NativeSystemNative.withAnswered system state
+            |> withLocals (Some NativeLocals.AwaitingReturnToUser)
+            |> NativeHandlerResult.reenterRetainingFrame
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State

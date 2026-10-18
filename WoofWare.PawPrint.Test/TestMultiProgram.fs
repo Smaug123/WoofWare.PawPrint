@@ -6,9 +6,9 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// The driver (`MultiProgram`) running one program: it owns the machine the program's process
-/// runs on, never hands that machine over while the one program runs, and ends the process on
-/// it when the program ends.
+/// The driver (`MultiProgram`) running one program: the machine in the program's kernel holds
+/// the program's process alone, the driver never idles the one program, and the process is
+/// gone from the machine when the program ends.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestMultiProgram =
@@ -38,7 +38,7 @@ public static class Program
 """
 
     [<Test>]
-    let ``a program's end leaves the driver's machine without its process, and the machine is never handed over before``
+    let ``a program's end leaves the machine without its process, and the driver never idles the one program``
         ()
         : unit
         =
@@ -62,15 +62,20 @@ public static class Program
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> failwith $"guest completed before Main: %O{outcome}"
         | Program.ProgramStartResult.Ready prepared ->
 
-        let machine = prepared.Driver.Machine
-        let processId = UnixSystem.processId prepared.State.Kernel.System
-        SimulatedMachine.processIds machine |> shouldEqual (Set.singleton processId)
+        let processId = prepared.State.Kernel.ProcessId
 
-        let rec go (driver : MultiProgram) (steps : int) : RunOutcome * SimulatedMachine<_, _> =
-            // A program of one never hands the machine over: a handover would cost a focus and
-            // an unfocus on every tick.
-            if not (obj.ReferenceEquals (driver.Machine, machine)) then
-                failwith $"the driver's machine changed at step %d{steps} while its one program ran"
+        UnixSystem.processIds prepared.State.Kernel.System
+        |> shouldEqual (Set.singleton processId)
+
+        let rec go (driver : MultiProgram) (steps : int) : RunOutcome * UnixSystem<_, _> =
+            if not driver.Idle.IsEmpty then
+                failwith $"the driver idled its one program at step %d{steps}"
+
+            if
+                UnixSystem.processIds driver.Current.State.Kernel.System
+                <> Set.singleton processId
+            then
+                failwith $"the machine held another process at step %d{steps} while its one program ran"
 
             match MultiProgram.step loggerFactory logger driver with
             | MultiStepOutcome.Stepped (driver,
@@ -99,5 +104,5 @@ public static class Program
             |> shouldEqual [ 104uy ; 105uy ]
         | other -> failwith $"expected a normal exit, got %O{other}"
 
-        SimulatedMachine.processIds remaining |> shouldEqual Set.empty
-        SimulatedMachine.checkInvariants remaining |> shouldEqual []
+        UnixSystem.processIds remaining |> shouldEqual Set.empty
+        UnixSystem.checkInvariants remaining |> shouldEqual []

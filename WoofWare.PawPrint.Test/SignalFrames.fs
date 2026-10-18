@@ -13,10 +13,10 @@ module SignalFrames =
     /// using this does not use it otherwise.
     let private carrier : Signal = Signal.SIGPROF
 
-    /// `system` with `task` inside a handler whose `sa_mask` is `mask`, with
-    /// `SA_NODEFER`, for `carrier`, whose disposition is put back as it was.
-    /// Fails the test unless the return to user mode delivers the carrier
-    /// alone.
+    /// `system`, a machine of one process, with its thread `task` inside a
+    /// handler whose `sa_mask` is `mask`, with `SA_NODEFER`, for `carrier`,
+    /// whose disposition is put back as it was. Fails the test unless the
+    /// return to user mode delivers the carrier alone.
     let enterSystem<'Task when 'Task : comparison>
         (task : 'Task)
         (mask : Set<Signal>)
@@ -39,25 +39,34 @@ module SignalFrames =
             KernelSignals.setDisposition carrier (SignalDisposition.Catch action) system
 
         let sent =
-            match UnixSignal.pthreadKill task (Signal.toRawSignoUnder numbering carrier) caught with
+            match
+                UnixSignal.pthreadKill
+                    (LoneProcess.caller task caught)
+                    task
+                    (Signal.toRawSignoUnder numbering carrier)
+                    caught
+            with
             | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
             | other -> failwith $"expected the carrier to be left pending on %O{task}, got %A{other}"
 
-        match UnixSignal.onReturnToUser task sent with
-        | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers [ frame ], system) when frame.Entry.Signal = carrier ->
+        match UnixSignal.onReturnToUser (LoneProcess.caller task sent) sent with
+        | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers ([ frame ], None), system) when
+            frame.Entry.Signal = carrier
+            ->
             KernelSignals.setDisposition carrier before system
         | other -> failwith $"expected the carrier alone to be delivered to %O{task}, got %A{other}"
 
-    /// `system` once `task`'s innermost handler has returned: `sigreturn(2)`,
-    /// which puts back the mask in force before that frame was pushed.
-    /// Delivers nothing; fails the test if `task` has no frame.
+    /// `system`, a machine of one process, once its thread `task`'s innermost
+    /// handler has returned: `sigreturn(2)`, which puts back the mask in force
+    /// before that frame was pushed. Delivers nothing; fails the test if `task`
+    /// has no frame.
     let leaveSystem<'Task when 'Task : comparison>
         (task : 'Task)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         : UnixSystem<'Task, NativeSignalHandler>
         =
-        match SignalState.framesOf task (UnixSystem.signals system) with
-        | innermost :: _ -> UnixSignal.sigreturn task innermost.Id system
+        match SignalState.framesOf task (UnixSystem.signals (LoneProcess.pid system) system) with
+        | innermost :: _ -> UnixSignal.sigreturn (LoneProcess.caller task system) innermost.Id system
         | [] -> failwith $"%O{task} is inside no handler"
 
     /// `kernel` with `thread` inside a handler whose `sa_mask` is `mask`: see

@@ -36,7 +36,7 @@ module TestEmulatedKernelAbort =
                 |> shouldEqual (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Default)
             | other -> failwith $"expected the runtime's handler, got %A{other}"
 
-            EndedProcess.termination (EmulatedKernel.abort thread kernel)
+            EndedProcess.termination (EmulatedKernel.abort thread kernel).Ended
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
@@ -55,7 +55,7 @@ module TestEmulatedKernelAbort =
             let masked (kernel : EmulatedKernel) : EmulatedKernel =
                 match
                     UnixSignal.pthreadSigmask
-                        thread
+                        (kernel.Caller thread)
                         block
                         (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
                         kernel.System
@@ -69,12 +69,12 @@ module TestEmulatedKernelAbort =
                 SignalMask.contains Signal.SIGABRT (SignalState.maskOf thread kernel.Signals)
                 |> shouldEqual true
 
-                EndedProcess.termination (EmulatedKernel.abort thread kernel)
+                EndedProcess.termination (EmulatedKernel.abort thread kernel).Ended
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
     let ``an abort dumps core exactly when the process writes dumps`` () : unit =
         for platform in platforms do
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
-                EndedProcess.termination (EmulatedKernel.abort thread (kernelOn platform coreDumps))
+                EndedProcess.termination (EmulatedKernel.abort thread (kernelOn platform coreDumps)).Ended
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, coreDumps = CoreDumps.Written))

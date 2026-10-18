@@ -113,7 +113,8 @@ class Program
             let startup : Map<Signal, SignalDisposition<NativeSignalHandler>> =
                 UnixSystem.initial (HostPlatform.platformOf flavour)
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> StartupSignalDispositions.install "test" numbering Set.empty
+                |> fun system ->
+                    StartupSignalDispositions.install "test" numbering Set.empty (LoneProcess.leader system) system
                 |> KernelSignals.dispositions
 
             let startupDisposition (signal : Signal) : SignalDisposition<NativeSignalHandler> =
