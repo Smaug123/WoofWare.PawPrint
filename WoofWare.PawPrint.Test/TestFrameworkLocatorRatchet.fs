@@ -109,6 +109,12 @@ module TestFrameworkLocatorRatchet =
                 Reason = "locates the test assembly, whose runtimeconfig names the test host's framework"
             }
             {
+                File = "TestAssemblyBinding.fs"
+                Locator = "Location"
+                Count = 1
+                Reason = "locates WoofWare.PawPrint.Logging, the small image the binder's probe loads"
+            }
+            {
                 File = "TestAssemblyProbe.fs"
                 Locator = "Location"
                 Count = 1
