@@ -350,7 +350,7 @@ module TestAspNetTwoProcess =
 
     [<Test>]
     let ``Kestrel and HttpClient as two processes on one machine agree with two real processes`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.linuxFutex
 
         agree
             requests
@@ -369,7 +369,7 @@ module TestAspNetTwoProcess =
     /// the client's next request goes over a new connection; see the module's docstring.
     [<Test>]
     let ``Kestrel closing an idle connection under a live HttpClient agrees with two real processes`` () : unit =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.linuxFutex
 
         agree
             idleClose

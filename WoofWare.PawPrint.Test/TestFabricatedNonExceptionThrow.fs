@@ -556,10 +556,6 @@ public static class Driver
                 throwingConstructorDriverSource
                 0
         | EmulatedRuntime.Net11 ->
-            // On .NET 11, PawPrint stops before the wrap, at the `Unsafe.BitCast` in
-            // `MemoryExtensions.MinMaxInteger`.
-            Net11Frontier.park Net11Frontier.bitCast
-
             // Real .NET 11 does not survive this culture, which throws on every read
             // (`Net11Frontier.nonExceptionWrapping`), and PawPrint refuses any exception the
             // wrapper's constructor raises on .NET 11.

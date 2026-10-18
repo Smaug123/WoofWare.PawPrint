@@ -88,6 +88,7 @@
     <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestRuntimeTypeHandleTarget.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
+    <Compile Include="TestCliTypeReinterpret.fs" />
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestFieldIdDiagnostics.fs" />
     <Compile Include="TestConcreteTypeDescription.fs" />

@@ -113,6 +113,7 @@ module TestPureCases =
                     "ForeignRaiseReadsCurrentExceptionTrace.cs"
                     "ForeignRaiseTokenSurvivesLocalCleanup.cs"
                     "ImmutableAgileExceptionNullArgument.cs"
+                    "ReflectionGetMethodFromCanonicalUnshared.cs"
                     "ReflectionInvokeByRefParameter.cs"
                     "ReflectionInvokeIntrinsicTarget.cs"
                     "ReflectionInvokeIntrinsicTypeMember.cs"
@@ -131,6 +132,7 @@ module TestPureCases =
                     "ReflectionPropertyType.cs"
                     "ReflectionPropertyTypeGenericDeclaringType.cs"
                     "ReflectiveIsTypicalMethodDefinition.cs"
+                    "StackFrameHelperUnsharedFrames.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
             yield!
@@ -149,17 +151,10 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.delegateBindToMethodInfo)
             yield!
                 [
-                    "ReflectionParameterMarshalAsCustomMarshaler.cs"
-                    "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
-                    "StackFrameHelperUnsharedFrames.cs"
-                    "TypeMakeArrayType.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.bitCast)
-            yield!
-                [
                     "ExpressionInterpreterByRefCall.cs"
                     "ReflectionInvokeConstructor.cs"
                     "ReflectionOpenConstructedMethods.cs"
+                    "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
             "DelegateMulticastInvoke.cs",
@@ -170,27 +165,6 @@ module TestPureCases =
             """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that a delegate bound to a virtual override reports the overriding `Derived` as its `Method.DeclaringType` (line 357), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "DelegateBindStaticAbstractInterfaceMethod.cs",
             """Parked behind `Net11Frontier.delegateBindToMethodInfo`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `BadImageFormatException` from `CreateDelegate` over the static abstract method, which .NET 10 binds. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            yield!
-                [
-                    "AssemblyGetType.cs"
-                    "AssemblyGetTypeUnloadedBaseAssembly.cs"
-                    "CustomAttributeTypeArg.cs"
-                    "CustomAttributeTypeArgArrayType.cs"
-                    "InitializeArrayBadFieldOrArray.cs"
-                    "InitializeArrayBoxedFieldHandle.cs"
-                    "PathGetFullPathRelative.cs"
-                    "ReflectionGetMethodFromCanonicalUnshared.cs"
-                    "RegexConstruction.cs"
-                    "RegexConstructionOptions.cs"
-                    "RegexConstructionRepeatedNonBacktracking.cs"
-                    "StringContentRoundTrip.cs"
-                    "StringEqualsComparison.cs"
-                    "StringEqualsComparisonCulture.cs"
-                    "StringStartsWithComparison.cs"
-                    "TypeGetGenericParameterConstraintsSelfReferential.cs"
-                    "UnsafeAccessorFrameInTrace.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.bitCast)
             yield!
                 [
                     "AdvancedStructLayout.cs"
@@ -219,6 +193,10 @@ module TestPureCases =
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered. Verified to exit 0 on real .NET 11."""
             "DelegateMethodInfo.cs",
             """On .NET 11, `Delegate.Method` asks the `Delegate_CreateMethodInfo` QCall, which PawPrint does not implement: "Unimplemented native method (PInvokeImpl QCall!Delegate_CreateMethodInfo)". Un-park when it is answered and the case states each runtime's answer: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1."""
+            "StringContentRoundTrip.cs",
+            """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
+            "ReflectionStripMethodInstantiationOpenDefinition.cs",
+            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `NullReferenceException`: the non-public `RuntimeMethodHandle` member the guest looks up by reflection (line 29) is not there to call. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "ModuleGetTypes.cs",
             """On .NET 11, the `RuntimeModule_GetTypes` QCall takes a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: "Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)". Un-park when the handler takes .NET 11's signature. Verified to exit 0 on real .NET 11."""
             yield!
@@ -281,8 +259,6 @@ module TestPureCases =
             """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Real .NET 11 refuses the bind with `InvalidOperationException` ("Could not execute the method because either the method itself or the containing type is not fully instantiated"), measured on RC1, where .NET 10 binds it. PawPrint refuses it on every runtime, as a `TODO`: "Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when the bind raises what RC1 raises. Verified to end in that unhandled exception on real .NET 11."""
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
-            "ReflectionStripMethodInstantiationOpenDefinition.cs",
-            """Parked behind `Net11Frontier.bitCast`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `NullReferenceException`: the non-public `RuntimeMethodHandle` member the guest looks up by reflection (line 29) is not there to call. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
         ]
         |> Map.ofList
 
@@ -1137,7 +1113,7 @@ public class Program
     /// first to show that the difference is really there to be seen.
     [<Test>]
     let ``StripMethodInstantiation refuses a caller that could see the canonical declaring type`` () =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.isAsyncMethod
 
         let source =
             """
@@ -1210,7 +1186,7 @@ public class Program
     /// are `sourcesPure/ReflectionGetMethodFromCanonicalUnshared.cs`.
     [<Test>]
     let ``GetMethodFromCanonical refuses a caller that could see the canonical declaring type`` () =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.isAsyncMethod
 
         let source =
             """
@@ -1291,7 +1267,7 @@ public class Program
     [<TestCase "capture.Invoke(null, new object[] { helper, false, null });">]
     [<TestCase "initializeSourceInfo.Invoke(helper, new object[] { false, null });">]
     let ``GetStackFramesInternal refuses a caller that could see a canonical frame`` (entry : string) =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.isAsyncMethod
 
         let source =
             """
@@ -1389,7 +1365,7 @@ public class Program
     [<TestCase("StripMethodInstantiation")>]
     [<TestCase("GetMethodFromCanonical")>]
     let ``Canonicalising entry points refuse an open construction with a shared argument`` (entryPoint : string) =
-        Net11Frontier.park Net11Frontier.bitCast
+        Net11Frontier.park Net11Frontier.isAsyncMethod
 
         let source =
             """

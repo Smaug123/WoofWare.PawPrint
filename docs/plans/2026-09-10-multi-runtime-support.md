@@ -753,7 +753,14 @@ mutation-testing skill applies to each table/classifier they introduce.
      `PosixSignal.SIGKILL` (`KillSelf.cs`), and at a `clt.un` between two byte views of one
      stackalloc block (`EventSourceDisabled.cs`). No guest reaches the
      `AppContext_TryGetHostPropertyValue` QCall yet, so its handler still waits for one;
-   * the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`;
+   * **(landed)** the `Unsafe.BitCast` refusal in `MemoryExtensions.MinMaxInteger`, which casts
+     `ReadOnlySpan<char>` to `ReadOnlySpan<ushort>`: `CliType.TryReinterpret` gives the target's
+     numbers and padding the source's bytes and moves each object reference and runtime pointer
+     whole into the target field of its kind at the same offset, a managed pointer between byrefs
+     viewed as the target's element type. Past it the parked cases reach
+     `isAsyncMethod`, `inlineArrayOfReferences`, the futex, the three-argument
+     `RuntimeModule_GetTypes`, and a runtime-async method in System.Net.Http
+     (`StringContentRoundTrip.cs`);
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);

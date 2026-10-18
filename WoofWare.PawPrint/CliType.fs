@@ -294,6 +294,50 @@ module private ByteAddressabilityClassifier =
         | CliNumericType.Int64 source -> int64Source source
         | CliNumericType.NativeInt source -> nativeIntSource source
 
+/// A target field that `CliType.TryReinterpret` fills by moving one source field whole.
+[<RequireQualifiedAccess>]
+type CliReinterpretSlot =
+    | ObjectReference
+    | RuntimePointer
+
+    member this.Description : string =
+        match this with
+        | CliReinterpretSlot.ObjectReference -> "an object reference"
+        | CliReinterpretSlot.RuntimePointer -> "a runtime pointer"
+
+/// Why `CliType.TryReinterpret` gives no value of the target type for the source's bits. Each
+/// offset is a byte offset into the value.
+[<RequireQualifiedAccess>]
+type CliReinterpretRefusal =
+    /// The target has a number at `[offset, offset + size)`. The source's byte at `at` there has
+    /// no value, for `obstruction`, and the source holds no number of the same shape exactly
+    /// there to move whole.
+    | NoBytesForNumber of offset : int * size : int * at : int * obstruction : CliByteAddressabilityRejection
+    /// The target has `slot` at `offset`, and the source holds nothing of the same kind exactly
+    /// there.
+    | NothingToMove of offset : int * slot : CliReinterpretSlot
+    /// A managed pointer at `offset` would move from a field of type `from` to one of type `into`,
+    /// which are not both byrefs.
+    | PointerBetweenTypes of offset : int * from : ConcreteTypeHandle * into : ConcreteTypeHandle
+    /// The target's padding byte `at` lands on a source byte with no value, for `obstruction`.
+    | NoBytesForPadding of at : int * obstruction : CliByteAddressabilityRejection
+    /// The target field at `offset` would take a source field whole, but a target field
+    /// overlapping it replaces its bytes.
+    | MovedFieldOverlaid of offset : int
+
+    member this.Description : string =
+        match this with
+        | CliReinterpretRefusal.NoBytesForNumber (offset, size, at, obstruction) ->
+            $"the target's %d{size}-byte number at offset %d{offset} needs the source's byte %d{at}, which is %s{obstruction.Description}, and the source has no number of that shape there"
+        | CliReinterpretRefusal.NothingToMove (offset, slot) ->
+            $"the target has %s{slot.Description} at offset %d{offset}, and the source has none exactly there"
+        | CliReinterpretRefusal.PointerBetweenTypes (offset, from, into) ->
+            $"the managed pointer at offset %d{offset} would move from a field of type %O{from} to one of type %O{into}, which are not both byrefs"
+        | CliReinterpretRefusal.NoBytesForPadding (at, obstruction) ->
+            $"the target's padding byte %d{at} lands on the source's %s{obstruction.Description}"
+        | CliReinterpretRefusal.MovedFieldOverlaid offset ->
+            $"the target field at offset %d{offset} would take a source field whole, but another target field overlaps it and replaces its bytes"
+
 /// How CoreCLR's auto layout treats a single field. `MethodTableBuilder` splits fields into
 /// "primitive" ones, bucketed by power-of-two size class, and value-class ones, placed after
 /// every bucket (methodtablebuilder.cpp:4445 draws the split; :8433 and :8500 place the two
@@ -1108,6 +1152,263 @@ type CliType =
         match CliType.WithBytesAtIfChanged offset bytes value with
         | None -> value
         | Some updated -> updated
+
+    /// The value of `template`'s shape whose bits are `source`'s, as `Unsafe.BitCast` makes one:
+    /// `templateType` and `sourceType` are the declared types of the two, which must be the same
+    /// size.
+    ///
+    /// Each number, and each byte of padding, of the result takes the source's bytes at its
+    /// offset. Each object reference, and each runtime pointer, takes the source's field of the
+    /// same kind that spans exactly its bytes, which is what its bits are, and so does a number
+    /// whose source bytes have no value but whose source field is a number of the same shape (a
+    /// native int carrying a handle, say). A managed pointer moved between two byref fields is
+    /// viewed as the target field's element type, as `Unsafe.As` views one. Everything else is
+    /// refused: a byte with no value landing on a number or on padding, a reference or pointer
+    /// with nothing of its kind under it, a managed pointer moving between fields that are not
+    /// both byrefs or of one type, and a field moved whole that a later target field overlays.
+    /// Where the source's bytes all have values, the result is
+    /// `OfBytesLike template (ToBytes source)`.
+    static member TryReinterpret
+        (template : CliType)
+        (templateType : ConcreteTypeHandle)
+        (source : CliType)
+        (sourceType : ConcreteTypeHandle)
+        : Result<CliType, CliReinterpretRefusal>
+        =
+        let size = CliType.SizeOf(template).Size
+
+        if CliType.SizeOf(source).Size <> size then
+            failwith
+                $"CliType.TryReinterpret: the template %O{templateType} is %d{size} bytes and the source %O{sourceType} is %d{CliType.SizeOf(source).Size}"
+
+        let image = CliType.ByteImageAt 0 size source
+
+        let bytesAt (offset : int) (count : int) : Result<byte[], int * CliByteAddressabilityRejection> =
+            let slice = image.[offset .. offset + count - 1]
+
+            match slice |> Array.tryFindIndex Result.isError with
+            | Some i ->
+                match slice.[i] with
+                | Error obstruction -> Error (offset + i, obstruction)
+                | Ok _ -> failwith "unreachable: tryFindIndex found an error"
+            | None ->
+                slice
+                |> Array.map (fun b ->
+                    match b with
+                    | Ok b -> b
+                    | Error _ -> failwith "unreachable: no byte is an error"
+                )
+                |> Ok
+
+        // The bytes a field covers that a moved source field supplies are not given values here,
+        // so a struct's preserved image holds zero there; its fields are authoritative over them.
+        let preservedAt (offset : int) (count : int) : byte[] =
+            image.[offset .. offset + count - 1]
+            |> Array.map (fun b ->
+                match b with
+                | Ok b -> b
+                | Error _ -> 0uy
+            )
+
+        // The leaf of `value` that last wrote every byte of `[offset, offset + count)` and spans
+        // exactly those bytes, with its declared type: the owner `ToBytes` would replay last.
+        let rec leafAt
+            (value : CliType)
+            (valueType : ConcreteTypeHandle)
+            (offset : int)
+            (count : int)
+            : (CliType * ConcreteTypeHandle) option
+            =
+            match value with
+            | CliType.ValueType vt ->
+                let endExclusive = offset + count
+
+                CliValueType.TryAllFields vt
+                |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
+                |> List.sortBy _.EditedAtTime
+                |> List.tryLast
+                |> Option.bind (fun winner ->
+                    if winner.Offset <= offset && endExclusive <= winner.Offset + winner.Size then
+                        leafAt winner.Contents winner.Type (offset - winner.Offset) count
+                    else
+                        None
+                )
+            | CliType.Numeric _
+            | CliType.Bool _
+            | CliType.Char _
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _ ->
+                if offset = 0 && count = CliType.SizeOf(value).Size then
+                    Some (value, valueType)
+                else
+                    None
+
+        let sameNumericShape (template : CliNumericType) (source : CliNumericType) : bool =
+            match template with
+            | CliNumericType.Int8 _ -> source.IsInt8
+            | CliNumericType.UInt8 _ -> source.IsUInt8
+            | CliNumericType.Int16 _ -> source.IsInt16
+            | CliNumericType.UInt16 _ -> source.IsUInt16
+            | CliNumericType.Int32 _ -> source.IsInt32
+            | CliNumericType.Int64 _ -> source.IsInt64
+            | CliNumericType.NativeInt _ -> source.IsNativeInt
+            | CliNumericType.Float32 _ -> source.IsFloat32
+            | CliNumericType.Float64 _ -> source.IsFloat64
+            | CliNumericType.NativeFloat _ -> source.IsNativeFloat
+
+        // The source field to move whole into the template's leaf at `offset`: `None` when the
+        // source has no field of the leaf's kind spanning exactly its bytes.
+        let moveWhole
+            (offset : int)
+            (template : CliType)
+            (templateType : ConcreteTypeHandle)
+            : Result<CliType, CliReinterpretRefusal> option
+            =
+            match leafAt source sourceType offset (CliType.SizeOf(template).Size) with
+            | None -> None
+            | Some (leaf, leafType) ->
+                match template, leaf with
+                | CliType.ObjectRef _, CliType.ObjectRef _ -> Some (Ok leaf)
+                | CliType.Numeric t, CliType.Numeric s when sameNumericShape t s -> Some (Ok leaf)
+                | CliType.RuntimePointer _, CliType.RuntimePointer pointer ->
+                    if leafType = templateType then
+                        Some (Ok leaf)
+                    else
+                        match pointer, leafType, templateType with
+                        | CliRuntimePointer.Managed managed,
+                          ConcreteTypeHandle.Byref _,
+                          ConcreteTypeHandle.Byref element ->
+                            ManagedPointerSource.reinterpretAs element managed
+                            |> CliRuntimePointer.Managed
+                            |> CliType.RuntimePointer
+                            |> Ok
+                            |> Some
+                        | _ ->
+                            CliReinterpretRefusal.PointerBetweenTypes (offset, leafType, templateType)
+                            |> Error
+                            |> Some
+                | _ -> None
+
+        // The template's value at `offset`, with each leaf filled by moving a source field whole
+        // and its offset: those leaves are the only ones that may cover source bytes with no value.
+        let rec reinterpretAt
+            (offset : int)
+            (template : CliType)
+            (templateType : ConcreteTypeHandle)
+            : Result<CliType * (int * CliType) list, CliReinterpretRefusal>
+            =
+            let count = CliType.SizeOf(template).Size
+
+            match template with
+            | CliType.ValueType vt ->
+                reinterpretValueTypeAt offset vt
+                |> Result.map (fun (vt, moved) -> CliType.ValueType vt, moved)
+            | CliType.Numeric _
+            | CliType.Bool _
+            | CliType.Char _ ->
+                match bytesAt offset count with
+                | Ok bytes -> Ok (CliType.OfBytesLike template bytes, [])
+                | Error (at, obstruction) ->
+                    match moveWhole offset template templateType with
+                    | Some moved -> moved |> Result.map (fun leaf -> leaf, [ offset, leaf ])
+                    | None -> Error (CliReinterpretRefusal.NoBytesForNumber (offset, count, at, obstruction))
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _ ->
+                let slot =
+                    match template with
+                    | CliType.ObjectRef _ -> CliReinterpretSlot.ObjectReference
+                    | _ -> CliReinterpretSlot.RuntimePointer
+
+                match moveWhole offset template templateType with
+                | Some moved -> moved |> Result.map (fun leaf -> leaf, [ offset, leaf ])
+                | None -> Error (CliReinterpretRefusal.NothingToMove (offset, slot))
+
+        and reinterpretValueTypeAt
+            (offset : int)
+            (template : CliValueType)
+            : Result<CliValueType * (int * CliType) list, CliReinterpretRefusal>
+            =
+            let count = CliValueType.SizeOf(template).Size
+
+            match template._Storage with
+            | CliValueTypeStorage.RawBytes _ ->
+                match bytesAt offset count with
+                | Ok bytes -> Ok (CliValueType.OfBytesLike template bytes, [])
+                | Error (at, obstruction) -> Error (CliReinterpretRefusal.NoBytesForPadding (at, obstruction))
+            | CliValueTypeStorage.Fields storage ->
+                let folded =
+                    (Ok ([], []), storage.Fields)
+                    ||> List.fold (fun acc field ->
+                        match acc with
+                        | Error _ -> acc
+                        | Ok (fields, moved) ->
+                            reinterpretAt (offset + field.Offset) field.Contents field.Type
+                            |> Result.map (fun (contents, movedHere) -> (contents :: fields), (movedHere @ moved))
+                    )
+
+                folded
+                |> Result.map (fun (contents, moved) ->
+                    let fields =
+                        (storage.Fields, List.rev contents)
+                        ||> List.mapi2 (fun index field contents ->
+                            { field with
+                                Contents = contents
+                                EditedAtTime = uint64 index
+                            }
+                        )
+
+                    let value =
+                        { template with
+                            _Storage =
+                                CliValueTypeStorage.Fields
+                                    {
+                                        Fields = fields
+                                        PreservedBytes = preservedAt offset count
+                                    }
+                            NextTimestamp = max 1UL (uint64 fields.Length)
+                        }
+
+                    value, moved
+                )
+
+        reinterpretAt 0 template templateType
+        |> Result.bind (fun (value, moved) ->
+            // A leaf moved whole holds its value only if it is what the result holds at its bytes:
+            // in an explicit layout a target field written after it, even one whose bytes there
+            // are padding, would replace it when the value is rendered.
+            let overlaid =
+                moved
+                |> List.tryFind (fun (start, leaf) ->
+                    match leafAt value templateType start (CliType.SizeOf(leaf).Size) with
+                    | Some (held, _) -> held <> leaf
+                    | None -> true
+                )
+
+            // Every byte with no value is either under a field moved whole or under the
+            // template's padding, which takes bytes and has none to take.
+            let unmoved =
+                image
+                |> Array.indexed
+                |> Array.tryPick (fun (at, b) ->
+                    match b with
+                    | Ok _ -> None
+                    | Error obstruction ->
+                        if
+                            moved
+                            |> List.exists (fun (start, leaf) ->
+                                start <= at && at < start + CliType.SizeOf(leaf).Size
+                            )
+                        then
+                            None
+                        else
+                            Some (at, obstruction)
+                )
+
+            match overlaid, unmoved with
+            | Some (start, _), _ -> Error (CliReinterpretRefusal.MovedFieldOverlaid start)
+            | None, Some (at, obstruction) -> Error (CliReinterpretRefusal.NoBytesForPadding (at, obstruction))
+            | None, None -> Ok value
+        )
 
     static member DescribeByteLayout (concreteTypes : AllConcreteTypes option) (value : CliType) : string =
         match value with
