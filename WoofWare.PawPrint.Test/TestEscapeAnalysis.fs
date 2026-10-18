@@ -4347,6 +4347,9 @@ public static class Uses
     public struct HoldsGone { public Provider.GoneStruct G; }
     static int BranchOnReferences<T>() => System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<T>() ? 1 : 0;
     public static int BranchOnHoldsGone() => BranchOnReferences<HoldsGone>();
+    public class DerivedFromGone : Provider.GoneType { }
+    public struct HoldsDerivedFromGone { public DerivedFromGone D; }
+    public static int BranchOnHoldsDerivedFromGone() => BranchOnReferences<HoldsDerivedFromGone>();
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
@@ -4436,6 +4439,8 @@ public static class Uses
         // provider no longer has. CoreCLR cannot load the struct, so no instance with it runs, and
         // the analysis answers without deciding the branch.
         against2 "BranchOnHoldsGone" |> ignore
+        // So too where a field's type derives from one the provider no longer has.
+        against2 "BranchOnHoldsDerivedFromGone" |> ignore
 
         for methodName, failure in failures do
             let bound, _ = against1 methodName
