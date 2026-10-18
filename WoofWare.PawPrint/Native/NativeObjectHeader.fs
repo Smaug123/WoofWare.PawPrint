@@ -252,7 +252,7 @@ module NativeObjectHeader =
                         state.ThreadState.[ctx.Thread]
                         None
                         ReturnValueDisposition.PushToCaller
-                        ExceptionEscape.Propagate
+                        (ExceptionEscape.UnhandledAtNativeCaller "SyncBlock::TryUpgradeThinLockToFullLock")
                         state
 
                 match commitment with
