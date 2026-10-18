@@ -168,13 +168,9 @@ module TypeLoad =
         |> List.ofSeq
 
     /// The types of a type definition's value-type fields that have a `FieldDesc` (a literal has
-    /// none), in `FieldDesc` order: its instance fields, then, when `withStatics`, its ordinary
-    /// static fields, then its `[ThreadStatic]` ones, each in metadata order.
-    let private valueTypeFields
-        (withStatics : bool)
-        (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeDefn list
-        =
+    /// none), in `FieldDesc` order: its instance fields, then its ordinary static fields, then its
+    /// `[ThreadStatic]` ones, each in metadata order.
+    let private valueTypeFields (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn list =
         let fields =
             definition.Fields
             |> List.filter (fun field ->
@@ -188,13 +184,10 @@ module TypeLoad =
         let instance = fields |> List.filter (isStatic >> not)
 
         let statics =
-            if withStatics then
-                let statics = fields |> List.filter isStatic
+            let statics = fields |> List.filter isStatic
 
-                (statics |> List.filter (fun field -> not field.IsThreadStatic))
-                @ (statics |> List.filter (fun field -> field.IsThreadStatic))
-            else
-                []
+            (statics |> List.filter (fun field -> not field.IsThreadStatic))
+            @ (statics |> List.filter (fun field -> field.IsThreadStatic))
 
         instance @ statics |> List.map (fun field -> field.Signature)
 
@@ -252,6 +245,51 @@ module TypeLoad =
             match constructedFrom constructed with
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
+
+    /// `MethodTableBuilder::GetCorElementTypeOfTypeDefOrRefForStaticField` for the type of a static
+    /// value-type field, spelled in `spellingAssembly`: whether it names an enum, decided from
+    /// metadata without loading it. That resolves the reference naming its definition (an
+    /// instantiation's generic definition), and a base class referred to by the name `System.Enum`,
+    /// and throws where either needs an assembly no runtime directory supplies. A type the assembly
+    /// lacks it leaves to `DoFullyLoad`. The approximate load it tries first swallows every failure,
+    /// so it reaches no miss.
+    let private staticFieldReference
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        (walk : LoadWalk)
+        : LoadWalk * LoadMiss option
+        =
+        let unavailable (walk : LoadWalk, result : Result<ResolvedTypeIdentity, LoadMiss>) =
+            match result with
+            | Error (LoadMiss.AssemblyUnavailable _ as miss) -> walk, Some miss
+            | Error (LoadMiss.TypeAbsent _)
+            | Ok _ -> walk, None
+
+        let nominal =
+            match TypeDefn.stripCustomModifiers spelling with
+            | TypeDefn.GenericInstantiation (root, _) -> TypeDefn.stripCustomModifiers root
+            | other -> other
+
+        match definitionOf loggerFactory dotnetRuntimeDirs spellingAssembly nominal walk with
+        | walk, Error miss -> unavailable (walk, Error miss)
+        | walk, Ok identity ->
+            let definedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
+
+            match definedIn.TypeDefs.[identity.TypeDefinition.Get].BaseType with
+            | Some (BaseTypeInfo.TypeRef handle) when
+                definedIn.TypeRefs.[handle].Namespace = "System"
+                && definedIn.TypeRefs.[handle].Name = "Enum"
+                ->
+                definitionOf
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    definedIn
+                    (TypeDefn.FromReference (definedIn.TypeRefs.[handle], SignatureTypeKind.Unknown))
+                    walk
+                |> unavailable
+            | _ -> walk, None
 
     /// `ClassLoader::LoadApproxTypeThrowing`, by which `CLASS_LOAD_APPROXPARENTS` loads a base or an
     /// interface: for an instantiation, its generic definition, and then, unless that is an
@@ -332,9 +370,10 @@ module TypeLoad =
             spelling
             walk
 
-    /// `MethodTableBuilder` for a type definition: its approximate base and interfaces, and the
-    /// value types of its instance fields, which its layout needs, loaded as approximately as a
-    /// value-type argument is.
+    /// `MethodTableBuilder` for a type definition: its approximate base and interfaces, then its
+    /// value-type fields in metadata order (`InitializeFieldDescs`): the type of an instance one,
+    /// which its layout needs, loaded as approximately as a value-type argument is, and the
+    /// reference naming a static one's (`staticFieldReference`).
     and private approximateDefinition
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -354,14 +393,26 @@ module TypeLoad =
         let definedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
         let definition = definedIn.TypeDefs.[identity.TypeDefinition.Get]
         let parent = approximateParent loggerFactory dotnetRuntimeDirs definedIn
-        let field = approximateArgument loggerFactory dotnetRuntimeDirs definedIn
+
+        let field (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) =
+            if field.Attributes.HasFlag System.Reflection.FieldAttributes.Static then
+                staticFieldReference loggerFactory dotnetRuntimeDirs definedIn field.Signature
+            else
+                approximateArgument loggerFactory dotnetRuntimeDirs definedIn field.Signature
+
+        let fields =
+            definition.Fields
+            |> List.filter (fun field ->
+                not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
+                && isValueTypeSpelling field.Signature
+            )
 
         firstMiss
             (List.map
                 parent
                 (Option.toList (baseSpelling definedIn definition)
                  @ interfaceSpellings definedIn definition)
-             @ List.map field (valueTypeFields false definition))
+             @ List.map field fields)
             walk
 
     /// `CLASS_LOAD_EXACTPARENTS` for a type spelled in `spellingAssembly`, after its approximate
@@ -513,7 +564,7 @@ module TypeLoad =
                 load
                 (Option.toList (baseSpelling definedIn definition)
                  @ interfaceSpellings definedIn definition)
-             @ List.map loadField (valueTypeFields true definition))
+             @ List.map loadField (valueTypeFields definition))
             walk
 
     /// `SigPointer::GetTypeHandleThrowing` to the given level, for a type spelled in
