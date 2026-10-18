@@ -2781,6 +2781,150 @@ public static class Cases
         |> List.map (fun expectation -> snd expectation.Method)
         |> comparesTypesByCalling true analysis fixture
 
+    /// Code that loads the `RuntimeType` of a type, which C# compiles to `ldtoken`, in generic code
+    /// that CoreCLR shares between instantiations and in code it does not.
+    let private runtimeTypeLookupSource =
+        """
+using System;
+using System.Collections.Generic;
+
+namespace RuntimeTypeLookup;
+
+public static class Cases
+{
+    public static Type Of<T>() => typeof(T);
+
+    public static Type OfString() => Of<string>();
+
+    public static Type OfInt() => Of<int>();
+
+    // A value type whose argument is a reference type, which CoreCLR shares too.
+    public static Type OfSharedStruct() => Of<KeyValuePair<int, string>>();
+
+    public static Type OfList<T>() => typeof(List<T>);
+
+    public static Type OfListOfString() => OfList<string>();
+
+    public static Type OfListOfInt() => OfList<int>();
+
+    // Shared by its second argument, though the type it loads names only its first.
+    public static Type First<T, U>() => typeof(T);
+
+    public static Type FirstOfPartlyShared() => First<int, string>();
+
+    public static Type Exact() => typeof(string);
+
+    // Queries of types the JIT folds, comparing handles where it would make the `RuntimeType`.
+    public static bool IsValue<T>() => typeof(T).IsValueType;
+
+    public static bool IsValueOfString() => IsValue<string>();
+
+    public static bool Same<T>() => typeof(T) == typeof(string);
+
+    public static bool SameOfString() => Same<string>();
+
+    public static bool SameReversed<T>() => typeof(string) == typeof(T);
+
+    public static bool SameReversedOfString() => SameReversed<string>();
+
+    public static Type OfBoxString() => Box<string>.Of();
+
+    public static Type OfBoxInt() => Box<int>.Of();
+
+    // Code that runs only on a CPU with 128-bit vectors.
+    public static Type Accelerated<T>() =>
+        System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated ? typeof(T) : null;
+
+    public static Type AcceleratedOfString() => Accelerated<string>();
+}
+
+// A type variable of the declaring type, rather than of the method.
+public static class Box<T>
+{
+    public static Type Of() => typeof(T);
+}
+"""
+
+    /// Whether each of `methods` of `runtimeTypeLookupSource` reaches
+    /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the JIT calls to make a type's
+    /// `RuntimeType` where it cannot embed it, as `reaches` says.
+    let private looksUpRuntimeType
+        (reaches : bool)
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (methods : string list)
+        : unit
+        =
+        let lookup =
+            methodNamed (hostCoreLib ()) "System.RuntimeTypeHandle" "GetRuntimeTypeFromHandle"
+
+        let mutable analysis = analysis
+
+        for name in methods do
+            let next, reached =
+                EscapeAnalysis.reachable analysis (methodNamed fixture "RuntimeTypeLookup.Cases" name)
+
+            analysis <- next
+
+            if reached.Contains lookup <> reaches then
+                failwith $"%s{name}: reaches GetRuntimeTypeFromHandle %b{reached.Contains lookup}"
+
+    [<Test>]
+    let ``loading a type that shared code looks up at run time makes its RuntimeType`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly
+                "RuntimeTypeLookup"
+                OutputKind.DynamicallyLinkedLibrary
+                [ runtimeTypeLookupSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "RuntimeTypeLookup.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        // The definitions stand for every instantiation, the shared ones among them.
+        looksUpRuntimeType
+            true
+            analysis
+            fixture
+            [
+                "Of"
+                "OfString"
+                "OfSharedStruct"
+                "OfList"
+                "OfListOfString"
+                "OfBoxString"
+            ]
+
+        // Where the type is exact, the JIT embeds its `RuntimeType`, which it makes as it compiles.
+        looksUpRuntimeType
+            false
+            analysis
+            fixture
+            [
+                "OfInt"
+                "OfListOfInt"
+                "FirstOfPartlyShared"
+                "Exact"
+                "OfBoxInt"
+                "IsValueOfString"
+                "SameOfString"
+                "SameReversedOfString"
+                // The analysis asks about a CPU with no vector instructions.
+                "AcceleratedOfString"
+            ]
+
+        // The `RuntimeType` comes from native code the analysis does not see into.
+        let _, ofString =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "RuntimeTypeLookup.Cases" "OfString")
+
+        ofString.Unknown |> shouldEqual true
+
+        let _, ofInt =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "RuntimeTypeLookup.Cases" "OfInt")
+
+        ofInt.Unknown |> shouldEqual false
+
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
     /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
     /// whose class in that CoreLib is a placeholder.

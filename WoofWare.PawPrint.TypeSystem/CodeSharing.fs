@@ -14,7 +14,7 @@ module CodeSharing =
 
     /// Whether `handle`, as a generic argument, canonicalises to a type containing `__Canon`:
     /// whether it is a reference type, or a value type with such an argument.
-    let rec private canonicalisesToCanon
+    let rec canonicalisesToCanon
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (handle : ConcreteTypeHandle)

@@ -184,6 +184,11 @@ type internal LocalFacts =
         /// Each call, and what it passes: each argument, `this` first, or for `newobj` the object
         /// it makes. Empty for a call the JIT emits in place of the body's own.
         Calls : (int * CallSite * SpelledArgument list) list
+        /// Each `ldtoken` of a type that mentions a type variable, by its offset, with the type as
+        /// the body spells it. `Calls` has the runtime's call of
+        /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle` there, which an instance makes only where
+        /// its shared code looks the type up at run time.
+        LookedUp : (int * SpelledType) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
         Rethrows : (int * ExceptionRegion) list
@@ -734,6 +739,30 @@ module EscapeAnalysis =
         | found ->
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeWrappedException(object), found %d{found.Length}"
+
+    /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle(IntPtr)`, which the JIT calls in place of
+    /// `ldtoken` of a type to make its `RuntimeType` where it cannot embed it: the method that
+    /// `CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPEHANDLE` and `CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPE`
+    /// are bound to (jithelpers.h).
+    let private runtimeTypeLookup (state : EscapeAnalysisState) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System" "RuntimeTypeHandle"
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = "GetRuntimeTypeFromHandle"
+                && m.IsStatic
+                && m.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.IntPtr ]
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeTypeHandle.GetRuntimeTypeFromHandle(IntPtr), found %d{found.Length}"
 
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
     /// making it as `making` says: the exception, and the methods it runs to make it, whose own
@@ -2251,6 +2280,7 @@ module EscapeAnalysis =
             Spellings = [||]
             Returns = StackValue.Unknown
             Consults = Set.empty
+            LookedUp = []
             Branching = None
         }
 
@@ -2359,6 +2389,7 @@ module EscapeAnalysis =
                 Spellings = [||]
                 Returns = StackValue.Unknown
                 Consults = Set.empty
+                LookedUp = []
                 Branching = None
             }
 
@@ -3065,8 +3096,9 @@ module EscapeAnalysis =
         //     comparison of X's and Y's handles (`gtFoldTypeCompare`, gentree.cpp).
         // `impIntrinsic` (importercalls.cpp) folds them while the operands are still the
         // `GetTypeFromHandle`s it expanded, so where no branch lands between the instructions. By
-        // the offset of the query's last call: the indices of its calls, and what a branch on it
-        // tests, where the body spells its types. The JIT folds them only where it makes its
+        // the offset of the query's last call: the indices of its calls, those of its `ldtoken`s,
+        // whose `RuntimeType`s it does not make, and what a branch on it tests, where the body
+        // spells its types. The JIT folds them only where it makes its
         // tier-0 optimisations: not in a method marked `NoOptimization` or one whose assembly
         // disables optimisation, nor in one that calls `StubHelpers.NextCallReturnAddress`, where
         // it expands only the intrinsics it must.
@@ -3167,7 +3199,11 @@ module EscapeAnalysis =
                             state,
                             Map.add
                                 (snd ops.[index + 2])
-                                ([ index + 1 ; index + 2 ], Option.map (TypeQuery.IsValueType >> Tested.Types) x)
+                                {|
+                                    Gone = [ index + 1 ; index + 2 ]
+                                    Elided = [ index ]
+                                    Tested = Option.map (TypeQuery.IsValueType >> Tested.Types) x
+                                |}
                                 queries
                     else
 
@@ -3189,13 +3225,24 @@ module EscapeAnalysis =
                         state,
                         Map.add
                             (snd ops.[index + 4])
-                            ([ index + 1 ; index + 3 ; index + 4 ],
-                             Option.map2 (fun x y -> Tested.Types (TypeQuery.Identity (x, y, equality))) x y)
+                            {|
+                                Gone = [ index + 1 ; index + 3 ; index + 4 ]
+                                Elided = [ index ; index + 2 ]
+                                Tested =
+                                    Option.map2 (fun x y -> Tested.Types (TypeQuery.Identity (x, y, equality))) x y
+                            |}
                             queries
                     | _ -> state, queries
                 )
 
-        let folded = typeQueries |> Map.values |> Seq.collect fst |> Set.ofSeq
+        let folded =
+            typeQueries |> Map.values |> Seq.collect (fun query -> query.Gone) |> Set.ofSeq
+
+        let elided =
+            typeQueries
+            |> Map.values
+            |> Seq.collect (fun query -> query.Elided)
+            |> Set.ofSeq
 
         // What each `brtrue` or `brfalse` tests, by the offset of the instruction before it, which
         // pushes the value: integers, or objects each spelled as a reference. A branch on a value
@@ -3208,9 +3255,9 @@ module EscapeAnalysis =
                 | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _ | UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _) when
                     not (capabilities.ContainsKey beforeOffset)
                     ->
-                    match Map.tryFind beforeOffset typeQueries with
-                    | Some (_, Some query) -> state, Map.add beforeOffset query tested
-                    | Some (_, None) -> state, tested
+                    match Map.tryFind beforeOffset typeQueries |> Option.map (fun query -> query.Tested) with
+                    | Some (Some query) -> state, Map.add beforeOffset query tested
+                    | Some None -> state, tested
                     | None ->
 
                     match ControlFlow.successorsOf beforeOffset before, valueAt offset 0 with
@@ -3250,6 +3297,39 @@ module EscapeAnalysis =
                 else
                     acc
             )
+
+        // Where the JIT makes the `RuntimeType` of a type at run time: an `ldtoken` of a type that
+        // mentions a type variable, which shared code looks up in its generic dictionary, so that
+        // the JIT cannot embed the `RuntimeType` as it does an exact type's (`fgMorphCall`,
+        // morph.cpp; `CEEInfo::getRuntimeTypePointer`). Only an instance says whether its code is
+        // shared (`instanceFacts`). A query of types the JIT folds compares handles instead.
+        let state, lookedUp =
+            ((state, []), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun (state, lookedUp) index ->
+                match fst ops.[index] with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, MetadataOperand.FromMetadata token) when
+                    executed.Contains (snd ops.[index])
+                    && not (unbound.Contains index)
+                    && not (elided.Contains index)
+                    ->
+                    match spelledType state assembly token.Token with
+                    | state, Some (spelling, spelledIn) when mentionsTypeVariable spelling ->
+                        let spelled =
+                            {
+                                Type = spelling
+                                SpelledIn = spelledIn
+                                InBodyContext = true
+                            }
+
+                        state, (snd ops.[index], spelled) :: lookedUp
+                    | state, _ -> state, lookedUp
+                | _ -> state, lookedUp
+            )
+
+        let calls =
+            (lookedUp
+             |> List.map (fun (offset, _) -> offset, runtimeRuns (runtimeTypeLookup state), []))
+            @ calls
 
         let regions = List.ofSeq body.ExceptionRegions
 
@@ -3360,6 +3440,7 @@ module EscapeAnalysis =
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
                 |> List.ofSeq
             Calls = List.rev calls
+            LookedUp = List.rev lookedUp
             Rethrows = List.rev rethrows
             Regions = regions
             OutsideBody = outsideBody
@@ -3916,6 +3997,42 @@ module EscapeAnalysis =
                 state, Some ((first = second) = equality)
             | _ -> state, None
 
+    /// Whether a type that a body spells names a type variable whose argument in `typeArguments`,
+    /// the declaring type's, or `methodArguments`, the method's, makes CoreCLR share the body's code
+    /// (`CodeSharing.canonicalisesToCanon`): whether the shared code looks the type up at run time.
+    let rec private namesSharedArgument
+        (state : EscapeAnalysisState)
+        (typeArguments : ConcreteTypeHandle list)
+        (methodArguments : ConcreteTypeHandle list)
+        (spelling : TypeDefn)
+        : bool
+        =
+        let shared (arguments : ConcreteTypeHandle list) (index : int) : bool =
+            match List.tryItem index arguments with
+            | Some argument -> CodeSharing.canonicalisesToCanon state.BaseTypes state.TypeSystem argument
+            | None ->
+                failwith $"BUG: %O{spelling} names type variable %d{index}, which the instance has no argument for"
+
+        match spelling with
+        | TypeDefn.GenericTypeParameter index -> shared typeArguments index
+        | TypeDefn.GenericMethodParameter index -> shared methodArguments index
+        | TypeDefn.GenericInstantiation (root, arguments) ->
+            Seq.append [ root ] arguments
+            |> Seq.exists (namesSharedArgument state typeArguments methodArguments)
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> namesSharedArgument state typeArguments methodArguments element
+        | TypeDefn.Modified modified -> namesSharedArgument state typeArguments methodArguments modified.Unmodified
+        | TypeDefn.FunctionPointer signature ->
+            signatureTypes signature
+            |> List.exists (namesSharedArgument state typeArguments methodArguments)
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void -> false
+
     /// The facts of `instance`: those of its definition, less what a run of the instance cannot
     /// reach, given which of the values its callers pass are null or zero (`MethodInstance.Passed`),
     /// and the type arguments it has where the JIT compiles a query of a type to a constant.
@@ -3965,6 +4082,32 @@ module EscapeAnalysis =
                             Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
                             Rethrows = facts.Rethrows |> List.filter (fst >> at)
                             Returns = returnedOver branching.Returns executed
+                        }
+
+            // The JIT embeds the `RuntimeType` of a type that the instance's code does not look up.
+            let refined =
+                match instance.Arguments with
+                | Instantiation.Open -> refined
+                | Instantiation.Closed (typeArguments, methodArguments) ->
+                    let embedded =
+                        refined.LookedUp
+                        |> List.filter (fun (_, spelled) ->
+                            not (namesSharedArgument state typeArguments methodArguments spelled.Type)
+                        )
+                        |> List.map fst
+                        |> Set.ofList
+
+                    if embedded.IsEmpty then
+                        refined
+                    else
+                        let lookup = runtimeRuns (runtimeTypeLookup state)
+
+                        { refined with
+                            Calls =
+                                refined.Calls
+                                |> List.filter (fun (offset, site, _) ->
+                                    not (embedded.Contains offset && site = lookup)
+                                )
                         }
 
             { state with
