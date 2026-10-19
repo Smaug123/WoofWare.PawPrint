@@ -767,10 +767,13 @@ mutation-testing skill applies to each table/classifier they introduce.
      (`BindToMethodDetailsLayout`); its `extraData` is the method handed in, where a closed
      binding's `_methodPtr` may name an override. Its open path also stopped sending a static
      virtual method to a virtual call stub (`DelegateRepresentation.bindsOpenToVirtualCallStub`).
-     Past it, the parked cases that ask `Delegate.Method` reach `Delegate_CreateMethodInfo`
-     (`delegateCreateMethodInfo`);
+     Past it, the parked cases that ask `Delegate.Method` reach `Delegate_CreateMethodInfo`;
+   * **(landed)** `Delegate_CreateMethodInfo`, which .NET 11's `Delegate.Method` asks for the
+     `IRuntimeMethodInfo` of the `MethodDesc*` in `_extraData`: a fresh `RuntimeMethodInfoStub`,
+     as .NET 10's `Delegate_FindMethodHandle` answers. Four of the cases it held reach
+     `isAsyncMethod`;
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
-     `Delegate_CreateMethodInfo`, and `RuntimeModule_GetTypes`'s three-argument shape
+     and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
      It blocks on `LowLevelMonitor`, which PawPrint already models, and brackets each wait with
