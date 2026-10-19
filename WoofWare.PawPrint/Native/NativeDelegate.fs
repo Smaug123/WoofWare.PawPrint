@@ -915,6 +915,70 @@ module NativeDelegate =
 
         IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state pointer (CliType.ValueType structure)
 
+    /// <summary>
+    /// Point the <c>ObjectHandleOnStack</c> target <paramref name="result" /> at a fresh
+    /// <c>RuntimeMethodInfoStub</c> over the method whose registry id is
+    /// <paramref name="registryId" />: CoreCLR's
+    /// <c>FindOrCreateAssociatedMethodDescForReflection</c> followed by
+    /// <c>AllocateStubMethodInfo</c>, which is how <c>Delegate.Method</c>'s QCalls answer.
+    /// </summary>
+    /// <remarks>
+    /// Refuses a method minted by Reflection.Emit: <c>Delegate.Method</c> answers a delegate over
+    /// one from the <c>DynamicMethod</c> CoreLib caches beside it, which
+    /// <paramref name="dynamicMethodCache" /> says how, and never asks.
+    /// </remarks>
+    let private writeFreshMethodInfo
+        (ctx : NativeCallContext)
+        (operation : string)
+        (dynamicMethodCache : string)
+        (result : ManagedPointerSource)
+        (registryId : int64)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with
+        | Some (MethodHandle.FromMetadata _) -> ()
+        | Some (MethodHandle.FromDynamic handle) ->
+            // Measured unreachable, not argued: `sourcesImpure/DelegateMethodOnDynamicMethod.cs`
+            // asks `Delegate.Method` of a delegate over a dynamic method on every runtime.
+            failwith
+                $"TODO: %s{operation} was handed %O{handle}, a method minted by Reflection.Emit; %s{dynamicMethodCache}, so Delegate.Method answers from there and never reaches this QCall"
+        | None -> failwith $"%s{operation}: method-registry id %d{registryId} names no method in this registry"
+
+        // `FindOrCreateAssociatedMethodDescForReflection`'s whole job is to replace a *shared*
+        // (`__Canon`) `MethodDesc` -- or an unboxing or instantiating stub -- with the exact one
+        // reflection is allowed to expose. Nothing to do here: a registry id names a fully
+        // concretised method, and PawPrint has no shared method representation for it to have
+        // been one of.
+        //
+        // A *fresh* stub, matching CoreCLR's unconditional `AllocateStubMethodInfo`, and not the
+        // `ldtoken` path's deduplicated one. The difference is guest-visible: measured, real .NET
+        // hands back two distinct objects for two reflective calls to `Delegate.FindMethodHandle`
+        // on one delegate, where sharing gave one. Only the *object* differs — the registry id
+        // inside it is reused, so `RuntimeType.GetMethodBase`'s cache still returns one
+        // `MethodInfo`, which is what makes `someDelegate.Method` and `GetMethod(...)` agree.
+        let runtimeMethodInfoStubType =
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                ctx.BaseClassTypes.RuntimeMethodInfoStub
+
+        let stubAddress, state =
+            MethodHandleRegistry.allocateFreshStubForId
+                ctx.BaseClassTypes
+                state.TypeSystem.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                registryId
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed result)
+                (CliType.ObjectRef (Some stubAddress))
+
+        NativeHandlerResult.completed state |> Some
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -1655,53 +1719,54 @@ module NativeDelegate =
             let state, registryId =
                 DelegateRepresentation.methodDescOf ctx.LoggerFactory ctx.BaseClassTypes operation delegateAddr state
 
-            match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with
-            | Some (MethodHandle.FromMetadata _) -> ()
-            | Some (MethodHandle.FromDynamic handle) ->
-                // Not reachable, and measured rather than argued:
-                // `DynamicMethod.CreateDelegate` calls `d.StoreDynamicMethod(this)` right after
-                // binding (DynamicMethod.CoreCLR.cs:60), which fills `_methodBase`, and
-                // `Delegate.GetMethodImpl` returns that without consulting the runtime.
-                // `sourcesImpure/DelegateMethodOnDynamicMethod.cs` is what keeps it that way.
-                failwith
-                    $"TODO: %s{operation} was handed a delegate bound to %O{handle}, a method minted by Reflection.Emit; DynamicMethod.CreateDelegate caches that MethodInfo in _methodBase, so Delegate.Method answers from there and never reaches this QCall"
-            | None -> failwith $"%s{operation}: method-registry id %d{registryId} names no method in this registry"
+            writeFreshMethodInfo
+                ctx
+                operation
+                "`DynamicMethod.CreateDelegate` calls `d.StoreDynamicMethod(this)` right after binding (DynamicMethod.CoreCLR.cs:60), which fills `_methodBase`"
+                result
+                registryId
+                state
 
-            // CoreCLR follows `GetMethodDesc` with
-            // `FindOrCreateAssociatedMethodDescForReflection`, whose whole job is to replace a
-            // *shared* (`__Canon`) `MethodDesc` -- or an unboxing or instantiating stub -- with
-            // the exact one reflection is allowed to expose. Nothing to do here: a registry id
-            // names a fully concretised method, and PawPrint has no shared method representation
-            // for it to have been one of.
-            //
-            // A *fresh* stub, matching CoreCLR's unconditional `AllocateStubMethodInfo`, and not
-            // the `ldtoken` path's deduplicated one. The difference is guest-visible: measured,
-            // real .NET hands back two distinct objects for two reflective calls to
-            // `Delegate.FindMethodHandle` on one delegate, where sharing gave one. Only the
-            // *object* differs — the registry id inside it is reused, so
-            // `RuntimeType.GetMethodBase`'s cache still returns one `MethodInfo`, which is what
-            // makes `someDelegate.Method` and `GetMethod(...)` agree.
-            let runtimeMethodInfoStubType =
-                AllConcreteTypes.getRequiredNonGenericHandle
-                    state.TypeSystem.ConcreteTypes
-                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+        | "Delegate_CreateMethodInfo",
+          "System.Private.CoreLib",
+          "System",
+          "Delegate",
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodDesc",
+                                                                         methodDescGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultHandleGenerics) ],
+          MethodReturnType.Void when methodDescGenerics.IsEmpty && resultHandleGenerics.IsEmpty ->
+            // .NET 11's `Delegate_CreateMethodInfo` (comdelegate.cpp:1912): the `IRuntimeMethodInfo`
+            // for a `MethodDesc*`, which `Delegate.GetMethodImplUncached` reads from the delegate's
+            // `_extraData` and turns into the `MethodInfo` that `Delegate.Method` hands the guest
+            // (Delegate.CoreCLR.cs:266-322). Where .NET 10's `Delegate_FindMethodHandle` is handed
+            // the delegate and finds the method itself, this is handed the method.
+            let operation = "Delegate_CreateMethodInfo"
 
-            let stubAddress, state =
-                MethodHandleRegistry.allocateFreshStubForId
-                    ctx.BaseClassTypes
-                    state.TypeSystem.ConcreteTypes
-                    state
-                    (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
-                    registryId
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
 
-            let state =
-                IlMachineState.writeManagedByrefWithBase
-                    ctx.BaseClassTypes
-                    state
-                    (ManagedPointerSource.requireAddressed result)
-                    (CliType.ObjectRef (Some stubAddress))
+            // A `MethodDesc*` is a registry id, held as a `RuntimeMethodHandleInternal`'s
+            // `m_handle` is.
+            let registryId =
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: the MethodDesc* is null, but Delegate.MethodDesc asks Delegate_GetMethodDesc for a delegate whose _extraData is zero, and that never answers null"
+                )
 
-            NativeHandlerResult.completed state |> Some
+            let result =
+                NativeCall.objectHandleOnStackTarget operation state "retMethodInfo" instruction.Arguments.[1]
+
+            writeFreshMethodInfo
+                ctx
+                operation
+                "`Delegate.CreateDelegateForDynamicMethod` stores the `DynamicMethod` in `_helperObject` (Delegate.CoreCLR.cs:478), which `Delegate.GetMethodImpl` answers from"
+                result
+                registryId
+                state
 
         | "Delegate_InternalEqualMethodHandles",
           "System.Private.CoreLib",
