@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
+open WoofWare.PosixKernel
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -67,8 +68,8 @@ module TestRaces =
     // only the post-fork suffix of a run.
     let private pctSeedSweep : uint64 list = [ 0UL .. 63UL ]
 
-    /// Sweep `pctSeedSweep` over one guest and return the set of exit codes
-    /// observed.
+    /// Sweep `pctSeedSweep` over one guest under `config`, and return how each seed's run
+    /// ended: its exit code, or what it failed with.
     ///
     /// Everything up to the guest's first *contended* scheduling decision is
     /// forced — no policy has a choice there, so every seed executes it
@@ -83,7 +84,12 @@ module TestRaces =
     /// A guest that never forks fails rather than answering the sweep in one
     /// run: these tests characterise the outcomes a *race* can produce, and a
     /// guest with no schedule space has no race left to characterise.
-    let private sweepPctExitCodes (sourceName : string) (image : byte[]) : Set<int> =
+    let private sweepPctEndings
+        (config : GuestConfig)
+        (sourceName : string)
+        (image : byte[])
+        : (uint64 * Result<int, exn>) list
+        =
         // Scoped to the whole sweep: `Program.resumeFork` documents that the
         // prefix's factory must outlive every resume, since the loaded
         // assemblies and `BaseClassTypes` were built against it. See
@@ -97,7 +103,7 @@ module TestRaces =
         let snapshot =
             use peImage = new MemoryStream (image)
 
-            match Program.runToFirstFork prefixLoggerFactory (Some sourceName) peImage guestConfig with
+            match Program.runToFirstFork prefixLoggerFactory (Some sourceName) peImage config with
             | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
             | Program.PrefixOutcome.NeverForked _ ->
                 failwith
@@ -116,10 +122,27 @@ module TestRaces =
             use _loggerFactoryResource = loggerFactory
             let logger = loggerFactory.CreateLogger "TestRaces"
 
-            Program.resumeFork loggerFactory (Some seed) snapshot
-            |> Program.pumpPrepared loggerFactory logger
-            |> ExpectRun.ended
-            |> exitCodeOfOutcome sourceName (Some seed)
+            let ending =
+                try
+                    Program.resumeFork loggerFactory (Some seed) snapshot
+                    |> Program.pumpPrepared loggerFactory logger
+                    |> ExpectRun.ended
+                    |> exitCodeOfOutcome sourceName (Some seed)
+                    |> Ok
+                with e ->
+                    Error e
+
+            seed, ending
+        )
+
+    /// The exit codes `sweepPctEndings` observes under `guestConfig`, failing on any run that
+    /// does not exit.
+    let private sweepPctExitCodes (sourceName : string) (image : byte[]) : Set<int> =
+        sweepPctEndings guestConfig sourceName image
+        |> List.map (fun (_, ending) ->
+            match ending with
+            | Ok exitCode -> exitCode
+            | Error e -> raise e
         )
         |> Set.ofList
 
@@ -180,6 +203,67 @@ module TestRaces =
         let image = compileImage sourceName
         runRealRuntime sourceName image |> shouldEqual 0
         sweepPctExitCodes sourceName image |> shouldEqual (Set.singleton 0)
+
+    /// `AcceptMeetsSigterm.cs`: the connection and the SIGTERM both reach the sleeping accept
+    /// before it finishes under some schedules.
+    let private acceptMeetsSigterm : string = "AcceptMeetsSigterm.cs"
+
+    [<Test>]
+    let ``an accept that meets a caught SIGTERM and a connection is interrupted and restarted cleanly under every PCT seed on Darwin``
+        ()
+        : unit
+        =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
+        // Under Darwin the signal beats the connection: the accept is interrupted, the handler
+        // runs, and the accept restarts and takes the connection.
+        let image = compileImage acceptMeetsSigterm
+        runRealRuntime acceptMeetsSigterm image |> shouldEqual 0
+
+        let darwin =
+            { guestConfig with
+                Kernel =
+                    { guestConfig.Kernel with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+            }
+
+        sweepPctEndings darwin acceptMeetsSigterm image
+        |> List.map (fun (seed, ending) ->
+            match ending with
+            | Ok exitCode -> exitCode
+            | Error e -> failwith $"%s{acceptMeetsSigterm} (seed=%d{seed}) failed: %s{e.Message}"
+        )
+        |> Set.ofList
+        |> shouldEqual (Set.singleton 0)
+
+    [<Test>]
+    let ``an accept that meets a caught SIGTERM and a connection is refused on Linux exactly where it owes a return``
+        ()
+        : unit
+        =
+        Net11Frontier.park Net11Frontier.linuxFutex
+
+        // Under Linux the connection beats the signal, and `accept4` makes the socket with
+        // FD_CLOEXEC, which the kernel library does not model, so an accept that must deliver a
+        // signal before it could set the flag is refused. Every
+        // other schedule exits cleanly, and some schedule must reach the refusal, or this checks
+        // nothing.
+        let image = compileImage acceptMeetsSigterm
+        let endings = sweepPctEndings guestConfig acceptMeetsSigterm image
+
+        let refused =
+            endings
+            |> List.filter (fun (seed, ending) ->
+                match ending with
+                | Ok exitCode ->
+                    (seed, exitCode) |> shouldEqual (seed, 0)
+                    false
+                | Error e when e.Message.Contains "accept4's flags" -> true
+                | Error e -> failwith $"%s{acceptMeetsSigterm} (seed=%d{seed}) failed otherwise: %s{e.Message}"
+            )
+
+        refused |> shouldNotEqual []
 
     /// Step `image` instruction by instruction under the given scheduler seed,
     /// returning the guest's exit code and how many steps reported

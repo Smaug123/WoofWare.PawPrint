@@ -5615,6 +5615,18 @@ module NativeSystemNative =
                     |> Some
                 | AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), unix ->
 
+                // A finishing accept answers a connection with a signal to deliver only
+                // under Linux, where a queued connection beats the signal; the thread
+                // takes the signal as the call returns, before it could set any flag.
+                if UnixSignal.owesReturn (state.Kernel.Caller ctx.Thread) unix then
+                    match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                    | SimulatedUnixFlavour.Linux ->
+                        failwith
+                            $"%s{operation}: thread %O{ctx.Thread}'s accept took a connection, fd %d{acceptedFd}, with a signal to deliver as it returns. Linux's accept4(SOCK_CLOEXEC) makes the socket with FD_CLOEXEC set, which the kernel library's accept does not, and setting it with fcntl must wait until the signal's handlers have run, when another thread could have seen it unset. Not modelled until the kernel library models accept4's flags."
+                    | SimulatedUnixFlavour.Darwin ->
+                        failwith
+                            $"%s{operation}: thread %O{ctx.Thread}'s accept took a connection, fd %d{acceptedFd}, with a signal to deliver, but under Darwin such a signal interrupts the call and the connection stays queued (this is a bug in the kernel library)."
+
                 // FD_CLOEXEC: Linux's `accept4(..., SOCK_CLOEXEC)` sets it as
                 // it accepts, and on Darwin the shim's `fcntl(F_SETFD,
                 // FD_CLOEXEC)` sets it after, closing the socket if that fails,
