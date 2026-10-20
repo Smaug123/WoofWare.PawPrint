@@ -28,8 +28,8 @@ module KernelSignals =
                 None
                 system
         with
-        | Ok (disposition, _) -> disposition
-        | Error errno -> failwith $"sigaction will not report %O{signal}'s disposition: %O{errno}"
+        | SigactionAnswer.Completed disposition, _ -> disposition
+        | SigactionAnswer.Failed errno, _ -> failwith $"sigaction will not report %O{signal}'s disposition: %O{errno}"
 
     /// Every signal whose disposition is not the default.
     let dispositions<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -41,9 +41,10 @@ module KernelSignals =
         [ 1 .. Signal.highestSignoUnder numbering ]
         |> List.choose (fun signo ->
             match UnixSignal.sigactionSyscall (LoneProcess.leader system) signo None system with
-            | Ok (SignalDisposition.Default, _)
-            | Error _ -> None
-            | Ok (disposition, _) -> Some (Signal.ofRawSignoUnder numbering signo |> ValueOption.get, disposition)
+            | SigactionAnswer.Completed SignalDisposition.Default, _
+            | SigactionAnswer.Failed _, _ -> None
+            | SigactionAnswer.Completed disposition, _ ->
+                Some (Signal.ofRawSignoUnder numbering signo |> ValueOption.get, disposition)
         )
         |> Map.ofList
 
@@ -62,5 +63,6 @@ module KernelSignals =
                 (Some disposition)
                 system
         with
-        | Ok (_, system) -> system
-        | Error errno -> failwith $"sigaction will not install %O{disposition} for %O{signal}: %O{errno}"
+        | SigactionAnswer.Completed _, system -> system
+        | SigactionAnswer.Failed errno, _ ->
+            failwith $"sigaction will not install %O{disposition} for %O{signal}: %O{errno}"

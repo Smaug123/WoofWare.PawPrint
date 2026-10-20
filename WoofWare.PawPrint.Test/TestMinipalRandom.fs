@@ -192,13 +192,13 @@ module TestMinipalRandom =
             match
                 UnixNamespace.openPath
                     (LoneProcess.leader system)
-                    0
                     (PathArgumentBytes.Bytes (Result.toOption (UnixByteString.ofString "/dev/null")).Value)
+                    0
                     0
                     system
             with
-            | SyscallOutcome.Answered (SyscallAnswer.Completed reopened), system ->
-                int reopened |> shouldEqual fd
+            | OpenOutcome.Answered (DescriptorAnswer.Returned reopened), system ->
+                reopened |> shouldEqual fd
                 system
             | other -> failwith $"open: %A{other}"
 

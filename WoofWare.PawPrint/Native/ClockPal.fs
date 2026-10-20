@@ -101,8 +101,8 @@ module ClockPal =
                     e
 
         match answer with
-        | Ok reading -> reading
-        | Error error ->
+        | ClockGettimeAnswer.Completed reading -> reading
+        | ClockGettimeAnswer.Failed error ->
             failwith
                 $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{UnixSystem.platform system}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
 

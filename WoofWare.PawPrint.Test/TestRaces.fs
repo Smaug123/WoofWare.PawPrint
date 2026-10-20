@@ -68,6 +68,29 @@ module TestRaces =
     // only the post-fork suffix of a run.
     let private pctSeedSweep : uint64 list = [ 0UL .. 63UL ]
 
+    /// The snapshot at `image`'s first contended scheduling decision under `config`, from which
+    /// each seed of a sweep resumes (see `sweepPctEndings`). `prefixLoggerFactory` must outlive
+    /// every resume.
+    let private firstFork
+        (prefixLoggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (config : GuestConfig)
+        (sourceName : string)
+        (image : byte[])
+        : Program.ForkSnapshot
+        =
+        use peImage = new MemoryStream (image)
+
+        match Program.runToFirstFork prefixLoggerFactory (Some sourceName) peImage config with
+        | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
+        | Program.PrefixOutcome.NeverForked _ ->
+            failwith
+                $"%s{sourceName} ran to completion without ever having two threads Runnable at the same tick, so every seed produces the same execution and the sweep characterises nothing."
+        | Program.PrefixOutcome.DeadlockedBeforeFork stuck ->
+            failwith $"%s{sourceName} wedged before any scheduling choice arose; stuck threads: %s{stuck}"
+        | Program.PrefixOutcome.ForkedDuringStartup contenders ->
+            failwith
+                $"%s{sourceName} first contends during startup (contenders: %A{contenders}), which `Program.runToFirstFork` refuses to snapshot; the race is supposed to be between two threads inside Main."
+
     /// Sweep `pctSeedSweep` over one guest under `config`, and return how each seed's run
     /// ended: its exit code, or what it failed with.
     ///
@@ -100,19 +123,7 @@ module TestRaces =
 
         use _prefixLoggerFactoryResource = prefixLoggerFactory
 
-        let snapshot =
-            use peImage = new MemoryStream (image)
-
-            match Program.runToFirstFork prefixLoggerFactory (Some sourceName) peImage config with
-            | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
-            | Program.PrefixOutcome.NeverForked _ ->
-                failwith
-                    $"%s{sourceName} ran to completion without ever having two threads Runnable at the same tick, so every seed produces the same execution and the sweep characterises nothing."
-            | Program.PrefixOutcome.DeadlockedBeforeFork stuck ->
-                failwith $"%s{sourceName} wedged before any scheduling choice arose; stuck threads: %s{stuck}"
-            | Program.PrefixOutcome.ForkedDuringStartup contenders ->
-                failwith
-                    $"%s{sourceName} first contends during startup (contenders: %A{contenders}), which `Program.runToFirstFork` refuses to snapshot; the race is supposed to be between two threads inside Main."
+        let snapshot = firstFork prefixLoggerFactory config sourceName image
 
         pctSeedSweep
         |> List.map (fun seed ->
@@ -237,33 +248,78 @@ module TestRaces =
         |> Set.ofList
         |> shouldEqual (Set.singleton 0)
 
+    /// Whether the leader, parked in an accept before a step, finished it in that step owing a
+    /// return to user mode: the accept took a connection with a signal still to deliver.
+    let private finishedAcceptOwingReturn (before : IlMachineState) (after : IlMachineState) : bool =
+        let leader = after.Kernel.Leader
+
+        let parkedInAccept (state : IlMachineState) : bool =
+            match UnixThreadState.parkedIn (EmulatedKernel.taskOf leader state.Kernel.Tasks) with
+            | Some (ParkedSyscall.Accept _) -> true
+            | Some _
+            | None -> false
+
+        parkedInAccept before
+        && not (parkedInAccept after)
+        && UnixSignal.owesReturn (after.Kernel.Caller leader) after.Kernel.System
+
+    /// As `sweepPctEndings`, stepping each seed's run so as to say, beside its exit code, whether
+    /// any of its steps `finishedAcceptOwingReturn`.
+    let private sweepPctAcceptsOwingReturn
+        (config : GuestConfig)
+        (sourceName : string)
+        (image : byte[])
+        : (uint64 * int * bool) list
+        =
+        let _prefixMessages, prefixLoggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "run_phase", "shared-prefix" ]
+
+        use _prefixLoggerFactoryResource = prefixLoggerFactory
+
+        let snapshot = firstFork prefixLoggerFactory config sourceName image
+
+        pctSeedSweep
+        |> List.map (fun seed ->
+            let _messages, loggerFactory =
+                LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "pct_seed", string seed ]
+
+            use _loggerFactoryResource = loggerFactory
+            let logger = loggerFactory.CreateLogger "TestRaces"
+
+            let rec loop (prepared : Program.PreparedProgram) (owed : bool) : int * bool =
+                match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.Completed outcome ->
+                    exitCodeOfOutcome sourceName (Some seed) outcome, owed
+                | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
+                    failwith $"%s{sourceName} (seed=%d{seed}) deadlocked; stuck threads: %s{stuck}"
+                | Program.ProgramStepOutcome.WorkerTerminated (next, _)
+                | Program.ProgramStepOutcome.InstructionStepped (next, _, _, _) ->
+                    loop next (owed || finishedAcceptOwingReturn prepared.State next.State)
+
+            let exitCode, owed =
+                loop (Program.resumeFork loggerFactory (Some seed) snapshot) false
+
+            seed, exitCode, owed
+        )
+
     [<Test>]
-    let ``an accept that meets a caught SIGTERM and a connection is refused on Linux exactly where it owes a return``
+    let ``an accept that meets a caught SIGTERM and a connection takes both cleanly under every PCT seed on Linux``
         ()
         : unit
         =
         Net11Frontier.park Net11Frontier.linuxFutex
 
-        // Under Linux the connection beats the signal, and `accept4` makes the socket with
-        // FD_CLOEXEC, which the kernel library does not model, so an accept that must deliver a
-        // signal before it could set the flag is refused. Every
-        // other schedule exits cleanly, and some schedule must reach the refusal, or this checks
-        // nothing.
+        // Under Linux the connection beats the signal: the accept takes the connection, which
+        // `accept4` made with FD_CLOEXEC, and the thread takes the signal as the call returns.
+        // Every schedule exits cleanly, and some schedule must finish the accept owing that
+        // return, or this checks nothing.
         let image = compileImage acceptMeetsSigterm
-        let endings = sweepPctEndings guestConfig acceptMeetsSigterm image
+        let runs = sweepPctAcceptsOwingReturn guestConfig acceptMeetsSigterm image
 
-        let refused =
-            endings
-            |> List.filter (fun (seed, ending) ->
-                match ending with
-                | Ok exitCode ->
-                    (seed, exitCode) |> shouldEqual (seed, 0)
-                    false
-                | Error e when e.Message.Contains "accept4's flags" -> true
-                | Error e -> failwith $"%s{acceptMeetsSigterm} (seed=%d{seed}) failed otherwise: %s{e.Message}"
-            )
+        for seed, exitCode, _ in runs do
+            (seed, exitCode) |> shouldEqual (seed, 0)
 
-        refused |> shouldNotEqual []
+        runs |> List.exists (fun (_, _, owed) -> owed) |> shouldEqual true
 
     /// Step `image` instruction by instruction under the given scheduler seed,
     /// returning the guest's exit code and how many steps reported

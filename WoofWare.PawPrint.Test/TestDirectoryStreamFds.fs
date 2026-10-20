@@ -81,6 +81,16 @@ module TestDirectoryStreamFds =
     let ``a fresh kernel names no streams`` () : unit =
         (kernel ()).DirectoryStreamFds |> shouldBeEmpty
 
+    /// glibc's and Darwin's `opendir` both open with `O_NONBLOCK`, which the descriptor keeps
+    /// on its open file description, where `fcntl(dirfd(d), F_GETFL)` would read it.
+    [<Test>]
+    let ``the stream's descriptor is non-blocking, as opendir opens it`` () : unit =
+        let block, kernel = kernel () |> openDir
+        let fd = EmulatedKernel.directoryStreamFd block kernel
+
+        UnixDescriptor.isNonBlocking (kernel.Caller kernel.Leader) fd kernel.System
+        |> shouldEqual (Some true)
+
     [<Test>]
     let ``opening binds the block to a directory descriptor at its start`` () : unit =
         let block, kernel = kernel () |> openDir
