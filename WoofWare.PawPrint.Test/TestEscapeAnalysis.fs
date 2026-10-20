@@ -4743,7 +4743,8 @@ public static class Uses
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
 
     /// A client compiled against one version of a provider, run against another lacking a type
-    /// that a type of the client derives from, implements or holds. The JIT loads in full each type
+    /// that a type of the client, or of a third assembly `Middle`, derives from, implements or
+    /// holds. The JIT loads in full each type
     /// a token names, and each type argument of a method it instantiates, before the body runs, so
     /// the load's `TypeLoadException` comes out of the caller, past the client's own `catch`. The
     /// host's CoreCLR, running each method against the same two assemblies, says which fail.
@@ -4774,6 +4775,7 @@ public static class Uses
     static void Generic<T>() { }
     public static bool IsDerivesFromKept(object o) => o is DerivesFromKept;
     public static bool IsDerivesFromGone(object o) => o is DerivesFromGone;
+    public static bool IsMiddleDerivesFromGone(object o) => o is Middle.DerivesFromGone;
     public static System.Type TypeOfDerivesFromGone() => typeof(DerivesFromGone);
     public static bool IsImplementsGone(object o) => o is ImplementsGone;
     public static object ArrayOfHoldsGone() => new HoldsGone[1];
@@ -4798,12 +4800,18 @@ public static class Uses
 
         let completeProvider = compile "Provider" [] (provider true)
         let incompleteProvider = compile "Provider" [] (provider false)
-        let clientImage = compile "Client" [ completeProvider ] client
+
+        let middleImage =
+            compile "Middle" [ completeProvider ] "namespace Middle; public class DerivesFromGone : Provider.Gone { }"
+
+        let clientImage = compile "Client" [ completeProvider ; middleImage ] client
 
         let methods =
             [
                 "IsDerivesFromKept", false
                 "IsDerivesFromGone", true
+                // A type reference, to a type of another assembly whose base class is gone.
+                "IsMiddleDerivesFromGone", true
                 "TypeOfDerivesFromGone", true
                 "IsImplementsGone", true
                 "ArrayOfHoldsGone", true
@@ -4820,10 +4828,10 @@ public static class Uses
 
             context.add_Resolving (
                 Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
-                    if name.Name = "Provider" then
-                        context.LoadFromStream (new MemoryStream (incompleteProvider))
-                    else
-                        null
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | "Middle" -> context.LoadFromStream (new MemoryStream (middleImage))
+                    | _ -> null
                 )
             )
 
@@ -4856,15 +4864,23 @@ public static class Uses
 
         let clientAssembly = read "Client" clientImage
         let providerAssembly = read "Provider" incompleteProvider
+        let middleAssembly = read "Middle" middleImage
 
-        let providerReference =
-            clientAssembly.AssemblyReferences.Values
-            |> Seq.find (fun r -> r.Name.Name = "Provider")
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
 
         let mutable analysis =
             analysisOver
-                [ clientAssembly ; providerAssembly ]
-                (fun loaded -> fst (loaded.WithBoundReference providerReference providerAssembly))
+                [ clientAssembly ; providerAssembly ; middleAssembly ]
+                (fun loaded ->
+                    let loaded =
+                        fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly)
+
+                    let loaded =
+                        fst (loaded.WithBoundReference (referenceTo clientAssembly "Middle") middleAssembly)
+
+                    fst (loaded.WithBoundReference (referenceTo middleAssembly "Provider") providerAssembly)
+                )
 
         let failures =
             [
