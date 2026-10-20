@@ -168,6 +168,7 @@
     <Compile Include="Native\NotifyEventsPal.fs" />
     <Compile Include="Native\OpenFlagsPal.fs" />
     <Compile Include="Native\FileSystemTypePal.fs" />
+    <Compile Include="Native\FileLockingPal.fs" />
     <Compile Include="Native\FileStatusPal.fs" />
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\DirectoryStream.fs" />

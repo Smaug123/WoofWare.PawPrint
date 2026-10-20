@@ -772,6 +772,12 @@ mutation-testing skill applies to each table/classifier they introduce.
      `IRuntimeMethodInfo` of the `MethodDesc*` in `_extraData`: a fresh `RuntimeMethodInfoStub`,
      as .NET 10's `Delegate_FindMethodHandle` answers. Four of the cases it held reach
      `isAsyncMethod`;
+   * **(landed)** `SystemNative_FileSystemSupportsLocking`, which .NET 11's `SafeFileHandle`
+     asks before taking the `flock` behind a `FileShare`, where .NET 10 asked
+     `SystemNative_GetFileSystemType` and decided in managed code. `FileLockingPal` transcribes
+     the shim: only a shared lock under write access asks `fstatfs(2)`, and is refused on NFS,
+     CIFS and SMB (by Linux's magic number, or by Darwin's filesystem name) or where `fstatfs`
+     fails. Every case parked on it passes;
    * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
      and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
