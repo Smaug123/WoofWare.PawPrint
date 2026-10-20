@@ -4,7 +4,7 @@ open WoofWare.PosixKernel
 
 /// A process's signal dispositions, read and set through `sigaction` as a
 /// program makes the system call, for a test that needs to arrange or inspect
-/// them.
+/// them. Each takes a machine of one process, whose leader makes the call.
 [<RequireQualifiedAccess>]
 module KernelSignals =
 
@@ -21,7 +21,13 @@ module KernelSignals =
         (system : UnixSystem<'Task, 'Handler>)
         : SignalDisposition<'Handler>
         =
-        match UnixSignal.sigactionSyscall (Signal.toRawSignoUnder (numberingOf system) signal) None system with
+        match
+            UnixSignal.sigactionSyscall
+                (LoneProcess.leader system)
+                (Signal.toRawSignoUnder (numberingOf system) signal)
+                None
+                system
+        with
         | Ok (disposition, _) -> disposition
         | Error errno -> failwith $"sigaction will not report %O{signal}'s disposition: %O{errno}"
 
@@ -34,7 +40,7 @@ module KernelSignals =
 
         [ 1 .. Signal.highestSignoUnder numbering ]
         |> List.choose (fun signo ->
-            match UnixSignal.sigactionSyscall signo None system with
+            match UnixSignal.sigactionSyscall (LoneProcess.leader system) signo None system with
             | Ok (SignalDisposition.Default, _)
             | Error _ -> None
             | Ok (disposition, _) -> Some (Signal.ofRawSignoUnder numbering signo |> ValueOption.get, disposition)
@@ -50,7 +56,11 @@ module KernelSignals =
         : UnixSystem<'Task, 'Handler>
         =
         match
-            UnixSignal.sigactionSyscall (Signal.toRawSignoUnder (numberingOf system) signal) (Some disposition) system
+            UnixSignal.sigactionSyscall
+                (LoneProcess.leader system)
+                (Signal.toRawSignoUnder (numberingOf system) signal)
+                (Some disposition)
+                system
         with
         | Ok (_, system) -> system
         | Error errno -> failwith $"sigaction will not install %O{disposition} for %O{signal}: %O{errno}"

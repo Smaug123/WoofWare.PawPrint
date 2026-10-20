@@ -362,8 +362,7 @@ public static class Program
     let private programs (driver : MultiProgram) : (ProcessId * RunningProgram) list =
         let current = driver.Current
 
-        (UnixSystem.processId current.State.Kernel.System, current)
-        :: Map.toList driver.Idle
+        (current.State.Kernel.ProcessId, current) :: Map.toList driver.Idle
 
     /// The threads of each program parked in `BlockedInSyscall`, as its state shows them.
     let private waiters (driver : MultiProgram) : Map<ProcessId, Set<ThreadId>> =
@@ -371,23 +370,19 @@ public static class Program
         |> List.map (fun (pid, program) -> pid, Set.ofList (Scheduler.syscallWaiters program.State))
         |> Map.ofList
 
-    /// What a sweep of `driver`'s machine wakes, asked about the threads each program's state shows
-    /// asleep in the kernel, of every program with a thread parked in `BlockedInSyscall`: the
-    /// question the driver's preamble asks.
+    /// What a sweep of `driver`'s machine wakes, where some program has a thread parked in
+    /// `BlockedInSyscall`: the question the driver's preamble asks.
     let private unwoken (driver : MultiProgram) : ((ProcessId * ThreadId) * Set<WakePrimitive>) list =
-        let asleep =
+        let anyWaiter =
             programs driver
-            |> List.choose (fun (pid, program) ->
-                match Scheduler.syscallWaiters program.State with
-                | [] -> None
-                | _ -> Some (pid, Scheduler.asleepInSyscall program.State)
-            )
-            |> Map.ofList
+            |> List.exists (fun (_, program) -> not (List.isEmpty (Scheduler.syscallWaiters program.State)))
 
-        if asleep.IsEmpty then
+        if not anyWaiter then
             []
         else
-            SimulatedMachine.wakes asleep (SimulatedMachine.unfocus driver.Current.State.Kernel.System driver.Machine)
+            UnixWait.wake driver.Current.State.Kernel.System
+            |> fst
+            |> List.map (fun (caller, fired) -> (Caller.processId caller, Caller.thread caller), fired)
 
     /// How a run went: its trace, how many threads its preambles woke, how many of those were in a
     /// program not checked out at the time, and each program's exit code in launch order.
@@ -434,7 +429,7 @@ public static class Program
                 Scheduler.checkSyscallSleepers program.State
 
             let after = waiters advanced
-            let currentPid = UnixSystem.processId advanced.Current.State.Kernel.System
+            let currentPid = advanced.Current.State.Kernel.ProcessId
 
             let wokenNow =
                 before
@@ -472,7 +467,7 @@ public static class Program
 
                 go next (ticks + 1) (line :: trace) woken wokenIdle
             | MultiStepOutcome.Finished (ends, machine) ->
-                SimulatedMachine.checkInvariants machine |> shouldEqual []
+                UnixSystem.checkInvariants machine |> shouldEqual []
 
                 let exitCodes =
                     ends
@@ -527,3 +522,137 @@ public static class Program
         runs
         |> List.sumBy (fun run -> run.Woken - run.WokenIdle)
         |> shouldBeGreaterThan 0
+
+    /// A program's signal poll wakes its dispatcher's read through `UnixWait.wake`, which wakes
+    /// every sleeping thread on the machine that may go on, another program's among them. The
+    /// kernel wakes a thread once, so that thread must be flipped back to `Runnable` even where
+    /// the same poll then ends its own process: here A's dispatcher reads a SIGTERM nothing has
+    /// registered for, re-raises it at its default, and A dies, while B's leader, whose
+    /// `epoll_wait` has timed out, was woken by the same wake.
+    [<Test>]
+    let ``a thread of another program that a signal poll wakes is flipped, even when the poll ends its own process``
+        ()
+        : unit
+        =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestMultiProgramWakes"
+
+        let spinner =
+            Roslyn.compile
+                [
+                    "public static class Program { public static int Main() { while (true) {} } }"
+                ]
+
+        let launch (name : string) : ProgramLaunch =
+            {
+                Image = new MemoryStream (spinner)
+                OriginalPath = Some name
+                DotnetRuntimeDirs = FrameworkUnderTest.runtimeDirs ()
+                Process = snd (KernelConfig.split KernelConfig.Default)
+                Argv = []
+                AssemblyPath = None
+                AppContext = AppContextProperties.empty
+                PctSeed = None
+            }
+
+        let machine, _ = KernelConfig.split KernelConfig.Default
+
+        let started =
+            MultiProgram.start loggerFactory machine [ launch "a.cs" ; launch "b.cs" ]
+
+        // Both programs into `Main`, so that A's death ends its run rather than its startup.
+        let rec warm (driver : MultiProgram) (ticks : int) : MultiProgram =
+            let inMain (program : RunningProgram) : bool =
+                match program.EntryFrame with
+                | EntryFrameKind.Main _ -> true
+                | EntryFrameKind.StartupCall _ -> false
+
+            if programs driver |> List.forall (snd >> inMain) then
+                driver
+            elif ticks > 1_000_000 then
+                failwith "startup took more than a million ticks"
+            else
+                match MultiProgram.step loggerFactory logger driver with
+                | MultiStepOutcome.Stepped (driver, _, _) -> warm driver (ticks + 1)
+                | other -> failwith $"startup ended: %A{other}"
+
+        let driver = warm started 0
+        let a = driver.Current
+        let pidB, b = driver.Idle |> Map.toList |> List.exactlyOne
+
+        // A's dispatcher, asleep in its read of its signal pipe.
+        let parkedA =
+            match NativeSystemNative.initializeSignalHandling "test" a.State.Kernel.Leader a.State with
+            | Ok state ->
+                match SignalDispatch.pollMachine loggerFactory a.BaseClassTypes state with
+                | SignalPoll.Continues state, [] -> state
+                | _, woken -> failwith $"the first poll woke %A{woken}, or ended the process"
+            | Error error -> failwith $"initialising signal handling failed with %O{error}"
+
+        let pipe = (PosixSignalShim.signalPipe parkedA.Kernel.PosixSignalShim).Value
+        let callerA = parkedA.Kernel.Caller parkedA.Kernel.Leader
+        let callerB = b.State.Kernel.Caller b.State.Kernel.Leader
+
+        // B's leader in an `epoll_wait` of 1 ms on a port nothing makes ready.
+        let waiting =
+            match UnixPoll.epollCreate1 callerB 0 parkedA.Kernel.System with
+            | Ok (port, system) ->
+                match UnixPoll.epollWait callerB port 1 UserBuffer.Mapped 1 system with
+                | EpollWaitOutcome.WouldBlock _, system -> system
+                | other -> failwith $"expected B's epoll_wait to park, got %A{other}"
+            | Error error -> failwith $"epoll_create1 failed with %O{error}"
+
+        // SIGTERM's number in A's pipe, as a native handler would have written it.
+        let written =
+            match UnixReadWrite.write callerA pipe.WriteEnd UserBuffer.Mapped 1UL waiting with
+            | CallProgress.NeedsCopyIn paused ->
+                match UnixReadWrite.writeWithBytes (ImmutableArray.Create 15uy) paused with
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system) -> system
+                | other -> failwith $"writing the pipe answered %A{other}"
+            | other -> failwith $"writing the pipe answered %A{other}"
+
+        // The clock past B's deadline.
+        let readyA =
+            parkedA.MapKernel (EmulatedKernel.withUnix written)
+            |> fun state ->
+                state.MapKernel (EmulatedKernel.withVirtualClockTicks (state.Kernel.VirtualClockTicks + 10_000L))
+
+        let readyB =
+            b.State.MapKernel (EmulatedKernel.withUnix readyA.Kernel.System)
+            |> Scheduler.parkInSyscall b.State.Kernel.Leader
+
+        let staged =
+            { driver with
+                Current =
+                    { a with
+                        State = readyA
+                    }
+                Roster =
+                    { driver.Roster with
+                        Idle =
+                            Map.add
+                                pidB
+                                { b with
+                                    State = readyB
+                                }
+                                driver.Idle
+                    }
+            }
+
+        match MultiProgram.step loggerFactory logger staged with
+        | MultiStepOutcome.Stepped (next, ended, ProgramEvent.Ended _) ->
+            ended |> shouldEqual a.State.Kernel.ProcessId
+            let survivor = next.Current.State
+
+            survivor.Kernel.ProcessId |> shouldEqual pidB
+
+            match
+                (UnixThreadState.park (EmulatedKernel.taskOf survivor.Kernel.Leader survivor.Kernel.Tasks)).Value.State
+            with
+            | ParkState.Woken _ -> ()
+            | ParkState.Asleep -> failwith "expected the poll's wake to have woken B's leader"
+
+            survivor.ThreadState.[survivor.Kernel.Leader].Status
+            |> shouldEqual ThreadStatus.Runnable
+        | other -> failwith $"expected A's poll to end A, got %A{other}"

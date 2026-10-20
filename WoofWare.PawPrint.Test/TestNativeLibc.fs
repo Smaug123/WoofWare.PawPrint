@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -35,7 +36,8 @@ module TestNativeLibc =
         =
         UnixSystem.initial (platformOf numbering)
         |> Launched.boot UnixSystem.pipedStandardStreams leader (CpuId 0)
-        |> StartupSignalDispositions.install "test" numbering inheritedIgnores
+        |> fun system ->
+            StartupSignalDispositions.install "test" numbering inheritedIgnores (LoneProcess.leader system) system
 
     let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =
         launched numbering Set.empty
@@ -49,7 +51,7 @@ module TestNativeLibc =
         (system : UnixSystem<int, NativeSignalHandler>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        match UnixThreadLifecycle.spawn leader task (CpuId 0) system with
+        match UnixThreadLifecycle.spawn (LoneProcess.caller leader system) task (CpuId 0) system with
         | SpawnAnswer.Spawned _, system -> system
         | SpawnAnswer.Failed error, _ -> failwith $"spawning task %d{task} failed with %O{error}"
 
@@ -61,9 +63,11 @@ module TestNativeLibc =
 
         let outcome =
             match entry.Target with
-            | ValueSome target -> UnixSignal.pthreadKill target signo system |> Result.mapError (sprintf "%A")
+            | ValueSome target ->
+                UnixSignal.pthreadKill (LoneProcess.leader system) target signo system
+                |> Result.mapError (sprintf "%A")
             | ValueNone ->
-                UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system
+                UnixSignal.kill (LoneProcess.leader system) (ProcessId.toInt32 (LoneProcess.pid system)) signo system
                 |> Result.mapError (sprintf "%A")
 
         match outcome with
@@ -88,7 +92,7 @@ module TestNativeLibc =
         (system : UnixSystem<int, NativeSignalHandler>, shim : PosixSignalShim)
         : UnixSystem<int, NativeSignalHandler> * PosixSignalShim
         =
-        match PosixSignalShim.installHandler numbering sent system shim with
+        match PosixSignalShim.installHandler numbering sent (LoneProcess.leader system) system shim with
         | Ok installed -> installed
         | Error errno -> failwith $"installing System.Native's handler for %O{sent} failed with %O{errno}"
 
@@ -100,7 +104,7 @@ module TestNativeLibc =
         (sent : Signal)
         : UnmodelledSelfSignal option
         =
-        NativeLibc.screenSelfSignal platform sender leader shim system sent
+        NativeLibc.screenSelfSignal platform (LoneProcess.caller sender system) leader shim system sent
 
     let private everyPlatform : SimulatedUnixPlatform list =
         [
@@ -320,14 +324,11 @@ module TestNativeLibc =
                 let expected =
                     Some (UnmodelledSelfSignal.FaultSignalFromOtherThread (signal numbering signo))
 
-                screenOn platform 1 (fresh numbering) (signal numbering signo)
-                |> shouldEqual expected
+                let withSender = withTask 1 (initial numbering), PosixSignalShim.initial
 
-                screenOn
-                    platform
-                    1
-                    (register numbering (signal numbering signo) (fresh numbering))
-                    (signal numbering signo)
+                screenOn platform 1 withSender (signal numbering signo) |> shouldEqual expected
+
+                screenOn platform 1 (register numbering (signal numbering signo) withSender) (signal numbering signo)
                 |> shouldEqual expected
 
     [<Test>]
@@ -375,8 +376,13 @@ module TestNativeLibc =
                             action.Restart |> shouldEqual true
                         | other -> failwith $"expected System.Native's handler, got %A{other}"
 
-                        // Caught, so it waits for the return to user mode.
-                        let registered = send (processDirected sent) signals, shim
+                        // Blocked, so it stays pending rather than being
+                        // delivered as the leader returns to user mode.
+                        let registered =
+                            signals
+                            |> SignalFrames.enterSystem leader (Set.singleton sent)
+                            |> send (processDirected sent),
+                            shim
 
                         screen registered (signal numbering signo)
                         |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
@@ -397,7 +403,7 @@ module TestNativeLibc =
 
             // Unregistering restores the ignore the shim saved.
             let restored, _, refused =
-                PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
+                PosixSignalShim.restoreHandler numbering Signal.SIGPIPE (LoneProcess.leader signals) signals shim
 
             refused |> shouldEqual None
 
@@ -447,7 +453,14 @@ module TestNativeLibc =
                             Some (UnmodelledSelfSignal.PendingOnOtherThread Signal.SIGPIPE)
                         | _ -> None
 
-                    NativeLibc.screenRaisedSignal platform sender leader PosixSignalShim.initial before raised after
+                    NativeLibc.screenRaisedSignal
+                        platform
+                        (LoneProcess.caller sender before)
+                        leader
+                        PosixSignalShim.initial
+                        before
+                        raised
+                        after
                     |> shouldEqual expected
 
     /// `raise(3)` aims the signal at the thread that raises it, which takes it
@@ -482,7 +495,14 @@ module TestNativeLibc =
 
                 (platform,
                  raiser,
-                 NativeLibc.screenRaisedSignal platform raiser leader PosixSignalShim.initial before raised after)
+                 NativeLibc.screenRaisedSignal
+                     platform
+                     (LoneProcess.caller raiser before)
+                     leader
+                     PosixSignalShim.initial
+                     before
+                     raised
+                     after)
                 |> shouldEqual (platform, raiser, expected)
 
     [<Test>]
@@ -507,7 +527,12 @@ module TestNativeLibc =
             shimAgain |> shouldEqual shim
 
             let restored, shimRestored, refused =
-                PosixSignalShim.restoreHandler numbering sigill restoredByRuntime shim
+                PosixSignalShim.restoreHandler
+                    numbering
+                    sigill
+                    (LoneProcess.leader restoredByRuntime)
+                    restoredByRuntime
+                    shim
 
             refused |> shouldEqual None
 
@@ -610,10 +635,17 @@ module TestNativeLibc =
             Prop.forAll (Arb.fromGen gen) (fun (numbering, mask, pending) -> property numbering mask pending)
         )
 
-        // The same signal, pending while registered.
+        // The same signal, pending while registered, which the leader blocks so
+        // that it is not delivered as the leader returns to user mode.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
-            let pending = send (processDirected Signal.SIGTERM) signals, shim
+
+            let pending =
+                signals
+                |> SignalFrames.enterSystem leader (Set.singleton Signal.SIGTERM)
+                |> send (processDirected Signal.SIGTERM),
+                shim
+
             screen pending Signal.SIGTERM |> shouldEqual None
 
     [<Test>]
@@ -672,3 +704,95 @@ module TestNativeLibc =
             Config.QuickThrowOnFailure.WithMaxTest 200,
             Prop.forAll (Arb.fromGen (Gen.choose (1, UnixSystem.defaultPidMax - 1))) linux
         )
+
+    /// `screenRaisedSignal` of the SIGPIPE of a write on Linux that finishes after sleeping, by
+    /// the process's only thread, with SIGPIPE at `disposition` (left as the process starts if
+    /// `None`). The screen reads the signal's disposition from the system before the signal was
+    /// raised, where the writer is still parked; and no other thread is left in the process: the
+    /// reader closed its end and exited.
+    let private screenLoneWritersSigpipe
+        (disposition : SignalDisposition<NativeSignalHandler> option)
+        : UnmodelledSelfSignal option
+        =
+        let kernel =
+            EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
+
+        let writer = kernel.Caller kernel.Leader
+        let reader = kernel.Caller (ThreadId 1)
+
+        let system =
+            match disposition with
+            | None -> kernel.System
+            | Some disposition ->
+                let signo =
+                    Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGPIPE
+
+                match UnixSignal.sigactionSyscall writer signo (Some disposition) kernel.System with
+                | Ok (_, system) -> system
+                | Error errno -> failwith $"sigaction answered %O{errno}"
+
+        let system =
+            match UnixThreadLifecycle.spawn writer (ThreadId 1) (CpuId 0) system with
+            | SpawnAnswer.Spawned _, system -> system
+            | other -> failwith $"spawn answered %A{other}"
+
+        let readEnd, writeEnd, system =
+            match UnixPipe.pipe2 writer 0 UserBuffer.Mapped system with
+            | Pipe2Answer.Created (readEnd, writeEnd), system -> readEnd, writeEnd, system
+            | other -> failwith $"pipe2 answered %A{other}"
+
+        let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
+            match UnixReadWrite.write writer writeEnd UserBuffer.Mapped 4096UL system with
+            | CallProgress.NeedsCopyIn paused ->
+                let count = (PausedWrite.copyRange paused).ByteCount
+
+                match
+                    UnixReadWrite.writeWithBytes (ImmutableArray.CreateRange (Array.zeroCreate<byte> count)) paused
+                with
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system) -> fill system
+                | other -> failwith $"filling the pipe answered %A{other}"
+            // Full: the writer sleeps.
+            | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock _, system)) -> system
+            | other -> failwith $"filling the pipe answered %A{other}"
+
+        let alone =
+            match UnixDescriptor.close reader readEnd (fill system) with
+            | SyscallAnswer.Completed _, system ->
+                match UnixThreadLifecycle.exitThread reader 0 system with
+                | ProcessFate.Continues ((), system) -> system
+                | other -> failwith $"the reader's exit answered %A{other}"
+            | other -> failwith $"closing the read end answered %A{other}"
+
+        let before =
+            match UnixWait.wake alone with
+            | [ woken, _ ], system when woken = writer -> system
+            | other -> failwith $"expected the close to wake the writer alone, got %A{fst other}"
+
+        match UnixReadWrite.finishWrite writer before with
+        | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.ReturnsRaising (_, raised), after)) ->
+            NativeLibc.screenRaisedSignal
+                kernel.UnixPlatform
+                writer
+                kernel.Leader
+                kernel.PosixSignalShim
+                before
+                raised
+                after
+        | other -> failwith $"expected the write to end in EPIPE and SIGPIPE, got %A{other}"
+
+    [<Test>]
+    let ``a write's SIGPIPE is screened when its writer, finishing a sleeping write, is the only thread`` () : unit =
+        // The runtime ignores SIGPIPE, so there is nothing to refuse.
+        screenLoneWritersSigpipe None |> shouldEqual None
+
+    [<Test>]
+    let ``a caught SIGPIPE is refused when its writer, finishing a sleeping write, is the only thread and owes its return``
+        ()
+        : unit
+        =
+        // Once the kernel raises the caught signal, the writer owes a return to user mode to take
+        // it, so the screen's answer does not depend on any thread being able to make a call.
+        let handler = NativeSignalHandler.CoreClrPalActivation
+
+        screenLoneWritersSigpipe (Some (SignalDisposition.Catch (SignalCatch.ofHandler handler)))
+        |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (Signal.SIGPIPE, handler)))

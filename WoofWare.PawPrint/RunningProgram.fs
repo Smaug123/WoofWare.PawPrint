@@ -79,9 +79,8 @@ type internal EntryFrameKind =
 /// its scheduler carries from one tick to the next.
 type internal RunningProgram =
     {
-        /// The process's interpreter state. Its kernel holds the process's view of the
-        /// machine, which is the machine as it stands only while the program is checked out
-        /// of its driver.
+        /// The process's interpreter state. Its kernel holds a copy of the machine, which is
+        /// the machine as it stands only while the program is checked out of its driver.
         State : IlMachineState
         BaseClassTypes : BaseClassTypes<DumpedAssembly>
         EntryThread : ThreadId
@@ -107,23 +106,23 @@ type internal ProgramTick =
     /// if the phase that ended was the last.
     | StartupCallReturned of advanced : RunningProgram
     /// The process ended, as `outcome` says, and `ended` is the kernel's account of the end,
-    /// which the driver takes to the machine the process ran on.
-    | Ended of outcome : RunOutcome * ended : EndedProcess<ThreadId, NativeSignalHandler>
+    /// with the machine as the end left it, which the driver runs any other program on.
+    | Ended of outcome : RunOutcome * ended : ProcessEnd
 
 /// The operations on one program that the driver (`MultiProgram`) runs each tick: those that
 /// stay with a program, as opposed to the machine-wide ones the driver runs itself. The other
 /// per-program phase is `SignalDispatch.poll`.
 ///
-/// Every one of them but `stepDecided` writes nothing through the program's view of the machine
+/// Every one of them but `stepDecided` writes nothing to the machine in the program's kernel
 /// (`EmulatedKernel.System`), and reads of it only the program's own process, which nothing but
-/// the program's own steps changes: so the driver can run them on a program that is not checked
-/// out, whose view of the machine is stale. A Debug build asserts the first half of that of each
-/// operation that answers a state, by reference.
+/// the program's own steps and the driver's syscall wakes change: so the driver can run them on a
+/// program that is not checked out, whose copy of the machine is stale. A Debug build asserts the
+/// first half of that of each operation that answers a state, by reference.
 [<RequireQualifiedAccess>]
 module internal RunningProgram =
-    /// Fail loudly, naming `operation`, if `after`'s view of the machine is not `before`'s by
-    /// reference: the operation wrote through the view, which on a program not checked out of
-    /// its driver would be a write through a stale copy of the machine. Debug builds only.
+    /// Fail loudly, naming `operation`, if the machine in `after`'s kernel is not `before`'s by
+    /// reference: the operation wrote to it, which on a program not checked out of its driver
+    /// would be a write to a stale copy of the machine. Debug builds only.
     let inline private assertWroteNoView
         (operation : string)
         (before : IlMachineState)
@@ -133,7 +132,7 @@ module internal RunningProgram =
 #if DEBUG
         if not (obj.ReferenceEquals (before.Kernel.System, after.Kernel.System)) then
             failwith
-                $"RunningProgram.%s{operation}: wrote the program's view of the machine, which the driver runs it without checking the program out for (this is an interpreter bug)."
+                $"RunningProgram.%s{operation}: wrote the machine in the program's kernel, which the driver runs it without checking the program out for (this is an interpreter bug)."
 #else
         ()
 #endif
@@ -231,10 +230,10 @@ module internal RunningProgram =
     /// deadline is `<= now`, a reading of the virtual clock in its ticks.
     ///
     /// `now` is an argument rather than read from the state's kernel because
-    /// the clock is the machine's, and a process's view of a machine other
-    /// processes share holds a stale copy of it once another has moved it on.
-    /// Nothing here reads the kernel's POSIX half, so a state whose view is
-    /// stale in that way may be passed with the machine's clock. Each fire routes
+    /// the clock is the machine's, and the copy of the machine an idle program
+    /// holds is stale once another program has moved it on. Nothing here reads
+    /// the kernel's POSIX half, so a state whose copy is stale in that way may
+    /// be passed with the machine's clock. Each fire routes
     /// through a per-subsystem fire function (WaitHandle dequeues from
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
@@ -366,44 +365,35 @@ module internal RunningProgram =
         assertWroteNoView "fireExpiredDeadlines" state fired
         fired
 
-    /// Every deadline a thread parked in a syscall is waiting for, as the first
-    /// tick of the virtual clock at or after it.
-    let private syscallDeadlines (state : IlMachineState) : int64 list =
-        match Scheduler.syscallWaiters state with
-        | [] -> []
-        | asleep ->
-            UnixWait.deadlines (Set.ofList asleep) state.Kernel.System
-            |> List.map ClockPal.firstTickAtOrAfter
+    /// Every deadline a call asleep in the kernel of `system` is waiting for, in every process
+    /// on the machine, as the first tick of the virtual clock at or after it
+    /// (`UnixWait.deadlines`).
+    let syscallDeadlines (system : UnixSystem<ThreadId, NativeSignalHandler>) : int64 list =
+        UnixWait.deadlines system |> List.map ClockPal.firstTickAtOrAfter
 
-    /// Every finite wait deadline the program has outstanding, in no particular order
-    /// and with duplicates where two threads are parked on the same instant:
-    /// the runtime-level waits' own deadlines, and those of the calls parked in
-    /// the kernel. The candidate set `ClockJitterStrategy.EagerDeadlines` draws
+    /// Every finite deadline the program's runtime-level waits have outstanding, in no
+    /// particular order and with duplicates where two threads are parked on the same instant.
+    /// With `syscallDeadlines`, the candidate set `ClockJitterStrategy.EagerDeadlines` draws
     /// from, which is why it is the whole collection and not just the minimum.
     ///
-    /// The kernel's deadlines are read from the program's own parks
-    /// (`UnixWait.deadlines`), which are its process's and so current in its view
-    /// whether or not the program is checked out.
+    /// Reads nothing of the kernel, so it may be asked of a program not checked out.
     let pendingDeadlines (state : IlMachineState) : int64 list =
-        let threadDeadlines =
-            state.ThreadState
-            |> Map.toList
-            |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
+        state.ThreadState
+        |> Map.toList
+        |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
 
-        threadDeadlines @ syscallDeadlines state
-
-    /// Flip to `Runnable` each of `woken`, threads of this program's state that the machine's
-    /// syscall wakes (`SimulatedMachine.wakes`) answered: what each was asleep for in the
-    /// kernel has happened.
+    /// Flip to `Runnable` each of `woken`, threads of this program's state that the kernel's
+    /// syscall wakes (`UnixWait.wake`) woke: what each was asleep for in the kernel has
+    /// happened.
     ///
     /// Every park is re-entrant — the native frame stays and the caller's
     /// program counter still names the call — so waking is exactly a flip to
     /// `Runnable`, and the re-entered handler finishes the call from the caller's
     /// own frame.
     ///
-    /// The signal dispatcher, asleep in its read of the signal pipe, is asked
-    /// about with the rest (see `Scheduler.asleepInSyscall`) but never flipped:
-    /// `SignalDispatch.poll` finishes its read at the next tick.
+    /// The signal dispatcher, asleep in its read of the signal pipe, is woken with
+    /// the rest but never flipped: `SignalDispatch.poll` finishes its read at the
+    /// next tick.
     let wakeFromSyscalls (woken : ThreadId list) (before : IlMachineState) : IlMachineState =
         let state =
             (before, woken)
@@ -462,8 +452,8 @@ module internal RunningProgram =
 
     /// The run's end when a signal killed the process: `ended` is the kernel's answer to
     /// the signal, and `state` the machine as it stood when the signal was sent.
-    let signalTerminated (state : IlMachineState) (ended : EndedProcess<ThreadId, NativeSignalHandler>) : RunOutcome =
-        match EndedProcess.termination ended with
+    let signalTerminated (state : IlMachineState) (ended : ProcessEnd) : RunOutcome =
+        match EndedProcess.termination ended.Ended with
         | ProcessTermination.Signaled (signal, coreDumped) -> RunOutcome.SignalTerminated (state, signal, coreDumped)
         | ProcessTermination.Exited _ as other ->
             failwith
@@ -517,11 +507,7 @@ module internal RunningProgram =
 
     /// How the process ends when the runtime aborts it on `thread`: CoreCLR's `PROCAbort`
     /// ends in `abort()`, which the kernel answers with a death by SIGABRT.
-    let private abortTermination
-        (thread : ThreadId)
-        (state : IlMachineState)
-        : EndedProcess<ThreadId, NativeSignalHandler>
-        =
+    let private abortTermination (thread : ThreadId) (state : IlMachineState) : ProcessEnd =
         EmulatedKernel.abort thread state.Kernel
 
     /// `RunMain`'s `SetLatchedExitCode(*piRetVal)`: the moment an `int Main` returns, its return
@@ -590,7 +576,7 @@ module internal RunningProgram =
                 EmulatedKernel.exitGroup program.EntryThread program.State.LatchedExitCode program.State.Kernel
 
             ProgramTick.Ended (
-                RunOutcome.NormalExit (program.State, program.EntryThread, EndedProcess.termination ended),
+                RunOutcome.NormalExit (program.State, program.EntryThread, EndedProcess.termination ended.Ended),
                 ended
             )
         | _ ->
@@ -783,12 +769,15 @@ module internal RunningProgram =
                 let ended =
                     EmulatedKernel.exitGroup exitingThread state.LatchedExitCode state.Kernel
 
-                ProgramTick.Ended (RunOutcome.ProcessExit (state, exitingThread, EndedProcess.termination ended), ended)
+                ProgramTick.Ended (
+                    RunOutcome.ProcessExit (state, exitingThread, EndedProcess.termination ended.Ended),
+                    ended
+                )
             | ExecutionResult.Aborted (state, abortingThread, message) ->
                 let ended = abortTermination abortingThread state
 
                 ProgramTick.Ended (
-                    RunOutcome.Aborted (state, abortingThread, message, EndedProcess.termination ended),
+                    RunOutcome.Aborted (state, abortingThread, message, EndedProcess.termination ended.Ended),
                     ended
                 )
             | ExecutionResult.SignalTerminated (state, ended) -> ProgramTick.Ended (signalTerminated state ended, ended)
@@ -796,7 +785,12 @@ module internal RunningProgram =
                 let ended = abortTermination terminatingThread state
 
                 ProgramTick.Ended (
-                    RunOutcome.GuestUnhandledException (state, terminatingThread, exn, EndedProcess.termination ended),
+                    RunOutcome.GuestUnhandledException (
+                        state,
+                        terminatingThread,
+                        exn,
+                        EndedProcess.termination ended.Ended
+                    ),
                     ended
                 )
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->

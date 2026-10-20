@@ -55,7 +55,7 @@ module DirectoryStream =
 
         let opened =
             try
-                UnixNamespace.openPath thread flags path 0 kernel.System
+                UnixNamespace.openPath (kernel.Caller thread) flags path 0 kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.failAdvising
                     operation
@@ -66,9 +66,9 @@ module DirectoryStream =
         | SyscallOutcome.WouldBlock condition, _ ->
             failwith
                 $"%s{operation}: thread %O{thread}'s open with O_DIRECTORY would sleep until %A{condition}, but an open that sleeps is of a FIFO, which O_DIRECTORY refuses with ENOTDIR before it could sleep (this is a bug in the kernel library)."
-        | SyscallOutcome.Restarts, _ ->
+        | SyscallOutcome.Interrupted, _ ->
             failwith
-                $"%s{operation}: thread %O{thread}'s open answered a restart, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
+                $"%s{operation}: thread %O{thread}'s open was interrupted by a signal, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
         | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
             DirectoryStreamOpen.Failed error, EmulatedKernel.withUnix system kernel
         | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
@@ -89,15 +89,20 @@ module DirectoryStream =
 
         DirectoryStreamOpen.Opened block, EmulatedKernel.withDirectoryStreamFd block (int fd) kernel
 
-    /// `closedir(3)` of the stream `block` names: unbind and free the block, and
-    /// close its descriptor. The stream is released whatever the close answers,
+    /// `closedir(3)` of the stream `block` names, on `thread`'s behalf: unbind and free the
+    /// block, and close its descriptor. The stream is released whatever the close answers,
     /// as a real `closedir` frees its `DIR` whatever `close` answers.
     ///
     /// The close fails only with EBADF, which a guest reaches by closing the
     /// stream's descriptor behind its back; descriptor numbers are guessable.
     /// A `block` that names no open stream is refused, as
     /// `EmulatedKernel.directoryStreamFd` refuses it.
-    let closedir (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : Result<unit, UnixError> * EmulatedKernel =
+    let closedir
+        (thread : ThreadId)
+        (block : NativeMemoryBlockId)
+        (kernel : EmulatedKernel)
+        : Result<unit, UnixError> * EmulatedKernel
+        =
         let fd = EmulatedKernel.directoryStreamFd block kernel
 
         let kernel =
@@ -105,6 +110,6 @@ module DirectoryStream =
                 NativeMemoryPool = NativeMemoryPool.free block kernel.NativeMemoryPool
             }
 
-        match UnixDescriptor.close fd kernel.System with
+        match UnixDescriptor.close (kernel.Caller thread) fd kernel.System with
         | SyscallAnswer.Completed _, system -> Ok (), EmulatedKernel.withUnix system kernel
         | SyscallAnswer.Failed error, system -> Error error, EmulatedKernel.withUnix system kernel

@@ -111,7 +111,7 @@ module TestKernelConfigSplit =
         |> EmulatedKernel.mapUnix (fun system ->
             match config.PidMax with
             | None -> system
-            | Some pidMax -> UnixSystem.writePidMaxSysctl "reference" pidMax system
+            | Some pidMax -> UnixSystem.writePidMaxSysctl pidMax system
         )
         |> fun kernel ->
             match config.CLibrary with

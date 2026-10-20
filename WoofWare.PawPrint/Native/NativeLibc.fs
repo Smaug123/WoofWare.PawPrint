@@ -101,7 +101,7 @@ module NativeLibc =
     /// kernel model before this matters.
     let screenSelfSignal<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
-        (sender : 'Task)
+        (sender : Caller<'Task>)
         (receiver : 'Task)
         (shim : PosixSignalShim)
         (system : UnixSystem<'Task, NativeSignalHandler>)
@@ -116,7 +116,7 @@ module NativeLibc =
         // (see `NativeSignalHandler.CoreClrPalFault`). Over an ignore it aborts
         // the process there and then, so no later fault meets the default.
         let faultHandler (replaced : PalReplacedDisposition) : UnmodelledSelfSignal option =
-            if sender <> receiver then
+            if Caller.thread sender <> receiver then
                 Some (UnmodelledSelfSignal.FaultSignalFromOtherThread signal)
             else
                 match replaced with
@@ -127,15 +127,10 @@ module NativeLibc =
                     else
                         None
 
-        // Asked of the kernel rather than through the C library, which will not
-        // report Linux's 33, whose handler is glibc's own.
-        match UnixSignal.sigactionSyscall (Signal.toRawSignoUnder numbering signal) None system with
-        // Darwin will not report SIGKILL or SIGSTOP, which nothing can catch,
-        // so no native code runs for either.
-        | Error _ -> None
-        | Ok (disposition, _) ->
-
-        match disposition with
+        // Read from the kernel's state, not asked by a call: the sender may be parked in the call
+        // that raised the signal, or owe its return from it. SIGKILL and SIGSTOP, which nothing
+        // can catch, read as their default.
+        match SignalState.disposition numbering signal (UnixSystem.signals (Caller.processId sender) system) with
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
@@ -155,6 +150,7 @@ module NativeLibc =
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 
+
     /// Whether PawPrint's kernel model can carry on after a syscall made by
     /// `sender` raised `raised`, given the system and System.Native's state
     /// before the call, and `after`, the system once the kernel generated it.
@@ -166,7 +162,7 @@ module NativeLibc =
     /// `leader`, which nothing delivers, is refused.
     let screenRaisedSignal<'Task when 'Task : comparison>
         (platform : SimulatedUnixPlatform)
-        (sender : 'Task)
+        (sender : Caller<'Task>)
         (leader : 'Task)
         (shim : PosixSignalShim)
         (before : UnixSystem<'Task, NativeSignalHandler>)
@@ -186,7 +182,7 @@ module NativeLibc =
         match raised.Target with
         | ValueSome target when
             target <> leader
-            && List.contains raised (SignalState.pending (UnixSystem.signals after))
+            && List.contains raised (SignalState.pending (UnixSystem.signals (Caller.processId sender) after))
             ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _
@@ -210,9 +206,9 @@ module NativeLibc =
 
         let answer =
             try
-                UnixSignal.kill pid signo system
+                UnixSignal.kill (state.Kernel.Caller ctx.Thread) pid signo system
             with :? UnmodelledException as e ->
-                let ownPid = ProcessId.toInt32 (UnixSystem.processId system)
+                let ownPid = ProcessId.toInt32 state.Kernel.ProcessId
 
                 let remedy =
                     if pid = ownPid then
@@ -237,7 +233,7 @@ module NativeLibc =
             |> ValueOption.bind (fun sent ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
                     system
@@ -254,11 +250,17 @@ module NativeLibc =
         match outcome with
         | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
             state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | ProcessFate.ProcessEnded ended ->
+        | ProcessFate.ProcessEnded (ended, remaining) ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
-                ExecutionResult.SignalTerminated (state, ended)
+                ExecutionResult.SignalTerminated (
+                    state,
+                    {
+                        Ended = ended
+                        Remaining = remaining
+                    }
+                )
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith
@@ -285,10 +287,10 @@ module NativeLibc =
 
         let answer =
             try
-                UnixSignal.pthreadKill ctx.Thread signo system
+                UnixSignal.pthreadKill (state.Kernel.Caller ctx.Thread) ctx.Thread signo system
             with :? UnmodelledException as e ->
                 KernelRefusal.fail
-                    $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{UnixSystem.processId system} is not modelled"
+                    $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{state.Kernel.ProcessId} is not modelled"
                     e
 
         match answer with
@@ -306,7 +308,7 @@ module NativeLibc =
             | ValueSome sent, ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
                 screenRaisedSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
                     system
@@ -318,7 +320,7 @@ module NativeLibc =
             | ValueSome sent, _ ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
-                    ctx.Thread
+                    (state.Kernel.Caller ctx.Thread)
                     ctx.Thread
                     state.Kernel.PosixSignalShim
                     system
@@ -333,11 +335,17 @@ module NativeLibc =
         match outcome with
         | ProcessFate.Continues (KillOutcome.ProcessRuns, after) ->
             state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | ProcessFate.ProcessEnded ended ->
+        | ProcessFate.ProcessEnded (ended, remaining) ->
             // The process never returns from this call.
             match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
-                ExecutionResult.SignalTerminated (state, ended)
+                ExecutionResult.SignalTerminated (
+                    state,
+                    {
+                        Ended = ended
+                        Remaining = remaining
+                    }
+                )
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith

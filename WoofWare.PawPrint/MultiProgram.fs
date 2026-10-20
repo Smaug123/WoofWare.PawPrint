@@ -6,7 +6,7 @@ open WoofWare.PosixKernel
 /// What a driver (`MultiProgram`) knows of its programs besides the checked-out one.
 type internal ProgramRoster =
     {
-        /// Every other live program, by its process ID. The machine in each one's view is
+        /// Every other live program, by its process ID. The machine in each one's kernel is
         /// stale.
         Idle : Map<ProcessId, RunningProgram>
         /// Every program's process ID, in the order the programs were launched, ended ones
@@ -26,15 +26,12 @@ type internal ProgramRoster =
 /// one program's (`MultiProgram.advance`). `MultiProgram.start` makes one, and
 /// `MultiProgram.step` runs it a tick at a time.
 ///
-/// One program is checked out: `Current`. Its kernel's view of the machine
-/// (`EmulatedKernel.System`) is the authoritative one, and `Machine` is the machine that view
-/// was focused from, so `SimulatedMachine.unfocus` and `SimulatedMachine.endProcess` accept the
-/// view, and whatever descends from it, back into `Machine`. `Machine` itself is therefore stale
-/// while a program is checked out, and is brought up to date only when the driver checks out
-/// another program or a program ends. Every other live program is idle: its view's process and
-/// tasks are the ones `Machine` holds, since nothing but its own steps changes them, and only
-/// the machine in its view is stale. A driver of one program never checks out another, which on
-/// every tick would cost a focus and an unfocus.
+/// One program is checked out: `Current`. The machine in its kernel (`EmulatedKernel.System`)
+/// is the machine, every process on it included. Every other live program is idle, and the
+/// machine in its kernel is a stale copy: its own process there is as the machine holds it,
+/// but for what the driver's syscall wakes have changed in its parks, since nothing but its own
+/// steps changes the rest of it, while everything else may have moved on. Checking a program
+/// out hands it the current machine. A driver of one program never checks out another.
 ///
 /// The global tick is the checked-out program's `EmulatedKernel.StepCounter`; checking out
 /// another program carries it across, as the clock is carried across inside the machine.
@@ -42,24 +39,15 @@ type internal ProgramRoster =
 /// A struct because every tick makes a new one, and a few references copied by value cost a
 /// one-program run nothing over the program record it would otherwise have held directly.
 /// What changes only with several programs is in `Roster`, so that a tick of one program
-/// copies five references and allocates nothing for the driver.
+/// copies three references and allocates nothing for the driver.
 [<Struct>]
 type MultiProgram =
     internal
         {
-            /// The machine `Current`'s view was focused from; stale while `Current` runs.
-            Machine : SimulatedMachine<ThreadId, NativeSignalHandler>
-            /// The checked-out program.
+            /// The checked-out program, whose kernel holds the machine.
             Current : RunningProgram
             /// How the machine's clock moves with each tick.
             Clock : MachineClock
-            /// What the last sweep for syscall wakes remembers, so that a tick at which nothing a
-            /// wake condition reads has changed sweeps nothing (`SimulatedMachine.wakesRemembering`).
-            WakeMemo : WakeSweepMemo<ThreadId, NativeSignalHandler>
-            /// The threads the last sweep for syscall wakes asked the machine about, by process,
-            /// so that a sweep at a tick at which none of them has parked or woken asks about the
-            /// same map, which `WakeMemo` recognises by identity.
-            SweptAsleep : Map<ProcessId, Set<ThreadId>>
             /// The programs other than the checked-out one, and how the driver chooses among
             /// them all.
             Roster : ProgramRoster
@@ -93,7 +81,7 @@ type MultiStepOutcome =
     | Stepped of driver : MultiProgram * program : ProcessId * event : ProgramEvent
     /// The last program's process ended. `ends` is how each program's run ended, in launch
     /// order, and `machine` the machine with no process left on it.
-    | Finished of ends : (ProcessId * RunEnd) list * machine : SimulatedMachine<ThreadId, NativeSignalHandler>
+    | Finished of ends : (ProcessId * RunEnd) list * machine : UnixSystem<ThreadId, NativeSignalHandler>
     /// No program has a thread that can run, and no deadline is left on the machine to jump
     /// the clock to: `stuck` says, for each live program in launch order, where each of its
     /// threads is. Real processes would hang here.
@@ -168,8 +156,7 @@ module MultiProgram =
             | Some annotated -> raise annotated
             | None -> reraise ()
 
-    let private processIdOf (program : RunningProgram) : ProcessId =
-        UnixSystem.processId program.State.Kernel.System
+    let private processIdOf (program : RunningProgram) : ProcessId = program.State.Kernel.ProcessId
 
     let private withState (state : IlMachineState) (program : RunningProgram) : RunningProgram =
         { program with
@@ -177,7 +164,7 @@ module MultiProgram =
         }
 
     /// The driver with `program` checked out in place of its current program, whose process
-    /// it must be: `program`'s view of the machine must descend from the current one's.
+    /// it must be: the machine in `program`'s kernel must descend from the current one's.
     let internal withCurrent (program : RunningProgram) (driver : MultiProgram) : MultiProgram =
         { driver with
             Current = program
@@ -220,40 +207,32 @@ module MultiProgram =
                 Map.tryFind pid driver.Idle |> Option.map (fun program -> pid, program)
         )
 
-    /// `program`, which `machine` holds idle, with a view of `machine` in place of its stale one
-    /// and the global tick `stepCounter`.
+    /// `program`, idle, with `machine` in place of the stale copy in its kernel, and the global
+    /// tick `stepCounter`.
     ///
-    /// Fails loudly unless `machine` holds the process and tasks of `program`'s view exactly:
-    /// an idle program's own steps are the only thing that changes them, so anything else means
-    /// a write through a stale view went somewhere, or a write-back lost one.
-    let private focusIdle
+    /// Fails loudly unless `machine` holds `program`'s process.
+    let private handOver
         (stepCounter : int64)
-        (machine : SimulatedMachine<ThreadId, NativeSignalHandler>)
+        (machine : UnixSystem<ThreadId, NativeSignalHandler>)
         (program : RunningProgram)
         : RunningProgram
         =
         let pid = processIdOf program
 
-        if not (SimulatedMachine.holdsProcessOf program.State.Kernel.System machine) then
-            failwith
-                $"MultiProgram: the machine does not hold process %O{pid} as its idle program's view has it, so checking the program out would lose a change to it (this is a bug in PawPrint)."
-
-        match SimulatedMachine.focus pid machine with
-        | None ->
+        if not (Set.contains pid (UnixSystem.processIds machine)) then
             failwith
                 $"MultiProgram: the machine does not hold process %O{pid}, whose program is idle (this is a bug in PawPrint)."
-        | Some view ->
-            program
-            |> withState (
-                program.State.WithKernel
-                    { EmulatedKernel.withUnix view program.State.Kernel with
-                        StepCounter = stepCounter
-                    }
-            )
+
+        program
+        |> withState (
+            program.State.WithKernel
+                { EmulatedKernel.withUnix machine program.State.Kernel with
+                    StepCounter = stepCounter
+                }
+        )
 
     /// The driver with the idle program `pid` checked out in place of the current one, which
-    /// goes idle: the current program's view written back into the machine, and `pid`'s view
-    /// focused from what that leaves. The global tick goes with the machine.
+    /// goes idle: the current program's machine is handed to `pid`'s, with the global tick.
     let private checkOut (pid : ProcessId) (driver : MultiProgram) : MultiProgram =
         let current = driver.Current
 
@@ -264,53 +243,35 @@ module MultiProgram =
                 failwith
                     $"MultiProgram: asked to check out process %O{pid}, which is not an idle program (this is a bug in PawPrint)."
 
-        let machine = SimulatedMachine.unfocus current.State.Kernel.System driver.Machine
-
         { driver with
-            Machine = machine
-            Current = focusIdle current.State.Kernel.StepCounter machine next
+            Current = handOver current.State.Kernel.StepCounter current.State.Kernel.System next
         }
         |> withIdle (driver.Idle |> Map.remove pid |> Map.add (processIdOf current) current)
 
-    /// End the checked-out program's process on the driver's machine, as `ended`, the
-    /// kernel's account of how the process ended, says: what a real kernel does at exit, where
-    /// another process can see it, closing every descriptor the process held. The program's
-    /// run ended as `outcome` says (`RunningProgram.runEnd`), and the first live program left
-    /// in launch order is checked out from the machine the end leaves, if any is.
+    /// The checked-out program's process has ended, as `ended`, the kernel's account of the end
+    /// and the machine the end left, says. The program's run ended as `outcome` says
+    /// (`RunningProgram.runEnd`), and the first live program left in launch order is checked
+    /// out onto the machine the end left, if any is.
     ///
-    /// Fails loudly if the machine will not end the process (`ProcessEndRefusal`). What the
-    /// process delivered to its standard streams stays readable from `outcome`'s state, which
-    /// is the machine as the process left it.
-    let private endCurrent
-        (driver : MultiProgram)
-        (outcome : RunOutcome)
-        (ended : EndedProcess<ThreadId, NativeSignalHandler>)
-        : MultiStepOutcome
-        =
+    /// What the process delivered to its standard streams stays readable from `outcome`'s
+    /// state, which is the machine as the process left it.
+    let private endCurrent (driver : MultiProgram) (outcome : RunOutcome) (ended : ProcessEnd) : MultiStepOutcome =
         let pid = processIdOf driver.Current
         let runEnd = RunningProgram.runEnd driver.Current outcome
-
-        let remaining =
-            try
-                SimulatedMachine.endProcess ended driver.Machine |> snd
-            with :? UnmodelledException as e ->
-                KernelRefusal.fail
-                    $"MultiProgram: process %O{pid} ended (%O{EndedProcess.termination ended}), and the machine would not close what it held"
-                    e
-
         let endedRuns = Map.add pid runEnd driver.Roster.Ended
 
         match driver.Launched |> List.tryFind (fun pid -> Map.containsKey pid driver.Idle) with
         | None ->
-            MultiStepOutcome.Finished (driver.Launched |> List.map (fun pid -> pid, Map.find pid endedRuns), remaining)
+            MultiStepOutcome.Finished (
+                driver.Launched |> List.map (fun pid -> pid, Map.find pid endedRuns),
+                ended.Remaining
+            )
         | Some next ->
             let stepCounter = (RunOutcome.state outcome).Kernel.StepCounter
 
             let driver =
                 { driver with
-                    Machine = remaining
-                    Current = focusIdle stepCounter remaining (Map.find next driver.Idle)
-                    SweptAsleep = Map.remove pid driver.SweptAsleep
+                    Current = handOver stepCounter ended.Remaining (Map.find next driver.Idle)
                     Roster =
                         { driver.Roster with
                             Idle = Map.remove next driver.Idle
@@ -329,49 +290,59 @@ module MultiProgram =
             driver.Idle
             |> Map.iter (fun _ program -> Scheduler.checkSyscallSleepers program.State)
 
-    /// The threads a sweep for syscall wakes asks the machine about, by process: each program's
-    /// threads asleep in the kernel (`SyscallSleepers.Asleep`), for every program with a thread
-    /// parked in `BlockedInSyscall`. A program with none has nothing for the sweep to flip,
-    /// whatever its signal dispatcher is doing: `SignalDispatch.poll` finishes the dispatcher's
-    /// read itself.
-    ///
-    /// `driver.SweptAsleep` itself, allocating nothing, while no program's threads asleep in the
-    /// kernel have changed since the last sweep.
-    let private sweptAsleep (driver : MultiProgram) : Map<ProcessId, Set<ThreadId>> =
-        let reconcile
-            (asleep : Map<ProcessId, Set<ThreadId>>)
-            (pid : ProcessId)
-            (program : RunningProgram)
-            : Map<ProcessId, Set<ThreadId>>
-            =
-            let sleepers = program.State._SyscallSleepers
+    /// Whether any program has a thread parked in `BlockedInSyscall`, which a sweep for syscall
+    /// wakes could flip. A program with none has nothing for the sweep to flip, whatever its
+    /// signal dispatcher is doing: `SignalDispatch.poll` finishes the dispatcher's read itself.
+    let private anySyscallWaiter (driver : MultiProgram) : bool =
+        not driver.Current.State._SyscallSleepers.Waiters.IsEmpty
+        || (not driver.Idle.IsEmpty
+            && driver.Idle
+               |> Map.exists (fun _ program -> not program.State._SyscallSleepers.Waiters.IsEmpty))
 
-            if sleepers.Waiters.IsEmpty then
-                if asleep.ContainsKey pid then
-                    Map.remove pid asleep
+    /// Flip to `Runnable`, in each program, its threads among `woken`.
+    let private flipWoken (woken : Caller<ThreadId> list) (driver : MultiProgram) : MultiProgram =
+        let wokenIn (pid : ProcessId) : ThreadId list =
+            woken
+            |> List.choose (fun caller ->
+                if Caller.processId caller = pid then
+                    Some (Caller.thread caller)
                 else
-                    asleep
-            else
-                match asleep.TryGetValue pid with
-                | true, swept when obj.ReferenceEquals (swept, sleepers.Asleep) -> asleep
-                | _ -> Map.add pid sleepers.Asleep asleep
+                    None
+            )
 
-        let asleep =
-            reconcile driver.SweptAsleep (processIdOf driver.Current) driver.Current
+        let wake (program : RunningProgram) : RunningProgram =
+            match wokenIn (processIdOf program) with
+            | [] -> program
+            | threads -> withState (RunningProgram.wakeFromSyscalls threads program.State) program
 
-        if driver.Idle.IsEmpty then
-            asleep
-        else
-            Map.fold reconcile asleep driver.Idle
+        { driver with
+            Current = wake driver.Current
+        }
+        |> withIdle (mapIdle wake driver.Idle)
 
-    /// Wake every thread whose syscall could get further now, in every program.
+    /// `ended`, how a program's end left the driver, with `woken`, threads of other programs a
+    /// poll woke before it ended its own process, flipped in the programs left: the kernel wakes
+    /// a thread once, so a wake that is not flipped here is lost.
+    let private flipWokenAfterEnd (woken : Caller<ThreadId> list) (ended : MultiStepOutcome) : MultiStepOutcome =
+        match woken, ended with
+        | [], _ -> ended
+        | _, MultiStepOutcome.Stepped (driver, pid, event) ->
+            MultiStepOutcome.Stepped (flipWoken woken driver, pid, event)
+        // No program is left to have a thread woken.
+        | _, MultiStepOutcome.Finished _ -> ended
+        | _, MultiStepOutcome.Deadlocked _ ->
+            failwith
+                "MultiProgram: a program's end answered a deadlock, which only the preamble's end does (this is a bug in PawPrint)."
+
+    /// Wake every thread whose syscall could get further now, in every program, and flip
+    /// `alsoWoken` too, threads a program's signal poll woke in another program
+    /// (`SignalDispatch.pollMachine`).
     ///
     /// One sweep for every parking syscall rather than one each, because the
     /// question is the same for all of them, and the kernel answers it:
-    /// `SimulatedMachine.wakes` reads each park's wake condition, in its own process's view,
-    /// and decides which waiters it wakes, choosing the one waiter of a queue that wakes one at
-    /// a time across every process on the machine. So a new parking syscall needs no sweep here
-    /// at all.
+    /// `UnixWait.wake` reads each park's wake condition, and decides which waiters it wakes,
+    /// choosing the one waiter of a queue that wakes one at a time across every process on
+    /// the machine. So a new parking syscall needs no sweep here at all.
     ///
     /// Runs every tick beside the deadline fires rather than being pushed by
     /// the syscalls that make conditions true: a sweep asks the same question of
@@ -386,68 +357,49 @@ module MultiProgram =
     /// on the record it still holds. Of several threads waiting on one socket
     /// event port, the kernel wakes one per event.
     ///
-    /// The machine asked is the checked-out program's view written back into the driver's
-    /// machine, which is then thrown away. The driver keeps what the sweep remembers, and the
-    /// threads it asked about, so that at a tick which changed nothing a wake condition reads but
-    /// the clock, short of every deadline, the kernel answers without asking any condition, and
-    /// the driver is unchanged. A woken thread of an idle program is only flipped to Runnable: its
-    /// call is finished when it next runs, in its program's view.
+    /// The machine swept is the checked-out program's, and keeps what the sweep remembers, so
+    /// that at a tick which changed nothing a wake condition reads but the clock, short of
+    /// every deadline, the kernel answers without asking any condition. A woken thread of an
+    /// idle program is only flipped to Runnable: its call is finished when it next runs.
     ///
-    /// A Debug build checks every program's kept syscall sleepers (`checkSleepers`) at every
-    /// tick.
-    let private wakeSyscalls (driver : MultiProgram) : MultiProgram =
+    /// Fails loudly, at every tick, if a thread any program keeps as parked in a syscall has no
+    /// park on the machine (`Scheduler.requireWaitersParked`). A Debug build also checks every
+    /// program's kept syscall sleepers against its thread states (`checkSleepers`).
+    let private wakeSyscalls (alsoWoken : Caller<ThreadId> list) (driver : MultiProgram) : MultiProgram =
 #if DEBUG
         checkSleepers driver
 #endif
 
-        let asleep = sweptAsleep driver
+        let machine = driver.Current.State.Kernel.System
+        Scheduler.requireWaitersParked machine driver.Current.State
+
+        if not driver.Idle.IsEmpty then
+            driver.Idle
+            |> Map.iter (fun _ program -> Scheduler.requireWaitersParked machine program.State)
 
         let driver =
-            if obj.ReferenceEquals (asleep, driver.SweptAsleep) then
+            if alsoWoken.IsEmpty then
                 driver
             else
-                { driver with
-                    SweptAsleep = asleep
-                }
+                flipWoken alsoWoken driver
 
-        if asleep.IsEmpty then
+        if not (anySyscallWaiter driver) then
             driver
         else
 
         let current = driver.Current
-
-        let woken, memo =
-            SimulatedMachine.wakesRemembering
-                driver.WakeMemo
-                asleep
-                (SimulatedMachine.unfocus current.State.Kernel.System driver.Machine)
+        let woken, machine = UnixWait.wake current.State.Kernel.System
 
         let driver =
-            if obj.ReferenceEquals (memo, driver.WakeMemo) then
+            if obj.ReferenceEquals (machine, current.State.Kernel.System) then
                 driver
             else
-                { driver with
-                    WakeMemo = memo
-                }
+                driver
+                |> withCurrent (withState (current.State.MapKernel (EmulatedKernel.withUnix machine)) current)
 
         match woken with
         | [] -> driver
-        | woken ->
-
-        let woken = woken |> List.map fst
-
-        let wokenIn (pid : ProcessId) : ThreadId list =
-            woken |> List.choose (fun (p, thread) -> if p = pid then Some thread else None)
-
-        let wake (pid : ProcessId) (program : RunningProgram) : RunningProgram =
-            match wokenIn pid with
-            | [] -> program
-            | threads -> withState (RunningProgram.wakeFromSyscalls threads program.State) program
-
-        { driver with
-            Current = wake (processIdOf current) current
-        }
-        |> withIdle (mapIdle (fun program -> wake (processIdOf program) program) driver.Idle)
+        | woken -> flipWoken (List.map fst woken) driver
 
     /// Whether any program has a Runnable thread: the policy-independent existence check rather
     /// than any scheduler's choice, so that no stochastic policy advances its RNG for a probe.
@@ -457,23 +409,28 @@ module MultiProgram =
             && driver.Idle
                |> Map.exists (fun _ program -> Scheduler.hasAnyRunnable program.State))
 
-    /// Every finite wait deadline any program has outstanding (`RunningProgram.pendingDeadlines`),
-    /// program by program in launch order, the checked-out program's from `current`.
+    /// Every finite wait deadline any program has outstanding: each program's runtime-level
+    /// waits' (`RunningProgram.pendingDeadlines`), program by program in launch order, the
+    /// checked-out program's from `current`, and then those of every call asleep in `current`'s
+    /// machine (`RunningProgram.syscallDeadlines`).
     let private pendingDeadlines (driver : MultiProgram) (current : IlMachineState) : int64 list =
-        if driver.Idle.IsEmpty then
-            RunningProgram.pendingDeadlines current
-        else
-            let currentPid = processIdOf driver.Current
+        let waits =
+            if driver.Idle.IsEmpty then
+                RunningProgram.pendingDeadlines current
+            else
+                let currentPid = processIdOf driver.Current
 
-            driver.Launched
-            |> List.collect (fun pid ->
-                if pid = currentPid then
-                    RunningProgram.pendingDeadlines current
-                else
-                    match Map.tryFind pid driver.Idle with
-                    | Some program -> RunningProgram.pendingDeadlines program.State
-                    | None -> []
-            )
+                driver.Launched
+                |> List.collect (fun pid ->
+                    if pid = currentPid then
+                        RunningProgram.pendingDeadlines current
+                    else
+                        match Map.tryFind pid driver.Idle with
+                        | Some program -> RunningProgram.pendingDeadlines program.State
+                        | None -> []
+                )
+
+        waits @ RunningProgram.syscallDeadlines current.Kernel.System
 
     /// Jump the clock forward if no program has a Runnable thread but at least one is parked
     /// with a finite-timeout wait outstanding: advance it to the nearest pending deadline across
@@ -542,56 +499,55 @@ module MultiProgram =
                             driver.Idle
                     )
 
-                jumpToDeadlines (wakeSyscalls driver)
+                jumpToDeadlines (wakeSyscalls [] driver)
 
-    /// Where each live program's threads are, in launch order, each read in a view of the
-    /// machine as it stands: the checked-out program's own, and for each idle program one
-    /// focused afresh, so that what another process's calls did to it shows.
+    /// Where each live program's threads are, in launch order, each read in the machine as it
+    /// stands, so that what another process's calls did to an idle program shows.
     let private describeEvery (driver : MultiProgram) : (ProcessId * string) list =
         let currentPid = processIdOf driver.Current
-
-        let machine =
-            lazy (SimulatedMachine.unfocus driver.Current.State.Kernel.System driver.Machine)
+        let machine = driver.Current.State.Kernel.System
 
         live driver
         |> List.map (fun (pid, program) ->
             if pid = currentPid then
                 pid, GuestLocation.describe program.State
             else
-                let focused =
-                    focusIdle driver.Current.State.Kernel.StepCounter (machine.Force ()) program
+                let handed = handOver driver.Current.State.Kernel.StepCounter machine program
 
-                pid, GuestLocation.describe focused.State
+                pid, GuestLocation.describe handed.State
         )
 
     /// The signal poll of every idle program, in launch order, whose poll may act
     /// (`SignalDispatch.mayAct`): each is checked out for its poll, which writes the signal pipe
-    /// in its view. Answers the driver, or how the tick ended if a poll ended its process.
+    /// on the machine. Answers the driver, with the threads of other programs the polls woke
+    /// after `woken`, or how the tick ended if a poll ended its process.
     let rec private pollIdle
         (loggerFactory : ILoggerFactory)
         (pids : ProcessId list)
+        (woken : Caller<ThreadId> list)
         (driver : MultiProgram)
-        : Result<MultiProgram, MultiStepOutcome>
+        : Result<MultiProgram * Caller<ThreadId> list, MultiStepOutcome>
         =
         match pids with
-        | [] -> Ok driver
+        | [] -> Ok (driver, woken)
         | pid :: pids ->
 
         match Map.tryFind pid driver.Idle with
-        | Some program when SignalDispatch.mayAct program.State ->
+        | Some program when SignalDispatch.mayAct driver.Current.State.Kernel.System program.State ->
             let driver = checkOut pid driver
             let program = driver.Current
 
-            match SignalDispatch.poll loggerFactory program.BaseClassTypes program.State with
-            | SignalPoll.ProcessKilled (state, ended) ->
-                Error (
-                    endCurrent
-                        (withCurrent (withState state program) driver)
-                        (RunningProgram.signalTerminated state ended)
-                        ended
-                )
-            | SignalPoll.Continues state -> pollIdle loggerFactory pids (withCurrent (withState state program) driver)
-        | _ -> pollIdle loggerFactory pids driver
+            match SignalDispatch.pollMachine loggerFactory program.BaseClassTypes program.State with
+            | SignalPoll.ProcessKilled (state, ended), elsewhere ->
+                endCurrent
+                    (withCurrent (withState state program) driver)
+                    (RunningProgram.signalTerminated state ended)
+                    ended
+                |> flipWokenAfterEnd (woken @ elsewhere)
+                |> Error
+            | SignalPoll.Continues state, elsewhere ->
+                pollIdle loggerFactory pids (woken @ elsewhere) (withCurrent (withState state program) driver)
+        | _ -> pollIdle loggerFactory pids woken driver
 
     /// The first half of a scheduler tick: everything that happens before a program is chosen
     /// and its policy asked which thread runs next. Advancing the clocks, firing wait deadlines,
@@ -602,7 +558,7 @@ module MultiProgram =
     /// program's own, and run on every live program; the clock's advance and its jitter, the
     /// syscall wakes, the jump to the earliest deadline and the deadlock are the machine's.
     /// Only a program whose signal poll may act is checked out for it; the other phases run on
-    /// idle programs as they are, reading nothing of the machine in their views.
+    /// idle programs as they are, reading nothing of the stale machines in their kernels.
     ///
     /// Split out from `decide` because *this* is the moment at which "how many threads are
     /// Runnable" becomes the answer the policy will act on. Every phase here can create
@@ -707,16 +663,18 @@ module MultiProgram =
         // onto the managed callback, so the scheduler can pick it on the same tick. Before the
         // syscall wakes, because writing to the pipe and reading from it change what a syscall
         // parked on it is waiting for.
-        match SignalDispatch.poll loggerFactory program.BaseClassTypes state with
-        | SignalPoll.ProcessKilled (state, ended) ->
+        match SignalDispatch.pollMachine loggerFactory program.BaseClassTypes state with
+        | SignalPoll.ProcessKilled (state, ended), woken ->
             let driver =
                 { driver with
                     Current = withState state program
                 }
                 |> withIdle idle
 
-            Advanced.Settled (endCurrent driver (RunningProgram.signalTerminated state ended) ended)
-        | SignalPoll.Continues state ->
+            endCurrent driver (RunningProgram.signalTerminated state ended) ended
+            |> flipWokenAfterEnd woken
+            |> Advanced.Settled
+        | SignalPoll.Continues state, woken ->
 
         let driver =
             { driver with
@@ -726,18 +684,19 @@ module MultiProgram =
 
         let polled =
             if idle.IsEmpty then
-                Ok driver
+                Ok (driver, woken)
             else
-                pollIdle loggerFactory driver.Launched driver
+                pollIdle loggerFactory driver.Launched woken driver
 
         match polled with
         | Error settled -> Advanced.Settled settled
-        | Ok driver ->
+        | Ok (driver, woken) ->
 
         // Wake anything parked in a syscall whose wake condition now holds — a port that has
-        // become deliverable, a lock that has become available. Before the jump to the
-        // deadlines, so neither is mistaken for quiescence.
-        let driver = wakeSyscalls driver
+        // become deliverable, a lock that has become available — and whatever the polls woke
+        // in other programs. Before the jump to the deadlines, so neither is mistaken for
+        // quiescence.
+        let driver = wakeSyscalls woken driver
 
         let struct (driver, runnable) = jumpToDeadlines driver
 
@@ -835,8 +794,8 @@ module MultiProgram =
     /// first tick, interleaved as `Main`s are.
     ///
     /// The machine boots, then every later process is launched onto it, then each program's
-    /// userspace is set up in its own view in launch order, which on Darwin draws on the
-    /// machine's entropy pool: so the launch order is part of the replay contract.
+    /// userspace is set up in launch order, which on Darwin draws on the machine's entropy
+    /// pool: so the launch order is part of the replay contract.
     ///
     /// A refusal names its knob as `machineKnobs.X` for the machine, and for the program at
     /// index `i` of `programs` as `.X` after `processKnobs i`.
@@ -855,10 +814,10 @@ module MultiProgram =
         // Checked before anything boots, so that a host that misconfigured it finds out first.
         let clock = MachineConfig.clock machineKnobs machineConfig
 
-        let system =
+        let machine =
             MachineConfig.bootSystem machineKnobs (processKnobs 0) machineConfig first.Process
 
-        let machine = SimulatedMachine.ofSystem system
+        let booted = Seq.exactlyOne (UnixSystem.processIds machine)
 
         let laterIds, machine =
             ((1, machine), later)
@@ -870,7 +829,7 @@ module MultiProgram =
 
                 let pid, machine =
                     try
-                        SimulatedMachine.launch processLaunch machine
+                        UnixSystem.launch processLaunch machine
                     with
                     | :? UnmodelledException
                     | :? System.ArgumentException as e ->
@@ -883,31 +842,23 @@ module MultiProgram =
             )
             |> fun (ids, (_, machine)) -> ids, machine
 
-        let launched = UnixSystem.processId system :: laterIds
+        let launched = booted :: laterIds
 
         let started, machine =
             (machine, List.indexed (List.zip launched programs))
             ||> List.mapFold (fun machine (index, (pid, (launch, entry))) ->
-                let view =
-                    match SimulatedMachine.focus pid machine with
-                    | Some view -> view
-                    | None ->
-                        failwith
-                            $"MultiProgram: the machine does not hold process %O{pid}, which it launched (this is a bug in PawPrint)."
+                let kernel =
+                    ProcessConfig.kernelOfProcess (processKnobs index) launch.Process pid machine
 
-                let kernel = ProcessConfig.kernelOfView (processKnobs index) launch.Process view
                 let program = ProgramStartup.start loggerFactory launch entry kernel
-                program, SimulatedMachine.unfocus program.State.Kernel.System machine
+                program, program.State.Kernel.System
             )
 
-        let first = focusIdle 0L machine (List.head started)
+        let first = handOver 0L machine (List.head started)
 
         {
-            Machine = machine
             Current = first
             Clock = clock
-            WakeMemo = WakeSweepMemo.empty
-            SweptAsleep = Map.empty
             Roster =
                 {
                     Idle =

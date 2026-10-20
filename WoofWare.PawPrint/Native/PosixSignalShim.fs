@@ -199,10 +199,11 @@ module PosixSignalShim =
         (numbering : SignalNumbering)
         (signal : Signal)
         (newAction : SignalDisposition<NativeSignalHandler> option)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         : Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>
         =
-        UnixSignal.sigaction (Signal.toRawSignoUnder numbering signal) newAction system
+        UnixSignal.sigaction caller (Signal.toRawSignoUnder numbering signal) newAction system
 
     /// `InstallSignalHandler`: install System.Native's handler for `signal`,
     /// saving the disposition it replaces. The shim respects an ignored
@@ -216,6 +217,7 @@ module PosixSignalShim =
     let installHandler<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : Result<UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim, UnixError>
@@ -241,7 +243,7 @@ module PosixSignalShim =
         else
 
         // `sigaction(sig, NULL, orig)` first, to respect an ignore.
-        match sigaction numbering signal None system with
+        match sigaction numbering signal None caller system with
         | Error errno -> Error errno
         | Ok (current, _) ->
 
@@ -272,7 +274,7 @@ module PosixSignalShim =
                         Restart = true
                     }
 
-            match sigaction numbering signal (Some (SignalDisposition.Catch action)) system with
+            match sigaction numbering signal (Some (SignalDisposition.Catch action)) caller system with
             | Error errno -> Error errno
             | Ok (replaced, system) -> Ok (system, save replaced)
 
@@ -289,6 +291,7 @@ module PosixSignalShim =
     /// only once; call this on its first initialisation.
     let saveConsoleSignals<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : PosixSignalShim
@@ -296,7 +299,7 @@ module PosixSignalShim =
         (state, [ Signal.SIGINT ; Signal.SIGQUIT ; Signal.SIGCONT ])
         ||> List.fold (fun state signal ->
             let disposition =
-                match sigaction numbering signal None system with
+                match sigaction numbering signal None caller system with
                 | Ok (disposition, _) -> disposition
                 | Error errno ->
                     failwith
@@ -331,6 +334,7 @@ module PosixSignalShim =
     let restoreHandler<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim * UnixError option
@@ -340,7 +344,7 @@ module PosixSignalShim =
                 Installed = Set.remove signal state.Installed
             }
 
-        match sigaction numbering signal (Some (original signal state)) system with
+        match sigaction numbering signal (Some (original signal state)) caller system with
         | Ok (_, system) -> system, state, None
         | Error errno -> system, state, Some errno
 
@@ -354,11 +358,12 @@ module PosixSignalShim =
     let enable<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : Result<UnixSystem<'Task, NativeSignalHandler>, UnixError> * PosixSignalShim
         =
-        match installHandler numbering signal system state with
+        match installHandler numbering signal caller system state with
         | Ok (system, state) ->
             Ok system,
             { state with
@@ -375,6 +380,7 @@ module PosixSignalShim =
     let disable<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim * UnixError option
@@ -382,6 +388,7 @@ module PosixSignalShim =
         restoreHandler
             numbering
             signal
+            caller
             system
             { state with
                 Registered = Set.remove signal state.Registered

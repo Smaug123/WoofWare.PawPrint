@@ -285,7 +285,7 @@ module TestOsThreadId =
 
         idOf (ThreadId 0) state |> shouldEqual 2897490UL
 
-        UnixSystem.processId state.Kernel.System
+        UnixSystem.processId (state.Kernel.Caller (ThreadId 0)) state.Kernel.System
         |> shouldEqual UnixSystem.defaultProcessId
 
         let state, first =

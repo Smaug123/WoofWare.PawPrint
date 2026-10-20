@@ -252,13 +252,14 @@ class SocketPollDarwin
         if (PollOne(idle, POLLIN | POLLOUT, 20) != 0) return 35;
 
         // 36-37: more entries than OPEN_MAX (10240) is the kernel's EINVAL,
-        // whatever they hold.
+        // whatever they hold, and 256 entries, which no RLIMIT_NOFILE refuses,
+        // are answered.
         PollEvent[] tooMany = new PollEvent[10241];
         for (int i = 0; i < tooMany.Length; i++) tooMany[i] = new PollEvent { FileDescriptor = -1, Events = POLLIN };
         fixed (PollEvent* entries = tooMany)
         {
             if (Poll(entries, (uint)tooMany.Length, 0, &triggered) != PAL_EINVAL) return 36;
-            if (Poll(entries, 1024, 0, &triggered) != PAL_SUCCESS || triggered != 0) return 37;
+            if (Poll(entries, 256, 0, &triggered) != PAL_SUCCESS || triggered != 0) return 37;
         }
 
         if (Close(refused) != PAL_SUCCESS) return 38;

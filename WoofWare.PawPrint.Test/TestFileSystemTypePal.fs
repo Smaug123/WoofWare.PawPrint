@@ -129,7 +129,7 @@ module TestFileSystemTypePal =
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         match target with
-        | None -> system |> UnixPathResolution.fstatfs 4242
+        | None -> system |> UnixPathResolution.fstatfs (LoneProcess.leader system) 4242
         | Some target -> FileSystemStatistics.ofObject (UnixSystem.platform system) (UnixSystem.mount system) target
 
     [<Test>]

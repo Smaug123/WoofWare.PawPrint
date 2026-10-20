@@ -63,7 +63,7 @@ module TestKernelConfig =
     let ``the process ID is configurable and validated`` () : unit =
         KernelConfig.Default.ProcessId |> shouldEqual UnixSystem.defaultProcessId
 
-        (UnixSystem.processId (KernelConfig.toKernel KernelConfig.Default).System)
+        (KernelConfig.toKernel KernelConfig.Default).ProcessId
         |> shouldEqual UnixSystem.defaultProcessId
 
         let configured =
@@ -72,7 +72,10 @@ module TestKernelConfig =
                     ProcessId = ProcessId.parseOrFail "test" 3
                 }
 
-        (UnixSystem.processId configured.System) |> ProcessId.toInt32 |> shouldEqual 3
+        UnixSystem.processIds configured.System
+        |> shouldEqual (Set.singleton configured.ProcessId)
+
+        configured.ProcessId |> ProcessId.toInt32 |> shouldEqual 3
 
         // The one value of the type that did not come from `parse`.
         let apply () =
@@ -248,7 +251,7 @@ module TestKernelConfig =
         (UnixSystem.soMaxConn kernel.System) |> shouldEqual 128
         (UnixSystem.ephemeralPortRange kernel.System) |> shouldEqual (49152us, 65535us)
 
-        (UnixSystem.credentials kernel.System)
+        (UnixSystem.credentials kernel.ProcessId kernel.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 501u) (GroupId.parseOrFail "test" 20u) [])
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -266,7 +269,7 @@ module TestKernelConfig =
         (UnixSystem.ephemeralPortRange configured.System)
         |> shouldEqual (40000us, 40010us)
 
-        (UnixSystem.credentials configured.System)
+        (UnixSystem.credentials configured.ProcessId configured.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
         // The default configuration is Linux's, in every one of those fields.
@@ -274,7 +277,7 @@ module TestKernelConfig =
         linux.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
         (UnixSystem.ephemeralPortRange linux.System) |> shouldEqual (32768us, 60999us)
 
-        (UnixSystem.credentials linux.System)
+        (UnixSystem.credentials linux.ProcessId linux.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
     [<Test>]
@@ -292,7 +295,7 @@ module TestKernelConfig =
                     SupplementaryGroups = groups
                 }
 
-        (UnixSystem.credentials kernel.System)
+        (UnixSystem.credentials kernel.ProcessId kernel.System)
         |> shouldEqual (
             Credentials.ofIds
                 (UserId.parseOrFail "test" 37u)
@@ -500,8 +503,10 @@ module TestKernelConfig =
 
     [<Test>]
     let ``KernelConfig refuses credentials no process could hold, naming the knob`` () : unit =
+        // The kernel's own refusal where it names the knob, and PawPrint's wrapping of it where
+        // it does not, so any exception.
         let refusal (config : KernelConfig) : string =
-            (Assert.Throws<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
+            (Assert.Catch<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
 
         refusal
             { KernelConfig.Default with
@@ -564,7 +569,7 @@ module TestKernelConfig =
             ] do
             let kernel = KernelConfig.toKernel (configured platform bits)
 
-            (UnixSystem.fileModeCreationMask kernel.System)
+            (UnixSystem.fileModeCreationMask kernel.ProcessId kernel.System)
             |> shouldEqual (PermissionBits.parseOrFail "test" bits)
 
             EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -580,7 +585,7 @@ module TestKernelConfig =
 
         let kernel = KernelConfig.toKernel config
 
-        (UnixSystem.currentDirectoryInode kernel.System)
+        (UnixSystem.currentDirectoryInode kernel.ProcessId kernel.System)
         |> shouldEqual (inodeOf kernel "/outer/inner")
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []

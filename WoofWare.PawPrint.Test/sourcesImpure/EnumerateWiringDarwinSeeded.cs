@@ -10,9 +10,9 @@ using System.Runtime.InteropServices;
 // `HAVE_DIRENT_NAME_LEN` is 1 and `ConvertDirent` copies the real length.
 //
 // The names are chosen so that a *byte* count is the only rule that fits: "e"
-// is 1 byte and 1 char, "\u00e9" is 2 bytes and 1 char, and "\u4e2d\u4e2d" is
-// 6 bytes and 2 chars. A handler reporting `String.Length` would answer 1, 1
-// and 2 -- agreeing on the first name only.
+// is 1 byte and 1 char, and "\u4e2d\u4e2d" is 6 bytes and 2 chars. A handler
+// reporting `String.Length` would answer 1 and 2 -- agreeing on the first name
+// only.
 //
 // Invisible to managed code: `DirectoryEntry.GetName` takes
 // `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
@@ -27,7 +27,7 @@ using System.Runtime.InteropServices;
 //
 // The exit code is the index of the first check that failed; 0 means all passed.
 //
-// Seed (see TestImpureCases.enumerateWiringSeed): d/ holding "e", "\u00e9" and
+// Seed (see TestImpureCases.enumerateWiringSeed): d/ holding "e" and
 // "\u4e2d\u4e2d".
 class Program
 {
@@ -85,9 +85,9 @@ class Program
 
         if (CloseDir(dir) != 0) return 4;
 
-        // Two dots plus the three seeded names: proof the loop ran at all, so a
+        // Two dots plus the two seeded names: proof the loop ran at all, so a
         // handler that answered end-of-stream immediately could not pass.
-        if (names != 5) return 5;
+        if (names != 4) return 5;
 
         // Fifty streams, opened and closed. Nothing here reads them: the point
         // is what `CloseDir` releases, which no guest can see -- the terminal

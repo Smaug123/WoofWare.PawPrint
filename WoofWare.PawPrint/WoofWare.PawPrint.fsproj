@@ -269,7 +269,7 @@
     <!-- The emulated POSIX kernel, developed at https://github.com/Smaug123/WoofWare.PosixKernel.
          A change to it lands there and arrives here by bumping this version. Projects that
          reference this one, such as WoofWare.PawPrint.Test, take it from here. -->
-    <PackageReference Include="WoofWare.PosixKernel" Version="0.1.303" />
+    <PackageReference Include="WoofWare.PosixKernel" Version="0.1.381" />
   </ItemGroup>
 
   <ItemGroup>

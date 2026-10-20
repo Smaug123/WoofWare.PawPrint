@@ -80,6 +80,7 @@ module PollEventsPal =
         | PollOutcome.Answered (reported, triggered) -> PollOutcome.Answered (List.map ofPlatform reported, triggered)
         | PollOutcome.WouldBlock condition -> PollOutcome.WouldBlock condition
         | PollOutcome.Failed error -> PollOutcome.Failed error
+        | PollOutcome.Interrupted -> PollOutcome.Interrupted
 
     /// `Common_Poll`'s conversion of the caller's `PollEvent`s into `struct pollfd`s:
     /// each `PollEvent.FileDescriptor` paired with its PAL `Events` becomes that
@@ -99,7 +100,7 @@ module PollEventsPal =
     /// An answer carries the PAL `TriggeredEvents` for each entry, in order, and
     /// `poll(2)`'s own return value; a park is finished with `finish`.
     let pollConverted<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (task : 'Task)
+        (task : Caller<'Task>)
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -110,7 +111,7 @@ module PollEventsPal =
 
     /// Finish the `poll` `task` parked in, as `poll` answers one.
     let finish<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (task : 'Task)
+        (task : Caller<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : PollOutcome * UnixSystem<'Task, 'Handler>
         =

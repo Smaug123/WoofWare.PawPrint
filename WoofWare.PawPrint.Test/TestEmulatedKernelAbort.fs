@@ -23,6 +23,25 @@ module TestEmulatedKernelAbort =
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
+    /// `kernel` with `thread` blocking SIGABRT through `pthread_sigmask`.
+    let private masked (kernel : EmulatedKernel) : EmulatedKernel =
+        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+
+        let block =
+            match numbering with
+            | SignalNumbering.Linux -> 0
+            | SignalNumbering.Darwin -> 1
+
+        match
+            UnixSignal.pthreadSigmask
+                (kernel.Caller thread)
+                block
+                (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                kernel.System
+        with
+        | Ok (_, system) -> EmulatedKernel.withUnix system kernel
+        | Error errno -> failwith $"pthread_sigmask failed with %O{errno}"
+
     [<Test>]
     let ``the runtime's own SIGABRT handler does not save the process`` () : unit =
         for platform in platforms do
@@ -36,7 +55,7 @@ module TestEmulatedKernelAbort =
                 |> shouldEqual (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Default)
             | other -> failwith $"expected the runtime's handler, got %A{other}"
 
-            EndedProcess.termination (EmulatedKernel.abort thread kernel)
+            EndedProcess.termination (EmulatedKernel.abort thread kernel).Ended
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
@@ -45,36 +64,45 @@ module TestEmulatedKernelAbort =
         // blocked it with a mask call or is inside a handler whose mask holds
         // it.
         for platform in platforms do
-            let numbering = SimulatedUnixPlatform.signalNumbering platform
-
-            let block =
-                match numbering with
-                | SignalNumbering.Linux -> 0
-                | SignalNumbering.Darwin -> 1
-
-            let masked (kernel : EmulatedKernel) : EmulatedKernel =
-                match
-                    UnixSignal.pthreadSigmask
-                        thread
-                        block
-                        (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
-                        kernel.System
-                with
-                | Ok (_, system) -> EmulatedKernel.withUnix system kernel
-                | Error errno -> failwith $"pthread_sigmask failed with %O{errno}"
-
             for blocked in [ masked ; SignalFrames.enter thread (Set.singleton Signal.SIGABRT) ] do
                 let kernel = kernelOn platform CoreDumps.Suppressed |> blocked
 
                 SignalMask.contains Signal.SIGABRT (SignalState.maskOf thread kernel.Signals)
                 |> shouldEqual true
 
-                EndedProcess.termination (EmulatedKernel.abort thread kernel)
+                EndedProcess.termination (EmulatedKernel.abort thread kernel).Ended
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
     let ``an abort dumps core exactly when the process writes dumps`` () : unit =
         for platform in platforms do
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
-                EndedProcess.termination (EmulatedKernel.abort thread (kernelOn platform coreDumps))
+                EndedProcess.termination (EmulatedKernel.abort thread (kernelOn platform coreDumps)).Ended
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, coreDumps = CoreDumps.Written))
+
+    [<Test>]
+    let ``an abort ends a process whose SIGABRT is already pending, blocked`` () : unit =
+        // A `raise(SIGABRT)` while the thread blocks it leaves the signal pending. The unblock
+        // `abort(3)` makes lets it through, and the thread dies of it as it returns from that
+        // call, before `abort` raises it again.
+        for platform in platforms do
+            let kernel = kernelOn platform CoreDumps.Suppressed |> masked
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+
+            let kernel =
+                match
+                    UnixSignal.pthreadKill
+                        (kernel.Caller thread)
+                        thread
+                        (Signal.toRawSignoUnder numbering Signal.SIGABRT)
+                        kernel.System
+                with
+                | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
+                | other -> failwith $"expected SIGABRT to be left pending, got %A{other}"
+
+            SignalState.pending kernel.Signals
+            |> List.map (fun entry -> entry.Signal)
+            |> shouldEqual [ Signal.SIGABRT ]
+
+            EndedProcess.termination (EmulatedKernel.abort thread kernel).Ended
+            |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))

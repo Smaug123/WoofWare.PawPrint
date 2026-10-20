@@ -8,18 +8,13 @@ open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PosixKernel
 
-/// The threads of one program whose tasks are asleep in a syscall in the kernel, as
-/// `Scheduler.syscallWaiters` and `Scheduler.asleepInSyscall` derive them from the thread states
-/// and the kernel's parks, kept as each thread parks and wakes. Each set is the same object for
-/// as long as no thread in it parks or wakes, so that a reader can tell by identity alone that it
-/// has not changed.
+/// The threads of one program parked in a syscall in the kernel, as `Scheduler.syscallWaiters`
+/// derives them from the thread states and the kernel's parks, kept as each thread parks and
+/// wakes.
 type SyscallSleepers =
     {
         /// The threads parked in `ThreadStatus.BlockedInSyscall`: `Scheduler.syscallWaiters`.
         Waiters : Set<ThreadId>
-        /// `Waiters`, and the signal dispatcher while its task is asleep in its read of the signal
-        /// pipe: `Scheduler.asleepInSyscall`.
-        Asleep : Set<ThreadId>
     }
 
 [<RequireQualifiedAccess>]
@@ -28,7 +23,6 @@ module SyscallSleepers =
     let empty : SyscallSleepers =
         {
             Waiters = Set.empty
-            Asleep = Set.empty
         }
 
 type IlMachineState =
@@ -76,10 +70,10 @@ type IlMachineState =
         /// Multiple managed heaps are allowed, but we hopefully only need one.
         ManagedHeap : ManagedHeap
         ThreadState : Map<ThreadId, ThreadState>
-        /// The threads whose tasks are asleep in a syscall in the kernel, kept as they park and
-        /// wake. Change it only through `Scheduler.parkInSyscall`, `Scheduler.wakeFromSyscall` and
-        /// `Scheduler.withDispatcherInRead`, never by assignment; `Scheduler.checkSyscallSleepers`
-        /// says whether it agrees with what the thread states and the kernel's parks show.
+        /// The threads parked in a syscall in the kernel, kept as they park and wake. Change it
+        /// only through `Scheduler.parkInSyscall` and `Scheduler.wakeFromSyscall`, never by
+        /// assignment; `Scheduler.checkSyscallSleepers` says whether it agrees with what the
+        /// thread states and the kernel's parks show.
         _SyscallSleepers : SyscallSleepers
         InternedStrings : ImmutableDictionary<string, ManagedHeapAddress>
         /// Memo of `IlMachineTypeResolution.cliTypeZeroOfHandle`: the zero value of each
@@ -506,7 +500,7 @@ type ExecutionResult =
     /// `ThreadId` because the whole process dies, not one thread. `ended` is
     /// the kernel's answer to the `kill` that killed it: its `EndedProcess.termination` is
     /// `ProcessTermination.Signaled`.
-    | SignalTerminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
+    | SignalTerminated of IlMachineState * ended : ProcessEnd
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
         IlMachineState *

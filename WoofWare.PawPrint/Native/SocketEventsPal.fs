@@ -89,6 +89,7 @@ module SocketEventsPal =
     /// derives, the new mask's epoll bits with `EPOLLET` added, and `data`
     /// verbatim.
     let tryChangeSocketEventRegistration<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : Caller<'Task>)
         (portFd : int)
         (targetFd : int)
         (currentEvents : int)
@@ -100,6 +101,7 @@ module SocketEventsPal =
         let events = toEpollEvents newEvents ||| EpollEvents.EdgeTriggered
 
         UnixPoll.epollCtl
+            caller
             portFd
             (epollCtlOperation currentEvents newEvents)
             targetFd

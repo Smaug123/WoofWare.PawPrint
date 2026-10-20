@@ -67,9 +67,6 @@ module MinipalRandom =
     /// On Linux, `getrandom(GRND_INSECURE)` in place of CoreCLR's unmodelled
     /// descriptor: the same bytes from the same pool. On Darwin,
     /// `CCRandomGenerateBytes`, from libSystem's generator.
-    ///
-    /// Fails loudly for a Linux request of more than a page by a thread with a
-    /// signal pending, which the kernel's `getrandom` refuses.
     let coreClrSecureRandomBytes
         (operation : string)
         (thread : ThreadId)
@@ -95,7 +92,12 @@ module MinipalRandom =
 
             let answer =
                 try
-                    UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system
+                    UnixEntropy.getRandom
+                        (kernel.Caller thread)
+                        UserBuffer.Mapped
+                        (uint64 remaining)
+                        GetRandomFlags.Insecure
+                        system
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail
                         $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread} was refused"
@@ -140,7 +142,7 @@ module MinipalRandom =
         let opened =
             try
                 UnixNamespace.openPath
-                    thread
+                    (kernel.Caller thread)
                     (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
                     urandomPath
                     0
@@ -152,9 +154,9 @@ module MinipalRandom =
         | SyscallOutcome.WouldBlock condition, _ ->
             failwith
                 $"%s{operation}: open(/dev/urandom) on thread %O{thread} would sleep until %A{condition}, but only an open of a FIFO sleeps, and /dev/urandom is a device node (this is a bug in the kernel library)."
-        | SyscallOutcome.Restarts, _ ->
+        | SyscallOutcome.Interrupted, _ ->
             failwith
-                $"%s{operation}: open(/dev/urandom) on thread %O{thread} answered a restart, which only a finishing call answers (this is a bug in the kernel library)."
+                $"%s{operation}: open(/dev/urandom) on thread %O{thread} was interrupted by a signal, though it never slept (this is a bug in the kernel library)."
         | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
             let kernel = EmulatedKernel.withUnix system kernel
 
@@ -226,7 +228,7 @@ module MinipalRandom =
 
             let outcome =
                 try
-                    UnixReadWrite.read thread fd UserBuffer.Mapped (uint64 remaining) system
+                    UnixReadWrite.read (kernel.Caller thread) fd UserBuffer.Mapped (uint64 remaining) system
                 with :? UnmodelledException as e ->
                     KernelRefusal.fail $"%s{operation}: read of fd %d{fd} was refused" e
 
@@ -243,9 +245,9 @@ module MinipalRandom =
             | ReadOutcome.WouldBlock condition, _ ->
                 failwith
                     $"%s{operation}: read of fd %d{fd}, minipal's /dev/urandom descriptor, would sleep until %A{condition}; the descriptor no longer names /dev/urandom, and a sleep inside minipal is not modelled."
-            | ReadOutcome.Restarts, _ ->
+            | ReadOutcome.Interrupted, _ ->
                 failwith
-                    $"%s{operation}: read of fd %d{fd} restarted, though it never slept (this is a bug in the kernel library)."
+                    $"%s{operation}: read of fd %d{fd} was interrupted by a signal, though it never slept (this is a bug in the kernel library)."
 
         let error, system = fill true kernel.System
         let kernel = EmulatedKernel.withUnix system kernel
@@ -293,7 +295,7 @@ module MinipalRandom =
             match lrand48 with
             | Some state -> state
             | None ->
-                match UnixClock.clockGettime clockRealtimeCoarse kernel.System with
+                match UnixClock.clockGettime (kernel.Caller thread) clockRealtimeCoarse kernel.System with
                 | Ok now -> Lrand48.seed (UnixTimestamp.seconds now)
                 | other ->
                     failwith

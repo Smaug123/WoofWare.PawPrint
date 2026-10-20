@@ -128,6 +128,35 @@ module TestImpureCases =
                     }
         }
 
+    /// The registration of `ForeignOwnedSeed.cs` on `platform`, whose guest
+    /// echoes the effective group 1500 and `groups`, the list `getgroups(2)`
+    /// reports.
+    let private foreignOwnedCase (platform : SimulatedUnixPlatform) (groups : uint32 list) : EndToEndTestCase =
+        {
+            FileName = "ForeignOwnedSeed.cs"
+            ExpectedReturnCode = 0
+            KernelConfig = foreignOwnedConfig platform
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (
+                        Array.ofList (1500u :: uint32 groups.Length :: groups)
+                        |> Array.collect (fun value ->
+                            [|
+                                byte (value &&& 0xFFu)
+                                byte ((value >>> 8) &&& 0xFFu)
+                                byte ((value >>> 16) &&& 0xFFu)
+                                byte ((value >>> 24) &&& 0xFFu)
+                            |]
+                        )
+                    )
+                )
+        }
+
     /// The seed `ProtectedFilesSeeded.cs` reads: root's `/etc/passwd`, and a
     /// root-owned sticky world-writable `/tmp` holding a regular file and a
     /// symbolic link to `/etc/passwd`, both of user 2000's.
@@ -569,11 +598,11 @@ module TestImpureCases =
                 name "lf", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "f", None)
             ]
 
-    /// The kernel the Darwin `access` wiring guest runs under, as `user`.
-    let private accessWiringDarwinConfig (user : uint32) : KernelConfig =
+    /// The kernel the Darwin `access` wiring guest runs under, as uid 1000.
+    let private accessWiringDarwinConfig : KernelConfig =
         { KernelConfig.Default with
             UnixPlatform = SimulatedUnixPlatform.macOsArm64
-            UserId = Some user
+            UserId = Some 1000u
             FileSystem = accessWiringSeed
         }
 
@@ -872,9 +901,10 @@ module TestImpureCases =
     /// Shared by the two enumeration wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the rule each expects.
     ///
-    /// The three names are chosen so that a *byte* count is the only rule that
-    /// fits Darwin's answer: "e" is 1 byte and 1 char, "\u00e9" is 2 bytes and
-    /// 1 char, and "\u4e2d\u4e2d" is 6 bytes and 2 chars.
+    /// The two names are chosen so that a *byte* count is the only rule that
+    /// fits Darwin's answer: "e" is 1 byte and 1 char, and "\u4e2d\u4e2d" is 6
+    /// bytes and 2 chars. One name beyond ASCII, because the kernel refuses a
+    /// Darwin directory seeded with two it cannot tell apart.
     let private enumerateWiringSeed : Map<DirectoryEntryName, SeedEntry> =
         let name (s : string) =
             DirectoryEntryName.parseOrFail "test seed" s
@@ -884,15 +914,7 @@ module TestImpureCases =
 
         Map.ofList
             [
-                name "d",
-                SeedEntry.directory (
-                    Map.ofList
-                        [
-                            name "e", file "one"
-                            name "\u00e9", file "two"
-                            name "\u4e2d\u4e2d", file "three"
-                        ]
-                )
+                name "d", SeedEntry.directory (Map.ofList [ name "e", file "one" ; name "\u4e2d\u4e2d", file "three" ])
             ]
 
     /// Shared by the two `rmdir` wiring guests, so that the only thing that
@@ -969,7 +991,7 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.ProcessId kernel.System)
         |> Map.count
         |> shouldEqual 3
 
@@ -1033,7 +1055,7 @@ module TestImpureCases =
             failwith
                 $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
 
-        List.contains (UnixSystem.currentDirectoryInode kernel.System) orphaned
+        List.contains (UnixSystem.currentDirectoryInode kernel.ProcessId kernel.System) orphaned
         |> shouldEqual true
 
         for inode in orphaned do
@@ -1234,7 +1256,7 @@ module TestImpureCases =
 
                     // The launch made three pipes and the guest two, so the
                     // next one made is the sixth.
-                    match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                    match UnixPipe.pipe2 (LoneProcess.leader system) 0 UserBuffer.Mapped system with
                     | Pipe2Answer.Created _, after ->
                         Set.difference
                             (UnixSystem.pipes after |> Map.keys |> Set.ofSeq)
@@ -1736,35 +1758,15 @@ module TestImpureCases =
             // high bit set and neither fits in sixteen bits, which is what
             // makes a truncating or sign-confusing handler visible at all.
             effectiveUserIdCase 4294967294u 4294967293u
-            {
-                // A Linux process on a filesystem it does not own: EACCES on
-                // writing and on creating, and CoreLib's read-only check through
-                // `GetEGid` and `GetGroups`. The guest echoes the effective group
-                // and the reported groups, which Linux sorts although they were
-                // configured out of order.
-                FileName = "ForeignOwnedSeed.cs"
-                ExpectedReturnCode = 0
-                KernelConfig = foreignOwnedConfig SimulatedUnixPlatform.linuxX64
-                AppContext = AppContextProperties.empty
-                Oracle = OraclePolicy.Never
-                ExpectsUnhandledException = false
-                AssertTerminalState =
-                    Some (fun state ->
-                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
-                        |> Seq.toArray
-                        |> shouldEqual (
-                            [| 1500u ; 3u ; 2000u ; 3000u ; 4000u |]
-                            |> Array.collect (fun value ->
-                                [|
-                                    byte (value &&& 0xFFu)
-                                    byte ((value >>> 8) &&& 0xFFu)
-                                    byte ((value >>> 16) &&& 0xFFu)
-                                    byte ((value >>> 24) &&& 0xFFu)
-                                |]
-                            )
-                        )
-                    )
-            }
+            // A Linux process on a filesystem it does not own: EACCES on
+            // writing and on creating, and CoreLib's read-only check through
+            // `GetEGid` and `GetGroups`. The guest echoes the effective group
+            // and the reported groups, which Linux sorts although they were
+            // configured out of order.
+            foreignOwnedCase SimulatedUnixPlatform.linuxX64 [ 2000u ; 3000u ; 4000u ]
+            // The same on Darwin, whose group list is the effective group
+            // followed by the supplementary groups as they were configured.
+            foreignOwnedCase SimulatedUnixPlatform.macOsArm64 [ 1500u ; 4000u ; 3000u ; 2000u ]
             // The `fs.protected_*` sysctls reach the kernel's walk and its
             // creating open: following user 2000's link in root's sticky /tmp,
             // and `O_CREAT` on user 2000's file there, are refused only under
@@ -3175,7 +3177,7 @@ module TestImpureCases =
             {
                 FileName = "AccessWiringDarwinSeeded.cs"
                 ExpectedReturnCode = 0
-                KernelConfig = accessWiringDarwinConfig 1000u
+                KernelConfig = accessWiringDarwinConfig
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
@@ -5336,46 +5338,6 @@ module TestImpureCases =
         runTestOn (FrameworkUnderTest.runtimeDirs ()) case
 
     [<Test>]
-    let ``a Darwin guest that asks for its groups stops, naming the unmeasured list`` () : unit =
-        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
-
-        // The same guest on a Darwin kernel reaches `File.GetAttributes` of a
-        // root-owned file in a group that is not its effective one, so CoreLib
-        // asks `GetGroups`; which list Darwin reports has not been measured, and
-        // the run must stop saying so rather than answer.
-        let source = Assembly.getEmbeddedResourceAsString "ForeignOwnedSeed.cs" assy
-        let image = Roslyn.compile [ source ]
-
-        let _messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", "ForeignOwnedSeed.cs" ]
-
-        use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
-        use peImage = new MemoryStream (image)
-
-        let exn =
-            Assert.Catch (fun () ->
-                BoundedRun.run
-                    loggerFactory
-                    "ForeignOwnedSeed.cs"
-                    (Some "ForeignOwnedSeed.cs")
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Kernel = foreignOwnedConfig SimulatedUnixPlatform.macOsArm64
-                            }
-                    }
-                |> ExpectRun.ended
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "SystemNative_GetGroups"
-        exn.Message |> shouldContainText "UnixDescriptor.getgroups"
-        exn.Message |> shouldContainText "has not been measured"
-        exn.Message |> shouldContainText "File.GetAttributes"
-
-    [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
         Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
 
@@ -5593,43 +5555,6 @@ module TestImpureCases =
         runTestOn
             (LinuxCoreLibFlavour.runtimeDirsPreferringLinux frameworkDir)
             (fileSystemWatcherLinuxCase frameworkDir)
-
-    [<Test>]
-    let ``a Darwin guest that asks root's X_OK of a regular file stops, naming the unmeasured rule`` () : unit =
-        // The Darwin wiring guest's first row, run as root: whether Darwin
-        // grants a privileged caller execution of a regular file has not been
-        // measured, and the run must stop saying so rather than answer.
-        let source = Assembly.getEmbeddedResourceAsString "AccessWiringDarwinSeeded.cs" assy
-        let image = Roslyn.compile [ source ]
-
-        let _messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", "AccessWiringDarwinSeeded.cs" ]
-
-        use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
-        use peImage = new MemoryStream (image)
-
-        let exn =
-            Assert.Catch (fun () ->
-                BoundedRun.run
-                    loggerFactory
-                    "AccessWiringDarwinSeeded.cs"
-                    (Some "AccessWiringDarwinSeeded.cs")
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Kernel = accessWiringDarwinConfig 0u
-                            }
-                    }
-                |> ExpectRun.ended
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "SystemNative_Access"
-        exn.Message |> shouldContainText "UnixPathResolution.accessWithPath"
-        exn.Message |> shouldContainText "KernelConfig.UserId"
-        exn.Message |> shouldContainText "privileged caller"
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

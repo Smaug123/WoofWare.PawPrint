@@ -142,7 +142,10 @@ module TestFileStatusPal =
             | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
 
         InodeContent.fileTypeBits (
-            InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
+            InodeContent.RegularFile (
+                FileContents.ofImmutableArray ImmutableArray<byte>.Empty,
+                SeedEntry.defaultPermsForRegularFile
+            )
         )
         |> shouldEqual (ofName "S_IFREG")
 
@@ -174,7 +177,10 @@ module TestFileStatusPal =
 
         for content in
             [
-                InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
+                InodeContent.RegularFile (
+                    FileContents.ofImmutableArray ImmutableArray<byte>.Empty,
+                    SeedEntry.defaultPermsForRegularFile
+                )
                 InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", (PermissionBits.parseOrFail "test" 0o777))
                 InodeContent.Socket (PermissionBits.parseOrFail "test" 0o755)
                 InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644)

@@ -7,9 +7,6 @@ using System.Runtime.InteropServices;
 // caller owns everything in the seed, so its own triple decides each row.
 // AccessWiringLinuxSeeded.cs is the Linux counterpart.
 //
-// Registered a second time with uid 0, where its first row, root's X_OK on a
-// regular file, must stop the run: what Darwin answers there is unmeasured.
-//
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.
 //

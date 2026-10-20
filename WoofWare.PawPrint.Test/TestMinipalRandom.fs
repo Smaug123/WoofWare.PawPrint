@@ -57,7 +57,7 @@ module TestMinipalRandom =
         | ProcessRandom.LibSystem _ -> failwith "a Linux kernel holds libSystem's generator"
 
     let private openFds (kernel : EmulatedKernel) : int list =
-        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.ProcessId kernel.System)
         |> Map.keys
         |> List.ofSeq
 
@@ -123,7 +123,7 @@ module TestMinipalRandom =
                 fd |> shouldEqual (List.max (openFds start) + 1)
                 openFds kernel |> shouldEqual (openFds start @ [ fd ])
 
-                match UnixPathResolution.fstat fd kernel.System with
+                match UnixPathResolution.fstat (kernel.Caller kernel.Leader) fd kernel.System with
                 | FileStatusAnswer.Reported status ->
                     status.Mode |> shouldEqual 0o020666
                     status.SpecialFileDevice |> shouldEqual 265L
@@ -147,7 +147,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd kernel.System with
+            match UnixDescriptor.close (kernel.Caller kernel.Leader) fd kernel.System with
             | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -169,7 +169,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd kernel.System with
+            match UnixDescriptor.close (kernel.Caller kernel.Leader) fd kernel.System with
             | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -184,14 +184,14 @@ module TestMinipalRandom =
 
         // Close it, and let the next open take its number: /dev/null.
         let system =
-            match UnixDescriptor.close fd kernel.System with
+            match UnixDescriptor.close (kernel.Caller kernel.Leader) fd kernel.System with
             | SyscallAnswer.Completed _, system -> system
             | other -> failwith $"close: %A{other}"
 
         let system =
             match
                 UnixNamespace.openPath
-                    (UnixSystem.leader system)
+                    (LoneProcess.leader system)
                     0
                     (PathArgumentBytes.Bytes (Result.toOption (UnixByteString.ofString "/dev/null")).Value)
                     0
@@ -279,7 +279,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd kernel.System with
+            match UnixDescriptor.close (kernel.Caller kernel.Leader) fd kernel.System with
             | SyscallAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -306,7 +306,12 @@ module TestMinipalRandom =
                 else
 
                 match
-                    UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 length) GetRandomFlags.Insecure kernel.System
+                    UnixEntropy.getRandom
+                        (kernel.Caller thread)
+                        UserBuffer.Mapped
+                        (uint64 length)
+                        GetRandomFlags.Insecure
+                        kernel.System
                 with
                 | GetRandomAnswer.Completed draw, system -> Seq.toArray (EntropyDraw.bytes draw), system
                 | other -> failwith $"%A{other}"
@@ -336,13 +341,11 @@ module TestMinipalRandom =
         // What `create` asked of the kernel: one getentropy(32), and nothing
         // else.
         let seedBytes, booted: ImmutableArray<byte> * UnixSystem<ThreadId, NativeSignalHandler> =
-            match
-                UnixEntropy.getEntropy
-                    UserBuffer.Mapped
-                    32UL
-                    (UnixSystem.initial platform
-                     |> (Launched.boot UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)))
-            with
+            let fresh =
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)
+
+            match UnixEntropy.getEntropy (LoneProcess.leader fresh) UserBuffer.Mapped 32UL fresh with
             | GetEntropyAnswer.Completed draw, system -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"
 
@@ -390,36 +393,29 @@ module TestMinipalRandom =
         )
 
     [<Test>]
-    let ``CoreCLR's copy on Linux, asked for more than a page with a signal pending, stops the run, naming why``
-        ()
-        : unit
-        =
-        // A caught SIGUSR1 (10) stays pending for the thread it was sent to,
-        // until the thread returns to user mode.
+    let ``CoreCLR's copy on Linux answers more than a page in one getrandom`` () : unit =
+        // Linux's getrandom stops at the first page boundary past which a signal
+        // is pending; no signal is deliverable to a thread as its call begins,
+        // since it takes one as it returns to user mode first, so the call moves
+        // every byte.
         let kernel = linuxAt SimulatedUnixPlatform.linuxX64 7UL
 
-        let caught =
-            KernelSignals.setDisposition
-                Signal.SIGUSR1
-                (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
-                kernel.System
+        let bytes, after = MinipalRandom.coreClrSecureRandomBytes "test" thread 4097 kernel
+        bytes.Length |> shouldEqual 4097
 
-        let system =
-            match UnixSignal.pthreadKill thread 10 caught with
-            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
-            | other -> failwith $"pthread_kill: %A{other}"
+        let expected =
+            match
+                UnixEntropy.getRandom
+                    (kernel.Caller thread)
+                    UserBuffer.Mapped
+                    4097UL
+                    GetRandomFlags.Insecure
+                    kernel.System
+            with
+            | GetRandomAnswer.Completed draw, system -> EntropyDraw.bytes draw, system
+            | other -> failwith $"getrandom: %A{other}"
 
-        let kernel = EmulatedKernel.withUnix system kernel
-
-        let thrown =
-            Assert.Throws<exn> (fun () -> MinipalRandom.coreClrSecureRandomBytes "test" thread 4097 kernel |> ignore)
-
-        thrown.Message |> shouldContainText "a signal is pending"
-
-        // A page or less is answered whatever is pending.
-        MinipalRandom.coreClrSecureRandomBytes "test" thread 4096 kernel
-        |> fst
-        |> fun bytes -> bytes.Length |> shouldEqual 4096
+        (bytes, after.System) |> shouldEqual expected
 
     [<Test>]
     let ``a negative length is refused`` () : unit =

@@ -13,7 +13,7 @@ type SignalPoll =
     /// default, or the SIGABRT of an abort a native handler called. The state
     /// is the machine as it stood then, and `ended` the kernel's answer to the
     /// signal, whose `EndedProcess.termination` is `ProcessTermination.Signaled`.
-    | ProcessKilled of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
+    | ProcessKilled of IlMachineState * ended : ProcessEnd
 
 /// System.Native's signal handling, between two guest instructions: its native
 /// handler, which the kernel runs on the leader when a caught signal is
@@ -173,6 +173,7 @@ module SignalDispatch =
 
             match
                 UnixSignal.sigaction
+                    (state.Kernel.Caller state.Kernel.Leader)
                     (Signal.toRawSignoUnder numbering signal)
                     (Some SignalDisposition.Default)
                     state.Kernel.System
@@ -182,15 +183,9 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: the PAL's restore of %O{signal}'s default was refused (%O{errno}), but the PAL catches only signals sigaction accepts."
         | PalReplacedDisposition.Ignore ->
-            // `abort` unblocks SIGABRT before raising it, which `frame`'s mask
-            // holds if `frame` is SIGABRT's own; returning through the frame
-            // first unblocks it the same way, and nothing else runs before the
-            // process dies.
-            let state =
-                state.MapKernel (fun kernel ->
-                    EmulatedKernel.withUnix (UnixSignal.sigreturn kernel.Leader frame.Id kernel.System) kernel
-                )
-
+            // `PROCAbort` calls `abort` from inside the handler, which never returns through
+            // `frame`: `abort` itself unblocks SIGABRT, which `frame`'s mask holds if `frame` is
+            // SIGABRT's own, and the process dies of whichever instance it then takes.
             SignalPoll.ProcessKilled (state, EmulatedKernel.abort state.Kernel.Leader state.Kernel)
 
     /// System.Native's native handler for `frame`'s signal, run on the leader:
@@ -256,9 +251,9 @@ module SignalDispatch =
             | ProcessFate.Continues (WriteOutcome.Returns answer, _) -> $"%O{answer}"
             | ProcessFate.Continues (WriteOutcome.ReturnsRaising (answer, raised), _) ->
                 $"%O{answer}, raising %O{raised.Signal}"
-            | ProcessFate.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
+            | ProcessFate.ProcessEnded (ended, _) -> $"the end of the process (%O{EndedProcess.termination ended})"
             | ProcessFate.Continues (WriteOutcome.WouldBlock _, _) -> "that the write sleeps, the pipe being full"
-            | ProcessFate.Continues (WriteOutcome.Restarts, _) -> "a restart"
+            | ProcessFate.Continues (WriteOutcome.Interrupted, _) -> "that a signal interrupted it"
 
         let refused (e : exn) : 'a =
             KernelRefusal.fail
@@ -267,7 +262,7 @@ module SignalDispatch =
 
         let progress =
             try
-                UnixReadWrite.write leader pipe.WriteEnd UserBuffer.Mapped 1UL system
+                UnixReadWrite.write (state.Kernel.Caller leader) pipe.WriteEnd UserBuffer.Mapped 1UL system
             with :? UnmodelledException as e ->
                 refused e
 
@@ -296,11 +291,28 @@ module SignalDispatch =
             | outcome -> refuse $"the kernel answers %s{describe outcome}"
         | CallProgress.Answered outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
-    /// Whether the leader may take a signal on its return to user mode: one is pending, and
-    /// the leader is not asleep in a syscall. Read from the process's own state alone.
-    let private leaderMayTake (state : IlMachineState) : bool =
-        not (List.isEmpty (SignalState.pending state.Kernel.Signals))
-        && (UnixThreadState.parkedIn (EmulatedKernel.taskOf state.Kernel.Leader state.Kernel.Tasks)).IsNone
+    /// Whether the leader owes a return to user mode in `system` (`UnixSignal.owesReturn`): a
+    /// signal is deliverable to it, or one interrupted the call it is returning from.
+    let private leaderOwesReturn (system : UnixSystem<ThreadId, NativeSignalHandler>) (state : IlMachineState) : bool =
+        UnixSignal.owesReturn (state.Kernel.Caller state.Kernel.Leader) system
+
+    /// Fails loudly if a signal is deliverable to any of `threads`, none of which is the
+    /// leader: PawPrint returns the leader alone to user mode, so such a thread would make its
+    /// next call owing the return. Under Linux, a signal sent to the process that the leader
+    /// blocks and another thread does not is that thread's to take.
+    let private refuseOwedByOthers (threads : ThreadId seq) (state : IlMachineState) : unit =
+        for thread in threads do
+            if UnixSignal.owesReturn (state.Kernel.Caller thread) state.Kernel.System then
+                failwith
+                    $"SignalDispatch.poll: a signal is deliverable to thread %O{thread}, which is not the process's leader %O{state.Kernel.Leader}: the process's leader blocks it while another thread does not, so a real kernel would have that thread take it, and PawPrint delivers a process's signals to its leader alone."
+
+    /// `refuseOwedByOthers` of every thread of the process but its leader.
+    let private refuseOwedByNonLeaders (state : IlMachineState) : unit =
+        refuseOwedByOthers
+            (state.Kernel.Tasks
+             |> Map.keys
+             |> Seq.filter (fun thread -> thread <> state.Kernel.Leader))
+            state
 
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost
@@ -310,13 +322,20 @@ module SignalDispatch =
     /// restores the default or aborts the process (see `runPalFaultHandler`);
     /// every other handler is refused.
     ///
-    /// A leader asleep in a syscall is not in user mode, and is not asked. A
-    /// signal it would take wakes it instead (`WakePrimitive.SignalDeliverable`),
-    /// the syscall's finishing call answers `EINTR` or a restart, and the shim
-    /// function that made it calls it again (see `NativeSystemNative`), leaving
-    /// the leader in user mode for the next poll. A leader in one of PawPrint's
-    /// own waits (a monitor, `Sleep`, a wait handle) is asked: CoreCLR's PAL
-    /// carries those waits on across a signal handler.
+    /// Made only where the leader owes it (`leaderOwesReturn`), and fails loudly,
+    /// whether or not the leader owes one, where another thread owes one
+    /// (`refuseOwedByOthers`). A leader asleep
+    /// in a syscall is not in user mode, and owes nothing. A signal it would
+    /// take wakes it instead (`WakePrimitive.SignalDeliverable`), the
+    /// syscall's finishing call answers that it was interrupted, and the
+    /// return here ends the call, failing it with `EINTR` (which this writes to
+    /// errno) or restarting it: either way the shim function that made it calls
+    /// it again once the leader runs (see `NativeSystemNative`), except a
+    /// `sigsuspend` or `pause`, which answers as the return ended it
+    /// (`NativeLocals.ReturnedToUser`, which this records in its frame). A
+    /// leader in one of PawPrint's own waits (a monitor, `Sleep`, a wait
+    /// handle) is asked: CoreCLR's PAL carries those waits on across a signal
+    /// handler.
     let private deliverToLeader (state : IlMachineState) : SignalPoll =
         let leader = state.Kernel.Leader
 
@@ -326,23 +345,22 @@ module SignalDispatch =
                 $"SignalDispatch.poll: the dispatcher %O{dispatcher} is the process's leader, which the kernel delivers the process's signals to; the dispatcher runs handlers for the leader and is always a thread of its own."
         | _ -> ()
 
-        // Nothing pending is nothing to deliver, and this runs between every
-        // two instructions, so it answers without assembling the kernel's view.
-        // No frame outlives a poll, so none is waiting for a sigreturn either.
-        if List.isEmpty (SignalState.pending state.Kernel.Signals) then
+        // This runs between every two instructions, so it answers at once when
+        // the leader owes nothing. No frame outlives a poll, so none is waiting
+        // for a sigreturn either.
+        if not (leaderOwesReturn state.Kernel.System state) then
             // A leader whose `sigsuspend` has ended (it holds a mask to restore
-            // and is no longer parked) has a signal to take, which
-            // is what ended it, and its return is what gives back the mask the
-            // call replaced; nothing runs between the call's answer and this
-            // poll to take the signal away.
+            // and is no longer parked) owes its return, which is what gives
+            // back the mask the call replaced.
             match SignalState.maskToRestore leader state.Kernel.Signals with
             | Some mask when (UnixThreadState.parkedIn (EmulatedKernel.taskOf leader state.Kernel.Tasks)).IsNone ->
                 failwith
-                    $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend with nothing pending to take, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
+                    $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend owing no return to user mode, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
             | Some _
-            | None -> SignalPoll.Continues state
-        elif not (leaderMayTake state) then
-            SignalPoll.Continues state
+            | None ->
+                // A signal the leader blocks may still be another thread's to take.
+                refuseOwedByNonLeaders state
+                SignalPoll.Continues state
         else
 
         let returnToUser
@@ -350,22 +368,48 @@ module SignalDispatch =
             : ProcessFate<ReturnToUserOutcome<ThreadId, NativeSignalHandler>, ThreadId, NativeSignalHandler>
             =
             try
-                UnixSignal.onReturnToUser leader state.Kernel.System
+                UnixSignal.onReturnToUser (state.Kernel.Caller leader) state.Kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail "SignalDispatch.poll: the kernel will not say what the leader takes" e
 
-        // Persist the walk's state whether or not it produced an action:
-        // discarding a receivable ignored signal is a state change with no
-        // delivery, and dropping it would replay the discard every tick.
+        // Persisted whether or not the return produced an action: discarding a
+        // receivable ignored signal is a state change with no delivery, and the
+        // return itself is one, which settles what the leader owed.
         let persist
             (systemAfter : UnixSystem<ThreadId, NativeSignalHandler>)
             (state : IlMachineState)
             : IlMachineState
             =
-            if UnixSystem.signals systemAfter = state.Kernel.Signals then
+            state.MapKernel (EmulatedKernel.withUnix systemAfter)
+
+        // How the call the leader returns from ended, where a signal interrupted
+        // it: errno holds EINTR once it fails with it, and a `sigsuspend` or
+        // `pause` waiting to answer is told.
+        let interruptedCallEnded (interrupted : InterruptedCall option) (state : IlMachineState) : IlMachineState =
+            match interrupted with
+            | None -> state
+            | Some ended ->
+
+            let state =
+                match ended with
+                | InterruptedCall.FailsWithEintr ->
+                    let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError leader (UnixError.toRawErrnoUnder numbering UnixError.EINTR)
+                    )
+                | InterruptedCall.Restarts -> state
+
+            let thread = state.ThreadState.[leader]
+
+            match thread.MethodState.NativeLocals with
+            | Some NativeLocals.AwaitingReturnToUser ->
                 state
-            else
-                state.MapKernel (EmulatedKernel.withUnix systemAfter)
+                |> IlMachineState.mapFrame
+                    leader
+                    thread.ActiveMethodState
+                    (MethodState.withNativeLocals (Some (NativeLocals.ReturnedToUser ended)))
+            | _ -> state
 
         // Run `frames`, innermost first, each followed by its `sigreturn` and a
         // return to user mode, which may push frames that run before the rest.
@@ -397,16 +441,17 @@ module SignalDispatch =
 
             let state =
                 state.MapKernel (fun kernel ->
-                    EmulatedKernel.withUnix (UnixSignal.sigreturn leader frame.Id kernel.System) kernel
+                    EmulatedKernel.withUnix (UnixSignal.sigreturn (kernel.Caller leader) frame.Id kernel.System) kernel
                 )
 
             state |> returnToUserThen (runFrames outer)
 
         and returnToUserThen (continuation : IlMachineState -> SignalPoll) (state : IlMachineState) : SignalPoll =
             match returnToUser state with
-            | ProcessFate.Continues (ReturnToUserOutcome.Resumes, after) -> continuation (persist after state)
-            | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers frames, after) ->
-                match runFrames frames (persist after state) with
+            | ProcessFate.Continues (ReturnToUserOutcome.Resumes interrupted, after) ->
+                continuation (persist after state |> interruptedCallEnded interrupted)
+            | ProcessFate.Continues (ReturnToUserOutcome.RunHandlers (frames, interrupted), after) ->
+                match runFrames frames (persist after state |> interruptedCallEnded interrupted) with
                 | SignalPoll.Continues state -> continuation state
                 | killed -> killed
             // The kernel has discarded it: the process was never stopped, so
@@ -421,14 +466,20 @@ module SignalDispatch =
             // since unblocked it. Applying a default at delivery is refused
             // rather than half-modelled, a termination's included, though the
             // kernel has ended the process.
-            | ProcessFate.ProcessEnded ended ->
+            | ProcessFate.ProcessEnded (ended, _) ->
                 failwith
                     $"SignalDispatch.poll: a pending signal at its default disposition, whose kernel default is to terminate, ended the process as the leader took it (%O{EndedProcess.termination ended}); applying a default disposition at delivery rather than at generation is not modelled."
             | ProcessFate.Continues (ReturnToUserOutcome.ProcessStopped signal, _) ->
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 
-        returnToUserThen SignalPoll.Continues state
+        match returnToUserThen SignalPoll.Continues state with
+        | SignalPoll.Continues state as polled ->
+            // The frames the return pushed can come to block a signal of the process's that
+            // another thread does not block, which that thread then takes.
+            refuseOwedByNonLeaders state
+            polled
+        | killed -> killed
 
     /// Start the managed callback for `signal` on the parked dispatcher: the
     /// shim's `g_posixSignalHandler(signo, posixSignal)`. The first callback
@@ -523,6 +574,7 @@ module SignalDispatch =
         match
             NativeSystemNative.handleNonCanceledPosixSignal
                 "SignalHandlerLoop's SystemNative_HandleNonCanceledPosixSignal"
+                dispatcher
                 signo
                 state
         with
@@ -567,11 +619,35 @@ module SignalDispatch =
         | OpenFileTarget.Fifo (inode, _) -> $"a FIFO (inode %O{inode})"
         | OpenFileTarget.Inotify _ -> "an inotify instance"
 
+    /// `woken`, threads the kernel has woken (`UnixWait.wake`), flipped back to `Runnable` where
+    /// they are this process's threads parked in `ThreadStatus.BlockedInSyscall`, with the
+    /// threads of other processes among them, which only their own programs can flip. The
+    /// dispatcher, idle in its read of the signal pipe, is left `Parked`: its read is finished
+    /// by its own poll.
+    let private wakeOwnThreads
+        (woken : (Caller<ThreadId> * Set<WakePrimitive>) list)
+        (state : IlMachineState)
+        : IlMachineState * Caller<ThreadId> list
+        =
+        ((state, []), woken)
+        ||> List.fold (fun (state, elsewhere) (caller, _) ->
+            if Caller.processId caller <> state.Kernel.ProcessId then
+                state, caller :: elsewhere
+            else
+                let thread = Caller.thread caller
+
+                match (Map.find thread state.ThreadState).Status with
+                | ThreadStatus.Parked -> state, elsewhere
+                | _ -> Scheduler.wakeFromSyscall thread state, elsewhere
+        )
+        |> fun (state, elsewhere) -> state, List.rev elsewhere
+
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and
     /// finished once the kernel wakes it if it is. Then what the loop does with
     /// the signal it read, and with each after it, until it starts a callback,
-    /// the read sleeps, or the process dies.
+    /// the read sleeps, or the process dies. Answers too the threads of other
+    /// processes that a wake woke (see `wakeOwnThreads`), after `elsewhere`.
     ///
     /// Fails where the read would not be of the signal pipe: where the
     /// descriptor the loop was given no longer names the pipe's read end. If
@@ -591,72 +667,87 @@ module SignalDispatch =
     let rec private wakeDispatcher
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (elsewhere : Caller<ThreadId> list)
         (state : IlMachineState)
-        : SignalPoll
+        : SignalPoll * Caller<ThreadId> list
         =
         match idleDispatcher state with
-        | None -> SignalPoll.Continues state
+        | None -> SignalPoll.Continues state, elsewhere
         | Some (dispatcher, pipe) ->
 
         let refuse (what : string) : 'a =
             failwith
                 $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, and %s{what}; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model."
 
-        let system = state.Kernel.System
+        let caller = state.Kernel.Caller dispatcher
+        refuseOwedByOthers [ dispatcher ] state
 
-        let read =
+        let read, state, elsewhere =
             try
-                match UnixThreadState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
+                let system = state.Kernel.System
+
+                match UnixThreadState.park (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
                 // The loop reads the number it was given, so the read is of the
                 // signal pipe only while that number names the pipe's read end.
                 | None ->
-                    match FileDescriptorRegistry.tryFindWithId pipe.ReadEnd (UnixSystem.fileDescriptors system) with
+                    match
+                        FileDescriptorRegistry.tryFindWithId
+                            pipe.ReadEnd
+                            (UnixSystem.fileDescriptors state.Kernel.ProcessId system)
+                    with
                     | Some (named, _) when named = pipe.ReadDescription ->
-                        Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
+                        Some (UnixReadWrite.read caller pipe.ReadEnd UserBuffer.Mapped 1UL system), state, elsewhere
                     | Some (_, description) ->
                         failwith
                             $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, but which no longer names that pipe's read end: the guest has put %s{describeTarget description.Target} at that number. The real SignalHandlerLoop would read from that instead and take what it read for signal numbers, which PawPrint does not model."
                     | None -> refuse "which the guest has closed, so the read fails with EBADF"
                 // Asleep in its read, which holds the description it was made
-                // through: finished once the kernel wakes it. Asked with every
-                // other sleeper, so that a reader that went to sleep on the pipe
-                // first takes the byte first. Its own wake condition is asked
-                // first, alone, because this runs between every two instructions
-                // and that answer is almost always no.
-                //
-                // Asked of this process's view alone (`UnixWait.wakes`) rather than
-                // of the machine (`SimulatedMachine.wakes`), which would choose the
-                // one reader the pipe wakes across every process: the process's own
-                // shim made the pipe, and nothing passes a descriptor to another
-                // process, so no other process can be asleep reading it.
-                | Some (ParkedSyscall.PipeRead _) ->
+                // through: finished once the kernel wakes it.
+                | Some {
+                           Syscall = ParkedSyscall.PipeRead _
+                           State = ParkState.Woken _
+                       } -> Some (UnixReadWrite.finishRead caller system), state, elsewhere
+                // Woken with every other sleeper, so that a reader that went to
+                // sleep on the pipe first takes the byte first. Its own wake
+                // condition is asked first, alone, because this runs between
+                // every two instructions and that answer is almost always no.
+                | Some {
+                           Syscall = ParkedSyscall.PipeRead _
+                           State = ParkState.Asleep
+                       } ->
                     if
-                        UnixWait.satisfied dispatcher system
+                        UnixWait.satisfied caller system
                         |> Option.exists (fun fired -> not (Set.isEmpty fired))
-                        && UnixWait.wakes (Scheduler.asleepInSyscall state) system
-                           |> List.exists (fun (task, _) -> task = dispatcher)
                     then
-                        Some (UnixReadWrite.finishRead dispatcher system)
+                        let woken, system = UnixWait.wake system
+
+                        let state, others =
+                            wakeOwnThreads woken (state.MapKernel (EmulatedKernel.withUnix system))
+
+                        let elsewhere = elsewhere @ others
+
+                        if woken |> List.exists (fun (woken, _) -> woken = caller) then
+                            Some (UnixReadWrite.finishRead caller state.Kernel.System), state, elsewhere
+                        else
+                            None, state, elsewhere
                     else
-                        None
+                        None, state, elsewhere
                 | Some other ->
                     failwith
-                        $"SignalDispatch.poll: the dispatcher %O{dispatcher} is idle, but its task is asleep in %A{other}; the loop makes no syscall but its read of the signal pipe (this is an interpreter bug)."
+                        $"SignalDispatch.poll: the dispatcher %O{dispatcher} is idle, but its task is asleep in %A{other.Syscall}; the loop makes no syscall but its read of the signal pipe (this is an interpreter bug)."
             with :? UnmodelledException as e ->
                 KernelRefusal.fail
                     $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, and the kernel will not answer the read; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model"
                     e
 
         match read with
-        | None -> SignalPoll.Continues state
+        | None -> SignalPoll.Continues state, elsewhere
         // Empty, with the write end open: the read sleeps, and so does the
         // dispatcher, until a poll finds the kernel has woken it.
         | Some (ReadOutcome.WouldBlock _, system) ->
-            state.MapKernel (EmulatedKernel.withUnix system)
-            |> Scheduler.withDispatcherInRead dispatcher true
-            |> SignalPoll.Continues
-        | Some (ReadOutcome.Restarts, _) ->
-            refuse "is restarted by a signal, which PawPrint never directs at the dispatcher"
+            SignalPoll.Continues (state.MapKernel (EmulatedKernel.withUnix system)), elsewhere
+        | Some (ReadOutcome.Interrupted, _) ->
+            refuse "is interrupted by a signal, which PawPrint never directs at the dispatcher"
         | Some (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> refuse $"fails with %O{error}"
         | Some (ReadOutcome.Answered (ReadAnswer.Drawn _), _) ->
             refuse "draws from the entropy pool, which a read of a pipe never does"
@@ -665,9 +756,7 @@ module SignalDispatch =
         if bytes.Length <> 1 then
             refuse $"reads %d{bytes.Length} bytes rather than one"
 
-        let state =
-            state.MapKernel (EmulatedKernel.withUnix system)
-            |> Scheduler.withDispatcherInRead dispatcher false
+        let state = state.MapKernel (EmulatedKernel.withUnix system)
 
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
         let signo = int bytes.[0]
@@ -688,15 +777,15 @@ module SignalDispatch =
         // it models no child process for a `waitpid` to find.
         match Signal.ofRawSignoUnder numbering signo with
         | ValueSome signal when PosixSignalShim.isRegistered signal state.Kernel.PosixSignalShim ->
-            SignalPoll.Continues (startCallback loggerFactory baseClassTypes dispatcher signal state)
+            SignalPoll.Continues (startCallback loggerFactory baseClassTypes dispatcher signal state), elsewhere
         | ValueSome _
         | ValueNone ->
             // Handled without guest code, and the loop goes straight back to
             // its read: so does this, rather than leaving the next byte for a
             // tick that may never come if every other thread is asleep.
             match handleNonCanceledOnDispatcher dispatcher signo state with
-            | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes state
-            | killed -> killed
+            | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes elsewhere state
+            | killed -> killed, elsewhere
 
     /// System.Native's signal handling between two guest instructions: the
     /// native handler for whatever the kernel delivers to the leader now, and
@@ -704,33 +793,65 @@ module SignalDispatch =
     /// once per tick by the driver's preamble (`MultiProgram.advance`), shortly
     /// before the scheduler picks its next thread, so a dispatcher it wakes can
     /// be picked on the same tick.
+    ///
+    /// The dispatcher's read is woken by `UnixWait.wake`, which wakes every
+    /// sleeping thread on the machine that may go on: this program's are
+    /// flipped back to `Runnable` here, and the threads of other processes it
+    /// woke are answered, in the order the kernel woke them, for their own
+    /// programs to flip.
+    let pollMachine
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : SignalPoll * Caller<ThreadId> list
+        =
+        match deliverToLeader state with
+        | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes [] state
+        | killed -> killed, []
+
+    /// `pollMachine` of a program alone on its machine, which no wake can find
+    /// another process's thread on.
+    ///
+    /// Fails loudly if the wake woke a thread of another process.
     let poll
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         : SignalPoll
         =
-        match deliverToLeader state with
-        | SignalPoll.Continues state -> wakeDispatcher loggerFactory baseClassTypes state
-        | killed -> killed
+        match pollMachine loggerFactory baseClassTypes state with
+        | polled, [] -> polled
+        | _, elsewhere ->
+            failwith
+                $"SignalDispatch.poll: the dispatcher's wake woke %O{elsewhere}, threads of another process, which only that process's program can wake; poll a machine of several programs through `pollMachine`."
 
-    /// Whether `poll` may do anything to `state`: a signal the leader may take on its return to
-    /// user mode, or a dispatcher idle in its loop that has not yet made its read of the signal
-    /// pipe. Read from the process's own state alone, never through its view of the machine,
-    /// so the driver can ask it of a program whose view of the machine is stale and hand the
-    /// machine over only to a program whose poll may act.
+    /// Whether `poll` may do anything to `state` on the machine `system`, which holds its
+    /// process: a return to user mode one of its threads owes (the leader's to make, any other's
+    /// to refuse), or a dispatcher idle in its loop that has
+    /// not yet made its read of the signal pipe, or whose read the kernel has woken. Reads the
+    /// process from `system` rather than from `state`'s kernel, so that the driver can ask it of
+    /// a program whose copy of the machine is stale and hand the machine over only to a program
+    /// whose poll may act.
     ///
     /// A dispatcher asleep in its read is not counted, though a write to the pipe would wake
     /// it: the process's own shim made the pipe, and nothing passes a descriptor to another
     /// process, so only the process's own steps and polls write it, and the poll that follows
     /// each of those runs while the process is still the one checked out.
-    let mayAct (state : IlMachineState) : bool =
-        leaderMayTake state
+    let mayAct (system : UnixSystem<ThreadId, NativeSignalHandler>) (state : IlMachineState) : bool =
+        UnixSystem.threads state.Kernel.ProcessId system
+        |> Map.exists (fun thread _ -> UnixSignal.owesReturn (state.Kernel.Caller thread) system)
         || match idleDispatcher state with
            | None -> false
            | Some (dispatcher, _) ->
-               match UnixThreadState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
-               | Some (ParkedSyscall.PipeRead _) -> false
+               match
+                   UnixThreadState.park (
+                       EmulatedKernel.taskOf dispatcher (UnixSystem.threads state.Kernel.ProcessId system)
+                   )
+               with
+               | Some {
+                          Syscall = ParkedSyscall.PipeRead _
+                          State = ParkState.Asleep
+                      } -> false
                | Some _
                | None -> true
 

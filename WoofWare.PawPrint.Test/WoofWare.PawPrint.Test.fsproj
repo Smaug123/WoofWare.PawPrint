@@ -27,6 +27,7 @@
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestRoslyn.fs" />
+    <Compile Include="LoneProcess.fs" />
     <Compile Include="KernelSignals.fs" />
     <Compile Include="SignalFrames.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />

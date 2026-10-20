@@ -155,12 +155,15 @@ module StartupSignalDispositions =
     /// and re-sends the signal, so the process does exactly what that
     /// disposition says.
     ///
+    /// Each call is made by `caller`, a thread of the process.
+    ///
     /// Fails loud, prefixed by `context`, on inherited ignores `refusal`
     /// refuses.
     let install<'Task when 'Task : comparison>
         (context : string)
         (numbering : SignalNumbering)
         (inheritedIgnores : Set<Signal>)
+        (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
         : UnixSystem<'Task, NativeSignalHandler>
         =
@@ -177,7 +180,8 @@ module StartupSignalDispositions =
         // accepts.
         let sigactionWith
             (call :
-                int
+                Caller<'Task>
+                    -> int
                     -> SignalDisposition<NativeSignalHandler> option
                     -> UnixSystem<'Task, NativeSignalHandler>
                     -> Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>)
@@ -186,7 +190,7 @@ module StartupSignalDispositions =
             (system : UnixSystem<'Task, NativeSignalHandler>)
             : SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>
             =
-            match call signo action system with
+            match call caller signo action system with
             | Ok answer -> answer
             | Error (errno : UnixError) ->
                 failwith

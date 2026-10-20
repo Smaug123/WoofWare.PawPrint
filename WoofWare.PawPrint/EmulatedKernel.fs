@@ -552,14 +552,17 @@ type CopyFileRangeSupport =
 /// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
-        /// The POSIX process this kernel runs, and the machine it runs on: see
-        /// `UnixSystem`. Its one task to begin with is the thread `Main` runs
-        /// on, `ThreadId 0`.
+        /// The machine this kernel's process runs on, with every process on it:
+        /// see `UnixSystem`. The process's one task to begin with is the thread
+        /// `Main` runs on, `ThreadId 0`.
         ///
         /// Never read field by field: PawPrint is a client of the kernel, and
         /// learns what it holds through the syscalls and the queries
         /// `UnixSystem` provides, as the members below do.
         System : UnixSystem<ThreadId, NativeSignalHandler>
+        /// The ID of the process this kernel runs, one of `System`'s: every call
+        /// a thread of the program makes is made in it (`Caller`).
+        ProcessId : ProcessId
         /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
         /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
         /// `SetLastError = true` P/Invoke's stub copies the system error here once the
@@ -720,31 +723,37 @@ type EmulatedKernel =
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog (UnixSystem.processId this.System) (UnixSystem.delivered this.System)
+        StandardStreams.outputLog this.ProcessId (UnixSystem.delivered this.System)
 
     /// Every task the kernel knows about, by the thread that is it.
     ///
     /// Exactly the live threads: `checkTaskInvariants` reports a thread with
     /// no task or a task with no thread. An absent key is therefore a bug
     /// rather than a default, which is what lets `UnixThreadState` be total.
-    member this.Tasks : Map<ThreadId, UnixThreadState> = UnixSystem.threads this.System
+    member this.Tasks : Map<ThreadId, UnixThreadState> =
+        UnixSystem.threads this.ProcessId this.System
 
     /// The process's first task: always `ThreadId 0`, the thread
     /// `IlMachineState.addThread` runs `Main` on. See `UnixSystem.leader`.
-    member this.Leader : ThreadId = UnixSystem.leader this.System
+    member this.Leader : ThreadId = UnixSystem.leader this.ProcessId this.System
+
+    /// `thread`, a thread of this kernel's process, as the caller of a syscall.
+    member this.Caller (thread : ThreadId) : Caller<ThreadId> = Caller.make this.ProcessId thread
 
 
     /// The environment the simulated process was started with: see
     /// `UnixSystem.environment`.
-    member this.Environment : UnixByteString list = UnixSystem.environment this.System
+    member this.Environment : UnixByteString list =
+        UnixSystem.environment this.ProcessId this.System
 
     /// The path of the executable that started the simulated process: see
     /// `UnixSystem.processPath`.
-    member this.ProcessPath : AbsoluteUnixPath option = UnixSystem.processPath this.System
+    member this.ProcessPath : AbsoluteUnixPath option =
+        UnixSystem.processPath this.ProcessId this.System
 
     /// The simulated process's signal state, which `SignalState`'s queries read.
     member this.Signals : SignalState<ThreadId, NativeSignalHandler> =
-        UnixSystem.signals this.System
+        UnixSystem.signals this.ProcessId this.System
 
     /// The virtual clock in 100 ns ticks (`ClockPal.nanosecondsPerTick`): the
     /// machine's uptime, which PawPrint only ever advances by whole ticks, so
@@ -826,6 +835,16 @@ type EmulatedKernelDefect =
     /// `sigreturn` within one poll, so none can be left pushed.
     | HandlerFramesBetweenInstructions of thread : ThreadId
 
+/// How a process ended, as the kernel's answer to the call that ended it says.
+type ProcessEnd =
+    {
+        /// The process's end: which process, and `EndedProcess.termination`, how it ended.
+        Ended : EndedProcess
+        /// The machine as the end left it, without the process: what a real kernel does at
+        /// exit, where another process can see it, closing every descriptor the process held.
+        Remaining : UnixSystem<ThreadId, NativeSignalHandler>
+    }
+
 /// A PawPrint process's kernel before it boots: the machine's boot image, and
 /// how the process PawPrint runs on it starts. `EmulatedKernel.image` makes
 /// one, and `EmulatedKernel.boot` launches the process onto the machine.
@@ -863,7 +882,7 @@ module EmulatedKernel =
     /// is the state a process is left in when its directory is removed out from
     /// under it. See `UnixPathResolution.currentDirectoryPath`.
     let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
-        UnixPathResolution.currentDirectoryPath kernel.System
+        UnixPathResolution.currentDirectoryPath kernel.ProcessId kernel.System
 
     /// The task that is `thread`, out of `tasks` (`EmulatedKernel.Tasks`),
     /// for `UnixThreadState`'s readers to read.
@@ -1094,25 +1113,27 @@ module EmulatedKernel =
                 $"%s{processKnobs}.CurrentDirectory must name a directory in %s{machineKnobs}.FileSystem."
                 e
 
-    /// The kernel of the PawPrint process `system` is the POSIX half of, newly
-    /// launched, as though its launcher had left `inheritedIgnores` ignored
-    /// (read under the platform's numbering), as `nohup` leaves SIGHUP. A
-    /// process's inherited ignores are fixed before any of its own code runs.
+    /// The kernel of the PawPrint process `pid`, newly launched on `system`, as
+    /// though its launcher had left `inheritedIgnores` ignored (read under the
+    /// platform's numbering), as `nohup` leaves SIGHUP. A process's inherited
+    /// ignores are fixed before any of its own code runs.
     ///
-    /// What is added to the POSIX half here is what a CoreCLR process has done
-    /// by the time `Main` runs: the signal dispositions it has installed
+    /// What is added to the process here is what a CoreCLR process has done by
+    /// the time `Main` runs: the signal dispositions it has installed
     /// (`StartupSignalDispositions.install`, which says which inherited ignores
     /// the runtime keeps, which it replaces, and which it refuses; `context`
     /// prefixes that refusal), and its C runtime's random-number state, which on
-    /// Darwin draws on the machine's entropy pool. So `system` must be the view
-    /// the process's syscalls are made in, and the machine in it is changed.
-    let ofView
+    /// Darwin draws on the machine's entropy pool, so the machine in `system` is
+    /// changed too. Each of those calls is made by the process's leader.
+    let ofProcess
         (context : string)
         (inheritedIgnores : Set<Signal>)
+        (pid : ProcessId)
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
         : EmulatedKernel
         =
         let platform = UnixSystem.platform system
+        let leader = Caller.make pid (UnixSystem.leader pid system)
 
         let system =
             system
@@ -1120,6 +1141,7 @@ module EmulatedKernel =
                 context
                 (SimulatedUnixPlatform.signalNumbering platform)
                 inheritedIgnores
+                leader
 
         // What the C runtime has before `main`. Darwin's `libSystem_initializer`
         // seeds its generator with one `getentropy(32)` (measured, by
@@ -1131,7 +1153,7 @@ module EmulatedKernel =
             | SimulatedUnixFlavour.Darwin ->
                 let drawn =
                     try
-                        UnixEntropy.getEntropy UserBuffer.Mapped 32UL system
+                        UnixEntropy.getEntropy leader UserBuffer.Mapped 32UL system
                     with :? UnmodelledException as e ->
                         KernelRefusal.fail
                             $"%s{context}: libSystem's getentropy(32) into storage it owns was refused (this is a bug in the kernel library)"
@@ -1163,20 +1185,21 @@ module EmulatedKernel =
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             System = system
+            ProcessId = pid
         }
 
     /// Boot `image` as PawPrint starts a process, as though its launcher had
     /// left `inheritedIgnores` ignored (read under the platform's numbering):
-    /// `bootSystem`, naming `KernelConfig`'s knobs, then `ofView`, whose
-    /// refusals `context` prefixes.
+    /// `bootSystem`, naming `KernelConfig`'s knobs, then `ofProcess` of the
+    /// process it booted with, whose refusals `context` prefixes.
     let bootInheritingSignalIgnores
         (context : string)
         (inheritedIgnores : Set<Signal>)
         (image : KernelImage)
         : EmulatedKernel
         =
-        bootSystem "KernelConfig" "KernelConfig" image.Process image.Machine
-        |> ofView context inheritedIgnores
+        let system = bootSystem "KernelConfig" "KernelConfig" image.Process image.Machine
+        ofProcess context inheritedIgnores (Seq.exactlyOne (UnixSystem.processIds system)) system
 
     /// `bootInheritingSignalIgnores` for a process whose launcher left no
     /// signal ignored.
@@ -1637,14 +1660,14 @@ module EmulatedKernel =
         // read, and that is refused below.
         let outcome =
             try
-                UnixThreadLifecycle.exitThread thread 0 kernel.System
+                UnixThreadLifecycle.exitThread (kernel.Caller thread) 0 kernel.System
             with
             | :? UnmodelledException
             | :? System.InvalidOperationException as e -> KernelRefusal.fail "EmulatedKernel.exitThread" e
 
         match outcome with
         | ProcessFate.Continues ((), system) -> withUnix system kernel
-        | ProcessFate.ProcessEnded ended ->
+        | ProcessFate.ProcessEnded (ended, _) ->
             failwith
                 $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
 
@@ -1658,7 +1681,7 @@ module EmulatedKernel =
     /// step of a thread after its first but the steps after a park or a displacement.
     let dispatch (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
         let cpu = UnixThreadState.cpu (taskOf thread kernel.Tasks)
-        let system = UnixScheduling.dispatch thread cpu kernel.System
+        let system = UnixScheduling.dispatch (kernel.Caller thread) cpu kernel.System
 
         if obj.ReferenceEquals (system, kernel.System) then
             kernel
@@ -1669,28 +1692,38 @@ module EmulatedKernel =
 
     /// `UnixThreadLifecycle.exitGroup` through this kernel: `thread` calls
     /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process
-    /// ends. The answer is the process's end (`EndedProcess`), whose
-    /// `EndedProcess.termination` is how it ended; the kernel is left as it stood.
+    /// ends. The answer is the process's end, whose `EndedProcess.termination`
+    /// is how it ended, with the machine the end leaves; `kernel` itself is
+    /// left as it stood.
     ///
     /// This is how a CoreCLR process that is not killed ends: the host passes the
     /// latched exit code to `exit`, once `Main` has returned and the foreground
     /// threads have finished, or at once from `Environment.Exit`.
-    let exitGroup
-        (thread : ThreadId)
-        (status : int32)
-        (kernel : EmulatedKernel)
-        : EndedProcess<ThreadId, NativeSignalHandler>
-        =
-        UnixThreadLifecycle.exitGroup thread status kernel.System
+    ///
+    /// Fails loudly if the kernel will not close what the process held.
+    let exitGroup (thread : ThreadId) (status : int32) (kernel : EmulatedKernel) : ProcessEnd =
+        let ended, remaining =
+            try
+                UnixThreadLifecycle.exitGroup (kernel.Caller thread) status kernel.System
+            with :? UnmodelledException as e ->
+                KernelRefusal.fail
+                    $"EmulatedKernel.exitGroup: process %O{kernel.ProcessId} exited, and the kernel would not close what it held"
+                    e
+
+        {
+            Ended = ended
+            Remaining = remaining
+        }
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
-    /// The answer is the process's end (`EndedProcess`), whose `EndedProcess.termination` is
-    /// a death by SIGABRT; the kernel is left as it stood.
+    /// The answer is the process's end, whose `EndedProcess.termination` is a death by
+    /// SIGABRT, with the machine the end leaves; `kernel` itself is left as it stood.
     ///
     /// Fails loudly if the process survives, or dies of anything but SIGABRT.
-    let abort (thread : ThreadId) (kernel : EmulatedKernel) : EndedProcess<ThreadId, NativeSignalHandler> =
+    let abort (thread : ThreadId) (kernel : EmulatedKernel) : ProcessEnd =
         let system = kernel.System
+        let caller = kernel.Caller thread
 
         // `PROCAbort` first restores the dispositions CoreCLR's own handlers
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
@@ -1700,9 +1733,41 @@ module EmulatedKernel =
         let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
         let signo = Signal.toRawSignoUnder numbering Signal.SIGABRT
 
-        let system =
-            match UnixSignal.sigaction signo (Some SignalDisposition.Default) system with
-            | Ok (_, system) -> system
+        let diedOfAbrt (ended : EndedProcess) (remaining : UnixSystem<ThreadId, NativeSignalHandler>) : ProcessEnd =
+            match EndedProcess.termination ended with
+            | ProcessTermination.Signaled (Signal.SIGABRT, _) ->
+                {
+                    Ended = ended
+                    Remaining = remaining
+                }
+            | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
+
+        // The thread's return to user mode after `call`, one of the calls `abort` makes, at
+        // which it takes whatever the call has let through: SIGABRT itself, at its default,
+        // where it was pending while blocked. `Error` if the process dies of it.
+        let returned
+            (call : string)
+            (system : UnixSystem<ThreadId, NativeSignalHandler>)
+            : Result<UnixSystem<ThreadId, NativeSignalHandler>, ProcessEnd>
+            =
+            let answer =
+                try
+                    UnixSignal.onReturnToUser caller system
+                with :? UnmodelledException as e ->
+                    KernelRefusal.fail
+                        $"EmulatedKernel.abort: %O{thread}'s return to user mode after %s{call} was refused"
+                        e
+
+            match answer with
+            | ProcessFate.Continues (ReturnToUserOutcome.Resumes None, system) -> Ok system
+            | ProcessFate.ProcessEnded (ended, remaining) -> Error (diedOfAbrt ended remaining)
+            | ProcessFate.Continues (outcome, _) ->
+                failwith
+                    $"EmulatedKernel.abort: %O{thread}'s return to user mode after %s{call} answered %O{outcome}, where only SIGABRT at its default could be let through."
+
+        let restored =
+            match UnixSignal.sigaction caller signo (Some SignalDisposition.Default) system with
+            | Ok (_, system) -> returned "restoring SIGABRT's default" system
             | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
 
         // `SIG_UNBLOCK`, as each `<signal.h>` numbers it.
@@ -1711,28 +1776,32 @@ module EmulatedKernel =
             | SignalNumbering.Linux -> 1
             | SignalNumbering.Darwin -> 2
 
-        let system =
-            match
-                UnixSignal.pthreadSigmask
-                    thread
-                    unblock
-                    (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
-                    system
-            with
-            | Ok (_, system) -> system
-            | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+        let unblocked =
+            restored
+            |> Result.bind (fun system ->
+                match
+                    UnixSignal.pthreadSigmask
+                        caller
+                        unblock
+                        (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                        system
+                with
+                | Ok (_, system) -> returned "unblocking SIGABRT" system
+                | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+            )
+
+        match unblocked with
+        | Error ended -> ended
+        | Ok system ->
 
         let raised =
             try
-                UnixSignal.pthreadKill thread signo system
+                UnixSignal.pthreadKill caller thread signo system
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
 
         match raised with
-        | Ok (ProcessFate.ProcessEnded ended) ->
-            match EndedProcess.termination ended with
-            | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
-            | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
+        | Ok (ProcessFate.ProcessEnded (ended, remaining)) -> diedOfAbrt ended remaining
         | other ->
             failwith
                 $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"
@@ -1813,9 +1882,8 @@ module EmulatedKernel =
     /// what PawPrint's own signal handling guarantees: no handler frame outlives
     /// the poll that pushed it.
     ///
-    /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
-    /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
-    /// repeats neither. The latter takes a `pinned` argument, which is what
+    /// The filesystem's own rules are `VirtualFileSystem.checkInvariants`, which
+    /// this does not repeat. It takes a `pinned` argument, which is what
     /// `ObjectLifetime.pinnedInodes` computes, so a caller wanting the whole picture
     /// pairs this with
     /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel.System)`.
@@ -2428,20 +2496,20 @@ module ProcessConfig =
         |> credentialsOrFail
         |> umaskOrFail
 
-    /// The kernel of the process `config` describes, whose view of the machine
-    /// is `view`: the userspace a CoreCLR process has set up by `Main`
-    /// (`EmulatedKernel.ofView`), with `config`'s C library and spin-wait count.
-    /// `view` must be the view the process's syscalls are made in, and the
-    /// machine in it is changed. Refusals name the knob `knobs.X`, where `knobs`
-    /// names the configuration record that holds it.
-    let kernelOfView
+    /// The kernel of the process `config` describes, the process `pid` of
+    /// `system`: the userspace a CoreCLR process has set up by `Main`
+    /// (`EmulatedKernel.ofProcess`), with `config`'s C library and spin-wait
+    /// count. The machine in `system` is changed. Refusals name the knob
+    /// `knobs.X`, where `knobs` names the configuration record that holds it.
+    let kernelOfProcess
         (knobs : string)
         (config : ProcessConfig)
-        (view : UnixSystem<ThreadId, NativeSignalHandler>)
+        (pid : ProcessId)
+        (system : UnixSystem<ThreadId, NativeSignalHandler>)
         : EmulatedKernel
         =
-        view
-        |> EmulatedKernel.ofView $"%s{knobs}.InheritedSignalIgnores" config.InheritedSignalIgnores
+        system
+        |> EmulatedKernel.ofProcess $"%s{knobs}.InheritedSignalIgnores" config.InheritedSignalIgnores pid
         |> fun kernel ->
             match config.CLibrary with
             | None -> kernel
@@ -2685,8 +2753,8 @@ module MachineConfig =
 
     /// The machine `machine` describes, booted with its first process launched
     /// as `firstProcess` describes it, every setter's validation applied on the
-    /// way: the first process's POSIX system, before any of the process's
-    /// userspace is set up (`ProcessConfig.kernelOfView`). Refusals name the knob
+    /// way: the machine with its one process, before any of the process's
+    /// userspace is set up (`ProcessConfig.kernelOfProcess`). Refusals name the knob
     /// `machineKnobs.X` or `processKnobs.X`, where each names the configuration
     /// record that holds the knob.
     ///
@@ -2711,11 +2779,20 @@ module MachineConfig =
         |> fun system ->
             match machine.PidMax with
             | None -> system
-            | Some pidMax -> UnixSystem.writePidMaxSysctl $"%s{machineKnobs}.PidMax" pidMax system
+            | Some pidMax ->
+                // The kernel names neither knob in its refusals: a Darwin machine has no such
+                // setting, and Linux's sysctl refuses a value outside its range.
+                try
+                    UnixSystem.writePidMaxSysctl pidMax system
+                with
+                | :? System.PlatformNotSupportedException as e ->
+                    failwith $"%s{machineKnobs}.PidMax is %d{pidMax}, but %s{e.Message}"
+                | :? System.ArgumentOutOfRangeException as e ->
+                    failwith $"%s{machineKnobs}.PidMax is %d{pidMax}, but %s{e.Message}"
 
     /// The kernel of the first process on the machine `machine` describes,
     /// launched as `firstProcess` describes it: `bootSystem`, then
-    /// `ProcessConfig.kernelOfView`. Refusals name the knob `machineKnobs.X` or
+    /// `ProcessConfig.kernelOfProcess`. Refusals name the knob `machineKnobs.X` or
     /// `processKnobs.X`, where each names the configuration record that holds
     /// the knob.
     let boot
@@ -2725,8 +2802,10 @@ module MachineConfig =
         (firstProcess : ProcessConfig)
         : EmulatedKernel
         =
-        bootSystem machineKnobs processKnobs machine firstProcess
-        |> ProcessConfig.kernelOfView processKnobs firstProcess
+        let system = bootSystem machineKnobs processKnobs machine firstProcess
+
+        system
+        |> ProcessConfig.kernelOfProcess processKnobs firstProcess (Seq.exactlyOne (UnixSystem.processIds system))
 
 [<RequireQualifiedAccess>]
 module KernelConfig =

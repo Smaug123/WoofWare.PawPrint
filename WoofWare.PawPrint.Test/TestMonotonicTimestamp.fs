@@ -26,6 +26,18 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestMonotonicTimestamp =
 
+    /// `ClockPal.systemTimeAsTicks`, read by the leader of `system`'s one process.
+    let private systemTimeAsTicks (system : UnixSystem<ThreadId, NativeSignalHandler>) : int64 =
+        ClockPal.systemTimeAsTicks (LoneProcess.leader system) system
+
+    /// `ClockPal.monotonicTimestampNanos`, read by the leader of `system`'s one process.
+    let private monotonicTimestampNanos (system : UnixSystem<ThreadId, NativeSignalHandler>) : int64 =
+        ClockPal.monotonicTimestampNanos (LoneProcess.leader system) system
+
+    /// `ClockPal.lowResolutionTimestampMs`, read by the leader of `system`'s one process.
+    let private lowResolutionTimestampMs (system : UnixSystem<ThreadId, NativeSignalHandler>) : int64 =
+        ClockPal.lowResolutionTimestampMs (LoneProcess.leader system) system
+
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private maxClockTicks : int64 = EmulatedKernel.maxVirtualClockTicks
@@ -73,11 +85,11 @@ module TestMonotonicTimestamp =
         // Stopwatch readings change with it. Real CLOCK_MONOTONIC counts from
         // an unspecified origin (system boot on Linux), which is exactly the
         // kind of host dependence PawPrint exists to remove.
-        ClockPal.monotonicTimestampNanos initialMachine |> shouldEqual 0L
+        monotonicTimestampNanos initialMachine |> shouldEqual 0L
 
         for platform in platforms do
-            ClockPal.monotonicTimestampNanos (machineOn platform 0L) |> shouldEqual 0L
-            ClockPal.lowResolutionTimestampMs (machineOn platform 0L) |> shouldEqual 0L
+            monotonicTimestampNanos (machineOn platform 0L) |> shouldEqual 0L
+            lowResolutionTimestampMs (machineOn platform 0L) |> shouldEqual 0L
 
     [<Test>]
     let ``maxVirtualClockTicks is the last tick whose nanoseconds fit an int64`` () =
@@ -114,7 +126,7 @@ module TestMonotonicTimestamp =
 
             platforms
             |> List.forall (fun platform ->
-                decimal (ClockPal.monotonicTimestampNanos (machineOn platform clockTicks)) = expected
+                decimal (monotonicTimestampNanos (machineOn platform clockTicks)) = expected
             )
 
         Check.One (propertyConfig, Prop.forAll int64s property)
@@ -137,9 +149,9 @@ module TestMonotonicTimestamp =
             |> List.forall (fun platform ->
                 let machine = machineOn platform (intoRange maxClockTicks seed)
 
-                let hiResMs = ClockPal.monotonicTimestampNanos machine / 1_000_000L
+                let hiResMs = monotonicTimestampNanos machine / 1_000_000L
 
-                hiResMs = ClockPal.lowResolutionTimestampMs machine
+                hiResMs = lowResolutionTimestampMs machine
             )
 
         Check.One (propertyConfig, Prop.forAll int64s property)
@@ -160,8 +172,7 @@ module TestMonotonicTimestamp =
                 7L * ClockPal.ticksPerMillisecond - 1L, 6L
             ] do
             for platform in platforms do
-                ClockPal.lowResolutionTimestampMs (machineOn platform ticks)
-                |> shouldEqual expected
+                lowResolutionTimestampMs (machineOn platform ticks) |> shouldEqual expected
 
     [<Test>]
     let ``the wall-clock epoch cannot perturb the monotonic clock`` () =
@@ -184,9 +195,7 @@ module TestMonotonicTimestamp =
                      |> EmulatedKernel.withVirtualClockTicks clockMs)
                         .System
 
-                ClockPal.monotonicTimestampNanos shifted = ClockPal.monotonicTimestampNanos (
-                    machineOn platform clockMs
-                )
+                monotonicTimestampNanos shifted = monotonicTimestampNanos (machineOn platform clockMs)
             )
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
@@ -210,12 +219,11 @@ module TestMonotonicTimestamp =
             let second = intoRange bound secondSeed
 
             let elapsedNanos =
-                ClockPal.monotonicTimestampNanos (machineWith second)
-                - ClockPal.monotonicTimestampNanos (machineWith first)
+                monotonicTimestampNanos (machineWith second)
+                - monotonicTimestampNanos (machineWith first)
 
             let elapsedTicks =
-                ClockPal.systemTimeAsTicks (machineWith second)
-                - ClockPal.systemTimeAsTicks (machineWith first)
+                systemTimeAsTicks (machineWith second) - systemTimeAsTicks (machineWith first)
 
             elapsedNanos / nanosPerTick = elapsedTicks
 
@@ -232,9 +240,9 @@ module TestMonotonicTimestamp =
 
             platforms
             |> List.forall (fun platform ->
-                let firstNanos = ClockPal.monotonicTimestampNanos (machineOn platform first)
+                let firstNanos = monotonicTimestampNanos (machineOn platform first)
 
-                let secondNanos = ClockPal.monotonicTimestampNanos (machineOn platform second)
+                let secondNanos = monotonicTimestampNanos (machineOn platform second)
 
                 compare firstNanos secondNanos = compare first second
             )
@@ -248,7 +256,7 @@ module TestMonotonicTimestamp =
         let property (seed : int64) : bool =
             platforms
             |> List.forall (fun platform ->
-                ClockPal.monotonicTimestampNanos (machineOn platform (intoRange maxClockTicks seed))
+                monotonicTimestampNanos (machineOn platform (intoRange maxClockTicks seed))
                 >= 0L
             )
 
@@ -265,7 +273,7 @@ module TestMonotonicTimestamp =
             platforms
             |> List.forall (fun platform ->
                 let nanos =
-                    ClockPal.monotonicTimestampNanos (machineOn platform (intoRange maxClockTicks seed))
+                    monotonicTimestampNanos (machineOn platform (intoRange maxClockTicks seed))
 
                 nanos % ClockPal.nanosecondsPerTick = 0L
             )
@@ -289,7 +297,7 @@ module TestMonotonicTimestamp =
         let property (clockMs : int64) : bool =
             let derivable = clockMs >= 0L && clockMs <= maxClockTicks
 
-            succeeds (fun () -> ClockPal.monotonicTimestampNanos (machineWith clockMs)) = derivable
+            succeeds (fun () -> monotonicTimestampNanos (machineWith clockMs)) = derivable
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -306,7 +314,7 @@ module TestMonotonicTimestamp =
             kernelOn SimulatedUnixPlatform.linuxX64 EmulatedKernel.maxVirtualClockTicks
 
         // The horizon itself is legal: a reading can still be derived from it.
-        ClockPal.monotonicTimestampNanos atHorizon.System |> shouldBeGreaterThan 0L
+        monotonicTimestampNanos atHorizon.System |> shouldBeGreaterThan 0L
 
         let beyond () =
             EmulatedKernel.withVirtualClockTicks (EmulatedKernel.maxVirtualClockTicks + 1L) atHorizon
