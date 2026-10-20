@@ -4744,6 +4744,149 @@ public static class Uses
         // Answering at all is the claim: it is a summary rather than a crash.
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
 
+    /// A client compiled against one version of a provider, run against another lacking a type
+    /// that a type of the client derives from, implements or holds. The JIT loads in full each type
+    /// a token names, and each type argument of a method it instantiates, before the body runs, so
+    /// the load's `TypeLoadException` comes out of the caller, past the client's own `catch`. The
+    /// host's CoreCLR, running each method against the same two assemblies, says which fail.
+    [<Test>]
+    let ``a type a token names fails to load where what it derives from, implements or holds is gone`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public interface IGone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let client =
+            """
+using System.Collections.Generic;
+
+namespace Client;
+
+public class DerivesFromKept : Provider.Kept { }
+public class DerivesFromGone : Provider.Gone { }
+public class ImplementsGone : Provider.IGone { }
+public struct HoldsGone { public Provider.GoneStruct G; }
+
+public static class Uses
+{
+    static void Generic<T>() { }
+    public static bool IsDerivesFromKept(object o) => o is DerivesFromKept;
+    public static bool IsDerivesFromGone(object o) => o is DerivesFromGone;
+    public static System.Type TypeOfDerivesFromGone() => typeof(DerivesFromGone);
+    public static bool IsImplementsGone(object o) => o is ImplementsGone;
+    public static object ArrayOfHoldsGone() => new HoldsGone[1];
+    public static object BoxHoldsGone() => default(HoldsGone);
+    public static bool IsListOfDerivesFromGone(object o) => o is List<DerivesFromGone>;
+    public static void InstantiateWithDerivesFromGone() { Generic<DerivesFromGone>(); }
+    public static bool CaughtIsDerivesFromGone(object o)
+    {
+        try { return o is DerivesFromGone; }
+        catch (System.TypeLoadException) { return false; }
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let clientImage = compile "Client" [ completeProvider ] client
+
+        let methods =
+            [
+                "IsDerivesFromKept", false
+                "IsDerivesFromGone", true
+                "TypeOfDerivesFromGone", true
+                "IsImplementsGone", true
+                "ArrayOfHoldsGone", true
+                "BoxHoldsGone", true
+                "IsListOfDerivesFromGone", true
+                "InstantiateWithDerivesFromGone", true
+                "CaughtIsDerivesFromGone", true
+            ]
+
+        // Whether each method throws `TypeLoadException` on the host's CoreCLR.
+        let hostThrows : Map<string, bool> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("TypeTokenLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    if name.Name = "Provider" then
+                        context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    else
+                        null
+                )
+            )
+
+            try
+                let uses =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Uses"
+
+                methods
+                |> List.map (fun (name, _) ->
+                    let method = uses.GetMethod name
+
+                    // Reflection passes a null argument to a value-type parameter as its default.
+                    let arguments : obj[] = Array.create (method.GetParameters ()).Length null
+
+                    let throws =
+                        try
+                            method.Invoke ((null : obj), arguments) |> ignore<obj>
+                            false
+                        with :? TargetInvocationException as e ->
+                            e.InnerException :? TypeLoadException
+
+                    name, throws
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let providerReference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference providerReference providerAssembly))
+
+        let failures =
+            [
+                for name, expected in methods do
+                    if hostThrows.[name] <> expected then
+                        yield $"%s{name}: the host throws TypeLoadException %b{hostThrows.[name]}, not %b{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.TypeLoadException" <> expected then
+                        yield $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
