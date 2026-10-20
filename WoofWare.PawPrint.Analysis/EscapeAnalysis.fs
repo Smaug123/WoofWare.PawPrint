@@ -407,6 +407,9 @@ type EscapeAnalysisState =
             /// Whether dispatch on a receiver of each type definition can be resolved, as far as it
             /// has been asked (`dispatchBinds`).
             DispatchBinds : Map<ResolvedTypeIdentity, bool>
+            /// The first type reference CoreCLR's full load of each type definition reaches that
+            /// names nothing (`TypeLoad.loadMiss`), as far as it has been asked.
+            TypeLoads : Map<ResolvedTypeIdentity, TypeLoad.LoadMiss option>
             Summaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
@@ -561,6 +564,7 @@ module EscapeAnalysis =
             Facts = Map.empty
             InstanceCalls = Map.empty
             DispatchBinds = Map.empty
+            TypeLoads = Map.empty
             Summaries = Map.empty
             Bases = Map.empty
             Returns = Map.empty
@@ -1584,6 +1588,75 @@ module EscapeAnalysis =
             | None -> spellingBindFailure state assembly spelling
         )
 
+    /// Why CoreCLR's full load of a type `assembly` spells fails, at the first type reference it
+    /// reaches that names nothing (`TypeLoad.loadMiss`): the base classes, interfaces and value-type
+    /// fields of each type it names, transitively, as well as the references it spells. The JIT
+    /// loads so each type a token names and each type argument of a method it instantiates. `None`
+    /// if no reference the load reaches fails to bind.
+    let private spellingLoadFailure
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * BindFailure option
+        =
+        let ofMiss (miss : TypeLoad.LoadMiss) : BindFailure =
+            match miss with
+            | TypeLoad.LoadMiss.TypeAbsent _ -> BindFailure.TypeAbsent
+            | TypeLoad.LoadMiss.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
+
+        let load (state : EscapeAnalysisState) (spellingAssembly : DumpedAssembly) (spelling : TypeDefn) =
+            let assemblies, miss =
+                TypeLoad.loadMiss
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    spellingAssembly
+                    spelling
+                    state.TypeSystem._LoadedAssemblies
+
+            withAssemblies state assemblies, miss
+
+        // A type definition's load is memoised; it is the same wherever a token names it.
+        let ofDefinition (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
+            match state.TypeLoads.TryFind identity with
+            | Some miss -> state, Option.map ofMiss miss
+            | None ->
+                let state, miss =
+                    load
+                        state
+                        (assemblyOf state identity.AssemblyFullName)
+                        (TypeDefn.FromDefinition (identity, SignatureTypeKind.Unknown))
+
+                { state with
+                    TypeLoads = state.TypeLoads.Add (identity, miss)
+                },
+                Option.map ofMiss miss
+
+        match TypeDefn.stripCustomModifiers spelling with
+        | TypeDefn.FromDefinition (identity, _) -> ofDefinition state identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            match bindTypeRef state assembly typeRef with
+            | state, TypeReferenceIdentity.Resolved identity -> ofDefinition state identity
+            | state, TypeReferenceIdentity.TypeAbsent _ -> state, Some BindFailure.TypeAbsent
+            | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, Some BindFailure.AssemblyUnavailable
+        | _ ->
+            let state, miss = load state assembly spelling
+            state, Option.map ofMiss miss
+
+    /// The first of `spellings`, in order, whose full load fails (`spellingLoadFailure`), and why.
+    let private firstLoadFailure
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spellings : TypeDefn seq)
+        : EscapeAnalysisState * BindFailure option
+        =
+        ((state, None), spellings)
+        ||> Seq.fold (fun (state, failure) spelling ->
+            match failure with
+            | Some _ -> state, failure
+            | None -> spellingLoadFailure state assembly spelling
+        )
+
     /// The types a method signature spells: its return type, if any, and its parameters'.
     let private signatureTypes (signature : TypeMethodSignature<TypeDefn>) : TypeDefn list =
         match signature.ReturnType with
@@ -1818,7 +1891,7 @@ module EscapeAnalysis =
             let state, target = callTarget state assembly token
             let target = Some target
 
-            let state, argumentsFailure = firstBindFailure state assembly spec.Signature
+            let state, argumentsFailure = firstLoadFailure state assembly spec.Signature
             state, target, raisesOf argumentsFailure @ failures
         | MetadataToken.MemberReference handle ->
             // Resolving the member reads only the parent's definition, but binding the reference
@@ -1876,9 +1949,18 @@ module EscapeAnalysis =
                     | FieldReferenceTarget.Defined _ -> state, None, []
 
             state, target, raisesOf parentFailure @ failures
+        // The JIT loads the type a type token names in full.
+        | MetadataToken.TypeDefinition handle ->
+            let state, failure =
+                spellingLoadFailure
+                    state
+                    assembly
+                    (TypeDefn.FromDefinition (assembly.TypeDefs.[handle].Identity, SignatureTypeKind.Unknown))
+
+            state, None, raisesOf failure
         | MetadataToken.TypeReference handle ->
             let state, failure =
-                spellingBindFailure
+                spellingLoadFailure
                     state
                     assembly
                     (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
@@ -1886,7 +1968,7 @@ module EscapeAnalysis =
             state, None, raisesOf failure
         | MetadataToken.TypeSpecification handle ->
             let state, failure =
-                spellingBindFailure state assembly assembly.TypeSpecs.[handle].Signature
+                spellingLoadFailure state assembly assembly.TypeSpecs.[handle].Signature
 
             state, None, raisesOf failure
         | MetadataToken.StandaloneSignature handle ->
