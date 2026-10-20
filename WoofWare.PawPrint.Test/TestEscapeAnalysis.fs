@@ -2783,7 +2783,7 @@ public static class Cases
             let value = "=Client.Value"
             let reference = "=Client.Reference"
 
-            let analysis, failures =
+            let _, failures =
                 unmet
                     analysis
                     fixture
@@ -2796,20 +2796,18 @@ public static class Cases
                             Contains = [ reference ]
                             Excludes = [ value ]
                         }
+                        // CoreCLR cannot load `DerivedFromGone`, so the method that names it fails
+                        // before it runs, and an instance asking of it is never made.
+                        { expect "Client.Cases" "OfDerivedFromGone" with
+                            Contains = [ "=System.TypeLoadException" ]
+                        }
+                        { expect "Client.Cases" "WithDerivedFromGone" with
+                            Contains = [ "=System.TypeLoadException" ]
+                        }
                     ]
 
             if not failures.IsEmpty then
                 failures |> String.concat Environment.NewLine |> failwith
-
-            let mutable analysis = analysis
-
-            // CoreCLR cannot load `DerivedFromGone`, so no instance asking of it runs. Answering at
-            // all is the claim: it is a summary rather than a crash.
-            for name in [ "OfDerivedFromGone" ; "WithDerivedFromGone" ] do
-                let next, _ =
-                    EscapeAnalysis.escapes analysis (methodNamed fixture "Client.Cases" name)
-
-                analysis <- next
         finally
             directory.Delete true
 
