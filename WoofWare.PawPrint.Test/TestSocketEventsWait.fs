@@ -217,13 +217,15 @@ class WaitsOnADuplicatedPort
         let prepared, _ = deadlock.Force ()
         let thread, _ = parkedThread prepared.State
 
+        // The guest's other thread, asleep outside the kernel, so free to make calls: in
+        // `Thread.Sleep`'s own wait, which each runtime's CoreLib blocks in its own way.
         let sleeper =
             prepared.State.ThreadState
             |> Map.toList
             |> List.choose (fun (tid, ts) ->
                 match ts.Status with
-                | ThreadStatus.BlockedOnSleep None -> Some tid
-                | _ -> None
+                | ThreadStatus.BlockedInSyscall -> None
+                | _ -> Some tid
             )
             |> List.exactlyOne
 

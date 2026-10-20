@@ -362,12 +362,20 @@ module MultiProgram =
     /// every deadline, the kernel answers without asking any condition. A woken thread of an
     /// idle program is only flipped to Runnable: its call is finished when it next runs.
     ///
-    /// A Debug build checks every program's kept syscall sleepers (`checkSleepers`) at every
-    /// tick.
+    /// Fails loudly, at every tick, if a thread any program keeps as parked in a syscall has no
+    /// park on the machine (`Scheduler.requireWaitersParked`). A Debug build also checks every
+    /// program's kept syscall sleepers against its thread states (`checkSleepers`).
     let private wakeSyscalls (alsoWoken : Caller<ThreadId> list) (driver : MultiProgram) : MultiProgram =
 #if DEBUG
         checkSleepers driver
 #endif
+
+        let machine = driver.Current.State.Kernel.System
+        Scheduler.requireWaitersParked machine driver.Current.State
+
+        if not driver.Idle.IsEmpty then
+            driver.Idle
+            |> Map.iter (fun _ program -> Scheduler.requireWaitersParked machine program.State)
 
         let driver =
             if alsoWoken.IsEmpty then

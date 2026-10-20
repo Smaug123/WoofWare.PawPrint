@@ -613,6 +613,23 @@ module Scheduler =
              | _ -> acc
          ))
 
+    /// Fails loudly if a thread `state` keeps as parked in a syscall (`IlMachineState._SyscallSleepers`)
+    /// has no park in `machine`, the machine its process runs on: no wake could ever find it, so it
+    /// would sleep for ever with nothing to say what it waits for. Reads only the kept threads, so a
+    /// driver may ask it at every tick.
+    let requireWaitersParked (machine : UnixSystem<ThreadId, NativeSignalHandler>) (state : IlMachineState) : unit =
+        let waiters = state._SyscallSleepers.Waiters
+
+        if not waiters.IsEmpty then
+            let tasks = UnixSystem.threads state.Kernel.ProcessId machine
+
+            for tid in waiters do
+                match Map.tryFind tid tasks |> Option.bind UnixThreadState.parkedIn with
+                | Some _ -> ()
+                | None ->
+                    failwith
+                        $"Scheduler.requireWaitersParked: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
+
     /// Fails loudly unless the syscall sleepers `state` keeps (`IlMachineState._SyscallSleepers`)
     /// are the ones `syscallWaiters` derives from its thread states and its kernel's parks.
     let checkSyscallSleepers (state : IlMachineState) : unit =
