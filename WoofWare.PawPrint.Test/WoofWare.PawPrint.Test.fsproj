@@ -163,6 +163,7 @@
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
     <Compile Include="TestAmbiguousDefaultInterfaceDispatch.fs" />
     <Compile Include="TestTypeLoad.fs" />
+    <Compile Include="TestJitTypeLoads.fs" />
     <Compile Include="TestDispatchReadsNoBody.fs" />
     <Compile Include="TestGcReferences.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />

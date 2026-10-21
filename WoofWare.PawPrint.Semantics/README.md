@@ -84,6 +84,24 @@ What lives here:
   analyser can follow the call into it. `TestStringConstructor` checks that every constructor in
   both CoreLibs has one, and that a fabricated type's constructor has one only when exactly one
   static `Ctor` takes its parameters and returns a string.
+* `JitTypeLoads` — which types the JIT loads when it compiles a method, by where each appears: a
+  local, the method's own signature, a callee's, a field's type, a type token, a member's owner.
+  CoreCLR hands the JIT only fully loaded types, so a type that fails to load there fails the
+  compilation, and its exception comes out of the call to the method, past every handler the
+  method has. Some it loads in full; the value types of the signature of a method whose address
+  becomes a function pointer it loads only where their references name a definition; some, a
+  local pointer or a callee's class parameter, it does not load at all. Whether a load fails is
+  the Loader's `TypeLoad` to say. Taking a method's address loads the value types of its signature
+  before its return type, or not at all, depending on the instruction and what becomes of the
+  address, or only if the JIT asks for the address itself, which it may not, folding it away or
+  looking it up in shared code, or may do while compiling a method it inlines this one into, or
+  only if it resolves the implementation a `constrained.` prefix names: those are loads it may make
+  (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
+  parameters' targets too. What a call of unmanaged code loads, and what making a delegate over a
+  static method loads, it does not describe. `TestJitTypeLoads` puts each of a grammar of types
+  that load, fail to load or live in a missing assembly at each position, runs every probe on the
+  host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
+  rule and `TypeLoad` say, with the same exception.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
