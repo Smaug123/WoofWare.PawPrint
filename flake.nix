@@ -28,7 +28,7 @@
       # - `expectedRuntimeVersion` is the version we emulate. It must equal `runtime.version`
       #   (enforced by the `runtime-version-pin-<name>` checks below). For each runtime
       #   `EmulatedRuntime` has a case for, the same build is pinned in
-      #   WoofWare.PawPrint/EmulatedRuntime.fs (`EmulatedRuntime.pin`), as the build identity the
+      #   WoofWare.PawPrint.Semantics/EmulatedRuntime.fs (`EmulatedRuntime.pin`), as the build identity the
       #   CoreLib's AssemblyInformationalVersion states (e.g. "10.0.12-servicing.26422.108"); the
       #   TestEmulatedRuntime drift test compares that against the CoreLib the suite loads. When
       #   nixpkgs bumps a runtime, bump all of that runtime's pins together.
@@ -229,7 +229,7 @@
         # check` in CI) when nixpkgs's version of that runtime drifts away from the version we pin.
         # Forces a deliberate bump of that runtime's `sourceRev` and `sourceHash`,
         # `expectedRuntimeVersion`, `linuxFrameworkHash`, and (for a runtime `EmulatedRuntime` has a
-        # case for) `EmulatedRuntime.pin` in WoofWare.PawPrint/EmulatedRuntime.fs in lockstep.
+        # case for) `EmulatedRuntime.pin` in WoofWare.PawPrint.Semantics/EmulatedRuntime.fs in lockstep.
         // pkgs.lib.mapAttrs' (name: pin:
           pkgs.lib.nameValuePair "runtime-version-pin-${name}"
           (pkgs.runCommand "runtime-version-pin-${name}" {}
@@ -237,7 +237,7 @@
               if pin.runtime.version != pin.expectedRuntimeVersion
               then ''
                 echo "Runtime pin drift for ${name}: nixpkgs provides ${pin.runtime.version} but expectedRuntimeVersion = ${pin.expectedRuntimeVersion}." >&2
-                echo "Bump ${name}'s sourceRev (to the public v<new> tag commit), sourceHash, expectedRuntimeVersion and linuxFrameworkHash, and EmulatedRuntime.pin in WoofWare.PawPrint/EmulatedRuntime.fs, together." >&2
+                echo "Bump ${name}'s sourceRev (to the public v<new> tag commit), sourceHash, expectedRuntimeVersion and linuxFrameworkHash, and EmulatedRuntime.pin in WoofWare.PawPrint.Semantics/EmulatedRuntime.fs, together." >&2
                 exit 1
               ''
               else if pin ? aspNetCore && pin.aspNetCore.version != pin.expectedRuntimeVersion

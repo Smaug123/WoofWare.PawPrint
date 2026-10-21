@@ -18,7 +18,6 @@
 
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
-    <Compile Include="EmulatedRuntime.fs" />
     <Compile Include="LoaderAllocator.fs" />
     <Compile Include="DynamicAssemblyImage.fs" />
     <Compile Include="Tuple.fs" />
