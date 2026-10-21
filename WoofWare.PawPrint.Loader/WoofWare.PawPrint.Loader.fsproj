@@ -27,6 +27,7 @@
         <Compile Include="AssemblyLoad.fs" />
         <Compile Include="BaseChainLoading.fs" />
         <Compile Include="AssemblyProbe.fs" />
+        <Compile Include="AssemblyBinding.fs" />
         <Compile Include="TypeResolution.fs" />
         <Compile Include="SignatureComparison.fs" />
         <Compile Include="TypeLoad.fs" />

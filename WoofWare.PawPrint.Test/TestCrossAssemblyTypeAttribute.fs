@@ -52,7 +52,7 @@ using TypeAttrCross;
 // The blob names `Decorated` unqualified: it is a type of this assembly, which is neither the
 // attribute's assembly nor CoreLib, so resolving it against either of those fails. (A type of
 // TypeAttrCross.AttrLib would be written assembly-qualified and bind through
-// `RuntimeAssembly.InternalLoad`, which is out of reach; see CustomAttributeTypeArgForeign.cs.)
+// `RuntimeAssembly.InternalLoad`, which CustomAttributeTypeArgForeign.cs covers.)
 [Target(typeof(Decorated), 1)]
 public class Decorated
 {
