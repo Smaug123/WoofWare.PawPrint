@@ -29,10 +29,6 @@ module Net11Frontier =
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."
 
-    /// The checked-in hardware-intrinsic table is .NET 10's.
-    let hardwareIntrinsicTable : string =
-        "`HardwareIntrinsicTable.tsv` reproduces .NET 10's JIT tables. .NET 11's `hwintrinsiclistarm64.h` has rows of a shape the reader does not parse, and .NET 11 adds instruction sets no row covers (Arm `Sha3`, x64 `Avx512Bmm`, `AvxVnni.V512`, `X86Base.X64.BigMul`). Un-park when the table is kept per runtime."
-
     /// The checked-in native contract table is .NET 10's.
     let nativeContractTable : string =
         "`NativeContractTable.tsv` was read from .NET 10's source, and has rows for natives .NET 11 does not have: the `Environment.get_CurrentManagedThreadId` FCall, which .NET 11's CoreLib does not declare (it reads a thread-static instead), citing `JIT_GetCurrentManagedThreadId`, which .NET 11's VM does not define; and `Monitor`'s `TryEnter_FastPath` and `Exit_FastPath` FCalls and `Monitor_Enter_Slowpath` and `Monitor_Exit_Slowpath` QCalls, which .NET 11 replaces with its managed thin lock, the third of which runs `SynchronizationContext.InvokeWaitMethodHelper`, which .NET 11's binder does not name and its CoreLib does not define. Un-park when the table is kept per runtime."

@@ -391,6 +391,8 @@ type EscapeAnalysisState =
             /// query answers, and whether a hardware instruction is emitted or throws.
             Target : JitTarget
             Profile : HardwareIntrinsicsProfile
+            /// The runtime whose JIT compiles the code: the one the CoreLib belongs to.
+            Runtime : EmulatedRuntime
             /// The assumptions the analysis may take a contract from in place of a method's body.
             Assumptions : Set<Assumption>
             /// Whether a callee's summary takes the classes of the objects its caller passes it
@@ -523,10 +525,11 @@ module EscapeAnalysis =
 
     /// Begin an analysis over the assemblies `context` has loaded, loading any others it needs from
     /// `runtimeDirs`, of what they do when CoreCLR's JIT compiles them for `target` on a CPU
-    /// `profile` describes. `profile` must not mark as supported a class of another target's
-    /// instruction sets: CoreLib gives those bodies that throw, whatever the CPU. The analysis takes
-    /// the contract of each of `assumptions` in place of the method it summarises; with none, every
-    /// answer follows from the code alone.
+    /// `profile` describes. The JIT is that of the runtime `context`'s CoreLib belongs to, which
+    /// must be one PawPrint supports. `profile` must not mark as supported a class of another
+    /// target's instruction sets: CoreLib gives those bodies that throw, whatever the CPU. The
+    /// analysis takes the contract of each of `assumptions` in place of the method it summarises;
+    /// with none, every answer follows from the code alone.
     let create
         (loggerFactory : ILoggerFactory)
         (runtimeDirs : string seq)
@@ -548,11 +551,20 @@ module EscapeAnalysis =
                     (nameof profile)
                     $"The profile marks %O{intrinsicClass} supported, but the JIT compiles for %A{target}"
 
+        let runtime =
+            match EmulatedRuntime.classify context.BaseTypes.Corelib with
+            | Ok runtime -> runtime
+            | Error unsupported ->
+                invalidArg
+                    (nameof context)
+                    $"The CoreLib %s{unsupported.CoreLib} is .NET major %d{unsupported.FoundMajor}, whose JIT the analysis does not describe; it describes %s{EmulatedRuntime.describeSupported ()}"
+
         {
             LoggerFactory = loggerFactory
             RuntimeDirs = List.ofSeq runtimeDirs
             Target = target
             Profile = profile
+            Runtime = runtime
             Assumptions = assumptions
             ArgumentContexts = true
             TypeSystem =
@@ -3070,7 +3082,9 @@ module EscapeAnalysis =
                         | SelfCallExpansion.Primitive primitive ->
                             raisedHere (contractRaises state (IntrinsicPrimitive.contract primitive))
                         | SelfCallExpansion.HardwareInstruction intrinsicClass ->
-                            match HardwareInstruction.contract state.Target intrinsicClass method.Name with
+                            match
+                                HardwareInstruction.contract state.Runtime state.Target intrinsicClass method.Name
+                            with
                             | InstructionContract.Raises faults ->
                                 let state, raises, opaque, calls =
                                     faults |> Set.toList |> List.choose (instructionRaises state) |> raisedHere

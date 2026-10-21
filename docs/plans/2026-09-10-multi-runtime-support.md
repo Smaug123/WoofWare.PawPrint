@@ -833,8 +833,16 @@ mutation-testing skill applies to each table/classifier they introduce.
    * `ExceptionMaking` per runtime: on real RC1 an exception escaping the making of a fault's or
      a failed bind's exception aborts the process, and a failed message lookup no longer
      replaces a `TypeInitializationException`;
-   * the tables read from one runtime's source, kept per runtime: `HardwareIntrinsicTable.tsv`
-     (a changed row shape in `hwintrinsiclistarm64.h`, and new ISAs), `NativeContractTable.tsv`
+   * **(landed)** the JIT's hardware-intrinsic tables, kept per runtime:
+     `HardwareIntrinsicTable.Net10.tsv` and `.Net11.tsv`, each regenerated from its runtime's
+     source by a reader that follows the headers' `#include`s and conditionals (RC1 drops the
+     braces around a row's instructions, adds two cost columns, and moves the `Vector*` rows into
+     the shared `hwintrinsiclist.h`). `HardwareInstruction` also maps classes to instruction sets
+     per runtime: RC1 folds SSE3 to SSE4.2 and POPCNT into `X86Base`, falls back from `AvxVnni`
+     to AVX512v3, and adds Arm's `Sha3`, `Sm4`, `SveAes`, `SveSha3` and `SveSm4` and x64's
+     `Avx512Bmm`. `EmulatedRuntime` moved to `WoofWare.PawPrint.Semantics` so that these, and the
+     escape analysis, which reads the runtime from its CoreLib, can be keyed on it;
+   * the other tables read from one runtime's source, kept per runtime: `NativeContractTable.tsv`
      (the `get_CurrentManagedThreadId` FCall and the four `Monitor` natives, which RC1 dropped), and the escape analysis's
      resource-lookup assumption (`Environment.GetResourceStringLocal` is gone);
    * the escape analysis's helpers around a synchronized method, per runtime: RC1's JIT calls

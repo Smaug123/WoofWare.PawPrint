@@ -4305,7 +4305,13 @@ public static class Cases
                             if not (shown.Contains wanted) then
                                 failures.Add $"%s{describe ()} lacks %s{wanted}: the CPU lacks the instruction"
                     | SelfCallExpansion.HardwareInstruction intrinsicClass ->
-                        match HardwareInstruction.contract target intrinsicClass method.Name with
+                        match
+                            HardwareInstruction.contract
+                                (EmulatedRuntime.ofCoreLib corelib)
+                                target
+                                intrinsicClass
+                                method.Name
+                        with
                         | InstructionContract.Unknown ->
                             if not escapes.Unknown then
                                 failures.Add $"%s{describe ()}: the JIT's tables do not say what it raises"

@@ -4,10 +4,10 @@ open System.Collections.Immutable
 
 /// A .NET runtime whose host contract PawPrint implements: the allowlist of supported runtimes.
 ///
-/// The managed BCL is loaded from the guest's own assemblies, so the only runtime-specific
-/// behaviour PawPrint itself supplies is the native/extern boundary (see the `Native/` and
-/// `ExternImplementations/` directories). A case of this type names one version of that
-/// boundary.
+/// The managed BCL is loaded from the guest's own assemblies, so the runtime-specific behaviour
+/// PawPrint itself supplies is the native/extern boundary (see the `Native/` and
+/// `ExternImplementations/` directories) and what CoreCLR's JIT makes of the IL it compiles (such
+/// as `HardwareInstruction`'s tables). A case of this type names one version of each.
 ///
 /// Which case a run uses is not configured: it is a function of the CoreLib the run actually
 /// loaded, read by `EmulatedRuntime.ofCoreLib` from that image's `AssemblyVersion` major. The
