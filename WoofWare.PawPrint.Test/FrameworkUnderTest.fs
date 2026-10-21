@@ -309,6 +309,24 @@ module FrameworkUnderTest =
             failwith "unreachable: Assert.Ignore did not throw"
         | Error error -> failwith $"%s{name runtime}'s CoreLib cannot be read: %s{describe error}"
 
+    /// `runtime`'s shared framework directory, whichever runtime is under test, for a fixture that
+    /// measures one runtime's native libraries on this host. A runtime whose framework only the Nix
+    /// devshell names ignores the calling test outside it.
+    let requireSharedFrameworkDirectoryOf (runtime : EmulatedRuntime) : string =
+        match locate runtime with
+        | Ok selected -> selected.SharedFrameworkDirectory
+        | Error (FrameworkUnderTestError.Unlocated (_, variable)) ->
+            Assert.Ignore $"%s{variable} is unset; run under `nix develop` to load %s{name runtime}'s framework."
+            failwith "unreachable: Assert.Ignore did not throw"
+        | Error error -> failwith $"%s{name runtime}'s framework cannot be located: %s{describe error}"
+
+    /// `runtime`'s pinned dotnet/runtime source, whichever runtime is under test; outside the Nix
+    /// devshell, the calling test is ignored.
+    let requireRuntimeSourceOf (runtime : EmulatedRuntime) : string =
+        requireDevshellDirectory
+            (runtimeSourceVariable runtime)
+            $"check against %s{name runtime}'s pinned upstream sources"
+
     /// The `DotnetRuntimeDirs` to run a guest along. A caller may put directories ahead of these
     /// (the guest's own siblings, say); if one of them holds a CoreLib, the guest runs on that
     /// CoreLib instead, and `assertServes` is what checks it is still the runtime under test's.

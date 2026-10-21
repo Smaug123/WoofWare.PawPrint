@@ -85,7 +85,7 @@ module TestFileSystemTypePal =
                     $"FileSystemTypePal maps %s{name} to 0x%X{value}, but the pinned pal_io.c maps it to 0x%X{upstream}."
             | None -> failwith $"FileSystemTypePal has a row for %s{name}, which the pinned pal_io.c does not."
 
-    let private everyCoherentPair : (SimulatedUnixFlavour * EmulatedFileSystemType) list =
+    let everyCoherentPair : (SimulatedUnixFlavour * EmulatedFileSystemType) list =
         [
             SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Tmpfs
             SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Nfs
@@ -93,7 +93,7 @@ module TestFileSystemTypePal =
             SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Nfs
         ]
 
-    let private everyTarget : OpenFileObject option list =
+    let everyTarget : OpenFileObject option list =
         [
             Some (OpenFileObject.File (InodeNumber 7L))
             Some (OpenFileObject.Socket (SocketId 1L))
@@ -103,12 +103,12 @@ module TestFileSystemTypePal =
         ]
 
     /// The objects only Darwin has, which a Linux machine is never asked about.
-    let private darwinOnlyTargets : OpenFileObject option list =
+    let darwinOnlyTargets : OpenFileObject option list =
         [ Some (OpenFileObject.Kqueue (OpenFileDescriptionId 3L)) ]
 
     /// What `SystemNative_GetFileSystemType` returns: the PAL's number, or 0 for
     /// any failure.
-    let private shimAnswer (answer : FileSystemStatisticsAnswer) : uint32 =
+    let shimAnswer (answer : FileSystemStatisticsAnswer) : uint32 =
         match answer with
         | FileSystemStatisticsAnswer.Reported statistics ->
             FileSystemTypePal.ofFields (FileSystemStatistics.typeFields statistics)
@@ -117,7 +117,7 @@ module TestFileSystemTypePal =
     /// What the library's `fstatfs` answers for `target` on a machine of
     /// `flavour` whose mount is a default one of `fsType`; `None` is a
     /// descriptor the process does not hold.
-    let private modelAnswer
+    let modelAnswer
         (flavour : SimulatedUnixFlavour)
         (fsType : EmulatedFileSystemType)
         (target : OpenFileObject option)

@@ -270,6 +270,7 @@
     <Compile Include="TestNotifyEventsPal.fs" />
     <Compile Include="TestOpenFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
+    <Compile Include="TestFileLockingPal.fs" />
     <Compile Include="TestFileStatusPal.fs" />
     <Compile Include="TestDirectoryEntryPal.fs" />
     <Compile Include="TestSocketShimPal.fs" />

@@ -13,10 +13,6 @@ module Net11Frontier =
     let isAsyncMethod : string =
         "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
-    /// .NET 11's `FileStream` asks whether the filesystem supports locking.
-    let fileSystemSupportsLocking : string =
-        "On .NET 11, opening a file through `SafeFileHandle` asks `Interop.Sys.FileSystemSupportsLocking` (SafeFileHandle.Unix.cs:528), the `SystemNative_FileSystemSupportsLocking` P/Invoke, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_FileSystemSupportsLocking)\". Un-park when the emulated kernel answers it."
-
     /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
     let inlineArrayOfReferences : string =
         "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."

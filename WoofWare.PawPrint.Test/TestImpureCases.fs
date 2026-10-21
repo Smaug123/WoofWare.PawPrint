@@ -5159,16 +5159,6 @@ module TestImpureCases =
             yield!
                 [ "SignalRetryKeepsShimCopies.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
-            yield!
-                [
-                    "CopyFileWiringDarwinSeeded.cs"
-                    "CopyFileWiringLinuxSeeded.cs"
-                    "FileSystemTypeNfs.cs"
-                    "ForeignOwnedSeed.cs"
-                    "TruncateWiringDarwinSeeded.cs"
-                    "TruncateWiringLinuxSeeded.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.fileSystemSupportsLocking)
             "DynamicAssemblyHosting.cs",
             """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
         ]
@@ -5339,8 +5329,6 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
-        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
-
         // An overwrite onto a link reaches SystemNative_CopyFile whichever
         // CoreLib runs it (see the guest), and on a Darwin kernel that shim is
         // fcopyfile(COPYFILE_ALL), which PawPrint refuses rather than copy
@@ -5422,8 +5410,6 @@ module TestImpureCases =
 
     [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =
-        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
-
         // `SupportsCopyFileRange` reads the release's major and minor numbers
         // and uses copy_file_range only from 5.3; below that the shim copies
         // with sendfile, which the kernel does not model. Releases either side
@@ -5494,8 +5480,6 @@ module TestImpureCases =
 
     [<Test>]
     let ``the Linux File.Copy wiring guest answers the same on the pinned linux-x64 CoreLib`` () : unit =
-        Net11Frontier.park Net11Frontier.fileSystemSupportsLocking
-
         // On a macOS host the registered case runs a Darwin CoreLib, whose
         // File.Copy first asks clonefile and is told ENOTSUP; this runs the
         // CoreLib CI and production run, which goes straight to

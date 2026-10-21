@@ -90,6 +90,8 @@ module TestPureCases =
     /// and how it was verified to behave on real .NET 10.
     let parkedOnNet10 : Map<string, string> =
         [
+            "FileSystemSupportsLockingDirect.cs",
+            """The guest calls `SystemNative_FileSystemSupportsLocking`, which .NET 10's libSystem.Native does not export, so real .NET 10 raises `EntryPointNotFoundException` at the first call and the guest exits 100. PawPrint raises no `EntryPointNotFoundException` for a missing export: "SystemNative_FileSystemSupportsLocking: .NET 10's libSystem.Native exports no such function". Un-park when PawPrint knows which exports each runtime's native libraries carry and raises it. Verified to exit 100 on real .NET 10."""
             "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
             """`CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET."""
         ]
@@ -210,23 +212,6 @@ module TestPureCases =
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             yield!
                 [
-                    "AccessSeeded.cs"
-                    "ChModSeeded.cs"
-                    "CopyFileSeeded.cs"
-                    "CopyFileUnauthorized.cs"
-                    "CreateSeeded.cs"
-                    "FileStreamHandleSeeded.cs"
-                    "FlockContentionSeeded.cs"
-                    "LinkSeeded.cs"
-                    "PosixFAdviseSeeded.cs"
-                    "ReadAllBytesSeeded.cs"
-                    "SymLinkSeeded.cs"
-                    "TruncateSeeded.cs"
-                    "WriteSeeded.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.fileSystemSupportsLocking)
-            yield!
-                [
                     "ActivatorCreateInstanceNonGeneric.cs"
                     "ExpressionLambdaCompile.cs"
                     "ExpressionLambdaCompileWide.cs"
@@ -247,6 +232,7 @@ module TestPureCases =
         [
             "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11
             "DelegateOpenStaticVirtualInvoke.cs", GuestEnding.ExitCode 10
+            "FileSystemSupportsLockingDirect.cs", GuestEnding.ExitCode 100
         ]
         |> Map.ofList
 

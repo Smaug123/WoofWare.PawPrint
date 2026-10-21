@@ -3835,6 +3835,54 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        // `uint32_t SystemNative_FileSystemSupportsLocking(intptr_t fd, int32_t
+        // lockOperation, int32_t accessWrite)` (.NET 11's pal_io.c:1720), which
+        // .NET 11's `SafeFileHandle.CanLockTheFile` asks where .NET 10's asked
+        // `SystemNative_GetFileSystemType` above and decided in managed code.
+        // The lock operation is matched loosely for the reason
+        // `SystemNative_FLock`'s is: CoreLib declares it as the
+        // `Interop.Sys.LockOperations` enum. So is the answer: CoreLib's
+        // `LibraryImport` reads it as an `int` `bool`, where a guest
+        // transcribing the C declares `uint`; the evaluation stack holds either
+        // as the same `int32`.
+        | Some "SystemNative_FileSystemSupportsLocking",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
+            let operation = "SystemNative_FileSystemSupportsLocking"
+
+            match EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib with
+            | EmulatedRuntime.Net11 -> ()
+            | EmulatedRuntime.Net10 ->
+                failwith
+                    $"%s{operation}: .NET 10's libSystem.Native exports no such function, so a real process's P/Invoke of it throws EntryPointNotFoundException; PawPrint does not raise that"
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let lockOperation = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let accessWrite = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let push (answer : int32) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim answer)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if not (FileLockingPal.asksFileSystem lockOperation accessWrite) then
+                push 1 state
+            else
+                // `fstatfs(2)` behind an EINTR retry, and every failure answers
+                // 0, as `SystemNative_GetFileSystemType`'s does.
+                match UnixPathResolution.fstatfs (state.Kernel.Caller ctx.Thread) fd state.Kernel.System with
+                | FileSystemStatisticsAnswer.Reported statistics ->
+                    let supported =
+                        FileLockingPal.supportsLockingOn (FileSystemStatistics.typeFields statistics)
+
+                    push (if supported then 1 else 0) state
+                | FileSystemStatisticsAnswer.Failed error ->
+                    // Unread by CoreLib, which declares no `SetLastError`;
+                    // recorded for a guest that reads errno itself.
+                    push 0 (withErrnoOnly ctx error state)
         | Some "SystemNative_CopyFile",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcreteIntPtr state.TypeSystem.ConcreteTypes
