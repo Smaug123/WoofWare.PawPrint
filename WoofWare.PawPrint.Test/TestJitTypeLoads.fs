@@ -31,6 +31,8 @@ module TestJitTypeLoads =
         | Caught of exceptionName : string
         /// Compiling the probe itself fails with the exception of this name.
         | Escapes of exceptionName : string
+        /// Compiling the method, prepared by itself, fails with the exception of this name.
+        | Fails of exceptionName : string
 
     let private providerSource (complete : bool) : string =
         let gone =
@@ -238,6 +240,14 @@ public class ThingException : System.Exception { }
             Callee = callee
         }
 
+    /// Whether the host's JIT compiles Swift's calling convention as such: it does on Arm64, and on
+    /// x64 other than Windows'.
+    let private compilesSwift : bool =
+        not (
+            OperatingSystem.IsWindows ()
+            && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+        )
+
     /// The declarations `k`th of `shapes`'s probes use: methods of `Probes`, and types of the
     /// client, each suffixed with `k`. None of them runs but to throw `NullReferenceException`.
     let private declarations (k : int) (shape : Shape) : string * string =
@@ -252,6 +262,8 @@ public class ThingException : System.Exception { }
                 $"static ref %s{s} ReturnsRef%d{k}() => throw null;"
                 $"static Instance%d{k} GetInstance%d{k}() => throw null;"
                 $"static Virtual%d{k} GetVirtual%d{k}() => throw null;"
+                $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static void SwiftOwn%d{k}(%s{s}* p) {{ }}"
+                $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvCdecl) }})] static void CdeclOwn%d{k}(%s{s}* p) {{ }}"
             ]
 
         let types =
@@ -281,15 +293,11 @@ public class ThingException : System.Exception { }
 
         let call = MemberOperand.Call
 
-        // Swift's calling convention is compiled as such on Arm64, and on x64 other than Windows'.
         let swift =
-            if
-                OperatingSystem.IsWindows ()
-                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
-            then
-                MemberOperand.Call
-            else
+            if compilesSwift then
                 MemberOperand.SwiftCall
+            else
+                MemberOperand.Call
 
         [
             probe
@@ -681,8 +689,15 @@ public class ThingException : System.Exception { }
         ]
         |> String.concat "\n"
 
-    /// What the host's CoreCLR does at each probe.
-    let private hostOutcomes (client : byte[]) (incompleteProvider : byte[]) (names : string list) : Outcome list =
+    /// What the host's CoreCLR does at each probe named `names`, and at preparing each method of
+    /// `Probes` named `prepared`.
+    let private hostOutcomes
+        (client : byte[])
+        (incompleteProvider : byte[])
+        (names : string list)
+        (prepared : string list)
+        : Outcome list * Outcome list
+        =
         let context =
             Runtime.Loader.AssemblyLoadContext ("JitTypeLoads", isCollectible = true)
 
@@ -699,15 +714,30 @@ public class ThingException : System.Exception { }
             let probes =
                 context.LoadFromStream(new MemoryStream (client)).GetType "Client.Probes"
 
-            names
-            |> List.map (fun name ->
-                try
-                    match probes.GetMethod(name).Invoke ((null : obj), [||]) :?> string with
-                    | "" -> Outcome.Runs
-                    | caught -> Outcome.Caught caught
-                with :? TargetInvocationException as e ->
-                    Outcome.Escapes (e.InnerException.GetType().Name)
-            )
+            let probed =
+                names
+                |> List.map (fun name ->
+                    try
+                        match probes.GetMethod(name).Invoke ((null : obj), [||]) :?> string with
+                        | "" -> Outcome.Runs
+                        | caught -> Outcome.Caught caught
+                    with :? TargetInvocationException as e ->
+                        Outcome.Escapes (e.InnerException.GetType().Name)
+                )
+
+            let prepared =
+                prepared
+                |> List.map (fun name ->
+                    let method = probes.GetMethod (name, BindingFlags.NonPublic ||| BindingFlags.Static)
+
+                    try
+                        Runtime.CompilerServices.RuntimeHelpers.PrepareMethod method.MethodHandle
+                        Outcome.Runs
+                    with e ->
+                        Outcome.Fails (e.GetType().Name)
+                )
+
+            probed, prepared
         finally
             context.Unload ()
 
@@ -741,7 +771,26 @@ public class ThingException : System.Exception { }
             allProbes
             |> List.collect (fun (_, probes) -> probes |> List.map (fun p -> p.Name))
 
-        let host = hostOutcomes clientImage incompleteProvider names
+        // Each method Swift code calls, and its counterpart C code calls, with the position its
+        // parameter is at.
+        let preparedPositions =
+            shapes
+            |> List.mapi (fun k _ ->
+                [
+                    $"SwiftOwn%d{k}",
+                    (if compilesSwift then
+                         JitTypePosition.SwiftOwnParameter
+                     else
+                         JitTypePosition.OwnParameter)
+                    $"CdeclOwn%d{k}", JitTypePosition.OwnParameter
+                ]
+            )
+            |> List.concat
+
+        let preparedNames = List.map fst preparedPositions
+
+        let host, hostPrepared =
+            hostOutcomes clientImage incompleteProvider names preparedNames
 
         let client =
             Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
@@ -772,7 +821,7 @@ public class ThingException : System.Exception { }
         // The provider is where the loader looks for assemblies, but not loaded.
         let directory = Directory.CreateTempSubdirectory "jit-type-loads"
 
-        let predicted =
+        let predicted, predictedPrepared =
             try
                 File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), incompleteProvider)
                 let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
@@ -852,13 +901,27 @@ public class ThingException : System.Exception { }
                         assemblies, outcome :: outcomes
                     )
                 )
-                |> snd
-                |> List.rev
+                |> fun (assemblies, outcomes) ->
+                    let _, prepared =
+                        ((assemblies, []), preparedPositions)
+                        ||> List.fold (fun (assemblies, outcomes) (name, position) ->
+                            let parameter = signature name |> snd |> List.exactlyOne
+                            let assemblies, failure = firstMiss assemblies [ position, parameter ]
+
+                            let outcome =
+                                match failure with
+                                | Some failure -> Outcome.Fails failure
+                                | None -> Outcome.Runs
+
+                            assemblies, outcome :: outcomes
+                        )
+
+                    List.rev outcomes, List.rev prepared
             finally
                 directory.Delete true
 
         let disagreements =
-            List.zip3 names host predicted
+            List.zip3 (names @ preparedNames) (host @ hostPrepared) (predicted @ predictedPrepared)
             |> List.choose (fun (name, host, predicted) ->
                 if host = predicted then
                     None
@@ -878,3 +941,12 @@ public class ThingException : System.Exception { }
         count (Outcome.Escapes "FileNotFoundException") |> shouldBeGreaterThan 50
         count (Outcome.Caught "TypeLoadException") |> shouldBeGreaterThan 20
         count (Outcome.Caught "FileNotFoundException") |> shouldBeGreaterThan 10
+
+        let countPrepared (outcome : Outcome) =
+            hostPrepared |> List.filter ((=) outcome) |> List.length
+
+        countPrepared Outcome.Runs |> shouldBeGreaterThan 100
+
+        if compilesSwift then
+            countPrepared (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 50
+            countPrepared (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 20

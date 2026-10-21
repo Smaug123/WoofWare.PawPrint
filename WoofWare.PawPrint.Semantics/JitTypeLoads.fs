@@ -12,6 +12,12 @@ type JitTypePosition =
     | Local
     /// A parameter of the method being compiled, as its locals (`lvaInitArgs`).
     | OwnParameter
+    /// A parameter of the method being compiled where that method is called by Swift's calling
+    /// convention (`[UnmanagedCallersOnly]` naming `CallConvSwift`), on a JIT target that compiles
+    /// such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'): as `OwnParameter`, and a
+    /// pointer's or byref's target too, which the JIT reads for the Swift-specific arguments
+    /// (`lvaInitSpecialSwiftParam`).
+    | SwiftOwnParameter
     /// The return type of the method being compiled (`getMethodInfo`, by `ConvToJitSig`).
     | OwnReturn
     /// A parameter of a method a call passes arguments to (`impPopCallArgs`: `getArgType` only).
@@ -165,6 +171,11 @@ module JitTypeLoads =
                 Some (JitTypeLoad.InFull spelling)
             else
                 None
+        // As `OwnParameter`, with `getArgClass` of a pointer or byref, whose type loads its target.
+        | JitTypePosition.SwiftOwnParameter ->
+            match spelling with
+            | TypeDefn.FunctionPointer _ -> None
+            | spelling -> Some (JitTypeLoad.InFull spelling)
         // `getArgType`, and `getArgClass` of a pointer or byref, whose type loads its target.
         | JitTypePosition.SwiftCalleeParameter ->
             match spelling with
