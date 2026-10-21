@@ -29,13 +29,16 @@ type JitTypePosition =
     /// pointer, which may pun one type for another, so that it loads every value type in the
     /// signature first (`MethodDesc::PrepareForUseAsAFunctionPointer`).
     | FunctionPointerSignature
-    /// As `FunctionPointerSignature`, for a method whose address CoreCLR prepares only when the JIT
-    /// asks for the address itself (`getFunctionFixedEntryPoint`, as it morphs the `ldftn`). It
-    /// does not ask where it folds the address away, nor where a generic dictionary supplies it in
-    /// code shared between instantiations, so these are loads it may make or not
-    /// (`JitTypeLoad.Possibly`). Where it inlines the method into another, it asks while compiling
-    /// that one, so that a load failing here fails the other's compilation instead.
-    | RequestedFunctionPointerSignature
+    /// As `FunctionPointerSignature`, for a method CoreCLR prepares only on a condition the
+    /// compilation decides, so these are loads the JIT may make or not (`JitTypeLoad.Possibly`).
+    /// One condition is that the JIT asks for the address itself (`getFunctionFixedEntryPoint`, as
+    /// it morphs the `ldftn`), which it does not where it folds the address away, nor where a
+    /// generic dictionary supplies it in code shared between instantiations; where it inlines the
+    /// method into another, it asks while compiling that one, so that a load failing here fails
+    /// the other's compilation instead. The other is that the JIT resolves which implementation of
+    /// a static virtual method a `constrained.` prefix names (`getCallInfo`), which it does not
+    /// where the type is one of the type variables of code shared between instantiations.
+    | PossibleFunctionPointerSignature
     /// The type of a field an instruction accesses (`getFieldInfo`).
     | FieldType
     /// The type a type token names, including a `catch` clause's (`resolveToken`).
@@ -75,16 +78,29 @@ type MethodAddressUse =
     /// Anything else: it is a function pointer.
     | FunctionPointer
 
+/// Whether an `ldftn` has a `constrained.` prefix, naming the type whose implementation of a static
+/// virtual method it takes the address of.
+[<RequireQualifiedAccess>]
+type AddressConstraint =
+    /// No prefix.
+    | Unconstrained
+    /// A `constrained.` prefix.
+    | Constrained
+
 /// When CoreCLR prepares the method an `ldftn` or `ldvirtftn` names as a function pointer
 /// (`JitTypePosition.FunctionPointerSignature`), relative to the JIT reading its return type.
 [<RequireQualifiedAccess>]
 type FunctionPointerPreparation =
     /// While the JIT resolves the instruction (`getCallInfo`), before it reads the return type:
     /// for `ldvirtftn`, and for an `ldftn` of a method a method specification instantiates, whatever
-    /// becomes of the address.
+    /// becomes of the address, unless a `constrained.` prefix names the implementation.
     | BeforeReturnType
+    /// As `BeforeReturnType`, if the JIT resolves which implementation the `constrained.` prefix
+    /// names: for an `ldftn` of a static virtual method a method specification instantiates
+    /// (`JitTypePosition.PossibleFunctionPointerSignature`).
+    | IfConstraintResolved
     /// If the JIT asks for the address itself, after it reads the return type: for any other `ldftn`
-    /// whose address is a function pointer (`JitTypePosition.RequestedFunctionPointerSignature`).
+    /// whose address is a function pointer (`JitTypePosition.PossibleFunctionPointerSignature`).
     | IfAddressRequested
     /// Not at all: for any other `ldftn`.
     | Unprepared
@@ -194,7 +210,7 @@ module JitTypeLoads =
             | TypeDefn.GenericMethodParameter _ -> Some (JitTypeLoad.InFull spelling)
             | spelling when isValueType spelling -> Some (JitTypeLoad.InFullIfDefined spelling)
             | _ -> None
-        | JitTypePosition.RequestedFunctionPointerSignature ->
+        | JitTypePosition.PossibleFunctionPointerSignature ->
             load JitTypePosition.FunctionPointerSignature spelling
             |> Option.map JitTypeLoad.Possibly
         // `ConvToJitSig`, `getFieldInfo` and `resolveToken` load every type but a primitive.
@@ -206,22 +222,26 @@ module JitTypeLoads =
         | JitTypePosition.DeclaringType -> Some (JitTypeLoad.InFull spelling)
 
     /// When CoreCLR prepares as a function pointer the method that `op`, an `ldftn` or
-    /// `ldvirtftn`, names by `token`, whose address has the use `addressUse`. `addressUse` says
-    /// nothing of an `ldvirtftn`, whose address CoreCLR prepares whatever becomes of it.
+    /// `ldvirtftn`, names by `token`, with or without a `constrained.` prefix, whose address has
+    /// the use `addressUse`. `addressUse` says nothing of an `ldvirtftn`, whose address CoreCLR
+    /// prepares whatever becomes of it.
     let preparation
         (op : UnaryMetadataTokenIlOp)
         (token : MetadataToken)
+        (prefix : AddressConstraint)
         (addressUse : MethodAddressUse)
         : FunctionPointerPreparation
         =
-        match op, token, addressUse with
-        | UnaryMetadataTokenIlOp.Ldvirtftn, _, _
-        | UnaryMetadataTokenIlOp.Ldftn, MetadataToken.MethodSpecification _, _ ->
+        match op, prefix, token, addressUse with
+        | UnaryMetadataTokenIlOp.Ldvirtftn, _, _, _
+        | UnaryMetadataTokenIlOp.Ldftn, AddressConstraint.Unconstrained, MetadataToken.MethodSpecification _, _ ->
             FunctionPointerPreparation.BeforeReturnType
-        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.FunctionPointer ->
+        | UnaryMetadataTokenIlOp.Ldftn, AddressConstraint.Constrained, MetadataToken.MethodSpecification _, _ ->
+            FunctionPointerPreparation.IfConstraintResolved
+        | UnaryMetadataTokenIlOp.Ldftn, _, _, MethodAddressUse.FunctionPointer ->
             FunctionPointerPreparation.IfAddressRequested
-        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.DelegateTarget
-        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.Discarded -> FunctionPointerPreparation.Unprepared
+        | UnaryMetadataTokenIlOp.Ldftn, _, _, MethodAddressUse.DelegateTarget
+        | UnaryMetadataTokenIlOp.Ldftn, _, _, MethodAddressUse.Discarded -> FunctionPointerPreparation.Unprepared
         | _ -> failwith $"JitTypeLoads.preparation was given %O{op}, which takes no method's address"
 
     /// Where in the signature of the member an instruction names the JIT meets a type, in the order
@@ -236,11 +256,17 @@ module JitTypeLoads =
         | MemberOperand.Jump -> MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.Address FunctionPointerPreparation.BeforeReturnType ->
             MemberPositions.Described [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
+        | MemberOperand.Address FunctionPointerPreparation.IfConstraintResolved ->
+            MemberPositions.Described
+                [
+                    JitTypePosition.PossibleFunctionPointerSignature
+                    JitTypePosition.CalleeReturn
+                ]
         | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested ->
             MemberPositions.Described
                 [
                     JitTypePosition.CalleeReturn
-                    JitTypePosition.RequestedFunctionPointerSignature
+                    JitTypePosition.PossibleFunctionPointerSignature
                 ]
         | MemberOperand.Address FunctionPointerPreparation.Unprepared ->
             MemberPositions.Described [ JitTypePosition.CalleeReturn ]

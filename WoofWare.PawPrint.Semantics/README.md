@@ -94,8 +94,9 @@ What lives here:
   the Loader's `TypeLoad` to say. Taking a method's address loads the value types of its signature
   before its return type, or not at all, depending on the instruction and what becomes of the
   address, or only if the JIT asks for the address itself, which it may not, folding it away or
-  looking it up in shared code, or may do while compiling a method it inlines this one into: those
-  are loads it may make (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
+  looking it up in shared code, or may do while compiling a method it inlines this one into, or
+  only if it resolves the implementation a `constrained.` prefix names: those are loads it may make
+  (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
   parameters' targets too. What a call of unmanaged code loads, and what making a delegate over a
   static method loads, it does not describe. `TestJitTypeLoads` puts each of a grammar of types
   that load, fail to load or live in a missing assembly at each position, runs every probe on the

@@ -240,13 +240,28 @@ public class ThingException : System.Exception { }
             | JitTypePosition.CalleeReturn -> [ position, returned ]
             | JitTypePosition.CalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
             | JitTypePosition.FunctionPointerSignature
-            | JitTypePosition.RequestedFunctionPointerSignature ->
+            | JitTypePosition.PossibleFunctionPointerSignature ->
                 returned :: parameters |> List.map (fun spelling -> position, spelling)
             | _ -> failwith $"memberPositions gave %A{position} for the method %A{operand} names"
         )
 
     /// As `signatureMeetings`, for an `op`, `ldftn` or `ldvirtftn`, naming the method by `token`,
-    /// whose address has the use `addressUse`.
+    /// with or without a `constrained.` prefix, whose address has the use `addressUse`.
+    let private constrainedMeetings
+        (op : UnaryMetadataTokenIlOp)
+        (token : MetadataToken)
+        (prefix : AddressConstraint)
+        (addressUse : MethodAddressUse)
+        (returned : TypeDefn)
+        (parameters : TypeDefn list)
+        : (JitTypePosition * TypeDefn) list
+        =
+        signatureMeetings
+            (MemberOperand.Address (JitTypeLoads.preparation op token prefix addressUse))
+            returned
+            parameters
+
+    /// As `constrainedMeetings`, without a `constrained.` prefix.
     let private addressMeetings
         (op : UnaryMetadataTokenIlOp)
         (token : MetadataToken)
@@ -255,7 +270,7 @@ public class ThingException : System.Exception { }
         (parameters : TypeDefn list)
         : (JitTypePosition * TypeDefn) list
         =
-        signatureMeetings (MemberOperand.Address (JitTypeLoads.preparation op token addressUse)) returned parameters
+        constrainedMeetings op token AddressConstraint.Unconstrained addressUse returned parameters
 
     /// The positions the JIT reads of a field of type `fieldType` that an instruction accesses,
     /// declared by `owner`.
@@ -298,6 +313,7 @@ public class ThingException : System.Exception { }
                 $"static ref %s{s} ReturnsRef%d{k}() => throw null;"
                 $"static Instance%d{k} GetInstance%d{k}() => throw null;"
                 $"static Virtual%d{k} GetVirtual%d{k}() => throw null;"
+                $"static void* ConstrainedAddress%d{k}<T>() where T : IStatic%d{k} => (void*)(delegate*<%s{s}, void>)&T.Target<int>;"
                 $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static void SwiftOwn%d{k}(%s{s}* p) {{ }}"
                 $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvCdecl) }})] static void CdeclOwn%d{k}(%s{s}* p) {{ }}"
                 if isUnmanaged shape then
@@ -312,6 +328,9 @@ public class ThingException : System.Exception { }
                 $"public unsafe class Virtual%d{k} {{ public virtual %s{s} M() => throw null; public virtual void T(%s{s} d) => throw null; public void NT(%s{s} d) => throw null; public void GT<U>(%s{s} d) => throw null; }}"
                 $"public unsafe class SharedTarget%d{k}<T> {{ public static void Takes(%s{s} d) => throw null; }}"
                 $"public unsafe class Shared%d{k}<T> {{ public static void* Address() => (void*)(delegate*<%s{s}, void>)&SharedTarget%d{k}<T>.Takes; }}"
+                $"public unsafe interface IStatic%d{k} {{ static abstract void Target<U>(%s{s} d); }}"
+                $"public unsafe class StaticClass%d{k} : IStatic%d{k} {{ public static void Target<U>(%s{s} d) => throw null; }}"
+                $"public unsafe struct StaticStruct%d{k} : IStatic%d{k} {{ public static void Target<U>(%s{s} d) => throw null; }}"
                 $"public unsafe class Constructed%d{k} {{ public Constructed%d{k}(%s{s} d) => throw null; }}"
                 $"public unsafe delegate void TakesDelegate%d{k}(%s{s} d);"
                 if isTypeArgument shape then
@@ -493,6 +512,47 @@ public class ThingException : System.Exception { }
                     function
                     | Tier.Tier0 -> PossibleLoads.Made
                     | Tier.Optimised -> PossibleLoads.Skipped
+            }
+            // A `constrained.` address of a static virtual method, which CoreCLR prepares only where the
+            // JIT resolves the implementation: not in code shared between the classes it is
+            // instantiated over, but in code of a struct of its own.
+            { probe
+                  "ConstrainedClassAddress"
+                  $"Use(ConstrainedAddress%d{k}<StaticClass%d{k}>());"
+                  (fun spelt ->
+                      meets
+                          []
+                          (constrainedMeetings
+                              UnaryMetadataTokenIlOp.Ldftn
+                              methodSpecification
+                              AddressConstraint.Constrained
+                              MethodAddressUse.FunctionPointer
+                              TypeDefn.Void
+                              [ spelt.Shape ])
+                  ) with
+                Possible =
+                    function
+                    | Tier.Tier0 -> PossibleLoads.Skipped
+                    | Tier.Optimised -> PossibleLoads.Skipped
+            }
+            { probe
+                  "ConstrainedStructAddress"
+                  $"Use(ConstrainedAddress%d{k}<StaticStruct%d{k}>());"
+                  (fun spelt ->
+                      meets
+                          []
+                          (constrainedMeetings
+                              UnaryMetadataTokenIlOp.Ldftn
+                              methodSpecification
+                              AddressConstraint.Constrained
+                              MethodAddressUse.FunctionPointer
+                              TypeDefn.Void
+                              [ spelt.Shape ])
+                  ) with
+                Possible =
+                    function
+                    | Tier.Tier0 -> PossibleLoads.Made
+                    | Tier.Optimised -> PossibleLoads.Made
             }
             { probe
                   "SharedAddressParameter"
