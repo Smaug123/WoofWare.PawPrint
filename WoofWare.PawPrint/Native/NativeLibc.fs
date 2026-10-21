@@ -220,11 +220,20 @@ module NativeLibc =
                     $"%s{operation}: kill(%d{pid}, %d{signo}) from process %d{ownPid} is not modelled%s{remedy}"
                     e
 
+        let answer =
+            match answer with
+            | ProcessFate.Continues (KillAnswer.Failed errno, after) -> Error (errno, after)
+            | ProcessFate.Continues (KillAnswer.Completed outcome, after) -> Ok (ProcessFate.Continues (outcome, after))
+            | ProcessFate.ProcessEnded (ended, remaining) -> Ok (ProcessFate.ProcessEnded (ended, remaining))
+
         match answer with
-        | Error errno ->
+        | Error (errno, after) ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno))
+            state.MapKernel (
+                EmulatedKernel.withUnix after
+                >> EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno)
+            )
             |> returning -1
         | Ok outcome ->
 
@@ -293,11 +302,20 @@ module NativeLibc =
                     $"%s{operation}: raise(%d{signo}) on %O{ctx.Thread} in process %O{state.Kernel.ProcessId} is not modelled"
                     e
 
+        let answer =
+            match answer with
+            | ProcessFate.Continues (KillAnswer.Failed errno, after) -> Error (errno, after)
+            | ProcessFate.Continues (KillAnswer.Completed outcome, after) -> Ok (ProcessFate.Continues (outcome, after))
+            | ProcessFate.ProcessEnded (ended, remaining) -> Ok (ProcessFate.ProcessEnded (ended, remaining))
+
         match answer with
-        | Error errno ->
+        | Error (errno, after) ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno))
+            state.MapKernel (
+                EmulatedKernel.withUnix after
+                >> EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno)
+            )
             |> returning -1
         | Ok outcome ->
 

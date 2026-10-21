@@ -128,7 +128,7 @@ module NativeLibcSignalMask =
                 -> int
                 -> SignalMask option
                 -> UnixSystem<ThreadId, NativeSignalHandler>
-                -> Result<SignalMask * UnixSystem<ThreadId, NativeSignalHandler>, UnixError>)
+                -> SignalMaskAnswer * UnixSystem<ThreadId, NativeSignalHandler>)
         : NativeHandlerResult
         =
         let state = ctx.State
@@ -138,13 +138,15 @@ module NativeLibcSignalMask =
         let set = readSet ctx operation numbering arguments.[1] state
 
         match call (state.Kernel.Caller ctx.Thread) how set state.Kernel.System with
-        | Ok (old, system) ->
+        | SignalMaskAnswer.Completed old, system ->
             NativeSystemNative.withAnswered system state
             |> writeSet ctx operation "oldset" numbering arguments.[2] old
             |> pushInt32 ctx 0
-        | Error error ->
+        | SignalMaskAnswer.Failed error, system ->
             // Measured by `sigprocmask-ops.c`: a failed call writes nothing to
             // `oldset`.
+            let state = state.MapKernel (EmulatedKernel.withUnix system)
+
             let raw =
                 UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
 

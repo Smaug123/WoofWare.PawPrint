@@ -151,12 +151,17 @@ module TestOpenFlagsPal =
             Check.One (Config.QuickThrowOnFailure.WithMaxTest 10000, property)
 
     [<Test>]
-    let ``opendir's word is O_RDONLY|O_DIRECTORY|O_CLOEXEC`` () : unit =
+    let ``opendir's word is O_RDONLY|O_NONBLOCK|O_DIRECTORY|O_CLOEXEC`` () : unit =
         for platform in platforms do
             let header = headers platform
 
             OpenFlagsPal.directoryStream platform
-            |> shouldEqual (header.["O_RDONLY"] ||| header.["O_DIRECTORY"] ||| header.["O_CLOEXEC"])
+            |> shouldEqual (
+                header.["O_RDONLY"]
+                ||| header.["O_NONBLOCK"]
+                ||| header.["O_DIRECTORY"]
+                ||| header.["O_CLOEXEC"]
+            )
 
     // ------------------------------------------------- what the kernel makes of it
 
@@ -195,10 +200,10 @@ module TestOpenFlagsPal =
                 match
                     UnixNamespace.openPath
                         (LoneProcess.leader system)
-                        word
                         (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/")))
+                        word
                         0o644
                         system
                 with
-                | SyscallOutcome.Answered _, _ -> ()
+                | OpenOutcome.Answered _, _ -> ()
                 | outcome, _ -> failwith $"%O{platform} 0x%x{word}: expected an open that returns, got %A{outcome}"

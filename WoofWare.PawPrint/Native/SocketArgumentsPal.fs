@@ -254,11 +254,20 @@ module SocketArgumentsPal =
             | _ -> None
 
     /// Linux's `SOCK_CLOEXEC`, which `SystemNative_Socket` ORs into every type
-    /// under `#ifdef SOCK_CLOEXEC`. Darwin's headers do not define it, so there
-    /// the shim sets `FD_CLOEXEC` with a separate `fcntl` after the call, which
-    /// the `SystemNative_Socket` handler makes.
+    /// under `#ifdef SOCK_CLOEXEC`, and `SystemNative_Accept` passes as
+    /// `accept4`'s flags. Darwin's headers do not define it, so there the shim
+    /// sets `FD_CLOEXEC` with a separate `fcntl` after each call, which the
+    /// `SystemNative_Socket` and `SystemNative_Accept` handlers make.
     [<Literal>]
     let private LinuxSockCloExec = 0x80000
+
+    /// The flag word `SystemNative_Accept` makes its accept with:
+    /// `accept4(..., SOCK_CLOEXEC)` under `HAVE_ACCEPT4`, which is Linux, and
+    /// on Darwin, which has no `accept4`, a plain `accept`, which is 0.
+    let acceptFlags (platform : SimulatedUnixPlatform) : int =
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> LinuxSockCloExec
+        | SimulatedUnixFlavour.Darwin -> 0
 
     /// The `socket(2)` arguments `SystemNative_Socket` passes for a domain, type
     /// and protocol in the PAL numbering, or the screen that refuses them first.

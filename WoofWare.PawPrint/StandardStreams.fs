@@ -130,22 +130,3 @@ module StandardStreams =
         | ExternalEndpoint (_, fd) ->
             failwith
                 $"StandardStreams.roleOf: %O{endpoint} is not one PawPrint launches; it launches descriptors 0, 1 and 2 only, so a delivery to launch descriptor %d{fd} means the kernel was not built from StandardStreams.launch (this is an interpreter bug)."
-
-    /// The deliveries in `delivered` to the pipes launched into the guest whose
-    /// process ID is `guest`, each labelled with the standard stream it reached:
-    /// what the guest wrote to its output streams, one entry per write, in the
-    /// order it wrote them.
-    let outputLog (guest : ProcessId) (delivered : DeliveryLog) : ImmutableArray<OutputLogEntry> =
-        let builder = ImmutableArray.CreateBuilder<OutputLogEntry> ()
-
-        for delivery in DeliveryLog.toList delivered do
-            match delivery.Endpoint with
-            | ExternalEndpoint (launchedInto, _) when launchedInto <> guest -> ()
-            | ExternalEndpoint _ ->
-                builder.Add
-                    {
-                        Role = roleOf guest delivery.Endpoint
-                        Bytes = delivery.Bytes
-                    }
-
-        builder.ToImmutable ()

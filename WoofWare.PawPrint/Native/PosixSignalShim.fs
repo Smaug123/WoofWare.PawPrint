@@ -201,7 +201,7 @@ module PosixSignalShim =
         (newAction : SignalDisposition<NativeSignalHandler> option)
         (caller : Caller<'Task>)
         (system : UnixSystem<'Task, NativeSignalHandler>)
-        : Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>
+        : SigactionAnswer<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>
         =
         UnixSignal.sigaction caller (Signal.toRawSignoUnder numbering signal) newAction system
 
@@ -244,8 +244,8 @@ module PosixSignalShim =
 
         // `sigaction(sig, NULL, orig)` first, to respect an ignore.
         match sigaction numbering signal None caller system with
-        | Error errno -> Error errno
-        | Ok (current, _) ->
+        | SigactionAnswer.Failed errno, _ -> Error errno
+        | SigactionAnswer.Completed current, _ ->
 
         match current with
         | SignalDisposition.Catch {
@@ -275,8 +275,8 @@ module PosixSignalShim =
                     }
 
             match sigaction numbering signal (Some (SignalDisposition.Catch action)) caller system with
-            | Error errno -> Error errno
-            | Ok (replaced, system) -> Ok (system, save replaced)
+            | SigactionAnswer.Failed errno, _ -> Error errno
+            | SigactionAnswer.Completed replaced, system -> Ok (system, save replaced)
 
     /// What `InitializeSignalHandlingCore` does to the shim's saved
     /// dispositions: it installs System.Native's handler for SIGINT, SIGQUIT
@@ -300,8 +300,8 @@ module PosixSignalShim =
         ||> List.fold (fun state signal ->
             let disposition =
                 match sigaction numbering signal None caller system with
-                | Ok (disposition, _) -> disposition
-                | Error errno ->
+                | SigactionAnswer.Completed disposition, _ -> disposition
+                | SigactionAnswer.Failed errno, _ ->
                     failwith
                         $"PosixSignalShim.saveConsoleSignals: sigaction will not report %O{signal}'s disposition (%O{errno}), though every flavour has the signal and lets it be caught."
 
@@ -345,8 +345,8 @@ module PosixSignalShim =
             }
 
         match sigaction numbering signal (Some (original signal state)) caller system with
-        | Ok (_, system) -> system, state, None
-        | Error errno -> system, state, Some errno
+        | SigactionAnswer.Completed _, system -> system, state, None
+        | SigactionAnswer.Failed errno, _ -> system, state, Some errno
 
     /// Whether `signal` has a managed registration: whether the dispatcher
     /// hands it to the callback (`g_hasPosixSignalRegistrations`).

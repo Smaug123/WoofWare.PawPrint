@@ -182,8 +182,10 @@ class NeverConnected
 
     /// The park names the listener's open file description and the descriptor the call was made
     /// through, the destination the call was entered
-    /// with, and the length the shim copied out of the guest's cell; the thread keeps the native
-    /// frame, with nothing pushed on it, so that a wake re-enters the handler.
+    /// with, the length the shim copied out of the guest's cell, and the flags the shim's
+    /// `accept4` asks of the socket it will make (`SOCK_CLOEXEC` under Linux, none under Darwin's
+    /// plain `accept`); the thread keeps the native frame, with nothing pushed on it, so that a
+    /// wake re-enters the handler.
     [<Test>]
     let ``an accept with nothing queued parks the caller on the listener's description`` () : unit =
         let prepared, _ = deadlock.Force ()
@@ -205,6 +207,11 @@ class NeverConnected
                         Listener = SleepTarget.Waiting (OpenFileDescriptionId 3L, 4)
                         Destination = UserBuffer.Mapped
                         DeclaredLength = 16u
+                        NewSocketNonBlocking = false
+                        NewSocketCloseOnExec =
+                            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                            | SimulatedUnixFlavour.Linux -> true
+                            | SimulatedUnixFlavour.Darwin -> false
                     }
             )
         )

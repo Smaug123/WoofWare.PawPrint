@@ -48,30 +48,26 @@ module DirectoryStream =
         // `TrailingSeparatorDemanded`, because a directory is demanded
         // outright whether the separator was there or not.
         // `opendir(3)` is this open: glibc's is
-        // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured,
-        // and `O_NONBLOCK` means nothing to a directory (see
+        // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured (see
         // `OpenFlagsPal.directoryStream`).
         let flags = OpenFlagsPal.directoryStream kernel.UnixPlatform
 
         let opened =
             try
-                UnixNamespace.openPath (kernel.Caller thread) flags path 0 kernel.System
+                UnixNamespace.openPath (kernel.Caller thread) path flags 0 kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.failAdvising
                     operation
-                    "This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models."
+                    "This open asks only for O_RDONLY|O_NONBLOCK|O_DIRECTORY|O_CLOEXEC, which the kernel models."
                     e
 
         match opened with
-        | SyscallOutcome.WouldBlock condition, _ ->
+        | OpenOutcome.WouldBlock condition, _ ->
             failwith
                 $"%s{operation}: thread %O{thread}'s open with O_DIRECTORY would sleep until %A{condition}, but an open that sleeps is of a FIFO, which O_DIRECTORY refuses with ENOTDIR before it could sleep (this is a bug in the kernel library)."
-        | SyscallOutcome.Interrupted, _ ->
-            failwith
-                $"%s{operation}: thread %O{thread}'s open was interrupted by a signal, which only a finishing call answers, and a first open is not one (this is a bug in the kernel library)."
-        | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
+        | OpenOutcome.Answered (DescriptorAnswer.Failed error), system ->
             DirectoryStreamOpen.Failed error, EmulatedKernel.withUnix system kernel
-        | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
+        | OpenOutcome.Answered (DescriptorAnswer.Returned fd), system ->
 
         // One allocation per stream rather than one per entry, because
         // `DirectoryEntry.Name` points into the stream's own storage and stays

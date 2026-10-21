@@ -8,7 +8,9 @@ using System.Threading;
 // schedules both arrive before the accept finishes. Under Darwin the signal
 // beats the connection, so the accept is interrupted and restarts once the
 // handler has run; under Linux the connection beats the signal, so the accept
-// takes it with the signal still to deliver.
+// takes it with the signal still to deliver. Either way the accepted socket
+// has FD_CLOEXEC: Linux's `accept4(SOCK_CLOEXEC)` makes it so, and Darwin's
+// shim sets it with `fcntl` after the accept.
 unsafe class Program
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
@@ -37,6 +39,11 @@ unsafe class Program
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
     static extern int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetFD")]
+    static extern int FcntlGetFD(IntPtr fd);
+
+    const int FD_CLOEXEC = 1;
 
     [DllImport("libc", EntryPoint = "kill")]
     static extern int Kill(int pid, int signo);
@@ -91,6 +98,7 @@ unsafe class Program
         if ((long)accepted <= 0) return 8;
         if (peerLength != 16) return 9;
         if (!handled.Wait(TimeSpan.FromSeconds(30))) return 10;
+        if (FcntlGetFD(accepted) != FD_CLOEXEC) return 11;
         return 0;
     }
 }

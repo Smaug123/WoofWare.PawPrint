@@ -376,8 +376,8 @@
   },
   {
     "pname": "WoofWare.PosixKernel",
-    "version": "0.1.381",
-    "hash": "sha256-DRAxlRziqjLWJrhbS+v2PhdHHbhQw/fLOAUIfsM85Js="
+    "version": "0.1.400",
+    "hash": "sha256-j946lpmXVw2P8uZYlobFMo+ArbgrY6CfUfOwRLaiaW0="
   },
   {
     "pname": "WoofWare.Whippet.Fantomas",

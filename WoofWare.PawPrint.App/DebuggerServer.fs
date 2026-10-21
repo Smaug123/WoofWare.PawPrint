@@ -377,8 +377,8 @@ module DebuggerServer =
                 writer.WriteNumber ("address", parked.FutexAddress)
 
                 match parked.FutexTimeout with
-                | FutexTimeout.Until deadline ->
-                    writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
+                | FutexTimeout.Until deadline
+                | FutexTimeout.At deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
                 | FutexTimeout.Untimed
                 | FutexTimeout.Unbounded -> ()
             | None -> writer.WriteString ("kind", "blockedInSyscall")
