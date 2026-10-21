@@ -5079,6 +5079,32 @@ public static class Uses
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// The names of the types that a spelling in `assembly` names, arguments, elements and
+    /// signatures included.
+    let rec private namedTypes (assembly : DumpedAssembly) (spelling : TypeDefn) : string list =
+        match spelling with
+        | TypeDefn.FromDefinition (identity, _) -> [ assembly.TypeDefs.[identity.TypeDefinition.Get].Name ]
+        | TypeDefn.FromReference (reference, _) -> [ reference.Name ]
+        | TypeDefn.GenericInstantiation (generic, arguments) ->
+            List.collect (namedTypes assembly) (generic :: List.ofSeq arguments)
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> namedTypes assembly element
+        | TypeDefn.Modified modified -> namedTypes assembly modified.Unmodified
+        | TypeDefn.FunctionPointer signature ->
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> []
+                | MethodReturnType.Returns returned -> [ returned ]
+
+            List.collect (namedTypes assembly) (returned @ signature.ParameterTypes)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> []
+
     /// A client compiled against one version of a provider, run against another lacking a type
     /// that the type of a local of the client names, derives from, implements or holds. The JIT
     /// loads in full the type of each local before the body runs, other than a pointer's,
@@ -5223,29 +5249,7 @@ public static unsafe class Locals
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly))
 
-        // The names of the types a spelling names, arguments, elements and signatures included.
-        let rec named (spelling : TypeDefn) : string list =
-            match spelling with
-            | TypeDefn.FromDefinition (identity, _) -> [ clientAssembly.TypeDefs.[identity.TypeDefinition.Get].Name ]
-            | TypeDefn.FromReference (reference, _) -> [ reference.Name ]
-            | TypeDefn.GenericInstantiation (generic, arguments) -> List.collect named (generic :: List.ofSeq arguments)
-            | TypeDefn.Array (element, _)
-            | TypeDefn.OneDimensionalArrayLowerBoundZero element
-            | TypeDefn.Pointer element
-            | TypeDefn.Byref element
-            | TypeDefn.Pinned element -> named element
-            | TypeDefn.Modified modified -> named modified.Unmodified
-            | TypeDefn.FunctionPointer signature ->
-                let returned =
-                    match signature.ReturnType with
-                    | MethodReturnType.Void -> []
-                    | MethodReturnType.Returns returned -> [ returned ]
-
-                List.collect named (returned @ signature.ParameterTypes)
-            | TypeDefn.PrimitiveType _
-            | TypeDefn.GenericTypeParameter _
-            | TypeDefn.GenericMethodParameter _
-            | TypeDefn.Void -> []
+        let named = namedTypes clientAssembly
 
         let failures =
             [
@@ -5269,6 +5273,198 @@ public static unsafe class Locals
 
                     let next, escapes =
                         EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Locals" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.TypeLoadException" <> expected then
+                        yield $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// A client compiled against one version of a provider, run against another lacking a type
+    /// that a parameter or the return type of a client method names, derives from, implements or
+    /// holds. The JIT compiling the method loads in full its return type and the type of each
+    /// parameter but a pointer, a byref or a function pointer, as it does a local's, so the load's
+    /// `TypeLoadException` comes out of the call to the method, past the method's own `catch`.
+    /// A caller's JIT loads less of a callee's signature, so the host calls each method through a
+    /// function pointer whose signature names none of these types. No instruction of these
+    /// methods names the type by a token.
+    [<Test>]
+    let ``the signature of a method fails to load where what it names, derives from, implements or holds is gone``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public interface IGone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let client =
+            """
+using System.Collections.Generic;
+
+namespace Client;
+
+public class DerivesFromKept : Provider.Kept { }
+public class DerivesFromGone : Provider.Gone { }
+public class ImplementsGone : Provider.IGone { }
+public struct HoldsGone { public Provider.GoneStruct G; }
+
+public static unsafe class Signatures
+{
+    public static nint ParameterOfDerivesFromKept(DerivesFromKept x) => 0;
+    public static nint ParameterOfGone(Provider.Gone x) => 0;
+    public static nint ParameterOfDerivesFromGone(DerivesFromGone x) => 0;
+    public static nint ParameterOfImplementsGone(ImplementsGone x) => 0;
+    public static nint ParameterOfArrayOfHoldsGone(HoldsGone[] x) => 0;
+    public static nint ParameterOfListOfDerivesFromGone(List<DerivesFromGone> x) => 0;
+    public static nint ParameterOfPointerToGoneStruct(Provider.GoneStruct* x) => 0;
+    public static nint ParameterOfByrefToGoneStruct(ref Provider.GoneStruct x) => 0;
+    public static nint CaughtParameterOfDerivesFromGone(DerivesFromGone x)
+    {
+        try { return 0; }
+        catch (System.TypeLoadException) { return 1; }
+    }
+    public static DerivesFromKept ReturnsDerivesFromKept(nint x) => null;
+    public static DerivesFromGone ReturnsDerivesFromGone(nint x) => null;
+    public static List<DerivesFromGone> ReturnsListOfDerivesFromGone(nint x) => null;
+    public static Provider.GoneStruct* ReturnsPointerToGoneStruct(nint x) => null;
+    public static ref HoldsGone ReturnsByrefToHoldsGone(nint x) => ref *(HoldsGone*)x;
+}
+
+public static unsafe class Probe
+{
+    public static bool ThrowsTypeLoad(nint method)
+    {
+        try { ((delegate*<nint, nint>)method)(0); return false; }
+        catch (System.TypeLoadException) { return true; }
+        catch { return false; }
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let clientImage = compile "Client" [ completeProvider ] client
+
+        // Each method, the name of a type its signature spells, and whether the JIT fails to load
+        // its signature.
+        let methods =
+            [
+                "ParameterOfDerivesFromKept", "DerivesFromKept", false
+                "ParameterOfGone", "Gone", true
+                "ParameterOfDerivesFromGone", "DerivesFromGone", true
+                "ParameterOfImplementsGone", "ImplementsGone", true
+                "ParameterOfArrayOfHoldsGone", "HoldsGone", true
+                "ParameterOfListOfDerivesFromGone", "DerivesFromGone", true
+                "ParameterOfPointerToGoneStruct", "GoneStruct", false
+                "ParameterOfByrefToGoneStruct", "GoneStruct", false
+                "CaughtParameterOfDerivesFromGone", "DerivesFromGone", true
+                "ReturnsDerivesFromKept", "DerivesFromKept", false
+                "ReturnsDerivesFromGone", "DerivesFromGone", true
+                "ReturnsListOfDerivesFromGone", "DerivesFromGone", true
+                "ReturnsPointerToGoneStruct", "GoneStruct", true
+                "ReturnsByrefToHoldsGone", "HoldsGone", true
+            ]
+
+        // Whether calling each method throws `TypeLoadException` on the host's CoreCLR.
+        let hostThrows : Map<string, bool> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("SignatureTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let loaded = context.LoadFromStream (new MemoryStream (clientImage))
+                let signatures = loaded.GetType "Client.Signatures"
+                let probe = (loaded.GetType "Client.Probe").GetMethod "ThrowsTypeLoad"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    // Looking a method up by name alone reads none of its signature's types.
+                    let pointer = (signatures.GetMethod name).MethodHandle.GetFunctionPointer ()
+                    name, probe.Invoke ((null : obj), [| box pointer |]) |> unbox<bool>
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly))
+
+        let failures =
+            [
+                for name, signatureType, expected in methods do
+                    let method =
+                        clientAssembly.Methods.Values
+                        |> Seq.filter (fun m -> m.Name = name)
+                        |> Seq.exactlyOne
+
+                    let spelled =
+                        match method.Signature.ReturnType with
+                        | MethodReturnType.Void -> method.Signature.ParameterTypes
+                        | MethodReturnType.Returns returned -> returned :: method.Signature.ParameterTypes
+
+                    if
+                        not (
+                            spelled
+                            |> List.exists (fun ty -> List.contains signatureType (namedTypes clientAssembly ty))
+                        )
+                    then
+                        yield $"%s{name}: its signature does not spell %s{signatureType}: %A{spelled}"
+
+                    // Nothing in the body names a type by a token.
+                    match method.Body with
+                    | MethodBody.Il body ->
+                        let tokens =
+                            body.Instructions
+                            |> List.filter (fun (op, _) ->
+                                match op with
+                                | IlOp.UnaryMetadataToken _ -> true
+                                | _ -> false
+                            )
+
+                        if not tokens.IsEmpty then
+                            yield $"%s{name}: its body names tokens: %A{tokens}"
+                    | body -> yield $"%s{name}: no IL body: %A{body}"
+
+                    if hostThrows.[name] <> expected then
+                        yield $"%s{name}: the host throws TypeLoadException %b{hostThrows.[name]}, not %b{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Signatures" name)
 
                     analysis <- next
                     let shown = render analysis escapes
