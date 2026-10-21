@@ -245,8 +245,8 @@ class WaitsOnADuplicatedPort
                         match
                             UnixSignal.sigactionSyscall (kernel.Caller sleeper) sigusr1 (Some disposition) system
                         with
-                        | Ok (_, system) -> system
-                        | Error errno -> failwith $"sigaction answered %O{errno}"
+                        | SigactionAnswer.Completed _, system -> system
+                        | SigactionAnswer.Failed errno, _ -> failwith $"sigaction answered %O{errno}"
 
                     let caught =
                         kernel.System
@@ -256,7 +256,7 @@ class WaitsOnADuplicatedPort
 
                     let sent =
                         match UnixSignal.pthreadKill (kernel.Caller sleeper) thread sigusr1 caught with
-                        | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
+                        | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) -> system
                         | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
                     let woken =

@@ -58,6 +58,7 @@ module OpenFlagsPal =
             Synchronous : int
             NoFollow : int
             Directory : int
+            NonBlock : int
         }
 
     let private numbering (platform : SimulatedUnixPlatform) : Numbering =
@@ -79,6 +80,7 @@ module OpenFlagsPal =
                 Synchronous = 0x101000
                 NoFollow = noFollow
                 Directory = directory
+                NonBlock = 0x800
             }
         | SimulatedUnixFlavour.Darwin ->
             {
@@ -89,6 +91,7 @@ module OpenFlagsPal =
                 Synchronous = 0x80
                 NoFollow = 0x100
                 Directory = 0x100000
+                NonBlock = 0x4
             }
 
     /// What the shim hands `open(2)` for this flags argument, in `platform`'s
@@ -132,15 +135,11 @@ module OpenFlagsPal =
             ||| bit NoFollow numbering.NoFollow
             |> Some
 
-    /// The flag word PawPrint's `opendir(3)` opens a directory with:
-    /// `O_RDONLY|O_DIRECTORY|O_CLOEXEC` in `platform`'s numbering.
-    ///
-    /// glibc's and Darwin's `opendir` add `O_NONBLOCK`, which the kernel
-    /// library does not model on `open(2)`. It changes nothing for a directory,
-    /// which no read blocks on, so it is left out rather than refused.
+    /// The flag word glibc's and Darwin's `opendir(3)` open a directory with:
+    /// `O_RDONLY|O_NONBLOCK|O_DIRECTORY|O_CLOEXEC` in `platform`'s numbering.
     let directoryStream (platform : SimulatedUnixPlatform) : int =
         let numbering = numbering platform
-        numbering.Directory ||| numbering.CloseOnExec
+        numbering.NonBlock ||| numbering.Directory ||| numbering.CloseOnExec
 
     /// The flag word minipal opens `/dev/urandom` with: `O_RDONLY|O_CLOEXEC` in
     /// `platform`'s numbering.

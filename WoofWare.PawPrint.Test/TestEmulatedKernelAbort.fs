@@ -39,8 +39,8 @@ module TestEmulatedKernelAbort =
                 (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
                 kernel.System
         with
-        | Ok (_, system) -> EmulatedKernel.withUnix system kernel
-        | Error errno -> failwith $"pthread_sigmask failed with %O{errno}"
+        | SignalMaskAnswer.Completed _, system -> EmulatedKernel.withUnix system kernel
+        | SignalMaskAnswer.Failed errno, _ -> failwith $"pthread_sigmask failed with %O{errno}"
 
     [<Test>]
     let ``the runtime's own SIGABRT handler does not save the process`` () : unit =
@@ -97,7 +97,8 @@ module TestEmulatedKernelAbort =
                         (Signal.toRawSignoUnder numbering Signal.SIGABRT)
                         kernel.System
                 with
-                | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
+                | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) ->
+                    EmulatedKernel.withUnix system kernel
                 | other -> failwith $"expected SIGABRT to be left pending, got %A{other}"
 
             SignalState.pending kernel.Signals

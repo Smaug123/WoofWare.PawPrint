@@ -46,7 +46,7 @@ module SignalFrames =
                     (Signal.toRawSignoUnder numbering carrier)
                     caught
             with
-            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
+            | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) -> system
             | other -> failwith $"expected the carrier to be left pending on %O{task}, got %A{other}"
 
         match UnixSignal.onReturnToUser (LoneProcess.caller task sent) sent with

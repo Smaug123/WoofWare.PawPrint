@@ -178,8 +178,9 @@ module SignalDispatch =
                     (Some SignalDisposition.Default)
                     state.Kernel.System
             with
-            | Ok (_, system) -> state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
-            | Error errno ->
+            | SigactionAnswer.Completed _, system ->
+                state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
+            | SigactionAnswer.Failed errno, _ ->
                 failwith
                     $"SignalDispatch.poll: the PAL's restore of %O{signal}'s default was refused (%O{errno}), but the PAL catches only signals sigaction accepts."
         | PalReplacedDisposition.Ignore ->
@@ -276,19 +277,15 @@ module SignalDispatch =
                     refused e
 
             match outcome with
-            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), written) ->
-                // A byte that reached a pipe the host drains, one of the
-                // standard output streams, is guest-visible output, which only
-                // a step's effect streams; this poll has no step to carry one.
-                if
-                    DeliveryLog.count (UnixSystem.delivered written)
-                    <> DeliveryLog.count (UnixSystem.delivered system)
-                then
-                    failwith
-                        $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with one of the standard output streams the host drains; PawPrint would record the byte as output without streaming it."
-
+            // A byte that reached a pipe the host drains, one of the standard
+            // output streams, is guest-visible output, which only a step's
+            // effect streams; this poll has no step to carry one.
+            | _, Some _ ->
+                failwith
+                    $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with one of the standard output streams the host drains; PawPrint would record the byte as output without streaming it."
+            | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), written), None ->
                 state.MapKernel (EmulatedKernel.withUnix written) |> SignalPoll.Continues
-            | outcome -> refuse $"the kernel answers %s{describe outcome}"
+            | outcome, None -> refuse $"the kernel answers %s{describe outcome}"
         | CallProgress.Answered outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
     /// Whether the leader owes a return to user mode in `system` (`UnixSignal.owesReturn`): a

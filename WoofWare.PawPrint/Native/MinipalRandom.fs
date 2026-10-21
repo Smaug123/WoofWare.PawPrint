@@ -143,33 +143,30 @@ module MinipalRandom =
             try
                 UnixNamespace.openPath
                     (kernel.Caller thread)
-                    (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
                     urandomPath
+                    (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
                     0
                     kernel.System
             with :? UnmodelledException as e ->
                 KernelRefusal.fail $"%s{operation}: open(/dev/urandom) was refused" e
 
         match opened with
-        | SyscallOutcome.WouldBlock condition, _ ->
+        | OpenOutcome.WouldBlock condition, _ ->
             failwith
                 $"%s{operation}: open(/dev/urandom) on thread %O{thread} would sleep until %A{condition}, but only an open of a FIFO sleeps, and /dev/urandom is a device node (this is a bug in the kernel library)."
-        | SyscallOutcome.Interrupted, _ ->
-            failwith
-                $"%s{operation}: open(/dev/urandom) on thread %O{thread} was interrupted by a signal, though it never slept (this is a bug in the kernel library)."
-        | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
+        | OpenOutcome.Answered (DescriptorAnswer.Returned fd), system ->
             let kernel = EmulatedKernel.withUnix system kernel
 
-            Ok (int fd),
+            Ok fd,
             { kernel with
-                ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open (int fd), lrand48)
+                ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open fd, lrand48)
             }
-        | SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.ENOENT), _ ->
+        | OpenOutcome.Answered (DescriptorAnswer.Failed UnixError.ENOENT), _ ->
             // minipal latches a missing `/dev/urandom` and never asks again. A
             // Linux machine here always has one, and nothing can remove it.
             failwith
                 $"%s{operation}: open(/dev/urandom) answered ENOENT, which minipal latches for the process's life; this kernel's devtmpfs always holds the node, so the latch is not modelled (this is a bug in the kernel library)."
-        | SyscallOutcome.Answered (SyscallAnswer.Failed error), system ->
+        | OpenOutcome.Answered (DescriptorAnswer.Failed error), system ->
             Error error, EmulatedKernel.withUnix system kernel
 
     /// `minipal_get_cryptographically_secure_random_bytes` in System.Native's
@@ -296,8 +293,8 @@ module MinipalRandom =
             | Some state -> state
             | None ->
                 match UnixClock.clockGettime (kernel.Caller thread) clockRealtimeCoarse kernel.System with
-                | Ok now -> Lrand48.seed (UnixTimestamp.seconds now)
-                | other ->
+                | ClockGettimeAnswer.Completed now -> Lrand48.seed (UnixTimestamp.seconds now)
+                | ClockGettimeAnswer.Failed _ as other ->
                     failwith
                         $"%s{operation}: time(NULL), which glibc answers from CLOCK_REALTIME_COARSE, failed: %A{other} (this is a bug in the kernel library)."
 

@@ -184,15 +184,15 @@ module StartupSignalDispositions =
                     -> int
                     -> SignalDisposition<NativeSignalHandler> option
                     -> UnixSystem<'Task, NativeSignalHandler>
-                    -> Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>)
+                    -> SigactionAnswer<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>)
             (signo : int)
             (action : SignalDisposition<NativeSignalHandler> option)
             (system : UnixSystem<'Task, NativeSignalHandler>)
             : SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>
             =
             match call caller signo action system with
-            | Ok answer -> answer
-            | Error (errno : UnixError) ->
+            | SigactionAnswer.Completed previous, system -> previous, system
+            | SigactionAnswer.Failed (errno : UnixError), _ ->
                 failwith
                     $"StartupSignalDispositions.install: sigaction(%d{signo}, %O{action}) under %O{numbering} was refused (%O{errno})"
 

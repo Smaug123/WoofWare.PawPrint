@@ -717,13 +717,20 @@ type EmulatedKernel =
         /// undefined behaviour on a real libc, which reads through whatever the
         /// number names by then, as `readdir` here does.
         DirectoryStreamFds : Map<NativeMemoryBlockId, int>
+        /// What the guest wrote to its standard output and error, one entry per
+        /// write, in the order it wrote them: the kernel's deliveries to the pipes
+        /// PawPrint drains, labelled by stream, newest first so that appending is
+        /// a cons. Appended only by `recordDelivery`.
+        _OutputLogNewestFirst : OutputLogEntry list
     }
 
     /// What the guest wrote to its standard output and error, one entry per
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog this.ProcessId (UnixSystem.delivered this.System)
+        let builder = ImmutableArray.CreateBuilder<OutputLogEntry> ()
+        builder.AddRange (List.rev this._OutputLogNewestFirst)
+        builder.ToImmutable ()
 
     /// Every task the kernel knows about, by the thread that is it.
     ///
@@ -908,6 +915,24 @@ module EmulatedKernel =
     let withUnix (system : UnixSystem<ThreadId, NativeSignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             System = system
+        }
+
+    /// Record what one `write(2)` by this kernel's process delivered out of the
+    /// machine, which the kernel answers beside the write's fate and keeps no
+    /// record of: the entry it appends to `OutputLog`.
+    ///
+    /// Fails loudly for a delivery to a pipe launched into another process
+    /// (`StandardStreams.roleOf`).
+    let recordDelivery (delivery : Delivery) (kernel : EmulatedKernel) : OutputLogEntry * EmulatedKernel =
+        let entry =
+            {
+                Role = StandardStreams.roleOf kernel.ProcessId delivery.Endpoint
+                Bytes = delivery.Bytes
+            }
+
+        entry,
+        { kernel with
+            _OutputLogNewestFirst = entry :: kernel._OutputLogNewestFirst
         }
 
     /// Apply an operation to this kernel's POSIX system. Those operations live
@@ -1175,6 +1200,7 @@ module EmulatedKernel =
             PosixSignalShim = PosixSignalShim.initial
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
+            _OutputLogNewestFirst = []
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -1767,8 +1793,9 @@ module EmulatedKernel =
 
         let restored =
             match UnixSignal.sigaction caller signo (Some SignalDisposition.Default) system with
-            | Ok (_, system) -> returned "restoring SIGABRT's default" system
-            | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
+            | SigactionAnswer.Completed _, system -> returned "restoring SIGABRT's default" system
+            | SigactionAnswer.Failed errno, _ ->
+                failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
 
         // `SIG_UNBLOCK`, as each `<signal.h>` numbers it.
         let unblock =
@@ -1786,8 +1813,9 @@ module EmulatedKernel =
                         (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
                         system
                 with
-                | Ok (_, system) -> returned "unblocking SIGABRT" system
-                | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+                | SignalMaskAnswer.Completed _, system -> returned "unblocking SIGABRT" system
+                | SignalMaskAnswer.Failed errno, _ ->
+                    failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
             )
 
         match unblocked with
@@ -1801,7 +1829,7 @@ module EmulatedKernel =
                 KernelRefusal.fail $"EmulatedKernel.abort: %O{thread} raising SIGABRT was refused" e
 
         match raised with
-        | Ok (ProcessFate.ProcessEnded (ended, remaining)) -> diedOfAbrt ended remaining
+        | ProcessFate.ProcessEnded (ended, remaining) -> diedOfAbrt ended remaining
         | other ->
             failwith
                 $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"

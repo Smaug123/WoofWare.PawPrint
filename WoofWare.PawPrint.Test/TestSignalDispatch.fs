@@ -256,7 +256,8 @@ module TestSignalDispatch =
             let signo = Signal.toRawSignoUnder (numberingOf state) signal
 
             match UnixSignal.kill (kernel.Caller kernel.Leader) pid signo kernel.System with
-            | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> EmulatedKernel.withUnix system kernel
+            | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) ->
+                EmulatedKernel.withUnix system kernel
             | other ->
                 let masks =
                     UnixSystem.threads kernel.ProcessId kernel.System
@@ -956,7 +957,7 @@ module TestSignalDispatch =
                 | other -> failwith $"closing %d{fd} answered %O{other}"
 
             match UnixDescriptor.dup (LoneProcess.leader system) 1 system with
-            | SyscallAnswer.Completed newFd, system when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
+            | DescriptorAnswer.Returned newFd, system when newFd = fd -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"duplicating stdout onto %d{fd} answered %O{other}"
         )
 
@@ -1006,12 +1007,12 @@ module TestSignalDispatch =
                 match
                     UnixNamespace.openPath
                         (LoneProcess.leader system)
-                        (flagWord (OpenFlagsPal.WriteOnly ||| OpenFlagsPal.Create))
                         sinkBytes
+                        (flagWord (OpenFlagsPal.WriteOnly ||| OpenFlagsPal.Create))
                         0o644
                         system
                 with
-                | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system when fd = int64 writeEnd ->
+                | OpenOutcome.Answered (DescriptorAnswer.Returned fd), system when fd = writeEnd ->
                     EmulatedKernel.withUnix system kernel
                 | other -> failwith $"opening the sink answered %A{other}"
             )
@@ -1027,10 +1028,10 @@ module TestSignalDispatch =
             let system = state.Kernel.System
 
             match
-                UnixNamespace.openPath (LoneProcess.leader system) (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system
+                UnixNamespace.openPath (LoneProcess.leader system) sinkBytes (flagWord OpenFlagsPal.ReadOnly) 0 system
             with
-            | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
-                match UnixReadWrite.read (LoneProcess.leader system) (int fd) UserBuffer.Mapped 16UL system with
+            | OpenOutcome.Answered (DescriptorAnswer.Returned fd), system ->
+                match UnixReadWrite.read (LoneProcess.leader system) fd UserBuffer.Mapped 16UL system with
                 | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ -> List.ofSeq bytes
                 | other -> failwith $"reading the sink answered %O{other}"
             | other -> failwith $"reopening the sink answered %O{other}"
@@ -1093,7 +1094,7 @@ module TestSignalDispatch =
     let private duplicatedOnto (source : int) (target : int) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
             match UnixDescriptor.dup2 (kernel.Caller kernel.Leader) source target kernel.System with
-            | SyscallAnswer.Completed fd, system when fd = int64 target -> EmulatedKernel.withUnix system kernel
+            | DescriptorAnswer.Returned fd, system when fd = target -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"dup2(%d{source}, %d{target}) answered %A{other}"
         )
 
@@ -1115,7 +1116,7 @@ module TestSignalDispatch =
             match
                 UnixSocket.socket (LoneProcess.leader system) SimulatedUnixPlatform.internetAddressFamily 1 6 system
             with
-            | Ok created -> created
+            | DescriptorAnswer.Returned fd, system -> fd, system
             | other -> failwith $"socket answered %A{other}"
 
         let system = state.Kernel.System
@@ -1158,6 +1159,7 @@ module TestSignalDispatch =
                     listener
                     UserBuffer.Mapped
                     16u
+                    0
                     system
             with
             | AcceptOutcome.Accepted _, system -> system
@@ -1184,9 +1186,9 @@ module TestSignalDispatch =
 
         let system = state.Kernel.System
 
-        match UnixNamespace.openPath (LoneProcess.leader system) flags pathBytes 0o644 system with
-        | SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
-            state.MapKernel (EmulatedKernel.withUnix system), int fd
+        match UnixNamespace.openPath (LoneProcess.leader system) pathBytes flags 0o644 system with
+        | OpenOutcome.Answered (DescriptorAnswer.Returned fd), system ->
+            state.MapKernel (EmulatedKernel.withUnix system), fd
         | other -> failwith $"opening the file answered %A{other}"
 
     [<Test>]
@@ -1277,7 +1279,7 @@ module TestSignalDispatch =
             state.MapKernel (fun kernel ->
                 let system =
                     match UnixDescriptor.dup2 (kernel.Caller kernel.Leader) readEnd 40 kernel.System with
-                    | SyscallAnswer.Completed 40L, system -> system
+                    | DescriptorAnswer.Returned 40, system -> system
                     | other -> failwith $"dup2 away answered %A{other}"
 
                 let system =
@@ -1644,7 +1646,7 @@ module TestSignalDispatch =
                 let count = (PausedWrite.copyRange paused).ByteCount
 
                 match UnixReadWrite.writeWithBytes (ImmutableArray.CreateRange (Array.create count 1uy)) paused with
-                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system) -> fill system
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system), None -> fill system
                 | other -> failwith $"filling the pipe answered %O{other}"
             // Full: the write would sleep, and the pipe is kept as it was.
             | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock _, _)) -> system
@@ -1679,7 +1681,7 @@ module TestSignalDispatch =
                 match UnixReadWrite.write (LoneProcess.leader system) pipe.WriteEnd UserBuffer.Mapped 1UL system with
                 | CallProgress.NeedsCopyIn paused ->
                     match UnixReadWrite.writeWithBytes (ImmutableArray.Create 0uy) paused with
-                    | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system) ->
+                    | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system), None ->
                         EmulatedKernel.withUnix system kernel
                     | other -> failwith $"writing to the pipe answered %O{other}"
                 | other -> failwith $"writing to the pipe answered %O{other} before the copy"
@@ -1942,7 +1944,7 @@ module TestSignalDispatch =
                             (Signal.toRawSignoUnder (numberingOf state) sigabrt)
                             kernel.System
                     with
-                    | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) ->
+                    | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) ->
                         EmulatedKernel.withUnix system kernel
                     | other -> failwith $"expected the leader's SIGABRT to be left pending, got %A{other}"
                 )

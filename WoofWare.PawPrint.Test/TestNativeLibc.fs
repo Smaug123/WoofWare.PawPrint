@@ -63,15 +63,12 @@ module TestNativeLibc =
 
         let outcome =
             match entry.Target with
-            | ValueSome target ->
-                UnixSignal.pthreadKill (LoneProcess.leader system) target signo system
-                |> Result.mapError (sprintf "%A")
+            | ValueSome target -> UnixSignal.pthreadKill (LoneProcess.leader system) target signo system
             | ValueNone ->
                 UnixSignal.kill (LoneProcess.leader system) (ProcessId.toInt32 (LoneProcess.pid system)) signo system
-                |> Result.mapError (sprintf "%A")
 
         match outcome with
-        | Ok (ProcessFate.Continues (KillOutcome.ProcessRuns, system)) -> system
+        | ProcessFate.Continues (KillAnswer.Completed KillOutcome.ProcessRuns, system) -> system
         | other -> failwith $"sending %A{entry}: %A{other}"
 
     let private signal (numbering : SignalNumbering) (signo : int) : Signal =
@@ -728,8 +725,8 @@ module TestNativeLibc =
                     Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGPIPE
 
                 match UnixSignal.sigactionSyscall writer signo (Some disposition) kernel.System with
-                | Ok (_, system) -> system
-                | Error errno -> failwith $"sigaction answered %O{errno}"
+                | SigactionAnswer.Completed _, system -> system
+                | SigactionAnswer.Failed errno, _ -> failwith $"sigaction answered %O{errno}"
 
         let system =
             match UnixThreadLifecycle.spawn writer (ThreadId 1) (CpuId 0) system with
@@ -749,7 +746,7 @@ module TestNativeLibc =
                 match
                     UnixReadWrite.writeWithBytes (ImmutableArray.CreateRange (Array.zeroCreate<byte> count)) paused
                 with
-                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system) -> fill system
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed _), system), None -> fill system
                 | other -> failwith $"filling the pipe answered %A{other}"
             // Full: the writer sleeps.
             | CallProgress.Answered (ProcessFate.Continues (WriteOutcome.WouldBlock _, system)) -> system

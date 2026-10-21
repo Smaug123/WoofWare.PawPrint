@@ -280,7 +280,7 @@ module TestTaskState =
         | ParkingSyscall.EpollWait ->
             let port, system =
                 match UnixPoll.epollCreate1 (LoneProcess.leader system) 0 system with
-                | Ok (port, system) -> port, system
+                | DescriptorAnswer.Returned port, system -> port, system
                 | other -> failwith $"epoll_create1 answered %A{other}"
 
             match UnixPoll.epollWait (LoneProcess.caller thread system) port 8 UserBuffer.Mapped -1 system with
@@ -472,7 +472,7 @@ module TestTaskState =
         // deadline alone ends.
         let port, state =
             match UnixPoll.epollCreate1 (state.Kernel.Caller state.Kernel.Leader) 0 state.Kernel.System with
-            | Ok (port, system) -> port, state.MapKernel (EmulatedKernel.withUnix system)
+            | DescriptorAnswer.Returned port, system -> port, state.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"epoll_create1 answered %A{other}"
 
         // The status goes with the record, because a park writes both and `checkTaskInvariants`

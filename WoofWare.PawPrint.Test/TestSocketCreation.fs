@@ -148,8 +148,8 @@ module TestSocketCreation =
 
             try
                 match UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system with
-                | Ok _ -> "Ok"
-                | Error error -> string<UnixError> error
+                | DescriptorAnswer.Returned _, _ -> "Ok"
+                | DescriptorAnswer.Failed error, _ -> string<UnixError> error
             with :? UnmodelledException ->
                 "Refused"
 
@@ -325,7 +325,7 @@ module TestSocketCreation =
             | Error screen -> failwith $"expected the screens to pass, got %O{screen}"
 
         match UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system with
-        | Ok (fd, system) ->
+        | DescriptorAnswer.Returned fd, system ->
             let socket =
                 match
                     FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors (LoneProcess.pid system) system)
@@ -507,8 +507,8 @@ module TestSocketCreation =
                                 match
                                     UnixSocket.socket (LoneProcess.leader system) domain socketType protocol system
                                 with
-                                | Error error -> Some (UnixErrorPal.toPal error)
-                                | Ok _ -> None
+                                | DescriptorAnswer.Failed error, _ -> Some (UnixErrorPal.toPal error)
+                                | DescriptorAnswer.Returned _, _ -> None
                             with :? UnmodelledException ->
                                 None
 

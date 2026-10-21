@@ -597,18 +597,18 @@ public static class Program
         // B's leader in an `epoll_wait` of 1 ms on a port nothing makes ready.
         let waiting =
             match UnixPoll.epollCreate1 callerB 0 parkedA.Kernel.System with
-            | Ok (port, system) ->
+            | DescriptorAnswer.Returned port, system ->
                 match UnixPoll.epollWait callerB port 1 UserBuffer.Mapped 1 system with
                 | EpollWaitOutcome.WouldBlock _, system -> system
                 | other -> failwith $"expected B's epoll_wait to park, got %A{other}"
-            | Error error -> failwith $"epoll_create1 failed with %O{error}"
+            | DescriptorAnswer.Failed error, _ -> failwith $"epoll_create1 failed with %O{error}"
 
         // SIGTERM's number in A's pipe, as a native handler would have written it.
         let written =
             match UnixReadWrite.write callerA pipe.WriteEnd UserBuffer.Mapped 1UL waiting with
             | CallProgress.NeedsCopyIn paused ->
                 match UnixReadWrite.writeWithBytes (ImmutableArray.Create 15uy) paused with
-                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system) -> system
+                | ProcessFate.Continues (WriteOutcome.Returns (WriteAnswer.Completed 1L), system), None -> system
                 | other -> failwith $"writing the pipe answered %A{other}"
             | other -> failwith $"writing the pipe answered %A{other}"
 
