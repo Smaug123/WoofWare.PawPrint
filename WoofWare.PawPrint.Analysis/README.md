@@ -137,7 +137,10 @@ method) may add more:
   signature of every method it calls, directly or through `calli`, is bound against the assemblies actually loaded, and a member
   or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
   `TypeLoadException` the JIT would throw. A member of one of the method's type variables
-  (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown";
+  (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown". The type
+  a type token names, and each type argument of a method a call instantiates, the JIT loads in
+  full, as it does a member reference's parent: what each derives from and implements, and the type of each
+  of its value-type fields, transitively, must be there too (`TypeLoad`);
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
   assembly. A module initializer is a type initializer, and the answer has what it raises and
@@ -322,8 +325,9 @@ was compiled against it, a missing member or type is reported as above, and says
 needs rebuilding (or, for a package, a different version). Other ways such a change can break a
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
-constraint added since now rejects, and a type it names whose own base type, interfaces or fields
-are no longer there (`TypeLoadException`).
+constraint added since now rejects, and a type whose own base type, interfaces or fields are no
+longer there (`TypeLoadException`) where only a local, a `catch` clause or a method's signature
+names it, or it declares a method or field that the body names by its definition.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever a token, a local or a `catch` clause names a type in it, and as
