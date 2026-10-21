@@ -35,7 +35,8 @@
         <Compile Include="StringConstructor.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <Compile Include="HardwareInstruction.fs" />
-        <EmbeddedResource Include="HardwareIntrinsicTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.tsv" />
+        <EmbeddedResource Include="HardwareIntrinsicTable.Net10.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net10.tsv" />
+        <EmbeddedResource Include="HardwareIntrinsicTable.Net11.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net11.tsv" />
         <EmbeddedResource Include="NativeContractTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.tsv" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>

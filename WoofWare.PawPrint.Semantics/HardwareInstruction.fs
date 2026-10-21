@@ -41,8 +41,9 @@ type HardwareIntrinsicRow =
         Flags : Set<string>
     }
 
-/// The JIT's hardware-intrinsic tables, as checked in beside this file (`HardwareIntrinsicTable.tsv`,
-/// embedded). A test regenerates them from the pinned runtime source and fails on any difference.
+/// Each runtime's JIT hardware-intrinsic tables, as checked in beside this file
+/// (`HardwareIntrinsicTable.<runtime>.tsv`, embedded). A test regenerates each from that runtime's
+/// pinned source and fails on any difference.
 [<RequireQualifiedAccess>]
 module HardwareIntrinsicTable =
 
@@ -105,19 +106,33 @@ module HardwareIntrinsicTable =
 
         lines [] |> List.map parse
 
-    /// Every row, in the order the checked-in table lists them.
-    let rows : Lazy<HardwareIntrinsicRow list> =
-        lazy
-            (let assembly = typeof<HardwareIntrinsicRow>.Assembly
-             let name = "WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.tsv"
+    let private read (runtime : EmulatedRuntime) : HardwareIntrinsicRow list =
+        let assembly = typeof<HardwareIntrinsicRow>.Assembly
 
-             use stream =
-                 match assembly.GetManifestResourceStream name with
-                 | null -> failwith $"HardwareIntrinsicTable: %s{assembly.FullName} embeds no %s{name}"
-                 | stream -> stream
+        let name =
+            match runtime with
+            | EmulatedRuntime.Net10 -> "WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net10.tsv"
+            | EmulatedRuntime.Net11 -> "WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net11.tsv"
 
-             use reader = new StreamReader (stream)
-             ofText (reader.ReadToEnd ()))
+        use stream =
+            match assembly.GetManifestResourceStream name with
+            | null -> failwith $"HardwareIntrinsicTable: %s{assembly.FullName} embeds no %s{name}"
+            | stream -> stream
+
+        use reader = new StreamReader (stream)
+        ofText (reader.ReadToEnd ())
+
+    let private net10 : Lazy<HardwareIntrinsicRow list> =
+        lazy (read EmulatedRuntime.Net10)
+
+    let private net11 : Lazy<HardwareIntrinsicRow list> =
+        lazy (read EmulatedRuntime.Net11)
+
+    /// Every row of `runtime`'s JIT, in the order the checked-in table lists them.
+    let rows (runtime : EmulatedRuntime) : HardwareIntrinsicRow list =
+        match runtime with
+        | EmulatedRuntime.Net10 -> net10.Force ()
+        | EmulatedRuntime.Net11 -> net11.Force ()
 
 
 /// An exception a hardware instruction can raise on a CPU that has it. Unrecoverable failures, such
@@ -165,15 +180,25 @@ module HardwareInstruction =
 
     /// The class nested in an instruction set's class, named `nested`, as `lookupIsa` maps the
     /// enclosing class's instruction set to the nested one's; `None` where it maps it to none.
-    let private nestedInstructionSet (target : JitTarget) (nested : string) (enclosing : string) : string option =
+    let private nestedInstructionSet
+        (runtime : EmulatedRuntime)
+        (target : JitTarget)
+        (nested : string)
+        (enclosing : string)
+        : string option
+        =
         match target, nested with
         // `Arm64VersionOfIsa` (hwintrinsicarm64.cpp).
         | JitTarget.Arm64, "Arm64" -> Some (enclosing + "_Arm64")
         // `X64VersionOfIsa` (hwintrinsicxarch.cpp).
         | JitTarget.X64, "X64" ->
             match enclosing with
+            | "SSE42" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> Some "SSE42_X64"
+                // .NET 11's X86Base absorbs SSE42.
+                | EmulatedRuntime.Net11 -> None
             | "X86Base"
-            | "SSE42"
             | "AVX"
             | "AVX2"
             | "AVX512"
@@ -217,13 +242,24 @@ module HardwareInstruction =
             | "GFNI" -> Some (enclosing + "_V512")
             | "AVXVNNIINT"
             | "AVXVNNIINT_V512" -> Some "AVXVNNIINT_V512"
+            | "AVXVNNI"
+            | "AVX512v3" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> None
+                | EmulatedRuntime.Net11 -> Some "AVX512v3"
             | _ -> None
         | _ -> None
 
     /// `lookupInstructionSet`: the instruction set of a class that is not nested, by its name. It
-    /// also names the cross-platform `Vector64` to `Vector512`, which are left out here, so a
-    /// placeholder of theirs has no contract.
-    let private topLevelInstructionSet (target : JitTarget) (ns : string) (name : string) : JitInstructionSet option =
+    /// also names the cross-platform vector classes, which are left out here, so a placeholder of
+    /// theirs has no contract.
+    let private topLevelInstructionSet
+        (runtime : EmulatedRuntime)
+        (target : JitTarget)
+        (ns : string)
+        (name : string)
+        : JitInstructionSet option
+        =
         match target, ns with
         | JitTarget.Arm64, _ when ns = JitTarget.instructionSetNamespace JitTarget.Arm64 ->
             match name with
@@ -237,6 +273,14 @@ module HardwareInstruction =
             | "Sha256"
             | "Sve"
             | "Sve2" -> Some (JitInstructionSet.Fixed name)
+            | "Sha3"
+            | "Sm4"
+            | "SveAes"
+            | "SveSha3"
+            | "SveSm4" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> None
+                | EmulatedRuntime.Net11 -> Some (JitInstructionSet.Fixed name)
             | _ -> None
         | JitTarget.X64, _ when ns = JitTarget.instructionSetNamespace JitTarget.X64 ->
             match name with
@@ -262,8 +306,16 @@ module HardwareInstruction =
             | "Avx512Vbmi2"
             | "Avx512Vpopcntdq" -> Some (JitInstructionSet.Fixed "AVX512v3")
             | "Avx512Vp2intersect" -> Some (JitInstructionSet.Fixed "AVX512VP2INTERSECT")
+            | "Avx512Bmm" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> None
+                | EmulatedRuntime.Net11 -> Some (JitInstructionSet.Fixed "AVX512BMM")
             | "AvxIfma" -> Some (JitInstructionSet.Fixed "AVXIFMA")
-            | "AvxVnni" -> Some (JitInstructionSet.Fixed "AVXVNNI")
+            | "AvxVnni" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> Some (JitInstructionSet.Fixed "AVXVNNI")
+                // On a CPU without AVX-VNNI, its EVEX encoding under AVX512v3.
+                | EmulatedRuntime.Net11 -> Some (JitInstructionSet.ByCpuSupport ("AVXVNNI", "AVX512v3"))
             | "AvxVnniInt8"
             | "AvxVnniInt16" -> Some (JitInstructionSet.ByCpuSupport ("AVXVNNIINT", "AVXVNNIINT_V512"))
             | "Gfni" -> Some (JitInstructionSet.Fixed "GFNI")
@@ -271,7 +323,10 @@ module HardwareInstruction =
             | "Sse3"
             | "Sse41"
             | "Sse42"
-            | "Ssse3" -> Some (JitInstructionSet.Fixed "SSE42")
+            | "Ssse3" ->
+                match runtime with
+                | EmulatedRuntime.Net10 -> Some (JitInstructionSet.Fixed "SSE42")
+                | EmulatedRuntime.Net11 -> Some (JitInstructionSet.Fixed "X86Base")
             | "Sha" -> Some (JitInstructionSet.Fixed "SHA")
             | "Sse"
             | "Sse2"
@@ -281,14 +336,24 @@ module HardwareInstruction =
             | _ -> None
         | _ -> None
 
-    /// The instruction set the JIT names for `intrinsicClass` when compiling for `target`, as its
-    /// `lookupIsa` names it; `None` where it names none.
-    let instructionSet (target : JitTarget) (intrinsicClass : IntrinsicClass) : JitInstructionSet option =
+    /// The instruction set `runtime`'s JIT names for `intrinsicClass` when compiling for `target`,
+    /// as its `lookupIsa` names it; `None` where it names none.
+    let instructionSet
+        (runtime : EmulatedRuntime)
+        (target : JitTarget)
+        (intrinsicClass : IntrinsicClass)
+        : JitInstructionSet option
+        =
         let nested (name : string) (enclosing : JitInstructionSet) : JitInstructionSet option =
             match enclosing with
-            | JitInstructionSet.Fixed isa -> nestedInstructionSet target name isa |> Option.map JitInstructionSet.Fixed
+            | JitInstructionSet.Fixed isa ->
+                nestedInstructionSet runtime target name isa
+                |> Option.map JitInstructionSet.Fixed
             | JitInstructionSet.ByCpuSupport (ifSupported, otherwise) ->
-                match nestedInstructionSet target name ifSupported, nestedInstructionSet target name otherwise with
+                match
+                    nestedInstructionSet runtime target name ifSupported,
+                    nestedInstructionSet runtime target name otherwise
+                with
                 | Some ifSupported, Some otherwise when ifSupported = otherwise ->
                     Some (JitInstructionSet.Fixed ifSupported)
                 | Some ifSupported, Some otherwise -> Some (JitInstructionSet.ByCpuSupport (ifSupported, otherwise))
@@ -298,12 +363,12 @@ module HardwareInstruction =
         // The JIT sees a class's name and at most two enclosing ones, so it does not name an
         // instruction set for a class nested deeper.
         match intrinsicClass.Path with
-        | [ name ] -> topLevelInstructionSet target intrinsicClass.Namespace name
+        | [ name ] -> topLevelInstructionSet runtime target intrinsicClass.Namespace name
         | [ enclosing ; name ] ->
-            topLevelInstructionSet target intrinsicClass.Namespace enclosing
+            topLevelInstructionSet runtime target intrinsicClass.Namespace enclosing
             |> Option.bind (nested name)
         | [ outer ; inner ; name ] ->
-            topLevelInstructionSet target intrinsicClass.Namespace outer
+            topLevelInstructionSet runtime target intrinsicClass.Namespace outer
             |> Option.bind (nested inner)
             |> Option.bind (nested name)
         | _ -> None
@@ -316,24 +381,33 @@ module HardwareInstruction =
         | JitTarget.X64, "AVX10v1_X64" -> [ "AVX512_X64" ]
         | _ -> [ isa ]
 
-    let private index : Lazy<Map<JitTarget * string * string, HardwareIntrinsicRow>> =
-        lazy
-            (HardwareIntrinsicTable.rows.Force ()
-             |> List.groupBy (fun row -> row.Target, row.InstructionSet, row.Name)
-             |> List.map (fun (key, rows) ->
-                 match rows with
-                 | [ row ] -> key, row
-                 // `binarySearchId` finds a method by its name alone within an instruction set.
-                 | _ ->
-                     failwith $"HardwareIntrinsicTable: %d{rows.Length} rows for %A{key}; the JIT's search assumes one"
-             )
-             |> Map.ofList)
+    let private indexOf (runtime : EmulatedRuntime) : Map<JitTarget * string * string, HardwareIntrinsicRow> =
+        HardwareIntrinsicTable.rows runtime
+        |> List.groupBy (fun row -> row.Target, row.InstructionSet, row.Name)
+        |> List.map (fun (key, rows) ->
+            match rows with
+            | [ row ] -> key, row
+            // `binarySearchId` finds a method by its name alone within an instruction set.
+            | _ ->
+                failwith
+                    $"HardwareIntrinsicTable: %d{rows.Length} rows for %A{key} on %A{runtime}; the JIT's search assumes one"
+        )
+        |> Map.ofList
 
-    /// The rows of the JIT's table from which it may expand the instruction `methodName` of
+    let private net10Index = lazy (indexOf EmulatedRuntime.Net10)
+    let private net11Index = lazy (indexOf EmulatedRuntime.Net11)
+
+    let private index (runtime : EmulatedRuntime) : Map<JitTarget * string * string, HardwareIntrinsicRow> =
+        match runtime with
+        | EmulatedRuntime.Net10 -> net10Index.Force ()
+        | EmulatedRuntime.Net11 -> net11Index.Force ()
+
+    /// The rows of `runtime`'s JIT table from which it may expand the instruction `methodName` of
     /// `intrinsicClass` when compiling for `target`: one for each instruction set it might name for
     /// the class, depending on the CPU. `None` where it names none, or where one it might name has
     /// no row for the method.
     let rows
+        (runtime : EmulatedRuntime)
         (target : JitTarget)
         (intrinsicClass : IntrinsicClass)
         (methodName : string)
@@ -341,9 +415,9 @@ module HardwareInstruction =
         =
         let rowOf (isa : string) : HardwareIntrinsicRow option =
             searched target isa
-            |> List.tryPick (fun isa -> index.Force().TryFind (target, isa, methodName))
+            |> List.tryPick (fun isa -> (index runtime).TryFind (target, isa, methodName))
 
-        match instructionSet target intrinsicClass with
+        match instructionSet runtime target intrinsicClass with
         | None -> None
         | Some (JitInstructionSet.Fixed isa) -> rowOf isa |> Option.map List.singleton
         | Some (JitInstructionSet.ByCpuSupport (ifSupported, otherwise)) ->
@@ -391,9 +465,15 @@ module HardwareInstruction =
             )
 
     /// What the instruction `methodName` of `intrinsicClass` can raise on a CPU that has it, when
-    /// the JIT compiles for `target`: whatever any row it may expand it from says.
-    let contract (target : JitTarget) (intrinsicClass : IntrinsicClass) (methodName : string) : InstructionContract =
-        match rows target intrinsicClass methodName with
+    /// `runtime`'s JIT compiles for `target`: whatever any row it may expand it from says.
+    let contract
+        (runtime : EmulatedRuntime)
+        (target : JitTarget)
+        (intrinsicClass : IntrinsicClass)
+        (methodName : string)
+        : InstructionContract
+        =
+        match rows runtime target intrinsicClass methodName with
         | None -> InstructionContract.Unknown
         | Some rows ->
 

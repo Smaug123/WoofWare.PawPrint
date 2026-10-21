@@ -298,6 +298,11 @@ module FrameworkUnderTest =
     let requireLinuxFrameworkDirectory () : string =
         requireDevshellDirectory (linuxFrameworkVariable (runtime ())) "exercise the linux-x64 CoreLib"
 
+    /// `runtime`'s pinned linux-x64 framework, whichever runtime is under test; outside the Nix
+    /// devshell, the calling test is ignored.
+    let requireLinuxFrameworkDirectoryOf (runtime : EmulatedRuntime) : string =
+        requireDevshellDirectory (linuxFrameworkVariable runtime) $"read %s{name runtime}'s linux-x64 CoreLib"
+
     /// `runtime`'s CoreLib, whichever runtime is under test, for a fixture that checks a shape
     /// PawPrint must handle on every supported runtime against each runtime's own image. A runtime
     /// whose framework only the Nix devshell names ignores the calling test outside it.

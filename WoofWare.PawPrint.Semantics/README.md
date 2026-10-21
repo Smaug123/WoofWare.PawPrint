@@ -13,6 +13,8 @@ inside an interpreter is available to the interpreter alone.
 
 What lives here:
 
+* `EmulatedRuntime` — the .NET runtimes PawPrint supports, and which one a CoreLib belongs to: the
+  key of every fact below that differs between runtimes.
 * `ContextSwitchPrior` — how likely interleaving an opcode with another thread's steps is to reveal
   a guest-visible difference. Consumed by PawPrint's Probabilistic Concurrency Testing scheduler.
 * `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
@@ -86,13 +88,14 @@ What lives here:
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
   operand is out of range, `DivideByZeroException` or `OverflowException` from an x86 integer
-  divide, or unknown for the JIT's helper and special intrinsics. It is read from the JIT's own
-  tables (`hwintrinsiclist*.h`), which `HardwareIntrinsicTable.tsv` reproduces, and its mapping from
-  an intrinsic class to the table's instruction set (`lookupIsa`) is transcribed for Arm64 and x64.
-  `TestHardwareInstruction` regenerates that table from the pinned runtime source and fails on a
-  difference; checks that every placeholder in the arm64 and linux-x64 CoreLibs has a row; and on an
-  arm64 or x64 host calls every instruction the CPU has with null, misaligned and valid addresses
-  and every immediate value, and fails on any exception a contract leaves out.
+  divide, or unknown for the JIT's helper and special intrinsics. It is read from each supported
+  runtime's JIT tables (`hwintrinsiclist*.h`), which `HardwareIntrinsicTable.<runtime>.tsv`
+  reproduce, and that JIT's mapping from an intrinsic class to the table's instruction set
+  (`lookupIsa`) is transcribed for Arm64 and x64; a caller names the runtime, an `EmulatedRuntime`.
+  `TestHardwareInstruction` regenerates each table from that runtime's pinned source and fails on a
+  difference; checks that every placeholder in each runtime's arm64 and linux-x64 CoreLibs has a
+  row; and on an arm64 or x64 host calls every instruction the CPU has with null, misaligned and
+  valid addresses and every immediate value, and fails on any exception a contract leaves out.
 * `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
   `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
   `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it
