@@ -98,10 +98,6 @@ module JitTypeLoads =
         | TypeDefn.Void -> None
         | spelling ->
 
-        if true then
-            Some (JitTypeLoad.InFull spelling)
-        else
-
         match position with
         // `getArgType` loads a value type or a type variable's argument; `getArgClass` loads what
         // `getArgType` called an object reference: a class, an interface, an array. Neither loads
