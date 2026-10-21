@@ -182,6 +182,25 @@ public class ThingException : System.Exception { }
             Callee : (JitTypePosition * TypeDefn) list
         }
 
+    /// How the host's JIT compiles the client: fully optimised in a collectible
+    /// `AssemblyLoadContext`, as CoreCLR tiers none of the code there
+    /// (`CodeVersionManager::IsMethodSupported`), and at tier 0 elsewhere, for a method's first call.
+    [<RequireQualifiedAccess>]
+    type private Tier =
+        | Tier0
+        | Optimised
+
+    /// What becomes, at a probe, of the loads the JIT may make or not (`JitTypeLoad.Possibly`).
+    [<RequireQualifiedAccess>]
+    type private PossibleLoads =
+        /// The JIT makes them where they are.
+        | Made
+        /// It makes none of them.
+        | Skipped
+        /// It makes those of the method the probe calls while compiling the probe, into which it
+        /// inlines that method.
+        | MadeByInliner
+
     /// One probe: a method of `Probes` whose body puts a shape at one position.
     type private Probe =
         {
@@ -191,6 +210,8 @@ public class ThingException : System.Exception { }
             /// Whether the body runs in a `try` with `catch` clauses, which stop what fails to load
             /// for a method it calls; otherwise its failures escape too.
             InTry : bool
+            /// What becomes of the loads the JIT may make or not, compiling at each tier.
+            Possible : Tier -> PossibleLoads
         }
 
     /// A token naming a method definition or a method specification, for
@@ -218,7 +239,8 @@ public class ThingException : System.Exception { }
             match position with
             | JitTypePosition.CalleeReturn -> [ position, returned ]
             | JitTypePosition.CalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
-            | JitTypePosition.FunctionPointerSignature ->
+            | JitTypePosition.FunctionPointerSignature
+            | JitTypePosition.RequestedFunctionPointerSignature ->
                 returned :: parameters |> List.map (fun spelling -> position, spelling)
             | _ -> failwith $"memberPositions gave %A{position} for the method %A{operand} names"
         )
@@ -288,6 +310,8 @@ public class ThingException : System.Exception { }
                 $"public unsafe class Static%d{k} {{ public static %s{s} F; }}"
                 $"public unsafe class Instance%d{k} {{ public %s{s} F; }}"
                 $"public unsafe class Virtual%d{k} {{ public virtual %s{s} M() => throw null; public virtual void T(%s{s} d) => throw null; public void NT(%s{s} d) => throw null; public void GT<U>(%s{s} d) => throw null; }}"
+                $"public unsafe class SharedTarget%d{k}<T> {{ public static void Takes(%s{s} d) => throw null; }}"
+                $"public unsafe class Shared%d{k}<T> {{ public static void* Address() => (void*)(delegate*<%s{s}, void>)&SharedTarget%d{k}<T>.Takes; }}"
                 $"public unsafe class Constructed%d{k} {{ public Constructed%d{k}(%s{s} d) => throw null; }}"
                 $"public unsafe delegate void TakesDelegate%d{k}(%s{s} d);"
                 if isTypeArgument shape then
@@ -306,6 +330,7 @@ public class ThingException : System.Exception { }
                 Body = body
                 Meets = meets
                 InTry = true
+                Possible = fun _ -> PossibleLoads.Made
             }
 
         let call = MemberOperand.Call
@@ -448,6 +473,45 @@ public class ThingException : System.Exception { }
                             [ spelt.Shape ])
                         []
                 )
+            // Optimising, the JIT folds the first address away, and asks for none. Code shared between
+            // instantiations finds the second through a generic dictionary, and asks for none, unless
+            // the JIT inlines it into the probe, which then asks for the address.
+            { probe
+                  "FoldedAddressParameter"
+                  $"Use((void*)((nint)(delegate*<%s{s}, void>)&Takes%d{k} & 0));"
+                  (fun spelt ->
+                      meets
+                          (addressMeetings
+                              UnaryMetadataTokenIlOp.Ldftn
+                              methodDefinition
+                              MethodAddressUse.FunctionPointer
+                              TypeDefn.Void
+                              [ spelt.Shape ])
+                          []
+                  ) with
+                Possible =
+                    function
+                    | Tier.Tier0 -> PossibleLoads.Made
+                    | Tier.Optimised -> PossibleLoads.Skipped
+            }
+            { probe
+                  "SharedAddressParameter"
+                  $"Use(Shared%d{k}<object>.Address());"
+                  (fun spelt ->
+                      meets
+                          []
+                          (addressMeetings
+                              UnaryMetadataTokenIlOp.Ldftn
+                              methodDefinition
+                              MethodAddressUse.FunctionPointer
+                              TypeDefn.Void
+                              [ spelt.Shape ])
+                  ) with
+                Possible =
+                    function
+                    | Tier.Tier0 -> PossibleLoads.Skipped
+                    | Tier.Optimised -> PossibleLoads.MadeByInliner
+            }
             probe
                 "StaticField"
                 $"TakesRef%d{k}(ref Static%d{k}.F);"
@@ -552,6 +616,7 @@ public class ThingException : System.Exception { }
                 Body = body
                 Meets = meets
                 InTry = true
+                Possible = fun _ -> PossibleLoads.Made
             }
 
         let delegateTarget (op : UnaryMetadataTokenIlOp) (token : MetadataToken) (spelt : Spellings) : Meetings =
@@ -675,8 +740,10 @@ public class ThingException : System.Exception { }
         |> String.concat "\n"
 
     /// What the host's CoreCLR does at each probe named `names`, and at preparing each method of
-    /// `Probes` named `prepared`.
+    /// `Probes` named `prepared`, compiling at `tier`. A context for tier 0 is not collectible, so it
+    /// stays loaded until the test host exits.
     let private hostOutcomes
+        (tier : Tier)
         (client : byte[])
         (incompleteProvider : byte[])
         (names : string list)
@@ -684,7 +751,7 @@ public class ThingException : System.Exception { }
         : Outcome list * Outcome list
         =
         let context =
-            Runtime.Loader.AssemblyLoadContext ("JitTypeLoads", isCollectible = true)
+            Runtime.Loader.AssemblyLoadContext ($"JitTypeLoads-%A{tier}", isCollectible = (tier = Tier.Optimised))
 
         context.add_Resolving (
             Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
@@ -724,7 +791,8 @@ public class ThingException : System.Exception { }
 
             probed, prepared
         finally
-            context.Unload ()
+            if context.IsCollectible then
+                context.Unload ()
 
     [<Test>]
     let ``the JIT loads in full exactly the types JitTypeLoads says, wherever a type of the grammar appears``
@@ -779,8 +847,12 @@ public class ThingException : System.Exception { }
 
         let preparedNames = List.map fst preparedPositions
 
-        let host, hostPrepared =
-            hostOutcomes clientImage incompleteProvider names preparedNames
+        let tiers = [ Tier.Tier0 ; Tier.Optimised ]
+
+        let host =
+            tiers
+            |> List.map (fun tier -> tier, hostOutcomes tier clientImage incompleteProvider names preparedNames)
+            |> Map.ofList
 
         let client =
             Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
@@ -811,7 +883,7 @@ public class ThingException : System.Exception { }
         // The provider is where the loader looks for assemblies, but not loaded.
         let directory = Directory.CreateTempSubdirectory "jit-type-loads"
 
-        let predicted, predictedPrepared =
+        let predicted =
             try
                 File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), incompleteProvider)
                 let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
@@ -829,9 +901,42 @@ public class ThingException : System.Exception { }
 
                     assemblies, failure
 
-                // Why the first of `meetings` whose type the JIT loads fails to load.
+                // Why `load` fails, where the JIT makes the loads it may make or not if `possible`.
+                let rec loadMiss
+                    (assemblies : LoadedAssemblies)
+                    (possible : bool)
+                    (load : JitTypeLoad)
+                    : LoadedAssemblies * string option
+                    =
+                    match load with
+                    | JitTypeLoad.InFull loaded -> loadFails assemblies loaded
+                    | JitTypeLoad.Possibly load ->
+                        if possible then
+                            loadMiss assemblies possible load
+                        else
+                            assemblies, None
+                    | JitTypeLoad.InFullIfDefined loaded ->
+                        let head =
+                            match TypeDefn.stripCustomModifiers loaded with
+                            | TypeDefn.GenericInstantiation (generic, _) -> TypeDefn.stripCustomModifiers generic
+                            | loaded -> loaded
+
+                        match head with
+                        | TypeDefn.FromReference (typeRef, _) ->
+                            match
+                                TypeResolution.tryResolveTypeRefIdentity loggerFactory dirs client typeRef assemblies
+                            with
+                            | assemblies, TypeReferenceIdentity.Resolved _ -> loadFails assemblies loaded
+                            | assemblies, TypeReferenceIdentity.TypeAbsent _ -> assemblies, None
+                            | assemblies, TypeReferenceIdentity.AssemblyUnavailable _ ->
+                                assemblies, Some "FileNotFoundException"
+                        | _ -> loadFails assemblies loaded
+
+                // Why the first of `meetings` whose type the JIT loads fails to load, where it makes
+                // the loads it may make or not if `possible`.
                 let firstMiss
                     (assemblies : LoadedAssemblies)
+                    (possible : bool)
                     (meetings : (JitTypePosition * TypeDefn) list)
                     : LoadedAssemblies * string option
                     =
@@ -840,103 +945,110 @@ public class ThingException : System.Exception { }
                         match found, JitTypeLoads.load position spelling with
                         | Some _, _
                         | None, None -> assemblies, found
-                        | None, Some (JitTypeLoad.InFull loaded) -> loadFails assemblies loaded
-                        | None, Some (JitTypeLoad.InFullIfDefined loaded) ->
-                            let head =
-                                match TypeDefn.stripCustomModifiers loaded with
-                                | TypeDefn.GenericInstantiation (generic, _) -> TypeDefn.stripCustomModifiers generic
-                                | loaded -> loaded
-
-                            match head with
-                            | TypeDefn.FromReference (typeRef, _) ->
-                                match
-                                    TypeResolution.tryResolveTypeRefIdentity
-                                        loggerFactory
-                                        dirs
-                                        client
-                                        typeRef
-                                        assemblies
-                                with
-                                | assemblies, TypeReferenceIdentity.Resolved _ -> loadFails assemblies loaded
-                                | assemblies, TypeReferenceIdentity.TypeAbsent _ -> assemblies, None
-                                | assemblies, TypeReferenceIdentity.AssemblyUnavailable _ ->
-                                    assemblies, Some "FileNotFoundException"
-                            | _ -> loadFails assemblies loaded
+                        | None, Some load -> loadMiss assemblies possible load
                     )
 
-                ((LoadedAssemblies.ofAssemblies [ corelib ; client ], []), allProbes)
-                ||> List.fold (fun (assemblies, outcomes) (anchor, probes) ->
-                    let spelt =
-                        {
-                            Shape =
-                                match anchor with
-                                | Some anchor -> fst (signature anchor)
-                                | None -> TypeDefn.Void
-                            Definition = definition
-                            Signature = signature
-                        }
+                // What each probe and each prepared method does, compiled at `tier`.
+                let predict (tier : Tier) : Outcome list * Outcome list =
+                    ((LoadedAssemblies.ofAssemblies [ corelib ; client ], []), allProbes)
+                    ||> List.fold (fun (assemblies, outcomes) (anchor, probes) ->
+                        let spelt =
+                            {
+                                Shape =
+                                    match anchor with
+                                    | Some anchor -> fst (signature anchor)
+                                    | None -> TypeDefn.Void
+                                Definition = definition
+                                Signature = signature
+                            }
 
-                    ((assemblies, outcomes), probes)
-                    ||> List.fold (fun (assemblies, outcomes) probe ->
-                        let meetings = probe.Meets spelt
-                        let assemblies, escapes = firstMiss assemblies meetings.Caller
-                        let assemblies, caught = firstMiss assemblies meetings.Callee
+                        ((assemblies, outcomes), probes)
+                        ||> List.fold (fun (assemblies, outcomes) probe ->
+                            let meetings = probe.Meets spelt
 
-                        let outcome =
-                            match escapes, caught with
-                            | Some escapes, _ -> Outcome.Escapes escapes
-                            | None, Some caught -> Outcome.Caught caught
-                            | None, None -> Outcome.Runs
+                            let isPossible (position : JitTypePosition, spelling : TypeDefn) : bool =
+                                match JitTypeLoads.load position spelling with
+                                | Some (JitTypeLoad.Possibly _) -> true
+                                | _ -> false
 
-                        assemblies, outcome :: outcomes
-                    )
-                )
-                |> fun (assemblies, outcomes) ->
-                    let _, prepared =
-                        ((assemblies, []), preparedPositions)
-                        ||> List.fold (fun (assemblies, outcomes) (name, position) ->
-                            let parameter = signature name |> snd |> List.exactlyOne
-                            let assemblies, failure = firstMiss assemblies [ position, parameter ]
+                            let made, caller, callee =
+                                match probe.Possible tier with
+                                | PossibleLoads.Made -> true, meetings.Caller, meetings.Callee
+                                | PossibleLoads.Skipped -> false, meetings.Caller, meetings.Callee
+                                | PossibleLoads.MadeByInliner ->
+                                    true,
+                                    meetings.Caller @ List.filter isPossible meetings.Callee,
+                                    List.filter (isPossible >> not) meetings.Callee
+
+                            let assemblies, escapes = firstMiss assemblies made caller
+                            let assemblies, caught = firstMiss assemblies made callee
 
                             let outcome =
-                                match failure with
-                                | Some failure -> Outcome.Fails failure
-                                | None -> Outcome.Runs
+                                match escapes, caught with
+                                | Some escapes, _ -> Outcome.Escapes escapes
+                                | None, Some caught -> Outcome.Caught caught
+                                | None, None -> Outcome.Runs
 
                             assemblies, outcome :: outcomes
                         )
+                    )
+                    |> fun (assemblies, outcomes) ->
+                        let _, prepared =
+                            ((assemblies, []), preparedPositions)
+                            ||> List.fold (fun (assemblies, outcomes) (name, position) ->
+                                let parameter = signature name |> snd |> List.exactlyOne
+                                let assemblies, failure = firstMiss assemblies true [ position, parameter ]
 
-                    List.rev outcomes, List.rev prepared
+                                let outcome =
+                                    match failure with
+                                    | Some failure -> Outcome.Fails failure
+                                    | None -> Outcome.Runs
+
+                                assemblies, outcome :: outcomes
+                            )
+
+                        List.rev outcomes, List.rev prepared
+
+                tiers |> List.map (fun tier -> tier, predict tier) |> Map.ofList
             finally
                 directory.Delete true
 
         let disagreements =
-            List.zip3 (names @ preparedNames) (host @ hostPrepared) (predicted @ predictedPrepared)
-            |> List.choose (fun (name, host, predicted) ->
-                if host = predicted then
-                    None
-                else
-                    Some $"%s{name}: the host %A{host}, JitTypeLoads %A{predicted}"
+            tiers
+            |> List.collect (fun tier ->
+                let host, hostPrepared = host.[tier]
+                let predicted, predictedPrepared = predicted.[tier]
+
+                List.zip3 (names @ preparedNames) (host @ hostPrepared) (predicted @ predictedPrepared)
+                |> List.choose (fun (name, host, predicted) ->
+                    if host = predicted then
+                        None
+                    else
+                        Some $"%s{name} at %A{tier}: the host %A{host}, JitTypeLoads %A{predicted}"
+                )
             )
 
         if not disagreements.IsEmpty then
             failwith (String.concat Environment.NewLine disagreements)
 
-        // Enough of each outcome for the comparison to say something.
-        let count (outcome : Outcome) =
-            host |> List.filter ((=) outcome) |> List.length
+        // Enough of each outcome at each tier for the comparison to say something.
+        for tier in tiers do
+            let host, hostPrepared = host.[tier]
 
-        count Outcome.Runs |> shouldBeGreaterThan 100
-        count (Outcome.Escapes "TypeLoadException") |> shouldBeGreaterThan 100
-        count (Outcome.Escapes "FileNotFoundException") |> shouldBeGreaterThan 50
-        count (Outcome.Caught "TypeLoadException") |> shouldBeGreaterThan 20
-        count (Outcome.Caught "FileNotFoundException") |> shouldBeGreaterThan 10
+            let count (outcome : Outcome) =
+                host |> List.filter ((=) outcome) |> List.length
 
-        let countPrepared (outcome : Outcome) =
-            hostPrepared |> List.filter ((=) outcome) |> List.length
+            count Outcome.Runs |> shouldBeGreaterThan 100
+            count (Outcome.Escapes "TypeLoadException") |> shouldBeGreaterThan 100
+            count (Outcome.Escapes "FileNotFoundException") |> shouldBeGreaterThan 50
+            count (Outcome.Caught "TypeLoadException") |> shouldBeGreaterThan 20
+            count (Outcome.Caught "FileNotFoundException") |> shouldBeGreaterThan 10
 
-        countPrepared Outcome.Runs |> shouldBeGreaterThan 100
+            let countPrepared (outcome : Outcome) =
+                hostPrepared |> List.filter ((=) outcome) |> List.length
 
-        if compilesSwift then
-            countPrepared (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 50
-            countPrepared (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 20
+            countPrepared Outcome.Runs |> shouldBeGreaterThan 100
+
+            if compilesSwift then
+                countPrepared (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 50
+                countPrepared (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 20

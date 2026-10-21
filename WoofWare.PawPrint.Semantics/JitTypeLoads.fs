@@ -29,6 +29,13 @@ type JitTypePosition =
     /// pointer, which may pun one type for another, so that it loads every value type in the
     /// signature first (`MethodDesc::PrepareForUseAsAFunctionPointer`).
     | FunctionPointerSignature
+    /// As `FunctionPointerSignature`, for a method whose address CoreCLR prepares only when the JIT
+    /// asks for the address itself (`getFunctionFixedEntryPoint`, as it morphs the `ldftn`). It
+    /// does not ask where it folds the address away, nor where a generic dictionary supplies it in
+    /// code shared between instantiations, so these are loads it may make or not
+    /// (`JitTypeLoad.Possibly`). Where it inlines the method into another, it asks while compiling
+    /// that one, so that a load failing here fails the other's compilation instead.
+    | RequestedFunctionPointerSignature
     /// The type of a field an instruction accesses (`getFieldInfo`).
     | FieldType
     /// The type a type token names, including a `catch` clause's (`resolveToken`).
@@ -49,6 +56,9 @@ type JitTypeLoad =
     /// is passed over; one into an assembly that is not there fails, as binding it must load the
     /// assembly (`ClassLoader::ResolveTokenToTypeDefThrowing`).
     | InFullIfDefined of TypeDefn
+    /// What the JIT may load or not, depending on how it compiles the method: if at all, as the
+    /// load inside says.
+    | Possibly of JitTypeLoad
 
 /// What becomes of the address an `ldftn` pushes.
 [<RequireQualifiedAccess>]
@@ -73,9 +83,9 @@ type FunctionPointerPreparation =
     /// for `ldvirtftn`, and for an `ldftn` of a method a method specification instantiates, whatever
     /// becomes of the address.
     | BeforeReturnType
-    /// When the JIT asks for the address (`getFunctionFixedEntryPoint`, as it morphs the
-    /// `ldftn`), after: for any other `ldftn` whose address is a function pointer.
-    | AfterReturnType
+    /// If the JIT asks for the address itself, after it reads the return type: for any other `ldftn`
+    /// whose address is a function pointer (`JitTypePosition.RequestedFunctionPointerSignature`).
+    | IfAddressRequested
     /// Not at all: for any other `ldftn`.
     | Unprepared
 
@@ -146,7 +156,7 @@ module JitTypeLoads =
     /// A type variable stands for its argument, which whoever instantiated the method or type
     /// loaded in full already, so loading it again cannot fail; it is answered as loaded in full
     /// wherever CoreCLR would load an argument of the right kind.
-    let load (position : JitTypePosition) (spelling : TypeDefn) : JitTypeLoad option =
+    let rec load (position : JitTypePosition) (spelling : TypeDefn) : JitTypeLoad option =
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void -> None
@@ -184,6 +194,9 @@ module JitTypeLoads =
             | TypeDefn.GenericMethodParameter _ -> Some (JitTypeLoad.InFull spelling)
             | spelling when isValueType spelling -> Some (JitTypeLoad.InFullIfDefined spelling)
             | _ -> None
+        | JitTypePosition.RequestedFunctionPointerSignature ->
+            load JitTypePosition.FunctionPointerSignature spelling
+            |> Option.map JitTypeLoad.Possibly
         // `ConvToJitSig`, `getFieldInfo` and `resolveToken` load every type but a primitive.
         | JitTypePosition.OwnReturn
         | JitTypePosition.CalleeReturn
@@ -206,7 +219,7 @@ module JitTypeLoads =
         | UnaryMetadataTokenIlOp.Ldftn, MetadataToken.MethodSpecification _, _ ->
             FunctionPointerPreparation.BeforeReturnType
         | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.FunctionPointer ->
-            FunctionPointerPreparation.AfterReturnType
+            FunctionPointerPreparation.IfAddressRequested
         | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.DelegateTarget
         | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.Discarded -> FunctionPointerPreparation.Unprepared
         | _ -> failwith $"JitTypeLoads.preparation was given %O{op}, which takes no method's address"
@@ -223,8 +236,12 @@ module JitTypeLoads =
         | MemberOperand.Jump -> MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.Address FunctionPointerPreparation.BeforeReturnType ->
             MemberPositions.Described [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
-        | MemberOperand.Address FunctionPointerPreparation.AfterReturnType ->
-            MemberPositions.Described [ JitTypePosition.CalleeReturn ; JitTypePosition.FunctionPointerSignature ]
+        | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested ->
+            MemberPositions.Described
+                [
+                    JitTypePosition.CalleeReturn
+                    JitTypePosition.RequestedFunctionPointerSignature
+                ]
         | MemberOperand.Address FunctionPointerPreparation.Unprepared ->
             MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.FieldAccess -> MemberPositions.Described [ JitTypePosition.FieldType ]

@@ -92,11 +92,15 @@ What lives here:
   becomes a function pointer it loads only where their references name a definition; some, a
   local pointer or a callee's class parameter, it does not load at all. Whether a load fails is
   the Loader's `TypeLoad` to say. Taking a method's address loads the value types of its signature
-  before or after its return type, or not at all, depending on the instruction and what becomes of
-  the address; a method Swift code calls loads its pointer parameters' targets too. What a call of
-  unmanaged code loads, and what making a delegate over a static method loads, it does not describe. `TestJitTypeLoads` puts each of a grammar of types that load, fail to load or live
-  in a missing assembly at each position, runs every probe on the host's CoreCLR, and checks that
-  it fails exactly where the rule and `TypeLoad` say, with the same exception.
+  before its return type, or not at all, depending on the instruction and what becomes of the
+  address, or only if the JIT asks for the address itself, which it may not, folding it away or
+  looking it up in shared code, or may do while compiling a method it inlines this one into: those
+  are loads it may make (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
+  parameters' targets too. What a call of unmanaged code loads, and what making a delegate over a
+  static method loads, it does not describe. `TestJitTypeLoads` puts each of a grammar of types
+  that load, fail to load or live in a missing assembly at each position, runs every probe on the
+  host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
+  rule and `TypeLoad` say, with the same exception.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
