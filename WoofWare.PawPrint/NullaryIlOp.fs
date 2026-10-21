@@ -1206,6 +1206,19 @@ module NullaryIlOp =
 
         let targetCliType = getTargetLdindCliType targetType
 
+        // The JIT imports an `ldind` whose value the next instruction pops as a null check of its
+        // address, which reads nothing (`CEE_POP` in importer.cpp), and Roslyn opens each of its
+        // `<PrivateImplementationDetails>.InlineArray*` helpers with that pair. Over a plain byref,
+        // reading the cell proves the address names live storage, which is all such a read checks:
+        // the value is never formed, so a cell whose bytes have no value (an object reference) is
+        // not asked for any. The `ldind` pushes the zero of its type in the value's place, which the
+        // `pop` this thread runs next discards unread; the `pop` stays a step of its own, since
+        // entering it may be a join that widens the slots beneath (`StackShapeOfMethod`).
+        let poppedNext =
+            match MethodState.peekNextInstruction state.ThreadState.[currentThread].MethodState with
+            | Some (IlOp.Nullary NullaryIlOp.Pop) -> true
+            | _ -> false
+
         let loadedValue =
             match popped with
             | EvalStackValue.ManagedPointer src when
@@ -1239,7 +1252,9 @@ module NullaryIlOp =
                 let cell =
                     IlMachineState.readManagedByref corelib state (ManagedPointerSource.requireAddressed src)
 
-                if ldindNeedsByteView target cell then
+                if poppedNext then
+                    targetCliType
+                elif ldindNeedsByteView target cell then
                     IlMachineState.readManagedByrefBytesAs
                         corelib
                         state
