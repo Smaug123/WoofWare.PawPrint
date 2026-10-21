@@ -3187,9 +3187,15 @@ module EscapeAnalysis =
         let state, localFailures =
             ((state, Set.empty), Option.defaultValue ImmutableArray.Empty body.LocalVars)
             ||> Seq.fold (fun (state, failures) local ->
-                match spellingBindFailure state assembly local with
-                | state, None -> state, failures
-                | state, Some failure -> state, Set.union failures (Set.ofList (bindFailureFacts state failure))
+                match JitTypeLoads.load JitTypePosition.Local local with
+                | None -> state, failures
+                | Some (JitTypeLoad.InFull loaded) ->
+                    match spellingLoadFailure state assembly loaded with
+                    | state, None -> state, failures
+                    | state, Some failure -> state, Set.union failures (Set.ofList (bindFailureFacts state failure))
+                | Some load ->
+                    failwith
+                        $"BUG: JitTypeLoads.load answers %O{load} for a local of %s{assembly.DefinitionFullName}, which loads in full or not at all"
             )
 
         let state, localFailures =

@@ -4907,6 +4907,207 @@ public static class Uses
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client compiled against one version of a provider, run against another lacking a type
+    /// that the type of a local of the client names, derives from, implements or holds. The JIT
+    /// loads in full the type of each local before the body runs, other than a pointer's,
+    /// a byref's or a function pointer's, so the load's `TypeLoadException` comes out of the
+    /// caller, past the client's own `catch`. No instruction of these methods names the type by a
+    /// token. The host's CoreCLR, running each method against the same two assemblies, says which
+    /// fail.
+    [<Test>]
+    let ``the type of a local fails to load where what it names, derives from, implements or holds is gone`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public interface IGone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        // Each local of a type the JIT loads has its address taken, so that Roslyn keeps it; a
+        // method taking a byref to it loads nothing at the caller. A pointer is read twice instead.
+        let client =
+            """
+using System.Collections.Generic;
+
+namespace Client;
+
+public class DerivesFromKept : Provider.Kept { }
+public class DerivesFromGone : Provider.Gone { }
+public class ImplementsGone : Provider.IGone { }
+public struct HoldsGone { public Provider.GoneStruct G; }
+
+public static unsafe class Locals
+{
+    static void OutDerivesFromKept(out DerivesFromKept x) => throw null;
+    static void OutGone(out Provider.Gone x) => throw null;
+    static void OutDerivesFromGone(out DerivesFromGone x) => throw null;
+    static void OutImplementsGone(out ImplementsGone x) => throw null;
+    static void OutHoldsGone(out HoldsGone x) => throw null;
+    static void OutArrayOfHoldsGone(out HoldsGone[] x) => throw null;
+    static void OutListOfDerivesFromGone(out List<DerivesFromGone> x) => throw null;
+
+    public static void OfDerivesFromKept() { DerivesFromKept x; OutDerivesFromKept(out x); }
+    public static void OfGone() { Provider.Gone x; OutGone(out x); }
+    public static void OfDerivesFromGone() { DerivesFromGone x; OutDerivesFromGone(out x); }
+    public static void OfImplementsGone() { ImplementsGone x; OutImplementsGone(out x); }
+    public static void OfHoldsGone() { HoldsGone x; OutHoldsGone(out x); }
+    public static void OfArrayOfHoldsGone() { HoldsGone[] x; OutArrayOfHoldsGone(out x); }
+    public static void OfListOfDerivesFromGone() { List<DerivesFromGone> x; OutListOfDerivesFromGone(out x); }
+    public static bool CaughtOfDerivesFromGone()
+    {
+        try { DerivesFromGone x; OutDerivesFromGone(out x); return true; }
+        catch (System.TypeLoadException) { return false; }
+    }
+    public static bool OfPointerToGoneStruct(void* q)
+    {
+        Provider.GoneStruct* p = (Provider.GoneStruct*)q;
+        return p == null || p == (Provider.GoneStruct*)1;
+    }
+    public static bool OfFunctionPointerOfGoneStruct(void* q)
+    {
+        delegate*<Provider.GoneStruct, void> f = (delegate*<Provider.GoneStruct, void>)q;
+        return f == null || f == (delegate*<Provider.GoneStruct, void>)1;
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let clientImage = compile "Client" [ completeProvider ] client
+
+        // Each method, the name of the type its local spells, and whether the JIT fails to load it.
+        let methods =
+            [
+                "OfDerivesFromKept", "DerivesFromKept", false
+                "OfGone", "Gone", true
+                "OfDerivesFromGone", "DerivesFromGone", true
+                "OfImplementsGone", "ImplementsGone", true
+                "OfHoldsGone", "HoldsGone", true
+                "OfArrayOfHoldsGone", "HoldsGone", true
+                "OfListOfDerivesFromGone", "DerivesFromGone", true
+                "CaughtOfDerivesFromGone", "DerivesFromGone", true
+                "OfPointerToGoneStruct", "GoneStruct", false
+                "OfFunctionPointerOfGoneStruct", "GoneStruct", false
+            ]
+
+        // Whether each method throws `TypeLoadException` on the host's CoreCLR.
+        let hostThrows : Map<string, bool> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("LocalTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let locals =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Locals"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let method = locals.GetMethod name
+
+                    // Reflection passes a null argument to a pointer parameter as a null pointer.
+                    let arguments : obj[] = Array.create (method.GetParameters ()).Length null
+
+                    let throws =
+                        try
+                            method.Invoke ((null : obj), arguments) |> ignore<obj>
+                            false
+                        with :? TargetInvocationException as e ->
+                            e.InnerException :? TypeLoadException
+
+                    name, throws
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly))
+
+        // The names of the types a spelling names, arguments, elements and signatures included.
+        let rec named (spelling : TypeDefn) : string list =
+            match spelling with
+            | TypeDefn.FromDefinition (identity, _) -> [ clientAssembly.TypeDefs.[identity.TypeDefinition.Get].Name ]
+            | TypeDefn.FromReference (reference, _) -> [ reference.Name ]
+            | TypeDefn.GenericInstantiation (generic, arguments) -> List.collect named (generic :: List.ofSeq arguments)
+            | TypeDefn.Array (element, _)
+            | TypeDefn.OneDimensionalArrayLowerBoundZero element
+            | TypeDefn.Pointer element
+            | TypeDefn.Byref element
+            | TypeDefn.Pinned element -> named element
+            | TypeDefn.Modified modified -> named modified.Unmodified
+            | TypeDefn.FunctionPointer signature ->
+                let returned =
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> []
+                    | MethodReturnType.Returns returned -> [ returned ]
+
+                List.collect named (returned @ signature.ParameterTypes)
+            | TypeDefn.PrimitiveType _
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _
+            | TypeDefn.Void -> []
+
+        let failures =
+            [
+                for name, localType, expected in methods do
+                    // Roslyn keeps the local whose type the method is about.
+                    let locals =
+                        match
+                            (clientAssembly.Methods.Values
+                             |> Seq.filter (fun m -> m.Name = name)
+                             |> Seq.exactlyOne)
+                                .Body
+                        with
+                        | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
+                        | _ -> []
+
+                    if not (locals |> List.exists (fun local -> List.contains localType (named local))) then
+                        yield $"%s{name}: no local spells %s{localType}: %A{locals}"
+
+                    if hostThrows.[name] <> expected then
+                        yield $"%s{name}: the host throws TypeLoadException %b{hostThrows.[name]}, not %b{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Locals" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.TypeLoadException" <> expected then
+                        yield $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
