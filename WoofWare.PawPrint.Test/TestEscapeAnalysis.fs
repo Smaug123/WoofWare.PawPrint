@@ -5476,6 +5476,70 @@ public static unsafe class Probe
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// An `[UnmanagedCallersOnly]` method that Swift's calling convention calls: the JIT compiling
+    /// it loads in full what a pointer parameter points to, as well as what the method's other
+    /// parameters load (`lvaInitSpecialSwiftParam`). No exception may leave such a method, so the
+    /// host cannot run it to say so.
+    [<Test>]
+    let ``a pointer parameter of a method Swift calls loads what it points to`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public struct Kept { }"
+            + (if complete then " public struct GoneStruct { }" else "")
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Swift
+{
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static void PointerToKept(Provider.Kept* x) { }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static void PointerToGoneStruct(Provider.GoneStruct* x) { }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly =
+            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
+
+        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        let raisesTypeLoad (analysis : EscapeAnalysisState) (name : string) : EscapeAnalysisState * bool =
+            let analysis, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Swift" name)
+
+            analysis, (render analysis escapes).Contains "=System.TypeLoadException"
+
+        let analysis, kept = raisesTypeLoad analysis "PointerToKept"
+        let _, gone = raisesTypeLoad analysis "PointerToGoneStruct"
+        (kept, gone) |> shouldEqual (false, true)
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.

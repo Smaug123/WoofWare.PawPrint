@@ -151,11 +151,14 @@ method) may add more:
   or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
   `TypeLoadException` the JIT would throw. A member of one of the method's type variables
   (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown". The type
-  a type token names, each type argument of a method a call instantiates, and the type of each
-  local the body declares, the JIT loads in full, as it does a member reference's parent: what
-  each derives from and implements, and the type of each of its value-type fields, transitively,
-  must be there too (`TypeLoad`). A local of a pointer, byref or function pointer type it does not
-  load at all, nor what that points to (`JitTypeLoads`);
+  a type token names, each type argument of a method a call instantiates, the type of each local
+  the body declares, and the method's own return type and parameter types, the JIT loads in full,
+  as it does a member reference's parent: what each derives from and implements, and the type of
+  each of its value-type fields, transitively, must be there too (`TypeLoad`). A local or parameter
+  of a pointer, byref or function pointer type it does not load at all, nor what that points to
+  (`JitTypeLoads`), unless Swift's calling convention calls the method, which the analysis takes
+  any `[UnmanagedCallersOnly]` method to be; a return type of such a type it loads with what it
+  points to;
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
   assembly. A module initializer is a type initializer, and the answer has what it raises and
@@ -341,12 +344,12 @@ needs rebuilding (or, for a package, a different version). Other ways such a cha
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
 constraint added since now rejects, and a type whose own base type, interfaces or fields are no
-longer there (`TypeLoadException`) where only a method's signature names it, or it declares a
-method or field that the body names by its definition.
+longer there (`TypeLoadException`) where only the signature of a method that the body calls names
+it, or it declares a method or field that the body names by its definition.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
-`FileNotFoundException` wherever the JIT loads a type in it that a token, a local or a `catch`
-clause names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
+`FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`
+clause or the method's own signature names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
 `AppDomain.AssemblyResolve` handlers, which may throw (the runtime then raises a `FileLoadException`
 wrapping what they threw), or load an assembly in its place whose code then runs.
 
