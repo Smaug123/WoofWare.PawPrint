@@ -146,11 +146,12 @@ module TestPureCases =
             yield!
                 [
                     "ExpressionInterpreterByRefCall.cs"
-                    "ReflectionInvokeConstructor.cs"
-                    "ReflectionOpenConstructedMethods.cs"
-                    "ReflectionParameterMarshalAsUnresolvedMarshaler.cs"
+                    "ExpressionLambdaCompile.cs"
+                    "ExpressionLambdaCompileWide.cs"
+                    "FieldHandleAcquiresContextFromThis.cs"
+                    "LdtokenMemberTokens.cs"
                 ]
-                |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
+                |> List.map (fun case -> case, Net11Frontier.methodIsCollectible)
             yield!
                 [
                     "AdvancedStructLayout.cs"
@@ -210,18 +211,6 @@ module TestPureCases =
                     "ValueTaskConfigureAwait.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
-            yield!
-                [
-                    "ActivatorCreateInstanceNonGeneric.cs"
-                    "ExpressionLambdaCompile.cs"
-                    "ExpressionLambdaCompileWide.cs"
-                    "FieldHandleAcquiresContextFromThis.cs"
-                    "LdtokenMemberTokens.cs"
-                    "ModuleResolveBadToken.cs"
-                    "ReflectionFieldPointer.cs"
-                    "StringCtorArgumentValidation.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.inlineArrayOfReferences)
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
         ]

@@ -13,10 +13,6 @@ module Net11Frontier =
     let isAsyncMethod : string =
         "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
-    /// Roslyn's inline-array helpers over references, which .NET 11's CoreLib uses.
-    let inlineArrayOfReferences : string =
-        "On .NET 11, CoreLib and System.Linq index inline arrays of object references through Roslyn's `<PrivateImplementationDetails>.InlineArrayElementRef` and `InlineArrayAsSpan`, which reinterpret the inline-array local. PawPrint refuses that view: \"refusing byte view over value type containing object references in plain byref\". Un-park when such an inline array can be indexed."
-
     /// .NET 11's Linux CoreLib blocks on a futex.
     let linuxFutex : string =
         "On .NET 11's Linux CoreLib, `LowLevelLock` and `LowLevelLifoSemaphore` block through `LowLevelThreadBlocker`, which calls the `SystemNative_LowLevelFutex_WaitOnAddress` P/Invoke that PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_LowLevelFutex_WaitOnAddress)\". The Darwin CoreLib blocks on `LowLevelMonitor` there instead, so these pass on a macOS host; measured on CI's Linux leg on 2026-10-17. Un-park when the futex wait runs."
@@ -24,6 +20,10 @@ module Net11Frontier =
     /// `UnicodeEncoding.GetBytes` orders two byte views of one stackalloc block.
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
+
+    /// The `RuntimeMethodHandle::IsCollectible` FCall, which .NET 11's `MethodInfo.IsCollectible` asks.
+    let methodIsCollectible : string =
+        "On .NET 11, `RuntimeMethodInfo.IsCollectible` asks the `RuntimeMethodHandle::IsCollectible` FCall (RuntimeMethodInfo.CoreCLR.cs:328) where .NET 10 asks the `RuntimeMethodHandle_GetIsCollectible` QCall, and PawPrint implements only the QCall: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsCollectible\". Expression trees and ldtoken of member tokens reach it. Measured on RC1 on 2026-10-21. Un-park when it is answered."
 
     /// The `MarshalNative_HasLayout` QCall, which .NET 11's `Marshal` asks before laying out a type.
     let marshalHasLayout : string =

@@ -778,7 +778,17 @@ mutation-testing skill applies to each table/classifier they introduce.
      the shim: only a shared lock under write access asks `fstatfs(2)`, and is refused on NFS,
      CIFS and SMB (by Linux's magic number, or by Darwin's filesystem name) or where `fstatfs`
      fails. Every case parked on it passes;
-   * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`, `Delegate_GetMethodDesc`,
+   * **(landed)** the null check that opens each of Roslyn's
+     `<PrivateImplementationDetails>.InlineArray*` helpers in RC1's CoreLib and System.Linq,
+     `ldarg.0; ldind.u1; pop`, which over an inline array of references reads a byte of an
+     object reference. The JIT imports an indirection whose value is popped as a null check of
+     its address, which reads nothing, and so does the interpreter: over a plain byref, an `ldind`
+     followed by `pop` reads the cell the byref names and forms no value
+     (`TestFabricatedDiscardedRead`). Seven of the twelve guests parked on it pass, as does the
+     one non-guest test; the other five reach `RuntimeMethodHandle::IsCollectible`, RC1's FCall
+     in place of .NET 10's `RuntimeMethodHandle_GetIsCollectible` QCall (`methodIsCollectible`);
+   * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`,
+     `RuntimeMethodHandle::IsCollectible`, `Delegate_GetMethodDesc`,
      and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.

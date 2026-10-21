@@ -215,8 +215,6 @@ class Program
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.inlineArrayOfReferences
-
         {
             Assemblies =
                 assemblies
