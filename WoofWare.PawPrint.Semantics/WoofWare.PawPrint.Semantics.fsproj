@@ -17,6 +17,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="EmulatedRuntime.fs" />
         <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="OpcodeFaults.fs" />
         <Compile Include="ControlFlow.fs" />
