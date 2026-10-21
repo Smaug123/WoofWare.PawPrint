@@ -108,6 +108,15 @@ public class ThingException : System.Exception { }
         | TakesFunction _ -> false
         | _ -> true
 
+    /// Whether the type is a pointer or a function pointer, which a method unmanaged code calls may
+    /// take as it is.
+    let private isUnmanaged (shape : Shape) : bool =
+        match shape with
+        | Pointer _
+        | ReturnsFunction _
+        | TakesFunction _ -> true
+        | _ -> false
+
     /// Whether `null` is a value of the type, so that a probe can pass one without naming the type
     /// anywhere the JIT would load it.
     let private takesNull (shape : Shape) : bool =
@@ -200,12 +209,15 @@ public class ThingException : System.Exception { }
         (parameters : TypeDefn list)
         : (JitTypePosition * TypeDefn) list
         =
-        JitTypeLoads.memberPositions operand
+        match JitTypeLoads.memberPositions operand with
+        | MemberPositions.Undescribed -> failwith $"memberPositions does not describe %A{operand}"
+        | MemberPositions.Described positions ->
+
+        positions
         |> List.collect (fun position ->
             match position with
             | JitTypePosition.CalleeReturn -> [ position, returned ]
-            | JitTypePosition.CalleeParameter
-            | JitTypePosition.SwiftCalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
+            | JitTypePosition.CalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
             | JitTypePosition.FunctionPointerSignature ->
                 returned :: parameters |> List.map (fun spelling -> position, spelling)
             | _ -> failwith $"memberPositions gave %A{position} for the method %A{operand} names"
@@ -227,7 +239,9 @@ public class ThingException : System.Exception { }
     /// declared by `owner`.
     let private fieldMeetings (owner : TypeDefn) (fieldType : TypeDefn) : (JitTypePosition * TypeDefn) list =
         (JitTypePosition.DeclaringType, owner)
-        :: (JitTypeLoads.memberPositions MemberOperand.FieldAccess
+        :: (match JitTypeLoads.memberPositions MemberOperand.FieldAccess with
+            | MemberPositions.Undescribed -> failwith "memberPositions does not describe a field access"
+            | MemberPositions.Described positions -> positions
             |> List.map (fun position ->
                 match position with
                 | JitTypePosition.FieldType -> position, fieldType
@@ -264,6 +278,9 @@ public class ThingException : System.Exception { }
                 $"static Virtual%d{k} GetVirtual%d{k}() => throw null;"
                 $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static void SwiftOwn%d{k}(%s{s}* p) {{ }}"
                 $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvCdecl) }})] static void CdeclOwn%d{k}(%s{s}* p) {{ }}"
+                if isUnmanaged shape then
+                    $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static void SwiftOwnBare%d{k}(%s{s} p) {{ }}"
+                    $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvCdecl) }})] static void CdeclOwnBare%d{k}(%s{s} p) {{ }}"
             ]
 
         let types =
@@ -292,12 +309,6 @@ public class ThingException : System.Exception { }
             }
 
         let call = MemberOperand.Call
-
-        let swift =
-            if compilesSwift then
-                MemberOperand.SwiftCall
-            else
-                MemberOperand.Call
 
         [
             probe
@@ -423,32 +434,6 @@ public class ThingException : System.Exception { }
                 "IndirectReturn"
                 $"delegate*<%s{s}> f = null; if (Never) f();"
                 (fun spelt -> meets (signatureMeetings call spelt.Shape []) [])
-            // An unmanaged call: by Swift's calling convention, which reads a pointer's target and a
-            // byref's where the JIT makes the transition in the probe's own code, which it does not
-            // in a `try` with a `catch` on a 64-bit target such as the host; and by C's, which does
-            // not read them.
-            { probe
-                  "SwiftPointer"
-                  $"delegate* unmanaged[Swift]<%s{s}*, void> f = null; if (Never) f(null);"
-                  (fun spelt -> meets (signatureMeetings swift TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) []) with
-                InTry = false
-            }
-            // A byref argument needs marshalling, as the VM must pin what it refers to, so the JIT makes
-            // no transition of its own for this one.
-            { probe
-                  "SwiftByref"
-                  $"delegate* unmanaged[Swift]<ref %s{s}, void> f = null; if (Never) f(ref *(%s{s}*)null);"
-                  (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Byref spelt.Shape ]) []) with
-                InTry = false
-            }
-            probe
-                "SwiftPointerInTry"
-                $"delegate* unmanaged[Swift]<%s{s}*, void> f = null; if (Never) f(null);"
-                (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) [])
-            probe
-                "CdeclPointer"
-                $"delegate* unmanaged[Cdecl]<%s{s}*, void> f = null; if (Never) f(null);"
-                (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) [])
             // `discardAddresses` makes the address this takes a `pop`'s.
             probe
                 "DiscardedParameter"
@@ -774,15 +759,20 @@ public class ThingException : System.Exception { }
         // Each method Swift code calls, and its counterpart C code calls, with the position its
         // parameter is at.
         let preparedPositions =
+            let swiftOwn =
+                if compilesSwift then
+                    JitTypePosition.SwiftOwnParameter
+                else
+                    JitTypePosition.OwnParameter
+
             shapes
-            |> List.mapi (fun k _ ->
+            |> List.mapi (fun k shape ->
                 [
-                    $"SwiftOwn%d{k}",
-                    (if compilesSwift then
-                         JitTypePosition.SwiftOwnParameter
-                     else
-                         JitTypePosition.OwnParameter)
+                    $"SwiftOwn%d{k}", swiftOwn
                     $"CdeclOwn%d{k}", JitTypePosition.OwnParameter
+                    if isUnmanaged shape then
+                        $"SwiftOwnBare%d{k}", swiftOwn
+                        $"CdeclOwnBare%d{k}", JitTypePosition.OwnParameter
                 ]
             )
             |> List.concat

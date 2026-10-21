@@ -15,17 +15,13 @@ type JitTypePosition =
     /// A parameter of the method being compiled where that method is called by Swift's calling
     /// convention (`[UnmanagedCallersOnly]` naming `CallConvSwift`), on a JIT target that compiles
     /// such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'): as `OwnParameter`, and a
-    /// pointer's or byref's target too, which the JIT reads for the Swift-specific arguments
-    /// (`lvaInitSpecialSwiftParam`).
+    /// pointer's or byref's target and a function pointer's signature too, which the JIT reads for
+    /// the Swift-specific arguments (`lvaInitSpecialSwiftParam`).
     | SwiftOwnParameter
     /// The return type of the method being compiled (`getMethodInfo`, by `ConvToJitSig`).
     | OwnReturn
     /// A parameter of a method a call passes arguments to (`impPopCallArgs`: `getArgType` only).
     | CalleeParameter
-    /// A parameter of an unmanaged method called by Swift's calling convention, which the JIT
-    /// reads for the Swift-specific arguments, a pointer's or byref's target included
-    /// (`impPopArgsForSwiftCall`: `getArgType`, then `getArgClass` for a pointer or byref).
-    | SwiftCalleeParameter
     /// The return type of a method an instruction names (`getCallInfo` or `getMethodSig`, by
     /// `ConvToJitSig`).
     | CalleeReturn
@@ -87,16 +83,11 @@ type FunctionPointerPreparation =
 /// member's signature the JIT loads depends on it (`JitTypeLoads.memberPositions`).
 [<RequireQualifiedAccess>]
 type MemberOperand =
-    /// `call`, `callvirt`, `newobj` or `calli` of a method, called other than by Swift's calling
-    /// convention.
+    /// `call`, `callvirt`, `newobj` or `calli` of managed code.
     | Call
-    /// A call of an unmanaged method by Swift's calling convention, on a JIT target that compiles
-    /// such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'), where the JIT makes the
-    /// transition to unmanaged code in the caller's own code (`impCheckForPInvokeCall`). It does
-    /// not in a handler, in a `try` that has a `catch` on a 64-bit target, in code it compiles
-    /// for debugging, in a block it expects to run rarely, or where the VM says the call needs
-    /// marshalling; there the call is `Call`, which loads less.
-    | SwiftCall
+    /// A call of unmanaged code: of a method CoreCLR implements by a P/Invoke, or `calli` by an
+    /// unmanaged calling convention.
+    | UnmanagedCall
     /// `jmp`.
     | Jump
     /// `ldftn` or `ldvirtftn` (`JitTypeLoads.preparation`).
@@ -105,6 +96,19 @@ type MemberOperand =
     | FieldAccess
     /// `ldtoken`.
     | Token
+
+/// Where the JIT meets types in the signature of the member an instruction names
+/// (`JitTypeLoads.memberPositions`).
+[<RequireQualifiedAccess>]
+type MemberPositions =
+    /// At these positions, in the order it meets them.
+    | Described of JitTypePosition list
+    /// At positions `JitTypeLoads` does not describe: an unmanaged call's. What the JIT reads of its
+    /// signature depends on whether it makes the transition to unmanaged code in the caller's own
+    /// code (`impCheckForPInvokeCall`), on the VM's walk of the signature for whether the call
+    /// needs marshalling (`PInvoke::MarshalingRequired`), and on the calling convention, Swift's
+    /// reading more (`impPopArgsForSwiftCall`).
+    | Undescribed
 
 /// Which types the JIT loads when it compiles a method, by where each appears.
 [<RequireQualifiedAccess>]
@@ -171,18 +175,9 @@ module JitTypeLoads =
                 Some (JitTypeLoad.InFull spelling)
             else
                 None
-        // As `OwnParameter`, with `getArgClass` of a pointer or byref, whose type loads its target.
-        | JitTypePosition.SwiftOwnParameter ->
-            match spelling with
-            | TypeDefn.FunctionPointer _ -> None
-            | spelling -> Some (JitTypeLoad.InFull spelling)
-        // `getArgType`, and `getArgClass` of a pointer or byref, whose type loads its target.
-        | JitTypePosition.SwiftCalleeParameter ->
-            match spelling with
-            | TypeDefn.Pointer _
-            | TypeDefn.Byref _ -> Some (JitTypeLoad.InFull spelling)
-            | spelling when isValueType spelling -> Some (JitTypeLoad.InFull spelling)
-            | _ -> None
+        // As `OwnParameter`, with `getArgClass` of what `getArgType` calls a pointer as well: a
+        // pointer, a byref or a function pointer, whose type loads its target or its signature.
+        | JitTypePosition.SwiftOwnParameter -> Some (JitTypeLoad.InFull spelling)
         | JitTypePosition.FunctionPointerSignature ->
             match spelling with
             | TypeDefn.GenericTypeParameter _
@@ -216,19 +211,21 @@ module JitTypeLoads =
         | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.Discarded -> FunctionPointerPreparation.Unprepared
         | _ -> failwith $"JitTypeLoads.preparation was given %O{op}, which takes no method's address"
 
-    /// The positions in the signature of the member an instruction names where the JIT meets a
-    /// type, in the order it meets them, besides the member's owner
+    /// Where in the signature of the member an instruction names the JIT meets a type, in the order
+    /// it meets them, besides the member's owner
     /// (`JitTypePosition.DeclaringType`), which it loads first, for every member token, `ldtoken`'s
     /// included. A function pointer's signature is its return type and then its parameters.
-    let memberPositions (operand : MemberOperand) : JitTypePosition list =
+    let memberPositions (operand : MemberOperand) : MemberPositions =
         match operand with
-        | MemberOperand.Call -> [ JitTypePosition.CalleeReturn ; JitTypePosition.CalleeParameter ]
-        | MemberOperand.SwiftCall -> [ JitTypePosition.CalleeReturn ; JitTypePosition.SwiftCalleeParameter ]
-        | MemberOperand.Jump -> [ JitTypePosition.CalleeReturn ]
+        | MemberOperand.Call ->
+            MemberPositions.Described [ JitTypePosition.CalleeReturn ; JitTypePosition.CalleeParameter ]
+        | MemberOperand.UnmanagedCall -> MemberPositions.Undescribed
+        | MemberOperand.Jump -> MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.Address FunctionPointerPreparation.BeforeReturnType ->
-            [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
+            MemberPositions.Described [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
         | MemberOperand.Address FunctionPointerPreparation.AfterReturnType ->
-            [ JitTypePosition.CalleeReturn ; JitTypePosition.FunctionPointerSignature ]
-        | MemberOperand.Address FunctionPointerPreparation.Unprepared -> [ JitTypePosition.CalleeReturn ]
-        | MemberOperand.FieldAccess -> [ JitTypePosition.FieldType ]
-        | MemberOperand.Token -> []
+            MemberPositions.Described [ JitTypePosition.CalleeReturn ; JitTypePosition.FunctionPointerSignature ]
+        | MemberOperand.Address FunctionPointerPreparation.Unprepared ->
+            MemberPositions.Described [ JitTypePosition.CalleeReturn ]
+        | MemberOperand.FieldAccess -> MemberPositions.Described [ JitTypePosition.FieldType ]
+        | MemberOperand.Token -> MemberPositions.Described []
