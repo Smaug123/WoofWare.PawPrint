@@ -16,6 +16,10 @@ type JitTypePosition =
     | OwnReturn
     /// A parameter of a method a call passes arguments to (`impPopCallArgs`: `getArgType` only).
     | CalleeParameter
+    /// A parameter of an unmanaged method called by Swift's calling convention, which the JIT
+    /// reads for the Swift-specific arguments, a pointer's or byref's target included
+    /// (`impPopArgsForSwiftCall`: `getArgType`, then `getArgClass` for a pointer or byref).
+    | SwiftCalleeParameter
     /// The return type of a method an instruction names (`getCallInfo` or `getMethodSig`, by
     /// `ConvToJitSig`).
     | CalleeReturn
@@ -44,17 +48,57 @@ type JitTypeLoad =
     /// assembly (`ClassLoader::ResolveTokenToTypeDefThrowing`).
     | InFullIfDefined of TypeDefn
 
-/// How an instruction that takes a method's address uses it.
+/// What becomes of the address an `ldftn` pushes.
 [<RequireQualifiedAccess>]
 type MethodAddressUse =
-    /// As the method argument of the delegate constructor that the `newobj` next to it calls,
-    /// which the JIT reads straight off the `ldftn` (`fgOptimizeDelegateConstructor`). Making the
-    /// delegate may then load the value types of the signature in full, for the `newobj` rather
-    /// than the `ldftn`: CoreCLR sets up a thunk to shuffle the arguments of a delegate over a
-    /// static method (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does not describe.
+    /// It is the method argument of the delegate constructor that the `newobj` right after the
+    /// `ldftn` calls, which the JIT reads straight off the `ldftn` (`fgOptimizeDelegateConstructor`).
+    /// Making the delegate may then load the value types of the signature in full, for the
+    /// `newobj` rather than the `ldftn`: CoreCLR sets up a thunk to shuffle the arguments of a
+    /// delegate over a static method (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does
+    /// not describe.
     | DelegateTarget
-    /// Any other way: stored, passed to a method, or the delegate constructor reached otherwise.
+    /// The `pop` right after the `ldftn` drops it, and with it the JIT's request for it.
+    | Discarded
+    /// Anything else: it is a function pointer.
     | FunctionPointer
+
+/// When CoreCLR prepares the method an `ldftn` or `ldvirtftn` names as a function pointer
+/// (`JitTypePosition.FunctionPointerSignature`), relative to the JIT reading its return type.
+[<RequireQualifiedAccess>]
+type FunctionPointerPreparation =
+    /// While the JIT resolves the instruction (`getCallInfo`), before it reads the return type:
+    /// for `ldvirtftn`, and for an `ldftn` of a method a method specification instantiates, whatever
+    /// becomes of the address.
+    | BeforeReturnType
+    /// When the JIT asks for the address (`getFunctionFixedEntryPoint`, as it morphs the
+    /// `ldftn`), after: for any other `ldftn` whose address is a function pointer.
+    | AfterReturnType
+    /// Not at all: for any other `ldftn`.
+    | Unprepared
+
+/// What an instruction does with the method or field it names, as far as which types of the
+/// member's signature the JIT loads depends on it (`JitTypeLoads.memberPositions`).
+[<RequireQualifiedAccess>]
+type MemberOperand =
+    /// `call`, `callvirt`, `newobj` or `calli` of a method, called other than by Swift's calling
+    /// convention.
+    | Call
+    /// A call of an unmanaged method by Swift's calling convention, on a JIT target that compiles
+    /// such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'), where the JIT makes the
+    /// transition to unmanaged code in the caller's own code (`impCheckForPInvokeCall`). It does
+    /// not in a handler, in a `try` that has a `catch` on a 64-bit target, in code it compiles
+    /// for debugging, in a block it expects to run rarely, or where the VM says the call needs
+    /// marshalling; there the call is `Call`, which loads less.
+    | SwiftCall
+    /// `jmp`.
+    | Jump
+    /// `ldftn` or `ldvirtftn` (`JitTypeLoads.preparation`).
+    | Address of FunctionPointerPreparation
+    /// An instruction that loads or stores a field, or takes its address.
+    | FieldAccess
+    /// `ldtoken`.
+    | Token
 
 /// Which types the JIT loads when it compiles a method, by where each appears.
 [<RequireQualifiedAccess>]
@@ -121,6 +165,13 @@ module JitTypeLoads =
                 Some (JitTypeLoad.InFull spelling)
             else
                 None
+        // `getArgType`, and `getArgClass` of a pointer or byref, whose type loads its target.
+        | JitTypePosition.SwiftCalleeParameter ->
+            match spelling with
+            | TypeDefn.Pointer _
+            | TypeDefn.Byref _ -> Some (JitTypeLoad.InFull spelling)
+            | spelling when isValueType spelling -> Some (JitTypeLoad.InFull spelling)
+            | _ -> None
         | JitTypePosition.FunctionPointerSignature ->
             match spelling with
             | TypeDefn.GenericTypeParameter _
@@ -135,58 +186,38 @@ module JitTypeLoads =
         | JitTypePosition.MethodArgument
         | JitTypePosition.DeclaringType -> Some (JitTypeLoad.InFull spelling)
 
-    /// The positions in the signature of the member that `op`, naming `token`, names where the JIT
-    /// meets a type, besides the member's owner (`JitTypePosition.DeclaringType`), which it loads
-    /// for every member token, `ldtoken`'s included. Empty for an instruction naming a type.
-    ///
-    /// A call passes arguments, so its callee's parameters count; `jmp` reads only the return
-    /// type, and `ldtoken` neither. `ldftn` and `ldvirtftn` read the return type, and CoreCLR
-    /// prepares the method as a function pointer (`JitTypePosition.FunctionPointerSignature`)
-    /// unless `addressUse` is `DelegateTarget` for an `ldftn` of a method no method specification
-    /// instantiates: `getCallInfo` prepares a method `ldvirtftn` names, or one a method
-    /// specification instantiates, whatever becomes of its address. `addressUse` says nothing of
-    /// any other instruction.
-    let memberPositions
+    /// When CoreCLR prepares as a function pointer the method that `op`, an `ldftn` or
+    /// `ldvirtftn`, names by `token`, whose address has the use `addressUse`. `addressUse` says
+    /// nothing of an `ldvirtftn`, whose address CoreCLR prepares whatever becomes of it.
+    let preparation
         (op : UnaryMetadataTokenIlOp)
         (token : MetadataToken)
         (addressUse : MethodAddressUse)
-        : JitTypePosition list
+        : FunctionPointerPreparation
         =
-        match op with
-        | UnaryMetadataTokenIlOp.Call
-        | UnaryMetadataTokenIlOp.Callvirt
-        | UnaryMetadataTokenIlOp.Calli
-        | UnaryMetadataTokenIlOp.Newobj -> [ JitTypePosition.CalleeReturn ; JitTypePosition.CalleeParameter ]
-        | UnaryMetadataTokenIlOp.Jmp -> [ JitTypePosition.CalleeReturn ]
-        | UnaryMetadataTokenIlOp.Ldftn ->
-            match token, addressUse with
-            | MetadataToken.MethodSpecification _, _
-            | _, MethodAddressUse.FunctionPointer ->
-                [ JitTypePosition.CalleeReturn ; JitTypePosition.FunctionPointerSignature ]
-            | _, MethodAddressUse.DelegateTarget -> [ JitTypePosition.CalleeReturn ]
-        | UnaryMetadataTokenIlOp.Ldvirtftn ->
+        match op, token, addressUse with
+        | UnaryMetadataTokenIlOp.Ldvirtftn, _, _
+        | UnaryMetadataTokenIlOp.Ldftn, MetadataToken.MethodSpecification _, _ ->
+            FunctionPointerPreparation.BeforeReturnType
+        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.FunctionPointer ->
+            FunctionPointerPreparation.AfterReturnType
+        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.DelegateTarget
+        | UnaryMetadataTokenIlOp.Ldftn, _, MethodAddressUse.Discarded -> FunctionPointerPreparation.Unprepared
+        | _ -> failwith $"JitTypeLoads.preparation was given %O{op}, which takes no method's address"
+
+    /// The positions in the signature of the member an instruction names where the JIT meets a
+    /// type, in the order it meets them, besides the member's owner
+    /// (`JitTypePosition.DeclaringType`), which it loads first, for every member token, `ldtoken`'s
+    /// included. A function pointer's signature is its return type and then its parameters.
+    let memberPositions (operand : MemberOperand) : JitTypePosition list =
+        match operand with
+        | MemberOperand.Call -> [ JitTypePosition.CalleeReturn ; JitTypePosition.CalleeParameter ]
+        | MemberOperand.SwiftCall -> [ JitTypePosition.CalleeReturn ; JitTypePosition.SwiftCalleeParameter ]
+        | MemberOperand.Jump -> [ JitTypePosition.CalleeReturn ]
+        | MemberOperand.Address FunctionPointerPreparation.BeforeReturnType ->
+            [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
+        | MemberOperand.Address FunctionPointerPreparation.AfterReturnType ->
             [ JitTypePosition.CalleeReturn ; JitTypePosition.FunctionPointerSignature ]
-        | UnaryMetadataTokenIlOp.Ldfld
-        | UnaryMetadataTokenIlOp.Ldflda
-        | UnaryMetadataTokenIlOp.Stfld
-        | UnaryMetadataTokenIlOp.Ldsfld
-        | UnaryMetadataTokenIlOp.Ldsflda
-        | UnaryMetadataTokenIlOp.Stsfld -> [ JitTypePosition.FieldType ]
-        | UnaryMetadataTokenIlOp.Ldtoken
-        | UnaryMetadataTokenIlOp.Castclass
-        | UnaryMetadataTokenIlOp.Newarr
-        | UnaryMetadataTokenIlOp.Box
-        | UnaryMetadataTokenIlOp.Ldelema
-        | UnaryMetadataTokenIlOp.Isinst
-        | UnaryMetadataTokenIlOp.Unbox_Any
-        | UnaryMetadataTokenIlOp.Stelem
-        | UnaryMetadataTokenIlOp.Ldelem
-        | UnaryMetadataTokenIlOp.Initobj
-        | UnaryMetadataTokenIlOp.Stobj
-        | UnaryMetadataTokenIlOp.Constrained
-        | UnaryMetadataTokenIlOp.Cpobj
-        | UnaryMetadataTokenIlOp.Ldobj
-        | UnaryMetadataTokenIlOp.Sizeof
-        | UnaryMetadataTokenIlOp.Unbox
-        | UnaryMetadataTokenIlOp.Mkrefany
-        | UnaryMetadataTokenIlOp.Refanyval -> []
+        | MemberOperand.Address FunctionPointerPreparation.Unprepared -> [ JitTypePosition.CalleeReturn ]
+        | MemberOperand.FieldAccess -> [ JitTypePosition.FieldType ]
+        | MemberOperand.Token -> []

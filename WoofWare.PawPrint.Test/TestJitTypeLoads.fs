@@ -152,13 +152,16 @@ public class ThingException : System.Exception { }
         + "catch (System.NullReferenceException) { } return \"\";"
 
 
-    /// How the client's metadata spells a probe's shape, and the client's own types.
+    /// How the client's metadata spells a probe's shape, the client's own types, and the signatures
+    /// of its methods.
     type private Spellings =
         {
             /// The shape, as a method returning it spells it.
             Shape : TypeDefn
             /// The client type of this name.
             Definition : string -> TypeDefn
+            /// The return type and the parameters of the method of `Probes` of this name.
+            Signature : string -> TypeDefn * TypeDefn list
         }
 
     /// Where a probe, and a method it calls, meet a type, each in the order the JIT meets them.
@@ -174,21 +177,40 @@ public class ThingException : System.Exception { }
             Name : string
             Body : string
             Meets : Spellings -> Meetings
+            /// Whether the body runs in a `try` with `catch` clauses, which stop what fails to load
+            /// for a method it calls; otherwise its failures escape too.
+            InTry : bool
         }
 
-    /// A token naming a method definition, a method specification or a field definition, for
-    /// `JitTypeLoads.memberPositions`, which reads only which of them it is.
+    /// A token naming a method definition or a method specification, for
+    /// `JitTypeLoads.preparation`, which reads only which of them it is.
     let private methodDefinition : MetadataToken =
         MetadataToken.MethodDef (Ecma335.MetadataTokens.MethodDefinitionHandle 1)
 
     let private methodSpecification : MetadataToken =
         MetadataToken.MethodSpecification (Ecma335.MetadataTokens.MethodSpecificationHandle 1)
 
-    let private fieldDefinition : MetadataToken =
-        MetadataToken.FieldDefinition (Ecma335.MetadataTokens.FieldDefinitionHandle 1)
+    /// The positions the JIT reads of the signature of a method an instruction names, which does
+    /// `operand` with it, returning `returned` and taking `parameters`, in the order it reads them.
+    let private signatureMeetings
+        (operand : MemberOperand)
+        (returned : TypeDefn)
+        (parameters : TypeDefn list)
+        : (JitTypePosition * TypeDefn) list
+        =
+        JitTypeLoads.memberPositions operand
+        |> List.collect (fun position ->
+            match position with
+            | JitTypePosition.CalleeReturn -> [ position, returned ]
+            | JitTypePosition.CalleeParameter
+            | JitTypePosition.SwiftCalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
+            | JitTypePosition.FunctionPointerSignature ->
+                returned :: parameters |> List.map (fun spelling -> position, spelling)
+            | _ -> failwith $"memberPositions gave %A{position} for the method %A{operand} names"
+        )
 
-    /// The positions the JIT reads of the signature of a method `op` names by `token`, returning
-    /// `returned` and taking `parameters`, where the instruction takes its address for `addressUse`.
+    /// As `signatureMeetings`, for an `op`, `ldftn` or `ldvirtftn`, naming the method by `token`,
+    /// whose address has the use `addressUse`.
     let private addressMeetings
         (op : UnaryMetadataTokenIlOp)
         (token : MetadataToken)
@@ -197,39 +219,17 @@ public class ThingException : System.Exception { }
         (parameters : TypeDefn list)
         : (JitTypePosition * TypeDefn) list
         =
-        JitTypeLoads.memberPositions op token addressUse
-        |> List.collect (fun position ->
-            match position with
-            | JitTypePosition.CalleeReturn -> [ position, returned ]
-            | JitTypePosition.CalleeParameter -> parameters |> List.map (fun parameter -> position, parameter)
-            | JitTypePosition.FunctionPointerSignature ->
-                returned :: parameters |> List.map (fun spelling -> position, spelling)
-            | _ -> failwith $"memberPositions gave %A{position} for the method %A{op} names"
-        )
+        signatureMeetings (MemberOperand.Address (JitTypeLoads.preparation op token addressUse)) returned parameters
 
-    /// The positions the JIT reads of the signature of a method definition a call `op` names.
-    let private signatureMeetings
-        (op : UnaryMetadataTokenIlOp)
-        (returned : TypeDefn)
-        (parameters : TypeDefn list)
-        : (JitTypePosition * TypeDefn) list
-        =
-        addressMeetings op methodDefinition MethodAddressUse.FunctionPointer returned parameters
-
-    /// The positions the JIT reads of a field of type `fieldType` that `op` names, declared by
-    /// `owner`.
-    let private fieldMeetings
-        (op : UnaryMetadataTokenIlOp)
-        (owner : TypeDefn)
-        (fieldType : TypeDefn)
-        : (JitTypePosition * TypeDefn) list
-        =
+    /// The positions the JIT reads of a field of type `fieldType` that an instruction accesses,
+    /// declared by `owner`.
+    let private fieldMeetings (owner : TypeDefn) (fieldType : TypeDefn) : (JitTypePosition * TypeDefn) list =
         (JitTypePosition.DeclaringType, owner)
-        :: (JitTypeLoads.memberPositions op fieldDefinition MethodAddressUse.FunctionPointer
+        :: (JitTypeLoads.memberPositions MemberOperand.FieldAccess
             |> List.map (fun position ->
                 match position with
                 | JitTypePosition.FieldType -> position, fieldType
-                | _ -> failwith $"memberPositions gave %A{position} for the field %A{op} names"
+                | _ -> failwith $"memberPositions gave %A{position} for a field"
             ))
 
     let private meets caller callee : Meetings =
@@ -276,9 +276,20 @@ public class ThingException : System.Exception { }
                 Name = $"%s{name}%d{k}"
                 Body = body
                 Meets = meets
+                InTry = true
             }
 
-        let call = UnaryMetadataTokenIlOp.Call
+        let call = MemberOperand.Call
+
+        // Swift's calling convention is compiled as such on Arm64, and on x64 other than Windows'.
+        let swift =
+            if
+                OperatingSystem.IsWindows ()
+                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+            then
+                MemberOperand.Call
+            else
+                MemberOperand.SwiftCall
 
         [
             probe
@@ -318,14 +329,22 @@ public class ThingException : System.Exception { }
 
                     meets
                         (signatureMeetings call owner []
-                         @ (JitTypePosition.DeclaringType, owner)
-                           :: signatureMeetings UnaryMetadataTokenIlOp.Callvirt spelt.Shape [])
+                         @ (JitTypePosition.DeclaringType, owner) :: signatureMeetings call spelt.Shape [])
                         []
                 )
             probe
                 "AddressReturn"
                 $"Use((void*)(delegate*<%s{s}>)&Returns%d{k});"
-                (fun spelt -> meets (signatureMeetings UnaryMetadataTokenIlOp.Ldftn spelt.Shape []) [])
+                (fun spelt ->
+                    meets
+                        (addressMeetings
+                            UnaryMetadataTokenIlOp.Ldftn
+                            methodDefinition
+                            MethodAddressUse.FunctionPointer
+                            spelt.Shape
+                            [])
+                        []
+                )
             // A function pointer to a method passes it nothing, but CoreCLR loads the value types of
             // its signature first; for a delegate's target, only where `ldvirtftn` or a method
             // specification names it. Each delegate here is over an instance method and closed over
@@ -395,7 +414,47 @@ public class ThingException : System.Exception { }
             probe
                 "IndirectReturn"
                 $"delegate*<%s{s}> f = null; if (Never) f();"
-                (fun spelt -> meets (signatureMeetings UnaryMetadataTokenIlOp.Calli spelt.Shape []) [])
+                (fun spelt -> meets (signatureMeetings call spelt.Shape []) [])
+            // An unmanaged call: by Swift's calling convention, which reads a pointer's target and a
+            // byref's where the JIT makes the transition in the probe's own code, which it does not
+            // in a `try` with a `catch` on a 64-bit target such as the host; and by C's, which does
+            // not read them.
+            { probe
+                  "SwiftPointer"
+                  $"delegate* unmanaged[Swift]<%s{s}*, void> f = null; if (Never) f(null);"
+                  (fun spelt -> meets (signatureMeetings swift TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) []) with
+                InTry = false
+            }
+            // A byref argument needs marshalling, as the VM must pin what it refers to, so the JIT makes
+            // no transition of its own for this one.
+            { probe
+                  "SwiftByref"
+                  $"delegate* unmanaged[Swift]<ref %s{s}, void> f = null; if (Never) f(ref *(%s{s}*)null);"
+                  (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Byref spelt.Shape ]) []) with
+                InTry = false
+            }
+            probe
+                "SwiftPointerInTry"
+                $"delegate* unmanaged[Swift]<%s{s}*, void> f = null; if (Never) f(null);"
+                (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) [])
+            probe
+                "CdeclPointer"
+                $"delegate* unmanaged[Cdecl]<%s{s}*, void> f = null; if (Never) f(null);"
+                (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ TypeDefn.Pointer spelt.Shape ]) [])
+            // `discardAddresses` makes the address this takes a `pop`'s.
+            probe
+                "DiscardedParameter"
+                $"Use((void*)(delegate*<%s{s}, void>)&Takes%d{k});"
+                (fun spelt ->
+                    meets
+                        (addressMeetings
+                            UnaryMetadataTokenIlOp.Ldftn
+                            methodDefinition
+                            MethodAddressUse.Discarded
+                            TypeDefn.Void
+                            [ spelt.Shape ])
+                        []
+                )
             probe
                 "StaticField"
                 $"TakesRef%d{k}(ref Static%d{k}.F);"
@@ -403,7 +462,7 @@ public class ThingException : System.Exception { }
                     let byref = TypeDefn.Byref spelt.Shape
 
                     meets
-                        (fieldMeetings UnaryMetadataTokenIlOp.Ldsflda (spelt.Definition $"Static%d{k}") spelt.Shape
+                        (fieldMeetings (spelt.Definition $"Static%d{k}") spelt.Shape
                          @ signatureMeetings call TypeDefn.Void [ byref ])
                         [ JitTypePosition.OwnParameter, byref ]
                 )
@@ -416,7 +475,7 @@ public class ThingException : System.Exception { }
 
                     meets
                         (signatureMeetings call owner []
-                         @ fieldMeetings UnaryMetadataTokenIlOp.Ldflda owner spelt.Shape
+                         @ fieldMeetings owner spelt.Shape
                          @ signatureMeetings call TypeDefn.Void [ byref ])
                         [ JitTypePosition.OwnParameter, byref ]
                 )
@@ -440,16 +499,14 @@ public class ThingException : System.Exception { }
                     (fun spelt ->
                         meets
                             ((JitTypePosition.DeclaringType, spelt.Definition $"Constructed%d{k}")
-                             :: signatureMeetings UnaryMetadataTokenIlOp.Newobj TypeDefn.Void [ spelt.Shape ])
+                             :: signatureMeetings call TypeDefn.Void [ spelt.Shape ])
                             [ JitTypePosition.OwnParameter, spelt.Shape ]
                     )
 
                 probe
                     "IndirectParameter"
                     $"delegate*<%s{s}, void> f = null; if (Never) f(null);"
-                    (fun spelt ->
-                        meets (signatureMeetings UnaryMetadataTokenIlOp.Calli TypeDefn.Void [ spelt.Shape ]) []
-                    )
+                    (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ spelt.Shape ]) [])
             if isTypeArgument shape then
                 probe
                     "MethodArgument"
@@ -462,16 +519,148 @@ public class ThingException : System.Exception { }
                     (fun spelt -> meets [ JitTypePosition.DeclaringType, spelt.Definition $"Derived%d{k}" ] [])
         ]
 
-    /// The client: every shape's declarations and probes.
+    /// Pairs of a return type and a parameter type, each failing to load, if at all, with an
+    /// exception of its own, so that which of them the JIT loads first decides which exception it
+    /// raises.
+    let private mixed : (Shape * Shape) list =
+        List.allPairs
+            [ Kept ; Gone ; HoldsGone ; MissingStruct ]
+            [ KeptStruct ; GoneStruct ; HoldsGone ; MissingStruct ]
+
+    /// The declarations the `j`th of `mixed`'s probes use.
+    let private mixedDeclarations (j : int) (returned : Shape, parameter : Shape) : string * string =
+        let r = render returned
+        let p = render parameter
+
+        let methods =
+            [
+                $"static %s{r} MixedStatic%d{j}(%s{p} p) => throw null;"
+                $"static MixedHolder%d{j} GetMixed%d{j}() => throw null;"
+            ]
+
+        let types =
+            [
+                $"public unsafe delegate %s{r} MixedDelegate%d{j}(%s{p} p);"
+                $"public unsafe class MixedHolder%d{j} {{ public virtual %s{r} V(%s{p} p) => throw null; public %s{r} G<U>(%s{p} p) => throw null; }}"
+            ]
+
+        String.concat "\n    " methods, String.concat "\n" types
+
+    /// The probes of the `j`th of `mixed`: its method's address taken as a function pointer, which
+    /// CoreCLR prepares after reading the return type, and as a delegate's target through
+    /// `ldvirtftn` and through a method specification, which it prepares before.
+    let private mixedProbes (j : int) (returned : Shape, parameter : Shape) : Probe list =
+        let r = render returned
+        let p = render parameter
+
+        let probe (name : string) (body : string) (meets : Spellings -> Meetings) : Probe =
+            {
+                Name = $"%s{name}%d{j}"
+                Body = body
+                Meets = meets
+                InTry = true
+            }
+
+        let delegateTarget (op : UnaryMetadataTokenIlOp) (token : MetadataToken) (spelt : Spellings) : Meetings =
+            let returned, parameters = spelt.Signature $"MixedStatic%d{j}"
+
+            meets
+                (signatureMeetings MemberOperand.Call (spelt.Definition $"MixedHolder%d{j}") []
+                 @ (JitTypePosition.DeclaringType, spelt.Definition $"MixedDelegate%d{j}")
+                   :: addressMeetings op token MethodAddressUse.DelegateTarget returned parameters)
+                []
+
+        [
+            probe
+                "MixedAddress"
+                $"Use((void*)(delegate*<%s{p}, %s{r}>)&MixedStatic%d{j});"
+                (fun spelt ->
+                    let returned, parameters = spelt.Signature $"MixedStatic%d{j}"
+
+                    meets
+                        (addressMeetings
+                            UnaryMetadataTokenIlOp.Ldftn
+                            methodDefinition
+                            MethodAddressUse.FunctionPointer
+                            returned
+                            parameters)
+                        []
+                )
+            probe
+                "MixedVirtual"
+                $"Keep(new MixedDelegate%d{j}(GetMixed%d{j}().V));"
+                (delegateTarget UnaryMetadataTokenIlOp.Ldvirtftn methodDefinition)
+            probe
+                "MixedGeneric"
+                $"Keep(new MixedDelegate%d{j}(GetMixed%d{j}().G<int>));"
+                (delegateTarget UnaryMetadataTokenIlOp.Ldftn methodSpecification)
+        ]
+
+    /// The client with each `Discarded` probe's call of `Use` replaced by a `pop` and `nop`s, so
+    /// that the address the probe takes is popped unused, which C# has no way to say.
+    let private discardAddresses (image : byte[]) : byte[] =
+        let patched = Array.copy image
+        use pe = new PortableExecutable.PEReader (ImmutableArray.CreateRange image)
+        let metadata = pe.GetMetadataReader ()
+
+        let methods =
+            metadata.TypeDefinitions
+            |> Seq.map metadata.GetTypeDefinition
+            |> Seq.filter (fun ty -> metadata.GetString ty.Name = "Probes")
+            |> Seq.exactlyOne
+            |> fun ty -> ty.GetMethods ()
+            |> Seq.map (fun handle -> handle, metadata.GetMethodDefinition handle)
+            |> List.ofSeq
+
+        let useToken =
+            methods
+            |> List.filter (fun (_, m) -> metadata.GetString m.Name = "Use")
+            |> List.exactlyOne
+            |> fst
+            |> fun handle -> Ecma335.MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit handle : EntityHandle)
+
+        let call = Array.append [| 0x28uy |] (BitConverter.GetBytes useToken)
+
+        for _, m in methods do
+            if (metadata.GetString m.Name).StartsWith "Discarded" then
+                let rva = m.RelativeVirtualAddress
+
+                let section =
+                    pe.PEHeaders.SectionHeaders
+                    |> Seq.find (fun s -> rva >= s.VirtualAddress && rva < s.VirtualAddress + s.VirtualSize)
+
+                let start = rva - section.VirtualAddress + section.PointerToRawData
+                let size = (pe.GetMethodBody rva).Size
+
+                let calls =
+                    [ start .. start + size - call.Length ]
+                    |> List.filter (fun i -> patched.[i .. i + call.Length - 1] = call)
+
+                match calls with
+                | [ at ] -> Array.blit [| 0x26uy ; 0uy ; 0uy ; 0uy ; 0uy |] 0 patched at call.Length
+                | _ -> failwith $"%s{metadata.GetString m.Name} calls Use %d{calls.Length} times, not once"
+
+        patched
+
+    /// Every probe: the name of the method of `Probes` returning its shape, if it has one, and the
+    /// probes of that shape or of the pair of `mixed`.
+    let private allProbes : (string option * Probe list) list =
+        (shapes |> List.mapi (fun k shape -> Some $"Returns%d{k}", probes k shape))
+        @ (mixed |> List.mapi (fun j pair -> None, mixedProbes j pair))
+
+    /// The client: every shape's and pair's declarations and probes.
     let private clientSource : string =
-        let declared = shapes |> List.mapi declarations
+        let declared =
+            (shapes |> List.mapi declarations) @ (mixed |> List.mapi mixedDeclarations)
 
         let probeMethods =
-            shapes
-            |> List.mapi probes
-            |> List.concat
+            allProbes
+            |> List.collect snd
             |> List.map (fun probe ->
-                $"    public static string %s{probe.Name}() {{ try {{ %s{probe.Body} }} %s{catches} }}"
+                if probe.InTry then
+                    $"    public static string %s{probe.Name}() {{ try {{ %s{probe.Body} }} %s{catches} }}"
+                else
+                    $"    public static string %s{probe.Name}() {{ %s{probe.Body} return \"\"; }}"
             )
 
         [
@@ -546,12 +735,11 @@ public class ThingException : System.Exception { }
                 OutputKind.DynamicallyLinkedLibrary
                 references
                 [ clientSource ]
-
-        let allProbes = shapes |> List.mapi (fun k shape -> k, shape, probes k shape)
+            |> discardAddresses
 
         let names =
             allProbes
-            |> List.collect (fun (_, _, probes) -> probes |> List.map (fun p -> p.Name))
+            |> List.collect (fun (_, probes) -> probes |> List.map (fun p -> p.Name))
 
         let host = hostOutcomes clientImage incompleteProvider names
 
@@ -570,6 +758,16 @@ public class ThingException : System.Exception { }
             TypeDefn.FromDefinition ((clientType name).Identity, SignatureTypeKind.Class)
 
         let probesType = clientType "Probes"
+
+        let signature (name : string) : TypeDefn * TypeDefn list =
+            let method = probesType.Methods |> List.find (fun m -> m.Name = name)
+
+            let returned =
+                match method.Signature.ReturnType with
+                | MethodReturnType.Returns returned -> returned
+                | MethodReturnType.Void -> TypeDefn.Void
+
+            returned, method.Signature.ParameterTypes
 
         // The provider is where the loader looks for assemblies, but not loaded.
         let directory = Directory.CreateTempSubdirectory "jit-type-loads"
@@ -628,18 +826,15 @@ public class ThingException : System.Exception { }
                     )
 
                 ((LoadedAssemblies.ofAssemblies [ corelib ; client ], []), allProbes)
-                ||> List.fold (fun (assemblies, outcomes) (k, _, probes) ->
-                    let shape =
-                        let returns = probesType.Methods |> List.find (fun m -> m.Name = $"Returns%d{k}")
-
-                        match returns.Signature.ReturnType with
-                        | MethodReturnType.Returns shape -> shape
-                        | MethodReturnType.Void -> failwith $"Returns%d{k} returns nothing"
-
+                ||> List.fold (fun (assemblies, outcomes) (anchor, probes) ->
                     let spelt =
                         {
-                            Shape = shape
+                            Shape =
+                                match anchor with
+                                | Some anchor -> fst (signature anchor)
+                                | None -> TypeDefn.Void
                             Definition = definition
+                            Signature = signature
                         }
 
                     ((assemblies, outcomes), probes)

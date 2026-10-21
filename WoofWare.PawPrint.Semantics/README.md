@@ -91,8 +91,10 @@ What lives here:
   method has. Some it loads in full; the value types of the signature of a method whose address
   becomes a function pointer it loads only where their references name a definition; some, a
   local pointer or a callee's class parameter, it does not load at all. Whether a load fails is
-  the Loader's `TypeLoad` to say. Making a delegate over a static method loads more, which it does
-  not describe. `TestJitTypeLoads` puts each of a grammar of types that load, fail to load or live
+  the Loader's `TypeLoad` to say. Taking a method's address loads the value types of its signature
+  before or after its return type, or not at all, depending on the instruction and what becomes of
+  the address; a Swift call made in the caller's own code loads its pointers' targets too. Making a
+  delegate over a static method loads more, which it does not describe. `TestJitTypeLoads` puts each of a grammar of types that load, fail to load or live
   in a missing assembly at each position, runs every probe on the host's CoreCLR, and checks that
   it fails exactly where the rule and `TypeLoad` say, with the same exception.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
