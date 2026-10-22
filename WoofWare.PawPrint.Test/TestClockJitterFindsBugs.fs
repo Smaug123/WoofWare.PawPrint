@@ -174,8 +174,6 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``no schedule reaches the buffer bug without jitter`` () : unit =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // The load-bearing half of this fixture. Whenever `Join(200)` returns
         // having *succeeded*, the worker has terminated and the buffer is
         // complete, so no interleaving of the two threads can expose a partial
@@ -187,8 +185,6 @@ module TestClockJitterFindsBugs =
 
     [<Test>]
     let ``no schedule reaches the lease bug without jitter`` () : unit =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // Same argument, and for the lease guest it is even more clearly not a
         // matter of luck: `Main` is parked in `Join` for the whole window, so
         // the worker is the only runnable thread and no policy can starve it.

@@ -5157,9 +5157,6 @@ module TestImpureCases =
                     "SocketShutdown.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
-            yield!
-                [ "SignalRetryKeepsShimCopies.cs" ]
-                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
         ]
         |> Map.ofList
 
