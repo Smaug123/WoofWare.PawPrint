@@ -196,7 +196,11 @@ module TestPrimitiveBackingFieldAddress =
         // uninitialised ones cannot be read at all, so taking the field's address must not read.
         for name, ti, _ in barePrimitiveCases do
             let src, state =
-                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized 8 (state ())
+                IlMachineState.allocateNativeMemory
+                    MemoryBlockInitialization.Uninitialized
+                    NativeBlockAlignment.malloc
+                    8
+                    (state ())
 
             let pointer, _ = fieldAddress ti src state
 

@@ -1041,6 +1041,27 @@ module ManagedPointerSource =
                 | _ -> noStructuralOrder ()
             | _ -> noStructuralOrder ()
 
+    /// The native-heap block `src` points into, and how many bytes into it. `None` for a
+    /// pointer into anything else, and for one whose offset passes through a field, whose
+    /// byte offset is the layout's to say rather than the pointer's. The offset is not
+    /// checked against the block's size.
+    let tryNativeMemoryByte (src : ManagedPointerSource) : (NativeMemoryBlockId * int64) option =
+        let rec foldCursor (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
+            match projs with
+            | [] -> Some byteOffset
+            | ByrefProjection.ReinterpretAs _ :: rest -> foldCursor byteOffset rest
+            | ByrefProjection.ByteOffset n :: rest -> foldCursor (byteOffset + int64<int> n) rest
+            | ByrefProjection.Field _ :: _ -> None
+
+        match src with
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (blockId, rootByteOffset)
+                                         Projections = projs
+                                     } ->
+            foldCursor (int64<int> rootByteOffset) projs
+            |> Option.map (fun offset -> blockId, offset)
+        | _ -> None
+
     /// Returns deterministic low address bits for byrefs that have a stable
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
     /// not a real loaded module address; callers may use it only for low-bit

@@ -186,7 +186,11 @@ module TestDirectoryStreamFds =
         let kernel = kernel ()
 
         let block, pool =
-            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 8 kernel.NativeMemoryPool
+            NativeMemoryPool.allocate
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                8
+                kernel.NativeMemoryPool
 
         let kernel =
             { kernel with

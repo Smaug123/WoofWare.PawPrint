@@ -73,7 +73,11 @@ module DirectoryStream =
         // `DirectoryEntry.Name` points into the stream's own storage and stays
         // valid only until the next `readdir`.
         let block, pool =
-            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized nameBufferBytes kernel.NativeMemoryPool
+            NativeMemoryPool.allocate
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                nameBufferBytes
+                kernel.NativeMemoryPool
 
         let pool =
             NativeMemoryPool.writeBytes block 0 (Array.zeroCreate nameBufferBytes) pool

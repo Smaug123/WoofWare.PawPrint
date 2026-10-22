@@ -64,6 +64,8 @@
     <Compile Include="EvalStack.fs" />
     <Compile Include="CheckedIntegerConversion.fs" />
     <Compile Include="EvalStackValueComparisons.fs" />
+    <Compile Include="NativeAddressSpace.fsi" />
+    <Compile Include="NativeAddressSpace.fs" />
     <Compile Include="MemoryPools.fsi" />
     <Compile Include="MemoryPools.fs" />
     <Compile Include="NativeReferenceCell.fs" />

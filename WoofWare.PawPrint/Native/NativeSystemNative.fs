@@ -4876,7 +4876,11 @@ module NativeSystemNative =
                 match allocationSizeArgument "SystemNative_Malloc" instruction.Arguments.[0] with
                 | ValueNone -> ManagedPointerSource.Null, state
                 | ValueSome size ->
-                    IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
+                    IlMachineState.allocateNativeMemory
+                        MemoryBlockInitialization.Uninitialized
+                        NativeBlockAlignment.malloc
+                        size
+                        state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
@@ -4904,7 +4908,11 @@ module NativeSystemNative =
                     if total > int64 System.Int32.MaxValue then
                         ManagedPointerSource.Null, state
                     else
-                        IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized (int total) state
+                        IlMachineState.allocateNativeMemory
+                            MemoryBlockInitialization.ZeroInitialized
+                            NativeBlockAlignment.malloc
+                            (int total)
+                            state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
@@ -4922,26 +4930,29 @@ module NativeSystemNative =
             // multiple of it; an alignment outside that is refused rather than given
             // the C library's EINVAL, which no caller has needed.
             //
-            // The block is a native block like any other, so the address model
+            // The block is placed at the alignment asked for, or at `malloc`'s where
+            // that is larger, as both C libraries do. The alignment-mask model still
             // claims for it only the 8-byte alignment `malloc` guarantees
             // (`ManagedPointerSource.tryContainerBase`): never wrong, and a mask
             // asking about the bits of a larger alignment is refused, not answered.
             let operation = "SystemNative_AlignedAlloc"
 
-            match allocationSizeArgument $"%s{operation} (alignment)" instruction.Arguments.[0] with
-            | ValueSome alignment when alignment >= 8 && System.Numerics.BitOperations.IsPow2 alignment -> ()
-            | ValueSome alignment ->
-                failwith
-                    $"%s{operation}: alignment %d{alignment} is not a power of two of at least sizeof(void*); CoreLib never passes one, and the C library's EINVAL answer is not modelled"
-            | ValueNone ->
-                failwith
-                    $"%s{operation}: alignment %O{instruction.Arguments.[0]} does not fit the interpreter's Int32 byte-count model; CoreLib passes one only with a size no smaller, which no caller has needed"
+            let alignment =
+                match allocationSizeArgument $"%s{operation} (alignment)" instruction.Arguments.[0] with
+                | ValueSome alignment when alignment >= 8 && System.Numerics.BitOperations.IsPow2 alignment ->
+                    NativeBlockAlignment.ofBytes (max alignment NativeBlockAlignment.malloc.Bytes)
+                | ValueSome alignment ->
+                    failwith
+                        $"%s{operation}: alignment %d{alignment} is not a power of two of at least sizeof(void*); CoreLib never passes one, and the C library's EINVAL answer is not modelled"
+                | ValueNone ->
+                    failwith
+                        $"%s{operation}: alignment %O{instruction.Arguments.[0]} does not fit the interpreter's Int32 byte-count model; CoreLib passes one only with a size no smaller, which no caller has needed"
 
             let ptrSrc, state =
                 match allocationSizeArgument $"%s{operation} (size)" instruction.Arguments.[1] with
                 | ValueNone -> ManagedPointerSource.Null, state
                 | ValueSome size ->
-                    IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
+                    IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized alignment size state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
@@ -7254,7 +7265,11 @@ module NativeSystemNative =
             // NULL instead, but both libcs PawPrint is ever compared against hand back
             // a unique pointer (measured on Darwin, documented for glibc).
             let allocated, state =
-                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized (int extent) state
+                IlMachineState.allocateNativeMemory
+                    MemoryBlockInitialization.Uninitialized
+                    NativeBlockAlignment.malloc
+                    (int extent)
+                    state
 
             storePointer allocated state
             |> IlMachineState.pushToEvalStack'

@@ -1064,17 +1064,18 @@ module IlMachineThreadState =
 
         setFrame thread frameId frame state
 
-    /// Allocate a block of native heap memory of the given size.  Returned as a
-    /// byref into byte 0 of the freshly-allocated block; callers that want a
-    /// `nativeint` pointer convert it via `NativeIntSource.ManagedPointer`.
+    /// Allocate a block of native heap memory of the given size, at an address with the
+    /// given alignment.  Returned as a byref into byte 0 of the freshly-allocated block;
+    /// callers that want a `nativeint` pointer convert it via `NativeIntSource.ManagedPointer`.
     let allocateNativeMemory
         (initialization : MemoryBlockInitialization)
+        (alignment : NativeBlockAlignment)
         (byteCount : int)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
         =
         let blockId, pool =
-            NativeMemoryPool.allocate initialization byteCount state.Kernel.NativeMemoryPool
+            NativeMemoryPool.allocate initialization alignment byteCount state.Kernel.NativeMemoryPool
 
         let state =
             state.MapKernel (fun kernel ->

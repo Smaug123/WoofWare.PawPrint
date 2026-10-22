@@ -3730,7 +3730,11 @@ public unsafe struct PointerWrapper
             stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
 
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 8 state
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                8
+                state
 
         let state =
             IlMachineState.writeManagedByref
@@ -4040,7 +4044,11 @@ public unsafe struct PointerWrapper
             stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
 
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 8 state
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                8
+                state
 
         let projectedPtr =
             ptr

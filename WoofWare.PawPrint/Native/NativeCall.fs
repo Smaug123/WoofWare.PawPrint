@@ -617,7 +617,11 @@ module NativeCall =
         // catch, and a zeroed block gives a saner picture if a future caller
         // under-fills its allocation.
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized bytes.Length state
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                bytes.Length
+                state
 
         let blockId =
             match ptr with

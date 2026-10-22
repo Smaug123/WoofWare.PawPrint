@@ -38,7 +38,12 @@ module NativeReferenceCell =
         : NativeReferenceCell * NativeMemoryPool
         =
         let block, pool =
-            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized PointerSize pool
+            NativeMemoryPool.allocate
+                MemoryBlockInitialization.ZeroInitialized
+                // A stack slot of the VM's, which holds a pointer, so pointer-aligned.
+                (NativeBlockAlignment.ofBytes PointerSize)
+                PointerSize
+                pool
 
         let pool = NativeMemoryPool.writeCell block 0 (CliType.ObjectRef contents) pool
 

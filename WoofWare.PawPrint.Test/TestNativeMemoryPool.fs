@@ -17,14 +17,14 @@ module TestNativeMemoryPool =
         (pool : NativeMemoryPool)
         : NativeMemoryBlockId * NativeMemoryPool
         =
-        NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized byteCount pool
+        NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized NativeBlockAlignment.malloc byteCount pool
 
     let private allocateUninitialized
         (byteCount : int)
         (pool : NativeMemoryPool)
         : NativeMemoryBlockId * NativeMemoryPool
         =
-        NativeMemoryPool.allocate MemoryBlockInitialization.Uninitialized byteCount pool
+        NativeMemoryPool.allocate MemoryBlockInitialization.Uninitialized NativeBlockAlignment.malloc byteCount pool
 
     [<Test>]
     let ``Allocated block ids are unique`` () : unit =

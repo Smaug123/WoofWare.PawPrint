@@ -1425,7 +1425,11 @@ module TestBinaryArithmetic =
         // through to `readManagedByref`/`writeManagedByrefWithBase`, which can't service
         // byte-backed reinterpretation when no typed cell exists at the requested offset.
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                4
+                (state ())
 
         // Plain typed-cell round-trip at the base offset.
         let state =
@@ -1451,7 +1455,11 @@ module TestBinaryArithmetic =
         // Routing bare `NativeMemoryByte` reads through `readManagedByref` → `readRootValue`
         // fails with "no typed cell here" instead of reading raw bytes.
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                4
+                (state ())
 
         let block =
             match ptr with
