@@ -77,7 +77,7 @@ public struct ThingStruct { }
         let source =
             "namespace Client;\n"
             + declarations
-            + "\npublic static class Tokens\n{\n"
+            + "\npublic static unsafe class Tokens\n{\n"
             + tokens
             + "\n}\n"
 
@@ -131,9 +131,16 @@ public struct ThingStruct { }
         |> Seq.exactlyOne
         |> fun ty -> ty.TypeDefHandle
 
-    /// What `TypeLoad.loadMiss` says CoreCLR does at a `typeof` of each of `names`: the load fails
-    /// with the exception of the first miss it reports.
-    let private pawPrintOutcomes (corelib : DumpedAssembly) (client : byte[]) (names : string list) : Outcome list =
+    /// What `TypeLoad` finds loading, in turn, each of the types `spellingsOf` the client spells:
+    /// the first miss of each load. Each load is from the definitions the loads before it brought,
+    /// if `fromEarlier`, or else from nothing.
+    let private missesOf
+        (corelib : DumpedAssembly)
+        (client : byte[])
+        (spellingsOf : DumpedAssembly -> TypeDefn list)
+        (fromEarlier : bool)
+        : TypeLoad.LoadMiss option list
+        =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let client =
@@ -147,31 +154,39 @@ public struct ThingStruct { }
             let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
             let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
-            ((LoadedAssemblies.ofAssemblies [ corelib ; client ], []), names)
-            ||> List.fold (fun (assemblies, outcomes) name ->
-                let identity = client.TypeDefs.[definitionNamed client name].Identity
+            ((LoadedAssemblies.ofAssemblies [ corelib ; client ], TypeLoad.nothingLoaded, []), spellingsOf client)
+            ||> List.fold (fun (assemblies, loaded, misses) spelling ->
+                let from = if fromEarlier then loaded else TypeLoad.nothingLoaded
 
-                let assemblies, miss =
-                    TypeLoad.loadMiss
-                        loggerFactory
-                        dirs
-                        baseClassTypes
-                        client
-                        (TypeDefn.FromDefinition (identity, SignatureTypeKind.Unknown))
-                        assemblies
+                let assemblies, loaded, miss =
+                    TypeLoad.loadMissFrom loggerFactory dirs baseClassTypes client spelling from assemblies
 
-                let outcome =
-                    match miss with
-                    | None -> Outcome.Loads
-                    | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Outcome.Fails "TypeLoadException"
-                    | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Outcome.Fails "FileNotFoundException"
-
-                assemblies, outcome :: outcomes
+                assemblies, loaded, miss :: misses
             )
-            |> snd
-            |> List.rev
+            |> fun (_, _, misses) -> List.rev misses
         finally
             directory.Delete true
+
+    /// What `TypeLoad.loadMissFrom` says CoreCLR does at a `typeof` of each of `names` in turn,
+    /// each from the definitions the ones before it loaded: the load fails with the exception of
+    /// the first miss it reports.
+    let private pawPrintOutcomes (corelib : DumpedAssembly) (client : byte[]) (names : string list) : Outcome list =
+        let spellingsOf (client : DumpedAssembly) =
+            names
+            |> List.map (fun name ->
+                TypeDefn.FromDefinition (
+                    client.TypeDefs.[definitionNamed client name].Identity,
+                    SignatureTypeKind.Unknown
+                )
+            )
+
+        missesOf corelib client spellingsOf true
+        |> List.map (fun miss ->
+            match miss with
+            | None -> Outcome.Loads
+            | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Outcome.Fails "TypeLoadException"
+            | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Outcome.Fails "FileNotFoundException"
+        )
 
     let private hostCoreLib : Lazy<DumpedAssembly> =
         lazy
@@ -500,3 +515,107 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         coverage.Count Outcome.Loads |> shouldBeGreaterThan 100
         coverage.Count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 40
         coverage.Count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 30
+
+    /// A type to load: one of the client's own, or one spelled over them and the provider's.
+    let private genLoad (kinds : Kind list) : Gen<Spelled> =
+        Gen.frequency
+            [
+                3, Gen.elements (List.init kinds.Length Earlier)
+                3, genArgument kinds 2
+                1,
+                Gen.elements [ KeptStruct ; GoneStruct ; GoneEnum ; MissingStruct ]
+                |> Gen.map Pointer
+                1, genArgument kinds 1 |> Gen.map FunctionPointer
+            ]
+
+    /// The type the `typeof` in the client's method `Tokens.Get{index}` spells.
+    let private spelledBy (client : DumpedAssembly) (index : int) : TypeDefn =
+        let method =
+            client.Methods.Values
+            |> Seq.filter (fun m -> m.Name = $"Get%d{index}")
+            |> Seq.exactlyOne
+
+        let token =
+            match method.Body with
+            | MethodBody.Il body ->
+                body.Instructions
+                |> List.pick (fun (op, _) ->
+                    match op with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, MetadataOperand.FromMetadata token) ->
+                        Some token.Token
+                    | _ -> None
+                )
+            | body -> failwith $"Tokens.Get%d{index} has no IL body: %A{body}"
+
+        match token with
+        | MetadataToken.TypeDefinition handle ->
+            TypeDefn.FromDefinition (client.TypeDefs.[handle].Identity, SignatureTypeKind.Unknown)
+        | MetadataToken.TypeReference handle ->
+            TypeDefn.FromReference (client.TypeRefs.[handle], SignatureTypeKind.Unknown)
+        | MetadataToken.TypeSpecification handle -> client.TypeSpecs.[handle].Signature
+        | other -> failwith $"Tokens.Get%d{index} loads the token of %O{other}, which is not a type"
+
+    /// Loading types in turn, each from the definitions the loads before it brought, finds what
+    /// loading each from nothing finds, whatever the order: a definition a load brings without
+    /// meeting a miss leads no later load to one.
+    [<Test>]
+    let ``a load from the definitions earlier loads brought finds what a load from nothing finds`` () : unit =
+        let genCase =
+            gen {
+                let! declarations = genClient
+                let kinds = declarations |> List.map (fun d -> d.Kind)
+                let! count = Gen.choose (1, 8)
+                let! loads = Gen.listOfLength count (genLoad kinds)
+                return declarations, loads
+            }
+
+        let property (cover : Outcome -> unit) (declarations : Declaration list, loads : Spelled list) : unit =
+            let source =
+                declarations |> List.mapi renderDeclaration |> String.concat Environment.NewLine
+
+            let names = List.map render loads
+            let client = compileClient source names
+
+            let spellingsOf (client : DumpedAssembly) =
+                List.init names.Length (spelledBy client)
+            // Each run reads the client afresh, and an assembly reference compares its name by
+            // reference, so a miss is compared by what it names.
+            let named (miss : TypeLoad.LoadMiss option) : Choice<TypeResolutionMiss, string> option =
+                match miss with
+                | None -> None
+                | Some (TypeLoad.LoadMiss.TypeAbsent miss) -> Some (Choice1Of2 miss)
+                | Some (TypeLoad.LoadMiss.AssemblyUnavailable reference) -> Some (Choice2Of2 reference.Name.FullName)
+
+            let fresh = missesOf hostCoreLib.Value client spellingsOf false |> List.map named
+
+            let fromEarlier =
+                missesOf hostCoreLib.Value client spellingsOf true |> List.map named
+
+            for miss in fresh do
+                match miss with
+                | None -> cover Outcome.Loads
+                | Some (Choice1Of2 _) -> cover (Outcome.Fails "TypeLoadException")
+                | Some (Choice2Of2 _) -> cover (Outcome.Fails "FileNotFoundException")
+
+            if fresh <> fromEarlier then
+                failwith (
+                    String.concat
+                        Environment.NewLine
+                        [
+                            source
+                            yield!
+                                List.zip3 names fresh fromEarlier
+                                |> List.map (fun (name, fresh, fromEarlier) ->
+                                    $"%s{name}: from nothing %A{fresh}, from earlier loads %A{fromEarlier}"
+                                )
+                        ]
+                )
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 100) (Arb.fromGen genCase) property
+
+        // A load after another that met a miss is what tells a sound record from one that keeps
+        // what a stopped walk marked; the fixed sample has plenty of each outcome.
+        coverage.Count Outcome.Loads |> shouldBeGreaterThan 150
+        coverage.Count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 60
+        coverage.Count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 40
