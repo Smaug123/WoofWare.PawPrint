@@ -9957,3 +9957,274 @@ public static class Cases
         match unmet (analysisOver [ assembly ] id) assembly expectations with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// The stack type an integer conversion pushes (ECMA-335 III.3.27).
+    [<RequireQualifiedAccess>]
+    type private Converted =
+        | Int32
+        | Int64
+        | Native
+
+    /// A `conv` of an integer that does not check for overflow, and the stack type it pushes.
+    type private Conversion =
+        {
+            Op : Emit.OpCode
+            Pushes : Converted
+        }
+
+        override this.ToString () : string = this.Op.Name
+
+    let private conversions : Conversion list =
+        [
+            Emit.OpCodes.Conv_I1, Converted.Int32
+            Emit.OpCodes.Conv_I2, Converted.Int32
+            Emit.OpCodes.Conv_I4, Converted.Int32
+            Emit.OpCodes.Conv_I8, Converted.Int64
+            Emit.OpCodes.Conv_U1, Converted.Int32
+            Emit.OpCodes.Conv_U2, Converted.Int32
+            Emit.OpCodes.Conv_U4, Converted.Int32
+            Emit.OpCodes.Conv_U8, Converted.Int64
+            Emit.OpCodes.Conv_I, Converted.Native
+            Emit.OpCodes.Conv_U, Converted.Native
+        ]
+        |> List.map (fun (op, pushes) ->
+            {
+                Op = op
+                Pushes = pushes
+            }
+        )
+
+    /// A division of an argument by a constant the body converts at least once: `ldarg.0`, then
+    /// the constant (`ldc.i8` where `Wide`, `ldc.i4` of its low 32 bits otherwise), then each of
+    /// `Conversions`, then `Division`.
+    type private ConvertedDivision =
+        {
+            Constant : int64
+            Wide : bool
+            Conversions : Conversion list
+            Division : Emit.OpCode
+        }
+
+        /// The stack type of the divisor, and so of the dividend, which the argument is.
+        member this.Width : Converted = (List.last this.Conversions).Pushes
+
+    let private convertedDivisionGen : FsCheck.Gen<ConvertedDivision> =
+        // Most constants that conversions can make zero or -1 have all their low 8, 16 or 32 bits
+        // clear, or all set.
+        let constant =
+            FsCheck.FSharp.Gen.oneof
+                [
+                    FsCheck.FSharp.Gen.choose (-3, 3) |> FsCheck.FSharp.Gen.map int64
+                    FsCheck.FSharp.Gen.map3
+                        (fun (high : int) (bits : int) (allSet : bool) ->
+                            let shifted = int64 high <<< bits
+                            if allSet then shifted ||| ((1L <<< bits) - 1L) else shifted
+                        )
+                        (FsCheck.FSharp.Gen.choose (-4, 4))
+                        (FsCheck.FSharp.Gen.elements [ 8 ; 16 ; 32 ])
+                        (FsCheck.FSharp.Gen.elements [ false ; true ])
+                    FsCheck.FSharp.Gen.elements
+                        [
+                            Int64.MinValue
+                            Int64.MaxValue
+                            int64 Int32.MinValue
+                            int64 Int32.MaxValue
+                        ]
+                    FsCheck.FSharp.ArbMap.defaults |> FsCheck.FSharp.ArbMap.generate<int64>
+                ]
+
+        FsCheck.FSharp.Gen.map4
+            (fun constant wide conversions division ->
+                {
+                    Constant = constant
+                    Wide = wide
+                    Conversions = conversions
+                    Division = division
+                }
+            )
+            constant
+            (FsCheck.FSharp.Gen.elements [ false ; true ])
+            (FsCheck.FSharp.Gen.choose (1, 3)
+             |> FsCheck.FSharp.Gen.bind (fun count ->
+                 FsCheck.FSharp.Gen.listOfLength count (FsCheck.FSharp.Gen.elements conversions)
+             ))
+            (FsCheck.FSharp.Gen.elements
+                [
+                    Emit.OpCodes.Div
+                    Emit.OpCodes.Rem
+                    Emit.OpCodes.Div_Un
+                    Emit.OpCodes.Rem_Un
+                ])
+
+    /// An image whose type `Run` has, for the `i`th of `cases`, a method `Case<i>` that divides as
+    /// the case says, and a method `Branch<i>` that converts the case's constant as it says, then
+    /// throws an `ArgumentException` where that is not zero, and a `FormatException` where it is.
+    let private emitConvertedDivisions (cases : ConvertedDivision list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "ConvertedDivisions", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "ConvertedDivisions"
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        cases
+        |> List.iteri (fun index case ->
+            let parameter =
+                match case.Width with
+                | Converted.Int32 -> typeof<int>
+                | Converted.Int64 -> typeof<int64>
+                | Converted.Native -> typeof<nativeint>
+
+            let il =
+                run
+                    .DefineMethod(
+                        $"Case%d{index}",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        parameter,
+                        [| parameter |]
+                    )
+                    .GetILGenerator ()
+
+            il.Emit Emit.OpCodes.Ldarg_0
+
+            if case.Wide then
+                il.Emit (Emit.OpCodes.Ldc_I8, case.Constant)
+            else
+                il.Emit (Emit.OpCodes.Ldc_I4, int32 case.Constant)
+
+            for conversion in case.Conversions do
+                il.Emit conversion.Op
+
+            il.Emit case.Division
+            il.Emit Emit.OpCodes.Ret
+
+            let il =
+                run
+                    .DefineMethod(
+                        $"Branch%d{index}",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        [||]
+                    )
+                    .GetILGenerator ()
+
+            let nonZero = il.DefineLabel ()
+
+            if case.Wide then
+                il.Emit (Emit.OpCodes.Ldc_I8, case.Constant)
+            else
+                il.Emit (Emit.OpCodes.Ldc_I4, int32 case.Constant)
+
+            for conversion in case.Conversions do
+                il.Emit conversion.Op
+
+            il.Emit (Emit.OpCodes.Brtrue, nonZero)
+            il.Emit (Emit.OpCodes.Newobj, typeof<FormatException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+            il.MarkLabel nonZero
+            il.Emit (Emit.OpCodes.Newobj, typeof<ArgumentException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+        )
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// Every division of a batch is asked of the real runtime, once with a dividend of 7, which
+    /// faults only on a zero divisor, and once with the least dividend of its width, which a
+    /// signed division by -1 overflows; the analysis must find exactly the faults those raise, as
+    /// the divisor is a constant. It must find exactly which exception each branch throws, too.
+    [<Test>]
+    let ``a converted constant decides a division's faults and a branch as on the real runtime`` () : unit =
+        let property (cases : ConvertedDivision list) : unit =
+            let image = emitConvertedDivisions cases
+
+            let onRealRuntime : (Set<string> * string) list =
+                let context =
+                    System.Runtime.Loader.AssemblyLoadContext ("ConvertedDivisions", isCollectible = true)
+
+                try
+                    let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                    cases
+                    |> List.mapi (fun index case ->
+                        let dividends : obj list =
+                            match case.Width with
+                            | Converted.Int32 -> [ box 7 ; box Int32.MinValue ]
+                            | Converted.Int64 -> [ box 7L ; box Int64.MinValue ]
+                            | Converted.Native -> [ box 7n ; box (nativeint Int64.MinValue) ]
+
+                        let raised (name : string) (argument : obj[]) : string option =
+                            try
+                                run.GetMethod(name).Invoke ((null : obj), argument) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some ("=" + e.InnerException.GetType().FullName)
+
+                        let divided =
+                            dividends
+                            |> List.choose (fun dividend -> raised $"Case%d{index}" [| dividend |])
+                            |> Set.ofList
+
+                        let branched =
+                            match raised $"Branch%d{index}" [||] with
+                            | Some raised -> raised
+                            | None -> failwith $"Branch%d{index} returned on the real runtime"
+
+                        divided, branched
+                    )
+                finally
+                    context.Unload ()
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let assembly =
+                Assembly.read loggerFactory (Some "ConvertedDivisions.dll") (new MemoryStream (image))
+
+            let arithmetic = Set.ofList [ divideByZero ; overflow ]
+
+            let thrown = Set.ofList [ "=System.ArgumentException" ; "=System.FormatException" ]
+
+            let _, failures =
+                ((analysisOver [ assembly ] id, []), List.indexed (List.zip cases onRealRuntime))
+                ||> List.fold (fun (analysis, failures) (index, (case, (divided, branched))) ->
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assembly "Run" $"Case%d{index}")
+
+                    let found = Set.intersect arithmetic (render analysis escapes)
+
+                    let failures =
+                        if escapes.Unknown || found <> divided then
+                            $"%A{case}: the division finds %A{Set.toList found}, unknown %b{escapes.Unknown}; the real runtime raised %A{Set.toList divided}"
+                            :: failures
+                        else
+                            failures
+
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assembly "Run" $"Branch%d{index}")
+
+                    let found = Set.intersect thrown (render analysis escapes)
+
+                    let failures =
+                        if escapes.Unknown || found <> Set.singleton branched then
+                            $"%A{case}: the branch finds %A{Set.toList found}, unknown %b{escapes.Unknown}; the real runtime raised %s{branched}"
+                            :: failures
+                        else
+                            failures
+
+                    analysis, failures
+                )
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+        FsCheck.Check.One (
+            FsCheck.Config.QuickThrowOnFailure.WithMaxTest 20,
+            FsCheck.FSharp.Prop.forAll
+                (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf convertedDivisionGen))
+                property
+        )
