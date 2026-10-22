@@ -108,6 +108,18 @@ method) may add more:
   The JIT expands `RuntimeHelpers.InitializeArray` of a field's handle too, but only where it
   optimises fully, which a method it compiles first does not, so there the analysis follows both
   calls;
+* `isinst`, `castclass`, and `unbox.any` of a reference type call the `CastHelpers` method the JIT
+  picks for the type (`getCastingHelperStatic`): an `IsInstanceOf...` one for `isinst` and a
+  `ChkCast...` one otherwise, of `Class` for a class or a value type, `Interface` for an interface,
+  and `Any` for the rest (an array, a type with variant type parameters, a type variable in shared
+  code, a `Nullable<T>` shared over its argument), which the analysis follows. Every one but
+  `IsInstanceOfClass` falls back to the runtime where the cast cache has no answer, which holds
+  under `NamedTypesLoad` and `DynamicCastsAsDocumented`. Where only an instance decides the method
+  (a cast to a type variable, or to a `Nullable<T>` over one), a generic definition calls each
+  some instance does, and an instance the one its code does. The JIT decides a cast without a call
+  only where it optimises fully, or where it folds a `box` the cast tests, which the analysis does
+  not follow: it follows the call there too. It takes the runtime to be a Unix one, which casts to
+  no type by type equivalence;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
@@ -199,9 +211,9 @@ exactly when the answer is not "unknown".
 Casting an object to an interface, or storing it in an array (whose element type may be an
 interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class
 implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
-helpers' fallback, that is the assumption `DynamicCastsAsDocumented` (below). It does not yet
-follow the cast helpers from `castclass`, `isinst` or `stelem.ref` themselves, and there it assumes
-the same without listing it: an implementation that throws anything but the
+helpers' fallback, as it does from `castclass` and `isinst`, that is the assumption
+`DynamicCastsAsDocumented` (below). It does not yet follow `stelem.ref`'s helper, and there it
+assumes the same without listing it: an implementation that throws anything but the
 `InvalidCastException` its documentation asks for can let that escape unreported. The interface's
 other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
 an object whose class does not implement the interface. The analysis counts an interface
