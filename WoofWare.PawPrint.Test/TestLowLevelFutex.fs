@@ -180,6 +180,13 @@ unsafe class Program
         Futex.Wake(misaligned);
         if (Marshal.GetLastPInvokeError() != Futex.EINVAL) return 12;
 
+        // The timeout is as long as the call asked: a second and a half, which takes in both of
+        // the timespec's fields.
+        long start = Environment.TickCount64;
+        if (Futex.WaitTimeout(word, 0, 1500) != 0) return 13;
+        long elapsed = Environment.TickCount64 - start;
+        if (elapsed < 1400 || elapsed > 4000) return 14;
+
         NativeMemory.AlignedFree(word);
         return 0;
     }
@@ -201,6 +208,7 @@ unsafe class Program
         IntPtr address = (IntPtr)word;
         int untimed = -1;
         int timed = -1;
+        int finished = 0;
 
         // Each waiter loops as LowLevelThreadBlocker does, so a wake that comes first, or a
         // spurious one, only sends it round again.
@@ -209,6 +217,7 @@ unsafe class Program
             int* w = (int*)address;
             while (Volatile.Read(ref *w) == 0) Futex.Wait(w, 0);
             untimed = Volatile.Read(ref *w);
+            Interlocked.Increment(ref finished);
         });
         Thread timedWaiter = new Thread(() =>
         {
@@ -216,13 +225,17 @@ unsafe class Program
             int answer = 1;
             while (Volatile.Read(ref *w) == 0 && answer == 1) answer = Futex.WaitTimeout(w, 0, 60000);
             timed = answer;
+            Interlocked.Increment(ref finished);
         });
         untimedWaiter.Start();
         timedWaiter.Start();
         Thread.Sleep(100);
 
+        // Each wake takes one waiter, and the other sleeps on: the word changed, but nothing woke it.
         Volatile.Write(ref *word, 1);
         Futex.Wake(word);
+        Thread.Sleep(100);
+        if (Volatile.Read(ref finished) != 1) return 3;
         Futex.Wake(word);
         untimedWaiter.Join();
         timedWaiter.Join();
