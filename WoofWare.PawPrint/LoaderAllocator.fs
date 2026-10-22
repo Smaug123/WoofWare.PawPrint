@@ -18,8 +18,10 @@ type LoaderAllocator =
 [<RequireQualifiedAccess>]
 module LoaderAllocator =
     /// Whether the code in this arena can be unloaded, which is `LoaderAllocator::IsCollectible`
-    /// (loaderallocator.hpp:592). Guest-visible: `Type.IsCollectible`, `MethodBase.IsCollectible`
-    /// and `Assembly.IsCollectible` are each a QCall that reports it.
+    /// (loaderallocator.hpp:592). Guest-visible through `Type.IsCollectible`,
+    /// `MethodBase.IsCollectible` and `Assembly.IsCollectible`: on .NET 10 each is a QCall that
+    /// reports it, and on .NET 11 the method's and the assembly's are FCalls and the type's is a
+    /// flag of its `MethodTable` or `TypeDesc` (`MethodTableProjection`).
     ///
     /// PawPrint answers `false` for everything, and that is a fact about the arena rather than a
     /// simplification. Every collectible arena in CoreCLR is an `AssemblyLoaderAllocator`, whose

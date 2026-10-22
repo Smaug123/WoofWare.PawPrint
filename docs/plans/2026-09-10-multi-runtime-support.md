@@ -787,8 +787,15 @@ mutation-testing skill applies to each table/classifier they introduce.
      (`TestFabricatedDiscardedRead`). Seven of the twelve guests parked on it pass, as does the
      one non-guest test; the other five reach `RuntimeMethodHandle::IsCollectible`, RC1's FCall
      in place of .NET 10's `RuntimeMethodHandle_GetIsCollectible` QCall (`methodIsCollectible`);
-   * `MarshalNative_HasLayout`, `RuntimeAssembly.GetIsCollectible`,
-     `RuntimeMethodHandle::IsCollectible`, `Delegate_GetMethodDesc`,
+   * **(landed)** collectibility as RC1 asks it: the `RuntimeMethodHandle::IsCollectible` and
+     `RuntimeAssembly.GetIsCollectible` FCalls in place of .NET 10's QCalls, and a type's own
+     flag, which RC1's `RuntimeType.IsCollectible` reads from its `MethodTable` or, for a type
+     variable, byref, pointer or function pointer, from its `TypeDesc`'s `_typeAndFlags`. Every
+     answer comes from `LoaderAllocator`. `TestTypeDescProjection` holds the `TypeDesc` word to the
+     test host's own. `ReflectionIsCollectible.cs` and two of the five cases parked on
+     `methodIsCollectible` pass; the other three reach `isAsyncMethod`, and
+     `DynamicAssemblyHosting.cs` reaches `RuntimeModule_GetTypes`;
+   * `MarshalNative_HasLayout`, `Delegate_GetMethodDesc`,
      and `RuntimeModule_GetTypes`'s three-argument shape
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
