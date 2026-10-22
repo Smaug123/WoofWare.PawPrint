@@ -68,7 +68,8 @@ method) may add more:
   which nothing else reaches), only the way the answer goes is followed (`ControlFlow.mayExecute`),
   and so it is where the value branched on straight away is an object known to be null or not: one
   `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
-  null; or an integer known to be zero or not: a constant an `ldc` pushed, an argument whose
+  null; or an integer known to be zero or not: a constant an `ldc` pushed, or what a conversion
+  that does not check for overflow (`conv.i1` to `conv.u8`, `conv.i`, `conv.u`) makes of one, an argument whose
   callers all pass zero or all pass something else, or a load through a `ref` argument whose
   callers' locals all hold zero or all hold something else; or a call of
   `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`, where the instance says what `T` is, which

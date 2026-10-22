@@ -29,6 +29,42 @@ type internal SpelledObject =
 type internal StackInteger =
     | Int32 of int32
     | Int64 of int64
+    /// A native int, of the 64 bits it has on every target the analysis knows (`JitTarget`).
+    | NativeInt of int64
+
+/// A `conv` of an integer that does not check for overflow, by the type it converts to.
+[<RequireQualifiedAccess>]
+type internal IntegerConversion =
+    | I1
+    | I2
+    | I4
+    | I8
+    | U1
+    | U2
+    | U4
+    | U8
+    | I
+    | U
+
+[<RequireQualifiedAccess>]
+module internal IntegerConversion =
+
+    /// The conversion `op` is, if it is one of these: `conv.r.un` and the floating-point
+    /// conversions push no integer, and the analysis follows no constant through one that checks
+    /// for overflow.
+    let ofNullary (op : NullaryIlOp) : IntegerConversion option =
+        match op with
+        | NullaryIlOp.Conv_I1 -> Some IntegerConversion.I1
+        | NullaryIlOp.Conv_I2 -> Some IntegerConversion.I2
+        | NullaryIlOp.Conv_I4 -> Some IntegerConversion.I4
+        | NullaryIlOp.Conv_I8 -> Some IntegerConversion.I8
+        | NullaryIlOp.Conv_U1 -> Some IntegerConversion.U1
+        | NullaryIlOp.Conv_U2 -> Some IntegerConversion.U2
+        | NullaryIlOp.Conv_U4 -> Some IntegerConversion.U4
+        | NullaryIlOp.Conv_U8 -> Some IntegerConversion.U8
+        | NullaryIlOp.Conv_I -> Some IntegerConversion.I
+        | NullaryIlOp.Conv_U -> Some IntegerConversion.U
+        | _ -> None
 
 [<RequireQualifiedAccess>]
 module internal StackInteger =
@@ -37,13 +73,38 @@ module internal StackInteger =
     let isZero (value : StackInteger) : bool =
         match value with
         | StackInteger.Int32 value -> value = 0
-        | StackInteger.Int64 value -> value = 0L
+        | StackInteger.Int64 value
+        | StackInteger.NativeInt value -> value = 0L
 
     /// Whether `integer` has the value `value`, at the width the stack holds it.
     let is (value : IntegerValue) (integer : StackInteger) : bool =
         match integer with
         | StackInteger.Int32 integer -> IntegerValue.holdsOfInt32 value integer
-        | StackInteger.Int64 integer -> IntegerValue.holdsOfInt64 value integer
+        | StackInteger.Int64 integer
+        | StackInteger.NativeInt integer -> IntegerValue.holdsOfInt64 value integer
+
+    /// What `conversion` pushes of `value` (ECMA-335 III.3.27): `value` truncated to the width
+    /// of the type it converts to, then extended to the stack type, by its sign for a signed type
+    /// and with zeros for an unsigned one. A conversion to a type no narrower than `value` extends
+    /// it by the sign of the type converted to.
+    let converted (conversion : IntegerConversion) (value : StackInteger) : StackInteger =
+        let signExtended, zeroExtended =
+            match value with
+            | StackInteger.Int32 value -> int64 value, int64 (uint32 value)
+            | StackInteger.Int64 value
+            | StackInteger.NativeInt value -> value, value
+
+        match conversion with
+        | IntegerConversion.I1 -> StackInteger.Int32 (int32 (sbyte signExtended))
+        | IntegerConversion.I2 -> StackInteger.Int32 (int32 (int16 signExtended))
+        | IntegerConversion.I4
+        | IntegerConversion.U4 -> StackInteger.Int32 (int32 signExtended)
+        | IntegerConversion.U1 -> StackInteger.Int32 (int32 (byte signExtended))
+        | IntegerConversion.U2 -> StackInteger.Int32 (int32 (uint16 signExtended))
+        | IntegerConversion.I8 -> StackInteger.Int64 signExtended
+        | IntegerConversion.U8 -> StackInteger.Int64 zeroExtended
+        | IntegerConversion.I -> StackInteger.NativeInt signExtended
+        | IntegerConversion.U -> StackInteger.NativeInt zeroExtended
 
     /// The integer type of a parameter spelled `parameter`, whose values the analysis follows;
     /// `None` for any other type.
@@ -486,6 +547,32 @@ module internal StackValues =
         let constant (value : StackInteger) =
             fixedValue (StackValue.Integers (Set.singleton (SpelledInteger.Constant value)))
 
+        // What `conversion` pushes of the integer it pops: each constant converted, and anything
+        // where the integer may be one the body does not say.
+        let convert (conversion : IntegerConversion) =
+            Ok (fun popped ->
+                match List.head popped with
+                | StackValue.Integers integers ->
+                    let converted =
+                        integers
+                        |> Seq.map (fun integer ->
+                            match integer with
+                            | SpelledInteger.Constant value ->
+                                Some (SpelledInteger.Constant (StackInteger.converted conversion value))
+                            | SpelledInteger.Argument _
+                            | SpelledInteger.Loaded _ -> None
+                        )
+                        |> List.ofSeq
+
+                    if List.forall Option.isSome converted then
+                        StackValue.Integers (converted |> List.choose id |> Set.ofList)
+                    else
+                        StackValue.Unknown
+                | StackValue.Objects _
+                | StackValue.Addresses _
+                | StackValue.Unknown -> StackValue.Unknown
+            )
+
         // What `ldind` of the integer type `loaded` at `offset` pushes from the address it pops.
         let load (offset : int) (loaded : PrimitiveType) =
             Ok (fun popped ->
@@ -534,6 +621,10 @@ module internal StackValues =
                 | IlOp.Nullary NullaryIlOp.Ldind_i4 -> load offset PrimitiveType.Int32
                 | IlOp.Nullary NullaryIlOp.Ldind_u4 -> load offset PrimitiveType.UInt32
                 | IlOp.Nullary NullaryIlOp.Ldind_i8 -> load offset PrimitiveType.Int64
+                | IlOp.Nullary nullary ->
+                    match IntegerConversion.ofNullary nullary with
+                    | Some conversion -> convert conversion
+                    | None -> fixedValue StackValue.Unknown
                 | _ -> fixedValue StackValue.Unknown
             | Pushed.Address ->
                 match op with
