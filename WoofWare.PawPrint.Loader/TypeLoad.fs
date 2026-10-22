@@ -621,17 +621,79 @@ module TypeLoad =
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
 
+    /// The type definitions that loads have brought to each of CoreCLR's load levels without
+    /// meeting a miss (`loadMissFrom`). A load from these passes over them, as CoreCLR passes over
+    /// a type already loaded: none can lead it to a miss, since a definition's load reaches the
+    /// same references wherever it is spelled. That holds only over the assemblies those loads
+    /// were over, or more of them, each reference bound as it was.
+    [<NoEquality ; NoComparison>]
+    type LoadedDefinitions =
+        private
+            {
+                Approximate : Set<ResolvedTypeIdentity>
+                Exact : Set<ResolvedTypeIdentity>
+                Full : Set<ResolvedTypeIdentity>
+            }
+
+    /// No definitions loaded: a load from these walks everything it reaches.
+    let nothingLoaded : LoadedDefinitions =
+        {
+            Approximate = Set.empty
+            Exact = Set.empty
+            Full = Set.empty
+        }
+
     /// <summary>
     /// The first type reference that names no type, among those CoreCLR's full load of
     /// <paramref name="spelling" />, a type <paramref name="spellingAssembly" /> spells, reaches, in
-    /// the order it reaches them. Loads, from <paramref name="dotnetRuntimeDirs" />, whatever
-    /// assemblies those references take, and the returned <c>LoadedAssemblies</c> carries them.
+    /// the order it reaches them, passing over the definitions <paramref name="loaded" /> holds.
+    /// Loads, from <paramref name="dotnetRuntimeDirs" />, whatever assemblies those references
+    /// take, and the returned <c>LoadedAssemblies</c> carries them. Where it meets no miss, the
+    /// returned <c>LoadedDefinitions</c> holds the definitions it loaded as well; otherwise it is
+    /// <paramref name="loaded" />.
     /// </summary>
     /// <remarks>
     /// A type variable is not a type the load reaches: a spelling of one, or of a generic
     /// definition's own instantiation over its type parameters, leaves the types an instantiation
     /// supplies for them to wherever that instantiation is spelled.
     /// </remarks>
+    let loadMissFrom
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        (loaded : LoadedDefinitions)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * LoadedDefinitions * LoadMiss option
+        =
+        let walk =
+            {
+                Assemblies = assemblies
+                Approximate = loaded.Approximate
+                Exact = loaded.Exact
+                Full = loaded.Full
+            }
+
+        match
+            loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes LoadLevel.Full spellingAssembly spelling walk
+        with
+        | walk, None ->
+            walk.Assemblies,
+            {
+                Approximate = walk.Approximate
+                Exact = walk.Exact
+                Full = walk.Full
+            },
+            None
+        // A walk stops at its first miss, so a definition it marked may have parts it never reached.
+        | walk, Some miss -> walk.Assemblies, loaded, Some miss
+
+    /// <summary>
+    /// The first type reference that names no type, among those CoreCLR's full load of
+    /// <paramref name="spelling" />, a type <paramref name="spellingAssembly" /> spells, reaches, in
+    /// the order it reaches them: <c>loadMissFrom</c> with nothing loaded.
+    /// </summary>
     let loadMiss
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -641,15 +703,14 @@ module TypeLoad =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * LoadMiss option
         =
-        let walk =
-            {
-                Assemblies = assemblies
-                Approximate = Set.empty
-                Exact = Set.empty
-                Full = Set.empty
-            }
+        let assemblies, _, miss =
+            loadMissFrom
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                spellingAssembly
+                spelling
+                nothingLoaded
+                assemblies
 
-        let walk, miss =
-            loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes LoadLevel.Full spellingAssembly spelling walk
-
-        walk.Assemblies, miss
+        assemblies, miss
