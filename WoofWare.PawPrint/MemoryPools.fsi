@@ -113,11 +113,12 @@ module NativeMemoryPool =
     /// A pool owning no blocks. The machine state holds exactly one.
     val empty : NativeMemoryPool
 
-    /// Reserve `byteCount` bytes and return the id addressing them. As for the stack pool,
-    /// ids are never reused, so a use-after-free fails rather than addressing whatever was
-    /// allocated next.
+    /// Reserve `byteCount` bytes, at an address aligned to `alignment` (see `tryAddressOf`),
+    /// and return the id addressing them. As for the stack pool, ids are never reused, so a
+    /// use-after-free fails rather than addressing whatever was allocated next.
     val allocate :
         initialization : MemoryBlockInitialization ->
+        alignment : NativeBlockAlignment ->
         byteCount : int ->
         pool : NativeMemoryPool ->
             NativeMemoryBlockId * NativeMemoryPool
@@ -140,6 +141,15 @@ module NativeMemoryPool =
     /// property of the allocation rather than of its contents. Reports the same
     /// use-after-free failure as any other access to a freed block.
     val blockSize : blockId : NativeMemoryBlockId -> pool : NativeMemoryPool -> int
+
+    /// The address of the byte `offset` bytes into `blockId`, as the process sees it: the
+    /// block's base in the pool's `NativeAddressSpace`, plus `offset`. `None` if the block is
+    /// not live, or if `offset` lies outside `[0, blockSize]`, where the address would be
+    /// some other block's, or none.
+    val tryAddressOf : blockId : NativeMemoryBlockId -> offset : int64 -> pool : NativeMemoryPool -> uint64 option
+
+    /// `NativeAddressSpace.checkInvariants` of the pool's live blocks. For tests.
+    val internal checkAddressInvariants : pool : NativeMemoryPool -> unit
 
     /// The cell covering `offset` together with the offset it starts at, or `None` if no
     /// cell covers it. Unlike `tryReadCell`, `offset` need not be where the cell begins.

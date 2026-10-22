@@ -48,6 +48,7 @@ type NativeMemoryPool =
     {
         NextBlockId : int
         Blocks : Map<NativeMemoryBlockId, MemoryBlock>
+        Addresses : NativeAddressSpace
     }
 
 /// A primitive byte read from a memory block, classified by where the byte
@@ -553,10 +554,12 @@ module NativeMemoryPool =
         {
             NextBlockId = 0
             Blocks = Map.empty
+            Addresses = NativeAddressSpace.empty
         }
 
     let allocate
         (initialization : MemoryBlockInitialization)
+        (alignment : NativeBlockAlignment)
         (byteCount : int)
         (pool : NativeMemoryPool)
         : NativeMemoryBlockId * NativeMemoryPool
@@ -566,10 +569,14 @@ module NativeMemoryPool =
 
         let blockId = NativeMemoryBlockId pool.NextBlockId
 
+        let _, addresses =
+            NativeAddressSpace.place blockId byteCount alignment pool.Addresses
+
         blockId,
         { pool with
             NextBlockId = pool.NextBlockId + 1
             Blocks = pool.Blocks |> Map.add blockId (MemoryBlock.empty initialization byteCount)
+            Addresses = addresses
         }
 
     /// Release a native-heap block. Subsequent reads or writes through any
@@ -583,6 +590,7 @@ module NativeMemoryPool =
 
         { pool with
             Blocks = pool.Blocks |> Map.remove blockId
+            Addresses = NativeAddressSpace.release blockId pool.Addresses
         }
 
     let isLive (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : bool = Map.containsKey blockId pool.Blocks
@@ -600,6 +608,19 @@ module NativeMemoryPool =
     /// property of the allocation rather than of its contents. Reports the same
     /// use-after-free failure as any other access to a freed block.
     let blockSize (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : int = (getBlock blockId pool).Size
+
+    let tryAddressOf (blockId : NativeMemoryBlockId) (offset : int64) (pool : NativeMemoryPool) : uint64 option =
+        match Map.tryFind blockId pool.Blocks, NativeAddressSpace.tryBase blockId pool.Addresses with
+        | Some block, Some blockBase when 0L <= offset && offset <= int64 block.Size -> Some (blockBase + uint64 offset)
+        | Some _, Some _ -> None
+        | None, None -> None
+        | Some _, None
+        | None, Some _ ->
+            failwith
+                $"NativeMemoryPool.tryAddressOf: %O{blockId} is live in only one of the pool's blocks and its address space (this is an interpreter bug)"
+
+    let internal checkAddressInvariants (pool : NativeMemoryPool) : unit =
+        NativeAddressSpace.checkInvariants pool.Addresses
 
     let private setBlock
         (blockId : NativeMemoryBlockId)

@@ -561,6 +561,7 @@ module TestPointerStructByteViewCells =
             let ptr, state =
                 IlMachineState.allocateNativeMemory
                     MemoryBlockInitialization.ZeroInitialized
+                    NativeBlockAlignment.malloc
                     (containerSize case.Cells)
                     state
 
