@@ -22,7 +22,7 @@ module TestNativeAddressSpace =
                 let! byteCount =
                     Gen.frequency [ 1, Gen.constant 0 ; 6, Gen.choose (1, 256) ; 1, Gen.choose (257, 1 <<< 20) ]
 
-                let! alignmentLog2 = Gen.choose (0, 16)
+                let! alignmentLog2 = Gen.choose (3, 16)
                 return Op.Allocate (byteCount, 1 <<< alignmentLog2)
             }
 
@@ -63,6 +63,20 @@ module TestNativeAddressSpace =
             |> shouldEqual None
 
             NativeMemoryPool.tryAddressOf block.Id -1L pool |> shouldEqual None
+
+            // The alignment-mask model's claim about a pointer into this block holds of
+            // where the block really is.
+            let claimed =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (block.Id, 0)
+                        Projections = []
+                    }
+                |> ManagedPointerSource.tryContainerBase
+
+            match claimed with
+            | Some containerBase -> block.Base % (1UL <<< containerBase.AlignmentBits) |> shouldEqual 0UL
+            | None -> failwith "tryContainerBase makes no claim about a native-heap block"
 
         live
         |> List.sortBy _.Base
@@ -168,7 +182,7 @@ module TestNativeAddressSpace =
                 ||> List.fold (fun pool _ ->
                     NativeMemoryPool.allocate
                         MemoryBlockInitialization.Uninitialized
-                        (NativeBlockAlignment.ofBytes 1)
+                        NativeBlockAlignment.minimum
                         largest
                         pool
                     |> snd
@@ -179,11 +193,11 @@ module TestNativeAddressSpace =
         exn.Message |> shouldContainText "address range is exhausted"
 
     [<Test>]
-    let ``Alignment must be a positive power of two`` () : unit =
-        for bytes in [ 1 ; 2 ; 16 ; 1 <<< 30 ] do
+    let ``Alignment must be a power of two no less than a pointer`` () : unit =
+        for bytes in [ 8 ; 16 ; 1 <<< 30 ] do
             (NativeBlockAlignment.ofBytes bytes).Bytes |> shouldEqual bytes
 
-        for bytes in [ 0 ; -1 ; 3 ; 24 ; System.Int32.MinValue ] do
+        for bytes in [ 0 ; -1 ; 1 ; 2 ; 4 ; 3 ; 24 ; System.Int32.MinValue ] do
             Assert.Throws<exn> (fun () -> NativeBlockAlignment.ofBytes bytes |> ignore)
             |> ignore
 

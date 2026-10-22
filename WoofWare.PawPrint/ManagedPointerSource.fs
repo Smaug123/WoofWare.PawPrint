@@ -1164,15 +1164,14 @@ module ManagedPointerSource =
                 HeaderBytes = 0L
             }
             |> Some
-        // `NativeMemory.Alloc` / `Marshal.AllocHGlobal` bottom out in `malloc`,
-        // which returns storage aligned for any fundamental type — 16 bytes on
-        // 64-bit targets.
+        // Every native-heap block is placed at least `NativeBlockAlignment.minimum`
+        // aligned, which is the claim made here.
         | ManagedPointerSource.Byref {
                                          Root = ByrefRoot.NativeMemoryByte _
                                          Projections = _
                                      } ->
             {
-                AlignmentBits = 3
+                AlignmentBits = Numerics.BitOperations.Log2 (uint32 NativeBlockAlignment.minimum.Bytes)
                 HeaderBytes = 0L
             }
             |> Some

@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
-/// The alignment a native-heap block's base must have: a power of two, in bytes.
+/// The alignment a native-heap block's base must have: a power of two, in bytes, and never
+/// less than `NativeBlockAlignment.minimum`.
 [<Sealed>]
 type NativeBlockAlignment =
     /// The alignment in bytes.
@@ -8,12 +9,18 @@ type NativeBlockAlignment =
 
 [<RequireQualifiedAccess>]
 module NativeBlockAlignment =
+    /// Pointer size, 8 bytes: the least alignment any native allocation has, since `malloc`,
+    /// `aligned_alloc` as CoreLib calls it, and a pointer-sized slot are all at least
+    /// pointer-aligned. `ManagedPointerSource.tryContainerBase` claims this of every
+    /// native-heap block when it answers an alignment mask.
+    val minimum : NativeBlockAlignment
+
     /// What `malloc` guarantees on the 64-bit targets PawPrint models: 16 bytes, from glibc and
     /// from Darwin's libmalloc alike. `calloc`, and every allocation CoreLib makes through
     /// `NativeMemory.Alloc` or `Marshal.AllocHGlobal`, gets the same.
     val malloc : NativeBlockAlignment
 
-    /// `bytes` as an alignment. Fails unless it is a positive power of two.
+    /// `bytes` as an alignment. Fails unless it is a power of two no less than `minimum`.
     val ofBytes : bytes : int -> NativeBlockAlignment
 
 /// Where each live native-heap block lies in the process's address space: a base address per

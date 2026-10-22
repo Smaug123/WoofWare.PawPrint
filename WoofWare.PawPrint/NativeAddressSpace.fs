@@ -10,9 +10,11 @@ type NativeBlockAlignment =
 
 [<RequireQualifiedAccess>]
 module NativeBlockAlignment =
+    let minimum : NativeBlockAlignment = NativeBlockAlignment.NativeBlockAlignment 8
+
     let ofBytes (bytes : int) : NativeBlockAlignment =
-        if bytes <= 0 || not (System.Numerics.BitOperations.IsPow2 bytes) then
-            failwith $"NativeBlockAlignment.ofBytes: %d{bytes} is not a positive power of two"
+        if bytes < minimum.Bytes || not (System.Numerics.BitOperations.IsPow2 bytes) then
+            failwith $"NativeBlockAlignment.ofBytes: %d{bytes} is not a power of two of at least %d{minimum.Bytes}"
 
         NativeBlockAlignment.NativeBlockAlignment bytes
 
