@@ -106,6 +106,7 @@ module TestStackEffect =
         | Pushed.Argument _
         | Pushed.Local _
         | Pushed.Operand _
+        | Pushed.Negated _
         | Pushed.Arithmetic
         | Pushed.Bitwise
         | Pushed.FromToken TokenValue.Field
@@ -204,7 +205,8 @@ module TestStackEffect =
                     // From an array and an index.
                     | Pushed.Element -> row.Pop |> shouldEqual "PopRef+PopI"
                     | Pushed.Arithmetic -> row.Pop |> shouldEqual "Pop1+Pop1"
-                    | Pushed.Operand fromTop -> fromTop |> shouldBeSmallerThan effect.Pops
+                    | Pushed.Operand fromTop
+                    | Pushed.Negated fromTop -> fromTop |> shouldBeSmallerThan effect.Pops
                     | Pushed.Argument _ -> row.Name.StartsWith "ldarg" |> shouldEqual true
                     | Pushed.Local _ -> row.Name.StartsWith "ldloc" |> shouldEqual true
                     | Pushed.Null -> row.Name |> shouldEqual "ldnull"

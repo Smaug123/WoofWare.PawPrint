@@ -83,6 +83,14 @@ module internal StackInteger =
         | StackInteger.Int64 integer
         | StackInteger.NativeInt integer -> IntegerValue.holdsOfInt64 value integer
 
+    /// What `neg` pushes of `value`: its negation, at the width the stack holds it, so that the
+    /// least value negates to itself.
+    let negated (value : StackInteger) : StackInteger =
+        match value with
+        | StackInteger.Int32 value -> StackInteger.Int32 (-value)
+        | StackInteger.Int64 value -> StackInteger.Int64 (-value)
+        | StackInteger.NativeInt value -> StackInteger.NativeInt (-value)
+
     /// What `conversion` pushes of `value` (ECMA-335 III.3.27): `value` truncated to the width
     /// of the type it converts to, then extended to the stack type, by its sign for a signed type
     /// and with zeros for an unsigned one. A conversion to a type no narrower than `value` extends
@@ -532,7 +540,47 @@ module internal StackValues =
 
         match a, b with
         | StackValue.Objects a, StackValue.Objects b -> bounded (Set.union a b) StackValue.Objects
-        | StackValue.Integers a, StackValue.Integers b -> bounded (Set.union a b) StackValue.Integers
+        | StackValue.Integers a, StackValue.Integers b ->
+            let joined = Set.union a b
+
+            let holds (width : StackInteger -> bool) : bool =
+                joined
+                |> Set.exists (fun integer ->
+                    match integer with
+                    | SpelledInteger.Constant value -> width value
+                    | SpelledInteger.Argument _
+                    | SpelledInteger.Loaded _ -> false
+                )
+
+            let anyInt32 =
+                holds (
+                    function
+                    | StackInteger.Int32 _ -> true
+                    | _ -> false
+                )
+
+            let anyInt64 =
+                holds (
+                    function
+                    | StackInteger.Int64 _ -> true
+                    | _ -> false
+                )
+
+            let anyNative =
+                holds (
+                    function
+                    | StackInteger.NativeInt _ -> true
+                    | _ -> false
+                )
+
+            // Constants of two widths: no stack type merges an int64 with another (ECMA-335
+            // III.1.8.1.3), and CoreCLR merges an int32 with a native int as a native int only
+            // where it imports both paths, which a branch it folds may not, so the slot's width,
+            // and what a conversion makes of it, is the JIT's to decide.
+            if List.length (List.filter id [ anyInt32 ; anyInt64 ; anyNative ]) > 1 then
+                Ok StackValue.Unknown
+            else
+                bounded joined StackValue.Integers
         | StackValue.Addresses a, StackValue.Addresses b -> bounded (Set.union a b) StackValue.Addresses
         | StackValue.Objects _, (StackValue.Integers _ | StackValue.Addresses _)
         | StackValue.Integers _, (StackValue.Objects _ | StackValue.Addresses _)
@@ -547,31 +595,32 @@ module internal StackValues =
         let constant (value : StackInteger) =
             fixedValue (StackValue.Integers (Set.singleton (SpelledInteger.Constant value)))
 
-        // What `conversion` pushes of the integer it pops: each constant converted, and anything
-        // where the integer may be one the body does not say.
-        let convert (conversion : IntegerConversion) =
-            Ok (fun popped ->
-                match List.head popped with
-                | StackValue.Integers integers ->
-                    let converted =
-                        integers
-                        |> Seq.map (fun integer ->
-                            match integer with
-                            | SpelledInteger.Constant value ->
-                                Some (SpelledInteger.Constant (StackInteger.converted conversion value))
-                            | SpelledInteger.Argument _
-                            | SpelledInteger.Loaded _ -> None
-                        )
-                        |> List.ofSeq
+        // `operation` of each constant `value` may be, and anything where it may be an integer the
+        // body does not say.
+        let ofConstants (operation : StackInteger -> StackInteger) (value : StackValue) : StackValue =
+            match value with
+            | StackValue.Integers integers ->
+                let operated =
+                    integers
+                    |> Seq.map (fun integer ->
+                        match integer with
+                        | SpelledInteger.Constant value -> Some (SpelledInteger.Constant (operation value))
+                        | SpelledInteger.Argument _
+                        | SpelledInteger.Loaded _ -> None
+                    )
+                    |> List.ofSeq
 
-                    if List.forall Option.isSome converted then
-                        StackValue.Integers (converted |> List.choose id |> Set.ofList)
-                    else
-                        StackValue.Unknown
-                | StackValue.Objects _
-                | StackValue.Addresses _
-                | StackValue.Unknown -> StackValue.Unknown
-            )
+                if List.forall Option.isSome operated then
+                    StackValue.Integers (operated |> List.choose id |> Set.ofList)
+                else
+                    StackValue.Unknown
+            | StackValue.Objects _
+            | StackValue.Addresses _
+            | StackValue.Unknown -> StackValue.Unknown
+
+        // What `conversion` pushes of the integer it pops.
+        let convert (conversion : IntegerConversion) =
+            Ok (fun popped -> ofConstants (StackInteger.converted conversion) (List.head popped))
 
         // What `ldind` of the integer type `loaded` at `offset` pushes from the address it pops.
         let load (offset : int) (loaded : PrimitiveType) =
@@ -590,6 +639,7 @@ module internal StackValues =
             | Pushed.Argument index -> fixedValue (List.item index spellings.Arguments)
             | Pushed.Local index -> fixedValue (List.item index spellings.Locals)
             | Pushed.Operand fromTop -> Ok (fun popped -> List.item fromTop popped)
+            | Pushed.Negated fromTop -> Ok (fun popped -> ofConstants StackInteger.negated (List.item fromTop popped))
             | Pushed.Null -> fixedValue (StackValue.Objects (Set.singleton SpelledObject.Null))
             | Pushed.String -> fixedValue spellings.String
             | Pushed.FromToken TokenValue.CallResult
