@@ -621,27 +621,16 @@ module TypeLoad =
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
 
-    /// The type definitions that loads have brought to each of CoreCLR's load levels without
-    /// meeting a miss (`loadMissFrom`). A load from these passes over them, as CoreCLR passes over
-    /// a type already loaded: none can lead it to a miss, since a definition's load reaches the
-    /// same references wherever it is spelled. That holds only over the assemblies those loads
+    /// The type definitions that loads have brought in full without meeting a miss
+    /// (`loadMissFrom`). A load from these passes over them at every level, as CoreCLR passes over a
+    /// type already loaded: none can lead it to a miss, since a definition's load reaches the same
+    /// references wherever it is spelled. That holds only over the assemblies those loads
     /// were over, or more of them, each reference bound as it was.
     [<NoEquality ; NoComparison>]
-    type LoadedDefinitions =
-        private
-            {
-                Approximate : Set<ResolvedTypeIdentity>
-                Exact : Set<ResolvedTypeIdentity>
-                Full : Set<ResolvedTypeIdentity>
-            }
+    type LoadedDefinitions = private | LoadedDefinitions of Set<ResolvedTypeIdentity>
 
     /// No definitions loaded: a load from these walks everything it reaches.
-    let nothingLoaded : LoadedDefinitions =
-        {
-            Approximate = Set.empty
-            Exact = Set.empty
-            Full = Set.empty
-        }
+    let nothingLoaded : LoadedDefinitions = LoadedDefinitions Set.empty
 
     /// <summary>
     /// The first type reference that names no type, among those CoreCLR's full load of
@@ -667,25 +656,20 @@ module TypeLoad =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * LoadedDefinitions * LoadMiss option
         =
+        let (LoadedDefinitions full) = loaded
+
         let walk =
             {
                 Assemblies = assemblies
-                Approximate = loaded.Approximate
-                Exact = loaded.Exact
-                Full = loaded.Full
+                Approximate = full
+                Exact = full
+                Full = full
             }
 
         match
             loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes LoadLevel.Full spellingAssembly spelling walk
         with
-        | walk, None ->
-            walk.Assemblies,
-            {
-                Approximate = walk.Approximate
-                Exact = walk.Exact
-                Full = walk.Full
-            },
-            None
+        | walk, None -> walk.Assemblies, LoadedDefinitions walk.Full, None
         // A walk stops at its first miss, so a definition it marked may have parts it never reached.
         | walk, Some miss -> walk.Assemblies, loaded, Some miss
 

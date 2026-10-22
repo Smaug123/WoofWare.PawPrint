@@ -412,6 +412,9 @@ type EscapeAnalysisState =
             /// The first type reference CoreCLR's full load of each type definition reaches that
             /// names nothing (`TypeLoad.loadMiss`), as far as it has been asked.
             TypeLoads : Map<ResolvedTypeIdentity, TypeLoad.LoadMiss option>
+            /// The type definitions loads so far have brought in full without meeting a miss, which a
+            /// load from them passes over.
+            LoadedDefinitions : TypeLoad.LoadedDefinitions
             Summaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
@@ -577,6 +580,7 @@ module EscapeAnalysis =
             InstanceCalls = Map.empty
             DispatchBinds = Map.empty
             TypeLoads = Map.empty
+            LoadedDefinitions = TypeLoad.nothingLoaded
             Summaries = Map.empty
             Bases = Map.empty
             Returns = Map.empty
@@ -1617,16 +1621,20 @@ module EscapeAnalysis =
             | TypeLoad.LoadMiss.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
 
         let load (state : EscapeAnalysisState) (spellingAssembly : DumpedAssembly) (spelling : TypeDefn) =
-            let assemblies, miss =
-                TypeLoad.loadMiss
+            let assemblies, loaded, miss =
+                TypeLoad.loadMissFrom
                     state.LoggerFactory
                     state.RuntimeDirs
                     state.BaseTypes
                     spellingAssembly
                     spelling
+                    state.LoadedDefinitions
                     state.TypeSystem._LoadedAssemblies
 
-            withAssemblies state assemblies, miss
+            { withAssemblies state assemblies with
+                LoadedDefinitions = loaded
+            },
+            miss
 
         // A type definition's load is memoised; it is the same wherever a token names it.
         let ofDefinition (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
