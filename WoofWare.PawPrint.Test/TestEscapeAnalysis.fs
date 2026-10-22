@@ -10690,6 +10690,8 @@ public static class Cases
                     "FunctionPointerOnValueType"
                     "FunctionPointerResolved"
                     "StaticFunctionPointer"
+                    "FunctionPointerEnabled"
+                    "FunctionPointerDisabled"
                 ]
 
         let failures =
@@ -10706,6 +10708,8 @@ public static class Cases
                     | "StaticPointerResolved" -> not raises && not ldftnOpaque
                     // No delegate constructor, whose native body is unknown, hides the `ldftn`.
                     | "FunctionPointerResolved" -> not raises && sources.IsEmpty
+                    // The `ldftn` is in a branch the `false` its caller passes rules out.
+                    | "FunctionPointerDisabled" -> not raises && sources.IsEmpty
                     // Every instantiation at once: the type variable does not decide what the
                     // `ldftn` resolves to.
                     | "StaticPointer"

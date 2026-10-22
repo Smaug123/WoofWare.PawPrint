@@ -4941,14 +4941,27 @@ module EscapeAnalysis =
                         let executed = ControlFlow.mayExecute branching.Body constants
                         let at (offset : int) : bool = executed.Contains offset
 
+                        // Every field is written out, so that one added to `LocalFacts` must be
+                        // decided on here.
                         state,
-                        { facts with
+                        {
                             Raises = facts.Raises |> List.filter (fst >> at)
                             Opaque = facts.Opaque |> List.filter (fun (offset, _, _) -> at offset)
                             Assumed = facts.Assumed |> List.filter (fst >> at)
                             Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
+                            // These two are read only to drop `Calls` at their offsets, which are
+                            // filtered.
+                            LookedUp = facts.LookedUp
+                            Casts = facts.Casts
+                            ConstrainedPointers =
+                                facts.ConstrainedPointers |> List.filter (fun (offset, _, _) -> at offset)
                             Rethrows = facts.Rethrows |> List.filter (fst >> at)
+                            Regions = facts.Regions
+                            OutsideBody = facts.OutsideBody
+                            Spellings = facts.Spellings
                             Returns = returnedOver branching.Returns executed
+                            Consults = facts.Consults
+                            Branching = facts.Branching
                         }
 
             // The JIT embeds the `RuntimeType` of a type that the instance's code does not look up.

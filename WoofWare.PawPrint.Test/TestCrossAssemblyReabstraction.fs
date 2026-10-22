@@ -152,6 +152,9 @@ public static class Cases
 
     public static unsafe delegate*<int> StaticFunctionPointer<T>() where T : ISFoo => &T.SFrob;
 
+    public static unsafe delegate*<int> StaticFunctionPointerIf<T>(bool enabled) where T : ISFoo =>
+        enabled ? &T.SFrob : null;
+
     // Uncaught, for the escape analysis to be asked about.
     public static int ConstrainedOnValueType() => Constrained(new S());
 
@@ -170,6 +173,10 @@ public static class Cases
     public static unsafe delegate*<int> FunctionPointerOnValueType() => StaticFunctionPointer<SS>();
 
     public static unsafe delegate*<int> FunctionPointerResolved() => StaticFunctionPointer<SPlain>();
+
+    public static unsafe delegate*<int> FunctionPointerEnabled() => StaticFunctionPointerIf<SS>(true);
+
+    public static unsafe delegate*<int> FunctionPointerDisabled() => StaticFunctionPointerIf<SS>(false);
 
     public static int InvokeStaticPointerOnValueType() => StaticPointer<SS>()();
 
