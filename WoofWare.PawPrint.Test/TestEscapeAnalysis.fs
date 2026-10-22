@@ -10631,15 +10631,18 @@ public static class Cases
         )
 
     /// What the escape analysis says of each `ReabstractionEntry.Cases` or `AmbiguousEntry.Cases`
-    /// method named, which makes a delegate over `ISFoo.SFrob` with a `constrained. ldftn`: whether
-    /// it lets `exception` escape, and the places that make it unknown.
+    /// method named, which takes a pointer to `ISFoo.SFrob` with a `constrained. ldftn`: what
+    /// escapes it, and the places that make it unknown. First, what making `failure`, the
+    /// dispatch failure's exception, raises: the runtime runs its parameterless constructor at the
+    /// failure.
     let private staticPointerAnswers
         (assemblies : CrossAssemblySpec list)
         (libraryName : string)
         (entryName : string)
         (typeName : string)
+        (failure : string)
         (methodNames : string list)
-        : (string * Set<string> * Set<string>) list
+        : Set<string> * (string * Set<string> * Set<string>) list
         =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let compiled = CrossAssemblyHarness.compileAssemblies assemblies
@@ -10650,16 +10653,17 @@ public static class Cases
         let library = read libraryName
         let entry = read entryName
 
-        ((analysisOver [ library ; entry ] id, []), methodNames)
-        ||> List.fold (fun (analysis, answers) methodName ->
-            let key = methodNamed entry typeName methodName
-            let analysis, escapes = EscapeAnalysis.escapes analysis key
-            let analysis, sources = EscapeAnalysis.unknownSources analysis key
-            let sources = sources |> Seq.map (renderSite analysis) |> Set.ofSeq
-            analysis, (methodName, render analysis escapes, sources) :: answers
-        )
-        |> snd
-        |> List.rev
+        let analysis, answers =
+            ((analysisOver [ library ; entry ] id, []), methodNames)
+            ||> List.fold (fun (analysis, answers) methodName ->
+                let key = methodNamed entry typeName methodName
+                let analysis, escapes = EscapeAnalysis.escapes analysis key
+                let analysis, sources = EscapeAnalysis.unknownSources analysis key
+                let sources = sources |> Seq.map (renderSite analysis) |> Set.ofSeq
+                analysis, (methodName, render analysis escapes, sources) :: answers
+            )
+
+        snd (making analysis failure), List.rev answers
 
     /// `TestCrossAssemblyReabstraction` pins that the real runtime throws `EntryPointNotFoundException`
     /// at the `ldftn` where CoreCLR compiles the frame for its exact instantiation (`SS`), and from
@@ -10667,7 +10671,7 @@ public static class Cases
     /// exact code. Either way, the `ldftn` may raise it.
     [<Test>]
     let ``a constrained ldftn landing on a reabstraction may raise EntryPointNotFoundException`` () : unit =
-        let answers =
+        let made, answers =
             staticPointerAnswers
                 [
                     TestCrossAssemblyReabstraction.libraryBefore
@@ -10677,6 +10681,7 @@ public static class Cases
                 TestCrossAssemblyReabstraction.libraryName
                 TestCrossAssemblyReabstraction.entryName
                 "ReabstractionEntry.Cases"
+                "System.EntryPointNotFoundException"
                 [
                     "StaticPointerOnValueType"
                     "StaticPointerOnClass"
@@ -10705,12 +10710,14 @@ public static class Cases
                     // `ldftn` resolves to.
                     | "StaticPointer"
                     | "StaticFunctionPointer" -> ldftnOpaque
-                    | _ -> raises
+                    // Making the exception runs its parameterless constructor.
+                    | _ -> raises && Set.isSubset made shown
 
                 if ok then
                     None
                 else
-                    Some $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}"
+                    Some
+                        $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}; making the exception raises %A{Set.toList made}"
             )
 
         if not failures.IsEmpty then
@@ -10723,7 +10730,7 @@ public static class Cases
     /// transparent, revisit how `callsOf` attributes `LocalFacts.ConstrainedPointers`.
     [<Test>]
     let ``calling a pointer a constrained ldftn loads stays opaque`` () : unit =
-        let answers =
+        let _, answers =
             staticPointerAnswers
                 [
                     TestCrossAssemblyReabstraction.libraryBefore
@@ -10733,6 +10740,7 @@ public static class Cases
                 TestCrossAssemblyReabstraction.libraryName
                 TestCrossAssemblyReabstraction.entryName
                 "ReabstractionEntry.Cases"
+                "System.EntryPointNotFoundException"
                 [ "InvokeStaticPointerOnValueType" ; "CallFunctionPointerOnValueType" ]
 
         let expected =
@@ -10763,7 +10771,7 @@ public static class Cases
         ()
         : unit
         =
-        let answers =
+        let made, answers =
             staticPointerAnswers
                 [
                     TestCrossAssemblyAmbiguousDefault.libraryBefore
@@ -10773,15 +10781,21 @@ public static class Cases
                 TestCrossAssemblyAmbiguousDefault.libraryName
                 TestCrossAssemblyAmbiguousDefault.entryName
                 "AmbiguousEntry.Cases"
+                "System.Runtime.AmbiguousImplementationException"
                 [ "StaticPointerOnValueType" ; "StaticPointerOnClass" ]
 
         let failures =
             answers
             |> List.choose (fun (methodName, shown, sources) ->
-                if shown.Contains "=System.Runtime.AmbiguousImplementationException" then
+                // Making the exception runs its parameterless constructor.
+                if
+                    shown.Contains "=System.Runtime.AmbiguousImplementationException"
+                    && Set.isSubset made shown
+                then
                     None
                 else
-                    Some $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}"
+                    Some
+                        $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}; making the exception raises %A{Set.toList made}"
             )
 
         if not failures.IsEmpty then
