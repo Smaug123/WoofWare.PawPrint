@@ -28,7 +28,8 @@ What lives here:
 * `LoadedTypeInfo` — whether a type is a value type, an enum or byref-like, and how a signature
   encodes it, decided by walking its base chain across the loaded assemblies.
 * `SignatureComparison` — whether two method signatures from different assemblies denote the same
-  types.
+  types, and whether two type references name one definition (`compareTypeTokens`), which
+  `WoofWare.PawPrint.TypeSystem`'s signature comparison asks too.
 * `FieldReferenceResolution` — which field a `MemberRef` names: the parent's own fields only, never
   a literal one, matched by name and exact type, as CoreCLR's `FindField` binds it, or nothing (a
   `MissingFieldException`). `MemberReferenceParent` reads the parent token, which
