@@ -4,7 +4,8 @@ open System.Reflection.Metadata
 open WoofWare.PawPrint
 
 /// CoreLib's `Object.GetType`, which the escape analysis always takes to raise only
-/// `ObjectGetType.raises` in place of its body.
+/// `ObjectGetType.raises`, and to return an object of exactly `System.RuntimeType`, in place of its
+/// body.
 ///
 /// Its body reads the object's method table and returns the type's `RuntimeType`, made on first
 /// use by the QCall `RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow`. That QCall finishes loading a

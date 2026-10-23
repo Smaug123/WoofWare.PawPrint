@@ -341,6 +341,9 @@ type internal Runs =
     /// CoreLib's resource lookup, whose contract (`ResourceLookup.raises`) the analysis takes in
     /// place of its body.
     | ResourceLookup
+    /// CoreLib's `Object.GetType`, whose contract (`ObjectGetType`) the analysis takes in place of
+    /// its body.
+    | ObjectGetType
     /// The method this assumption summarises, whose contract the analysis takes in place of its
     /// body.
     | Assumed of Assumption
@@ -582,6 +585,10 @@ type EscapeAnalysisState =
 /// <c>SR</c>'s initializer, and the stack trace that reads, are unknown unless the caller allows
 /// <c>Assumption.CoreLibTypeInitializers</c> and <c>Assumption.StackTracePreserved</c>; allowed no
 /// assumption, constructing almost any CoreLib exception is unknown still.
+///
+/// CoreLib's <c>Object.GetType</c> is taken to raise only what allocating its result raises
+/// (<c>ObjectGetType</c>): its slow path, a QCall, finishes loading a type that is not fully
+/// loaded, but an object's type always is.
 ///
 /// A caller may allow further assumptions (<c>Assumption</c>), each of which replaces a method's
 /// body with a contract, or code with what the JIT compiles it to; an answer lists those it relied
@@ -2986,6 +2993,7 @@ module EscapeAnalysis =
         match Assumption.summarises assembly key.Method.Get with
         | Some assumption when assumptions.Contains assumption -> Runs.Assumed assumption
         | _ when ResourceLookup.isLookup assembly key.Method.Get -> Runs.ResourceLookup
+        | _ when ObjectGetType.isGetType assembly key.Method.Get -> Runs.ObjectGetType
         | _ ->
 
         match substituted, intrinsic with
@@ -3077,6 +3085,27 @@ module EscapeAnalysis =
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.
             state, contracted (exactly ResourceLookup.raises) [] [ preserveStackTrace state, [] ]
+        | Runs.ObjectGetType ->
+            let constructors =
+                ObjectGetType.constructs state.Runtime
+                |> List.map (fun name -> parameterlessConstructor state name, [])
+
+            // It returns the object's `RuntimeType`, never null.
+            let runtimeType = corelibType state "System" "RuntimeType"
+            let state, spelling, _ = spelledDefinition state runtimeType
+
+            let returned =
+                {
+                    Type = spelling
+                    SpelledIn = runtimeType.AssemblyFullName
+                    InBodyContext = true
+                }
+
+            state,
+            { contracted (exactly (ObjectGetType.raises state.Runtime)) [] constructors with
+                Spellings = [| returned |]
+                Returns = StackValue.Objects (Set.singleton (SpelledObject.Exactly 0))
+            }
         | Runs.Assumed assumption ->
             state,
             contracted
