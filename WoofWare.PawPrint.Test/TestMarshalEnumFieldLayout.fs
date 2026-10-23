@@ -327,7 +327,7 @@ public struct NestCharUnicode { public E8 T; public char K; }
                 let vt, state = pawPrintZero shape
 
                 let blittable =
-                    StructMarshalStub.isBlittableStruct
+                    Blittability.isBlittableStruct
                         state.TypeSystem.ConcreteTypes
                         state.TypeSystem._LoadedAssemblies
                         bct

@@ -613,7 +613,7 @@ module TestMarshalLayout =
                 ]
             |> CliType.ValueType
 
-        StructMarshalStub.isBlittableStruct allCt loaded bct inner |> shouldEqual false
+        Blittability.isBlittableStruct allCt loaded bct inner |> shouldEqual false
 
         let outer =
             ofFields

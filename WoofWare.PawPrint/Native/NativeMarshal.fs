@@ -397,7 +397,7 @@ module NativeMarshal =
             // memmoved *as a field*, though a standalone Decimal is its own native layout, and a
             // standalone DateTime is filtered earlier by the AutoLayout gate.
             let isBlittableStruct (t : CliType) : bool =
-                StructMarshalStub.isBlittableStruct
+                Blittability.isBlittableStruct
                     state.TypeSystem.ConcreteTypes
                     state.TypeSystem._LoadedAssemblies
                     ctx.BaseClassTypes
