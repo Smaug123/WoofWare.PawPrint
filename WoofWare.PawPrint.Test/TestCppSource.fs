@@ -192,7 +192,7 @@ LOCAL_LABEL(Fail):
             ]
 
     [<Test>]
-    let ``a write barrier is a routine, a marked end ends one, and a symbol in a memory operand is not called``
+    let ``a write barrier is a routine, a marked end ends one, and neither a symbol in a memory operand nor a routine's own label is called``
         ()
         : unit
         =
@@ -204,7 +204,10 @@ WRITE_BARRIER_END Barrier
 
 LEAF_ENTRY Marked, _TEXT
         mov     rax, [rip + C_FUNC(Data)]
+        jne     Done
+        jmp     Done
         b       C_FUNC(Target)
+    Done:
 LEAF_END_MARKED Marked, _TEXT
 
 LEAF_ENTRY After, _TEXT

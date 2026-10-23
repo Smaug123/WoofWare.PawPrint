@@ -456,10 +456,17 @@ module CppSource =
         List.ofSeq found
 
     let private routineStart : Regex =
-        Regex (@"^\s*(?:LEAF|NESTED)_ENTRY\s+(\w+)", RegexOptions.Multiline)
+        Regex (@"^\s*(?:LEAF|NESTED|WRITE_BARRIER)_ENTRY\s+(\w+)", RegexOptions.Multiline)
 
     let private macroStart : Regex =
         Regex (@"^\s*\.macro\s+(\w+)", RegexOptions.Multiline)
+
+    /// What `assemblyRoutines` records a routine as calling where it branches through a register or
+    /// memory, whose target its text does not name.
+    let indirectBranch : string = "<indirect>"
+
+    /// A memory operand, which names the data a routine reads or writes rather than code it calls.
+    let private memoryOperand : Regex = Regex @"\[[^\]]*\]"
 
     /// A routine `C_FUNC` names, or one a branch names directly.
     let private assemblyCall : Regex =
@@ -469,13 +476,16 @@ module CppSource =
     let private indirectCall : Regex =
         Regex @"(?:^|\s)(?:blr|br)\s|\b(?:call|jmp)\s+(?:\*|\[|qword\b|r[a-z0-9]+\b|e[a-z]{2}\b)"
 
+    /// A label the line defines.
+    let private labelDefinition : Regex = Regex @"^\s*([A-Za-z_]\w*)\s*:"
+
     /// A macro the line invokes: the word that starts it, if upper-case or spelled with an
     /// underscore, which no instruction of x64 or arm64 is, and not a label.
     let private macroUse : Regex = Regex @"^\s*([A-Z][A-Z0-9_]+|[a-z]\w*_\w*)\b(?!\s*:)"
 
     /// The routines and macros a GNU assembler file (`.S`) defines, after `strip`. A routine
-    /// calls each routine it branches to by name, and each macro it invokes; a branch through a
-    /// register is a call of `<indirect>`.
+    /// calls each routine it branches to by name, other than its own labels, and each macro it
+    /// invokes; a branch through a register or memory is a call of `indirectBranch`.
     let assemblyRoutines (text : string) : SourceRoutine list =
         let lines = (strip text).Split '\n'
 
@@ -484,9 +494,9 @@ module CppSource =
                 [
                     for line in body do
                         if indirectCall.IsMatch line then
-                            yield "<indirect>"
+                            yield indirectBranch
 
-                        for m in assemblyCall.Matches line do
+                        for m in assemblyCall.Matches (memoryOperand.Replace (line, "")) do
                             let target =
                                 if m.Groups.[1].Success then
                                     m.Groups.[1].Value
@@ -502,9 +512,22 @@ module CppSource =
                             yield used.Groups.[1].Value
                 ]
 
+            // A branch to a label of its own is not a call.
+            let labels =
+                body
+                |> List.choose (fun line ->
+                    let defined = labelDefinition.Match line
+
+                    if defined.Success then
+                        Some defined.Groups.[1].Value
+                    else
+                        None
+                )
+                |> Set.ofList
+
             {
                 Name = name
-                Calls = Set.ofList called |> Set.remove name
+                Calls = Set.difference (Set.ofList called) labels |> Set.remove name
                 Text = String.concat "\n" body
             }
 
@@ -515,7 +538,8 @@ module CppSource =
                 if started.Success then
                     let name = started.Groups.[1].Value
 
-                    let finished = Regex $@"^\s*(?:LEAF|NESTED)_END\s+%s{name}\b"
+                    let finished =
+                        Regex $@"^\s*(?:LEAF|NESTED|WRITE_BARRIER)_END(?:_MARKED)?\s+%s{name}\b"
 
                     let body =
                         lines
