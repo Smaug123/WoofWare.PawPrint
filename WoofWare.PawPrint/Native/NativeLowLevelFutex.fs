@@ -21,6 +21,7 @@ module NativeLowLevelFutex =
     /// The futex word `int* address` names: the address the kernel keys it by, and how the
     /// kernel finds the memory there.
     let private futexWord
+        (ctx : NativeCallContext)
         (operation : string)
         (address : CliType)
         (state : IlMachineState)
@@ -38,11 +39,19 @@ module NativeLowLevelFutex =
                     failwith
                         $"%s{operation}: %O{pointer} names storage but has no pointer to it (this is an interpreter bug)"
 
-            match ManagedPointerSource.tryNativeMemoryByte source with
-            | None ->
-                failwith
-                    $"%s{operation}: the futex word %O{source} is not in native-heap memory, which is the only memory PawPrint gives an address, and the kernel keys a futex by its word's address. CoreLib keeps every futex word in a block from NativeMemory.AlignedAlloc."
-            | Some (block, offset) ->
+            let block, offset =
+                match StorageLocation.resolve ctx.BaseClassTypes state source with
+                | StorageLocation.LocationResolution.Located (_, Some (ByteStorageIdentity.NativeMemory block, offset)) ->
+                    block, offset
+                | StorageLocation.LocationResolution.Located (_, Some (storage, _)) ->
+                    failwith
+                        $"%s{operation}: the futex word %O{source} is in %O{storage}, not in native-heap memory, which is the only memory PawPrint gives an address, and the kernel keys a futex by its word's address. CoreLib keeps every futex word in a block from NativeMemory.AlignedAlloc."
+                | StorageLocation.LocationResolution.Located (_, None) ->
+                    failwith
+                        $"%s{operation}: the futex word %O{source} has no flat byte coordinate in its storage, so PawPrint cannot say what address it is at."
+                | StorageLocation.LocationResolution.Unrelatable ->
+                    failwith
+                        $"%s{operation}: the futex word %O{source} names storage but resolves to none (this is an interpreter bug)"
 
             match NativeMemoryPool.tryAddressOf block offset (IlMachineState.getNativeMemoryPool state) with
             | Some address -> address, UserBuffer.Mapped, Some source
@@ -140,7 +149,9 @@ module NativeLowLevelFutex =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered the call while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
-                let address, word, source = futexWord operation ctx.Instruction.Arguments.[0] state
+                let address, word, source =
+                    futexWord ctx operation ctx.Instruction.Arguments.[0] state
+
                 let comparand = NativeCall.int32Argument operation ctx.Instruction.Arguments.[1]
 
                 match
@@ -245,7 +256,7 @@ module NativeLowLevelFutex =
             // `syscall(SYS_futex, address, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0)`, its answer
             // ignored. A wake reads no memory.
             let operation = "SystemNative_LowLevelFutex_WakeByAddressSingle"
-            let address, word, _ = futexWord operation instruction.Arguments.[0] state
+            let address, word, _ = futexWord ctx operation instruction.Arguments.[0] state
 
             match
                 futex

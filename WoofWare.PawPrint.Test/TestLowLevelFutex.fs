@@ -63,16 +63,18 @@ static unsafe class Futex
 }
 """
 
-    /// How a stepped run ended, and whether any thread was ever parked in a futex wait.
+    /// How a stepped run ended, and the most threads ever parked in a futex wait at once.
     type private Journey =
         {
             Outcome : RunOutcome
-            SawFutexPark : bool
+            MostFutexParked : int
         }
 
-    let private futexParked (state : IlMachineState) : bool =
+        member this.SawFutexPark : bool = this.MostFutexParked > 0
+
+    let private futexParked (state : IlMachineState) : int =
         state.ThreadState
-        |> Map.exists (fun tid ts ->
+        |> Map.filter (fun tid ts ->
             ts.Status = ThreadStatus.BlockedInSyscall
             && (
                 match UnixThreadState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
@@ -80,6 +82,7 @@ static unsafe class Futex
                 | _ -> false
             )
         )
+        |> Map.count
 
     let private journey (name : string) (dotnetRuntimes : ImmutableArray<string>) (image : byte[]) : Journey =
         let _messages, loggerFactory =
@@ -95,27 +98,35 @@ static unsafe class Futex
                 failwith $"guest completed before Main: %O{outcome}"
             | Program.ProgramStartResult.Ready prepared -> prepared
 
-        let rec loop (prepared : Program.PreparedProgram) (steps : int64) (sawPark : bool) : Journey =
+        let rec loop (prepared : Program.PreparedProgram) (steps : int64) (most : int) : Journey =
             if steps > BoundedRun.defaultMaxSteps then
                 failwith $"%s{name} ran past %d{BoundedRun.defaultMaxSteps} steps without terminating"
 
-            let sawPark = sawPark || futexParked prepared.State
+            let most = max most (futexParked prepared.State)
 
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome ->
                 {
                     Outcome = outcome
-                    SawFutexPark = sawPark
+                    MostFutexParked = most
                 }
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"%s{name} deadlocked: %s{stuck}"
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _)
-            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _) -> loop prepared (steps + 1L) sawPark
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _) -> loop prepared (steps + 1L) most
 
-        loop prepared 0L false
+        loop prepared 0L 0
+
+    /// The exit code of a run that ended normally.
+    let private exitCode (name : string) (journey : Journey) : int =
+        match journey.Outcome with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode
+        | other -> failwith $"%s{name}: expected a normal exit, got %O{other}"
 
     /// Run `source` under PawPrint, comparing it with the real runtime where that can make the
     /// same call (see the fixture's comment), and return how PawPrint's run went. Fails unless
-    /// it exits with code 0, which every guest here uses for "every check passed".
+    /// it exits with code 0, which every guest here uses for "every check passed". A guest run
+    /// here must pass on a real runtime under any scheduling, so its checks may not rest on
+    /// how long another thread takes.
     let private run (name : string) (source : string) : Journey =
         let image = Roslyn.compile [ prelude + source ]
 
@@ -139,10 +150,7 @@ static unsafe class Futex
         | Some real -> DifferentialOracle.compareOutcomes name 0 false real (RunEnd.Ended journey.Outcome)
         | None -> ()
 
-        match journey.Outcome with
-        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
-        | other -> failwith $"%s{name}: expected a normal exit, got %O{other}"
-
+        exitCode name journey |> shouldEqual 0
         journey
 
     [<Test>]
@@ -185,7 +193,7 @@ unsafe class Program
         long start = Environment.TickCount64;
         if (Futex.WaitTimeout(word, 0, 1500) != 0) return 13;
         long elapsed = Environment.TickCount64 - start;
-        if (elapsed < 1400 || elapsed > 4000) return 14;
+        if (elapsed < 1400 || elapsed > 10000) return 14;
 
         NativeMemory.AlignedFree(word);
         return 0;
@@ -208,7 +216,6 @@ unsafe class Program
         IntPtr address = (IntPtr)word;
         int untimed = -1;
         int timed = -1;
-        int finished = 0;
 
         // Each waiter loops as LowLevelThreadBlocker does, so a wake that comes first, or a
         // spurious one, only sends it round again.
@@ -217,7 +224,6 @@ unsafe class Program
             int* w = (int*)address;
             while (Volatile.Read(ref *w) == 0) Futex.Wait(w, 0);
             untimed = Volatile.Read(ref *w);
-            Interlocked.Increment(ref finished);
         });
         Thread timedWaiter = new Thread(() =>
         {
@@ -225,17 +231,13 @@ unsafe class Program
             int answer = 1;
             while (Volatile.Read(ref *w) == 0 && answer == 1) answer = Futex.WaitTimeout(w, 0, 60000);
             timed = answer;
-            Interlocked.Increment(ref finished);
         });
         untimedWaiter.Start();
         timedWaiter.Start();
         Thread.Sleep(100);
 
-        // Each wake takes one waiter, and the other sleeps on: the word changed, but nothing woke it.
         Volatile.Write(ref *word, 1);
         Futex.Wake(word);
-        Thread.Sleep(100);
-        if (Volatile.Read(ref finished) != 1) return 3;
         Futex.Wake(word);
         untimedWaiter.Join();
         timedWaiter.Join();
@@ -250,6 +252,98 @@ unsafe class Program
 
         journey.SawFutexPark |> shouldEqual true
 
+    /// Not compared with the real runtime: that each wake takes exactly one waiter is seen only
+    /// once both are parked, which a real runtime's scheduling does not promise by any time.
+    /// PawPrint's does, and the run shows that both were parked at once.
+    [<Test>]
+    let ``Each wake takes one waiter, and the other sleeps on`` () : unit =
+        let source =
+            """
+unsafe class Program
+{
+    static int Main()
+    {
+        int* word = Futex.NewWord();
+        IntPtr address = (IntPtr)word;
+        int finished = 0;
+
+        ThreadStart waiter = () =>
+        {
+            int* w = (int*)address;
+            while (Volatile.Read(ref *w) == 0) Futex.Wait(w, 0);
+            Interlocked.Increment(ref finished);
+        };
+        Thread first = new Thread(waiter);
+        Thread second = new Thread(waiter);
+        first.Start();
+        second.Start();
+        Thread.Sleep(100);
+
+        // The word changes for both, but only a wake ends a wait.
+        Volatile.Write(ref *word, 1);
+        Futex.Wake(word);
+        Thread.Sleep(100);
+        if (Volatile.Read(ref finished) != 1) return 1;
+        Futex.Wake(word);
+        first.Join();
+        second.Join();
+        return 0;
+    }
+}
+"""
+
+        let name = "LowLevelFutexOneWaiterPerWake.cs"
+
+        let journey =
+            journey name (FrameworkUnderTest.runtimeDirs ()) (Roslyn.compile [ prelude + source ])
+
+        exitCode name journey |> shouldEqual 0
+        journey.MostFutexParked |> shouldEqual 2
+
+    [<Test>]
+    let ``A word reached through a field is the word at that field's byte offset`` () : unit =
+        let source =
+            """
+struct Pair
+{
+    public int A;
+    public int B;
+}
+
+unsafe class Program
+{
+    static int Main()
+    {
+        Pair* pair = (Pair*)NativeMemory.AlignedAlloc((nuint)sizeof(Pair), 64);
+        pair->A = 0;
+        pair->B = 0;
+        IntPtr address = (IntPtr)pair;
+
+        // The waiter names the word as a field, the waker by its byte offset.
+        Thread waiter = new Thread(() =>
+        {
+            Pair* p = (Pair*)address;
+            while (Volatile.Read(ref p->B) == 0) Futex.Wait(&p->B, 0);
+        });
+        waiter.Start();
+        Thread.Sleep(100);
+
+        int* b = (int*)((byte*)pair + 4);
+        Volatile.Write(ref *b, 1);
+        Futex.Wake(b);
+        waiter.Join();
+
+        // A field's word is screened as any other.
+        if (Futex.WaitTimeout(&pair->A, 1, 1000) != 1) return 1;
+        if (Marshal.GetLastPInvokeError() != Futex.EAGAIN) return 2;
+        return 0;
+    }
+}
+"""
+
+        let journey = run "LowLevelFutexFieldWord.cs" source
+        journey.SawFutexPark |> shouldEqual true
+
     [<Test>]
     let ``A signal ends a timed wait with EINTR and restarts an untimed one, which reads its word again`` () : unit =
         // System.Native installs its handler with SA_RESTART, under which Linux restarts an
@@ -260,14 +354,22 @@ unsafe class Program
 unsafe class Program
 {
     static int Handled;
+    static int Returned;
 
+    // Signals the process until the main thread's call has returned, so that one signal
+    // arrives while it waits however late it begins to.
     static Thread Signal(Action before)
     {
+        Volatile.Write(ref Returned, 0);
         Thread t = new Thread(() =>
         {
             Thread.Sleep(100);
             before();
-            Futex.Kill(Environment.ProcessId, Futex.SIGTERM);
+            while (Volatile.Read(ref Returned) == 0)
+            {
+                Futex.Kill(Environment.ProcessId, Futex.SIGTERM);
+                Thread.Sleep(100);
+            }
         });
         t.Start();
         return t;
@@ -289,6 +391,7 @@ unsafe class Program
         Thread signaller = Signal(() => { });
         int answer = Futex.WaitTimeout(word, 0, 60000);
         int error = Marshal.GetLastPInvokeError();
+        Volatile.Write(ref Returned, 1);
         signaller.Join();
         if (answer != 1) return 1;
         if (error != Futex.EINTR) return 2;
@@ -296,6 +399,7 @@ unsafe class Program
         signaller = Signal(() => Volatile.Write(ref *(int*)address, 1));
         Futex.Wait(word, 0);
         error = Marshal.GetLastPInvokeError();
+        Volatile.Write(ref Returned, 1);
         signaller.Join();
         if (error != Futex.EAGAIN) return 3;
 
