@@ -183,8 +183,6 @@ module TestRaces =
 
     [<Test>]
     let ``ReadWriteRace under PCT covers every legal outcome`` () : unit =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // The headline schedule-fuzzing claim: PCT, swept across a fixed
         // seed range, must enumerate *exactly* the legal outcome set —
         // neither missing one (we'd lose a class of real-world bugs) nor
@@ -205,8 +203,6 @@ module TestRaces =
 
     [<Test>]
     let ``a pipe write that meets a caught SIGTERM and a closed reader ends cleanly under every PCT seed`` () : unit =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // Under some schedules the writer finishes its write as the only thread that could make
         // a call, owing the SIGTERM's delivery, and the SIGPIPE the write raises must still be
         // screened.
@@ -224,7 +220,10 @@ module TestRaces =
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.linuxFutex
+        // The CoreLib that runs is the host's, whatever kernel the guest is given.
+        if HostPlatform.flavour () = Some SimulatedUnixFlavour.Linux then
+            Net11Frontier.park
+                "On a Linux host the guest runs .NET 11's Linux CoreLib, whose thread-pool workers block through `futex(2)`, which the Darwin kernel this test gives it does not have, so the kernel refuses the call (measured at PCT seed 6). Un-park when this test runs a Darwin CoreLib under its Darwin kernel."
 
         // Under Darwin the signal beats the connection: the accept is interrupted, the handler
         // runs, and the accept restarts and takes the connection.
@@ -307,8 +306,6 @@ module TestRaces =
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // Under Linux the connection beats the signal: the accept takes the connection, which
         // `accept4` made with FD_CLOEXEC, and the thread takes the signal as the call returns.
         // Every schedule exits cleanly, and some schedule must finish the accept owing that
@@ -379,8 +376,6 @@ module TestRaces =
 
     [<Test>]
     let ``NewobjCctorRace under PCT covers every legal outcome`` () : unit =
-        Net11Frontier.park Net11Frontier.linuxFutex
-
         // Unlike the ReadWriteRace sweep this is a single-element set, so the
         // equality is really "no seed ever sees a partially-initialised type".
         // The sweep is what makes that a claim about the blocking *and* the

@@ -42,6 +42,7 @@ module NativeDispatch =
             NativeLibcSignalMask.tryExecute
             NativeCryptoNative.tryExecute
             NativeLowLevelMonitor.tryExecute
+            NativeLowLevelFutex.tryExecute
             NativeDebugger.tryExecute
             NativeException.tryExecute
             NativeDelegate.tryExecute

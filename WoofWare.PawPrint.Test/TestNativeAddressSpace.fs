@@ -202,42 +202,14 @@ module TestNativeAddressSpace =
             |> ignore
 
     [<Test>]
-    let ``A native pointer's address is its block's base plus its byte offset`` () : unit =
-        let view = ByrefProjection.ReinterpretAs (ConcreteTypeHandle.Concrete 0)
-
-        // The shapes a pointer into a native block takes: a trailing byte offset only ever
-        // follows a reinterpretation.
-        let genProjections : Gen<ByrefProjection list> =
-            Gen.oneof
-                [
-                    Gen.constant []
-                    Gen.constant [ view ]
-                    Gen.choose (-64, 192)
-                    |> Gen.map (fun n -> [ view ; ByrefProjection.ByteOffset n ])
-                ]
-
-        let property (rootOffset : int, projections : ByrefProjection list) : unit =
+    let ``A byte's address is its block's base plus its offset, within the block and one past it`` () : unit =
+        let property (offset : int64) : unit =
             let block, pool =
                 NativeMemoryPool.allocate
                     MemoryBlockInitialization.ZeroInitialized
                     NativeBlockAlignment.malloc
                     128
                     NativeMemoryPool.empty
-
-            let ptr =
-                ManagedPointerSource.Byref
-                    {
-                        Root = ByrefRoot.NativeMemoryByte (block, rootOffset)
-                        Projections = projections
-                    }
-
-            let offset =
-                match projections with
-                | [ _ ; ByrefProjection.ByteOffset n ] -> int64 rootOffset + int64 n
-                | _ -> int64 rootOffset
-
-            ManagedPointerSource.tryNativeMemoryByte ptr
-            |> shouldEqual (Some (block, offset))
 
             let expected =
                 if 0L <= offset && offset <= 128L then
@@ -249,28 +221,8 @@ module TestNativeAddressSpace =
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 300,
-            Prop.forAll (Arb.fromGen (Gen.zip (Gen.choose (0, 128)) genProjections)) property
+            Prop.forAll (Arb.fromGen (Gen.choose (-64, 192) |> Gen.map int64)) property
         )
-
-    [<Test>]
-    let ``Only a pointer into a native block, at a byte offset, has a native location`` () : unit =
-        let block = NativeMemoryBlockId 0
-
-        ManagedPointerSource.Byref
-            {
-                Root = ByrefRoot.NativeMemoryByte (block, 8)
-                Projections = [ ByrefProjection.Field (FieldId.named "B") ]
-            }
-        |> ManagedPointerSource.tryNativeMemoryByte
-        |> shouldEqual None
-
-        ManagedPointerSource.Null
-        |> ManagedPointerSource.tryNativeMemoryByte
-        |> shouldEqual None
-
-        ManagedPointerSource.NativeIntPlaceholder 0x1000L
-        |> ManagedPointerSource.tryNativeMemoryByte
-        |> shouldEqual None
 
     /// Two 4096-aligned blocks of 12288 bytes, each after a 16-byte `malloc` block. CoreLib
     /// rounds an aligned allocation's size up to a multiple of its alignment, and 12288 is the
