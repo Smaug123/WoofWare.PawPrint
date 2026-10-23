@@ -863,7 +863,8 @@ choice, and may change as the method tiers up.
 **PawPrint**: raises each exception when the instruction *executes*, as for an abstract method's
 `call`, and runs a box it folds as an ordinary box, whose object nothing can reach once the
 instructions after it have consumed it. Where the fold turns on whether the JIT inlines the method,
-PawPrint stops with an error that says so rather than pick one, and likewise where it turns on what
+PawPrint stops with an error that says so rather than pick one, unless the method is marked
+`MethodImplOptions.NoInlining`, which leaves only shared code's answer; and likewise where it turns on what
 `compareTypesForCast` answers for the canonical form of a type cast to a generic interface, which
 PawPrint does not build.
 

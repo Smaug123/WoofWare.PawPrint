@@ -451,7 +451,8 @@ module internal UnaryMetadataObjectOps =
     /// method is, rather than refusing to compile the method over it: whether the instructions
     /// after it in its block test or unbox the box at once (`BoxPattern`). `boxedSpelling` is how the
     /// method spells the type, where its operand is a metadata token. Fails where the answer turns
-    /// on whether the JIT inlines the method into its caller, which PawPrint does not model.
+    /// on whether the JIT inlines the method into its caller, which PawPrint does not model, unless
+    /// the method forbids it (`MethodImplOptions.NoInlining`).
     let private byRefLikeBoxFolds
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -515,8 +516,14 @@ module internal UnaryMetadataObjectOps =
                 state, BoxFollower.Unboxed unboxed
             | BoxFollower.CastUnboxed (cast, unboxed) ->
                 let state, cast = resolve state cast
-                let state, unboxed = resolve state unboxed
-                state, BoxFollower.CastUnboxed (cast, unboxed)
+
+                // The JIT resolves the `unbox.any` operand only once it has proved the `isinst`
+                // operand is the boxed type, which it proves of no other type in any view.
+                if fst cast = boxed then
+                    let state, unboxed = resolve state unboxed
+                    state, BoxFollower.CastUnboxed (cast, unboxed)
+                else
+                    state, BoxFollower.Other
 
         let typeArguments = List.ofSeq method.DeclaringTypeGenerics
         let methodArguments = List.ofSeq method.Generics
@@ -542,7 +549,14 @@ module internal UnaryMetadataObjectOps =
                 (view compiled (boxed, boxedSpelling))
                 (BoxFollower.map (view compiled) follower)
 
+        // A dynamic method is never shared, so inlining one would not change the answer.
+        let inlinable =
+            match method with
+            | MethodInfo.Metadata (_, facts) -> not (facts.ImplAttributes.HasFlag MethodImplAttributes.NoInlining)
+            | MethodInfo.Synthesised _ -> true
+
         match folds true, folds false with
+        | Some compiled, _ when not inlinable -> state, compiled
         | Some compiled, Some inlined when compiled = inlined -> state, compiled
         | Some compiled, Some inlined ->
             failwith

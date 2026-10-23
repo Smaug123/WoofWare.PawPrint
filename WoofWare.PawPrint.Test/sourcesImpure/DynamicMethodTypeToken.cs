@@ -413,6 +413,29 @@ public class Program
             return 22;
         }
 
+        // 23. It resolves the `unbox.any` after an `isinst` only where the `isinst` names the
+        // boxed type, so here it refuses the box without looking at `void`, which is no type
+        // `unbox.any` takes (measured).
+        Func<int> byrefLikeBoxCastOther = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Isinst, typeof(object));
+            il.Emit(OpCodes.Unbox_Any, typeof(void));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeBoxCastOther();
+            return 23;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

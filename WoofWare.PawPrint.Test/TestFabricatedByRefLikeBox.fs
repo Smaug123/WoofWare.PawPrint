@@ -350,6 +350,20 @@ module TestFabricatedByRefLikeBox =
                     il.Emit OpCodes.Pop
                 )
 
+        // The JIT never inlines a method that forbids it, so in shared code it refuses this.
+        let boxTUnboxNoInlining =
+            let method =
+                generic
+                    "BoxTUnboxNoInlining"
+                    4
+                    (fun il parameter ->
+                        il.Emit (OpCodes.Unbox_Any, parameter)
+                        il.Emit OpCodes.Pop
+                    )
+
+            method.SetImplementationFlags MethodImplAttributes.NoInlining
+            method
+
         // A default value of `ty`, through a local.
         let pushesDefault (ty : Type) (il : ILGenerator) =
             let local = il.DeclareLocal ty
@@ -388,6 +402,8 @@ module TestFabricatedByRefLikeBox =
         calls "CallsBoxTCastEquatableShared" boxTCastEquatable sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxTUnboxShared" boxTUnbox sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxHeldCastTUnshared" boxHeldCastT typeof<int> ignore
+        calls "CallsBoxTUnboxNoInliningShared" boxTUnboxNoInlining sharedHolder (pushesDefault sharedHolder)
+        calls "CallsBoxTUnboxNoInliningUnshared" boxTUnboxNoInlining unsharedHolder (pushesDefault unsharedHolder)
         calls "CallsBoxHeldCastTShared" boxHeldCastT typeof<string> ignore
 
         boxes.CreateType () |> ignore<Type>
@@ -464,6 +480,8 @@ public static class Driver
         if ((r = Expect(Boxes.CallsBoxTUnboxUnshared, 4, 49)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTCastShared, 1, 51)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxHeldCastTUnshared, 1, 55)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.CallsBoxTUnboxNoInliningShared, 57, 58)) != 0) return r;
+        if ((r = Expect(Boxes.CallsBoxTUnboxNoInliningUnshared, 4, 59)) != 0) return r;
 
         return 0;
     }
