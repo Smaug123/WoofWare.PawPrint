@@ -71,6 +71,11 @@ type IntrinsicBody =
     /// `UnreachableException`. Only code the runtime generates calls these (IL stubs, the async
     /// resumption stub, runtime-async methods).
     | CallSiteExpansion
+    /// A method of CoreLib's `System.StubHelpers.StructureMarshaler<T>`, whose body CoreCLR's VM
+    /// replaces with a stub that marshals T field by field when T is a value type that is neither
+    /// blittable nor an enum (`StructMarshalStubs::TryGenerateStructMarshallingMethod`,
+    /// dllimport.cpp). For any other T, the method's own IL runs.
+    | StructMarshalling
     /// The method has no IL: an InternalCall, a P/Invoke, a runtime-provided or an abstract body.
     | NoIl
 
@@ -307,6 +312,16 @@ module IntrinsicBody =
             && callSiteExpansions.Contains (declaringType.Namespace, declaringType.Name, definition.Name)
         then
             IntrinsicBody.CallSiteExpansion
+        else if
+
+            // `getMethodInfoWorker` (jitinterface.cpp) offers every intrinsic of corelib.h's
+            // `STRUCTURE_MARSHALER` to `TryGenerateStructMarshallingMethod`.
+            assembly.ThisAssemblyDefinition.Name.Name = corelib
+            && not declaringType.IsNested
+            && declaringType.Namespace = "System.StubHelpers"
+            && declaringType.Name = "StructureMarshaler`1"
+        then
+            IntrinsicBody.StructMarshalling
         else
 
         match definition.Body with
@@ -418,6 +433,7 @@ module IntrinsicBody =
             | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method
             | IntrinsicBody.JitExpansion _
             | IntrinsicBody.CallSiteExpansion
+            | IntrinsicBody.StructMarshalling
             | IntrinsicBody.OwnIl
             | IntrinsicBody.NoIl -> None
         else

@@ -801,7 +801,20 @@ mutation-testing skill applies to each table/classifier they introduce.
      native throws it. PawPrint aborts the run on any row it cannot load, on both runtimes, so it
      never writes that argument. `ModuleGetTypes.cs` and the cross-assembly test of the module
      pseudo-type pass; `DynamicAssemblyHosting.cs` reaches `isAsyncMethod`;
-   * `MarshalNative_HasLayout` and `Delegate_GetMethodDesc`
+   * **(landed)** `MarshalNative_HasLayout`, which RC1's `Marshal` asks in place of .NET 10's
+     `MarshalNative_TryGetStructMarshalStub`: whether a type has layout, whether it is blittable,
+     and its native size, answering for an enum's underlying integer. RC1 then marshals a struct
+     through `StructureMarshaler<T>`, whose `ConvertToUnmanagedCore`, `ConvertToManaged` and
+     `FreeCore` the VM replaces with a field-by-field stub when T is not blittable
+     (`IntrinsicBody.StructMarshalling`); PawPrint refuses there. Whether CoreCLR blits a type and
+     whether PawPrint can copy it are told apart (`Blittability`): CoreCLR blits a struct holding a
+     pointer, and a struct without fields. Four of the sixteen cases parked on it pass, as do three
+     new ones: `MarshalDestroyStructureBlittable.cs`, `MarshalDestroyStructurePointerOrEmpty.cs`
+     (parked on .NET 10, whose arm builds a stub for those structs and refuses), and
+     `MarshalStructureToPtrEnum.cs`, since RC1 marshals a boxed enum as its integer where .NET 10
+     throws. The other twelve marshal a struct that is not blittable (`structureMarshalerStub`);
+   * PawPrint's struct-marshal plan in place of `StructureMarshaler<T>`'s three bodies, and
+     `Delegate_GetMethodDesc`
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
      It blocks on `LowLevelMonitor`, which PawPrint already models, and brackets each wait with

@@ -245,8 +245,7 @@ interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the obje
 implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
 helpers' fallback, as it does from `castclass` and `isinst`, that is the assumption
 `DynamicCastsAsDocumented` (below). It does not yet follow `CastHelpers.StelemRef`, which the JIT
-calls at `stelem.ref` and at `stelem` of a reference type, because `StelemRef` stores through
-`CastHelpers.WriteBarrier`, an FCall with no contract row. There the analysis assumes the same
+calls at `stelem.ref` and at `stelem` of a reference type. There the analysis assumes the same
 without listing it: an implementation that throws anything but the `InvalidCastException` its
 documentation asks for can let that escape unreported. The interface's
 other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
