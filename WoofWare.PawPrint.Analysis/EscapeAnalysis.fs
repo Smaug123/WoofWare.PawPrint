@@ -3332,12 +3332,32 @@ module EscapeAnalysis =
 
             state, raises, opaque, calls
 
-        // The JIT loads the type of every local and every `catch` clause before the body runs, as
-        // it binds every token.
+        // The JIT loads the method's return type, the type of each of its parameters and locals,
+        // and the type of every `catch` clause before the body runs, as it binds every token.
+        // Swift's calling convention makes it load more of a parameter's type; nothing here reads
+        // which convention an `[UnmanagedCallersOnly]` method names, so each such method is taken
+        // to be called by Swift's, which loads at least as much as any other.
+        let parameterPosition =
+            if MethodInfo.isUnmanagedCallersOnly method then
+                JitTypePosition.SwiftOwnParameter
+            else
+                JitTypePosition.OwnParameter
+
+        let ownTypes =
+            [
+                match method.Signature.ReturnType with
+                | MethodReturnType.Void -> ()
+                | MethodReturnType.Returns returned -> yield JitTypePosition.OwnReturn, returned
+                for parameter in method.Signature.ParameterTypes do
+                    yield parameterPosition, parameter
+                for local in Option.defaultValue ImmutableArray.Empty body.LocalVars do
+                    yield JitTypePosition.Local, local
+            ]
+
         let state, localFailures =
-            ((state, Set.empty), Option.defaultValue ImmutableArray.Empty body.LocalVars)
-            ||> Seq.fold (fun (state, failures) local ->
-                match JitTypeLoads.load JitTypePosition.Local local with
+            ((state, Set.empty), ownTypes)
+            ||> List.fold (fun (state, failures) (position, spelling) ->
+                match JitTypeLoads.load position spelling with
                 | None -> state, failures
                 | Some (JitTypeLoad.InFull loaded) ->
                     match spellingLoadFailure state assembly loaded with
@@ -3345,7 +3365,7 @@ module EscapeAnalysis =
                     | state, Some failure -> state, Set.union failures (Set.ofList (bindFailureFacts state failure))
                 | Some load ->
                     failwith
-                        $"BUG: JitTypeLoads.load answers %O{load} for a local of %s{assembly.DefinitionFullName}, which loads in full or not at all"
+                        $"BUG: JitTypeLoads.load answers %O{load} at %O{position} in %s{assembly.DefinitionFullName}, which loads in full or not at all"
             )
 
         let state, localFailures =
