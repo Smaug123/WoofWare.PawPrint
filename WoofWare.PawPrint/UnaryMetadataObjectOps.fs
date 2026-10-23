@@ -538,11 +538,32 @@ module internal UnaryMetadataObjectOps =
                        )
             }
 
-        // Whether the JIT may see the types as they are: it never inlines a method that forbids
-        // it. A dynamic method is never shared, so it sees them as they are anyway.
+        // Whether the JIT may see the types as they are. It never inlines a method marked
+        // `NoInlining` or `NoOptimization` (`MethodTableBuilder` marks it not inline), nor one
+        // whose module it compiles as debuggable code (`CEEInfo::canInline`). It refuses to inline
+        // others for reasons of its own, where the answer it might give is no less undecided. A
+        // dynamic method is never shared, so it sees the types as they are anyway.
         let inlinable =
             match method with
-            | MethodInfo.Metadata (_, facts) -> not (facts.ImplAttributes.HasFlag MethodImplAttributes.NoInlining)
+            | MethodInfo.Metadata (_, facts) ->
+                let forbidden =
+                    facts.ImplAttributes.HasFlag MethodImplAttributes.NoInlining
+                    || facts.ImplAttributes.HasFlag MethodImplAttributes.NoOptimization
+
+                let declaringType =
+                    method.TryDeclaringType
+                    |> Option.defaultWith (fun () ->
+                        failwith $"BUG: metadata method %s{method.Name} has no declaring type"
+                    )
+
+                let assembly =
+                    state.TypeSystem._LoadedAssemblies.ByDefinitionName declaringType.AssemblyFullName
+
+                match Debuggable.allowsJitOptimisation assembly with
+                | Some optimised -> optimised && not forbidden
+                | None ->
+                    failwith
+                        $"TODO: %s{assembly.DefinitionFullName}'s DebuggableAttribute is malformed, over which CoreCLR refuses to load it at all"
             | MethodInfo.Synthesised _ -> true
 
         let state, follower =

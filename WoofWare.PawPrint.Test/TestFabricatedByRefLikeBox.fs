@@ -26,9 +26,26 @@ module TestFabricatedByRefLikeBox =
     ///   - `ref struct Holder<T>`, so that code over `Holder<string>` is shared;
     ///   - `static class Boxes`, whose methods are described inline. Each non-generic one takes
     ///     no argument but `BoxBranchLandedOn`'s and returns an `int`.
-    let private fabricate () : byte[] =
+    ///
+    /// Where `debuggable`, the assembly's `DebuggableAttribute` disables optimisation, as a C# Debug
+    /// build's does, so that the JIT inlines none of its methods.
+    let private fabricateWith (debuggable : bool) : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "ByRefLikeBox", typeof<obj>.Assembly)
+
+        if debuggable then
+            builder.SetCustomAttribute (
+                CustomAttributeBuilder (
+                    typeof<Diagnostics.DebuggableAttribute>.GetConstructor
+                        [| typeof<Diagnostics.DebuggableAttribute.DebuggingModes> |],
+                    [|
+                        box (
+                            Diagnostics.DebuggableAttribute.DebuggingModes.Default
+                            ||| Diagnostics.DebuggableAttribute.DebuggingModes.DisableOptimizations
+                        )
+                    |]
+                )
+            )
 
         let modul = builder.DefineDynamicModule "ByRefLikeBox"
 
@@ -373,6 +390,20 @@ module TestFabricatedByRefLikeBox =
             method.SetImplementationFlags MethodImplAttributes.NoInlining
             method
 
+        // Nor one marked `NoOptimization`.
+        let boxTUnboxNoOptimization =
+            let method =
+                generic
+                    "BoxTUnboxNoOptimization"
+                    4
+                    (fun il parameter ->
+                        il.Emit (OpCodes.Unbox_Any, parameter)
+                        il.Emit OpCodes.Pop
+                    )
+
+            method.SetImplementationFlags MethodImplAttributes.NoOptimization
+            method
+
         // Nor does it resolve the `unbox.any` operand after an `isinst` unless it proves the
         // `isinst` operand is the boxed type, which in shared code it does not. This one names a
         // type of an assembly that is nowhere to be found where the guest runs.
@@ -450,6 +481,8 @@ module TestFabricatedByRefLikeBox =
         calls "CallsBoxTCastUnboxAbsentShared" boxTCastUnboxAbsentNoInlining sharedHolder (pushesDefault sharedHolder)
 
         calls "CallsBoxTUnboxNoInliningUnshared" boxTUnboxNoInlining unsharedHolder (pushesDefault unsharedHolder)
+
+        calls "CallsBoxTUnboxNoOptimizationShared" boxTUnboxNoOptimization sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxHeldCastTShared" boxHeldCastT typeof<string> ignore
 
         boxes.CreateType () |> ignore<Type>
@@ -457,6 +490,8 @@ module TestFabricatedByRefLikeBox =
         use image = new MemoryStream ()
         builder.Save image
         image.ToArray ()
+
+    let private fabricate () : byte[] = fabricateWith false
 
     /// Each scenario returns its own code on failure and 0 on success, so a disagreement names
     /// the scenario.
@@ -529,6 +564,7 @@ public static class Driver
         if ((r = ExpectRefused(Boxes.CallsBoxTUnboxNoInliningShared, 57, 58)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTUnboxNoInliningUnshared, 4, 59)) != 0) return r;
         if ((r = ExpectRefused(Boxes.CallsBoxTCastUnboxAbsentShared, 61, 62)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.CallsBoxTUnboxNoOptimizationShared, 63, 64)) != 0) return r;
 
         return 0;
     }
@@ -564,6 +600,25 @@ public static class Driver
     }
 }
 """
+
+    [<TestCase("CallsBoxTUnboxShared", 4)>]
+    [<TestCase("CallsBoxTCastObjectShared", 2)>]
+    let ``the JIT inlines no method of a debuggable assembly, so its shared code refuses the box``
+        (callee : string)
+        (folded : int)
+        =
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth
+                "ByRefLikeBox"
+                (fabricateWith true)
+                $"Debuggable%s{callee}Driver"
+                (refusalDriver callee folded)
+
+        onHost |> shouldEqual (RealRuntimeResult.NormalExit 1)
+
+        match onPawPrint with
+        | FabricatedOutcome.Exited code -> code |> shouldEqual 1
+        | FabricatedOutcome.Failed e -> raise (Exception ("PawPrint did not run the guest to completion", e))
 
     /// Where whether the JIT folds a box turns on whether it inlines the method, on what it decides
     /// for a canonical form PawPrint does not build, or on its refusing a metadata operand, which
