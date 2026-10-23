@@ -183,10 +183,10 @@ module internal UnaryMetadataFieldOps =
         let exceptionType, fields =
             IlMachineMemberResolution.bindingFailureException ctx.BaseClassTypes failure
 
-        IlMachineStateExecution.raiseRuntimeExceptionWithFields
+        IlMachineStateExecution.raiseRuntimeException
             ctx.LoggerFactory
             ctx.BaseClassTypes
-            exceptionType
+            (IlMachineStateExecution.RaiseOrigin.InstructionResolution (ResolutionFault.TokenBinding, exceptionType))
             fields
             ctx.Thread
             state
@@ -349,7 +349,13 @@ module internal UnaryMetadataFieldOps =
         match currentObj with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | _ ->
 
         let state =
@@ -554,7 +560,13 @@ module internal UnaryMetadataFieldOps =
         match currentObj with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | _ ->
 
         let state =
@@ -747,7 +759,13 @@ module internal UnaryMetadataFieldOps =
         match ptr with
         | NullObjectRef
         | ManagedPointer ManagedPointerSource.Null ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | _ ->
 
         let state, projection =

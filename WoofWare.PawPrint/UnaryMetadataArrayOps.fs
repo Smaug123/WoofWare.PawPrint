@@ -96,7 +96,11 @@ module internal UnaryMetadataArrayOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.TypeLoadException
+                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                    ResolutionFault.TokenBinding,
+                    baseClassTypes.TypeLoadException
+                ))
+                []
                 thread
                 state
         else
@@ -111,7 +115,13 @@ module internal UnaryMetadataArrayOps =
 
             // Don't advance the PC: exception dispatch needs the faulting instruction's
             // offset for handler search and stack-trace construction.
-            IlMachineStateExecution.raiseOpcodeFaultWithMessage loggerFactory baseClassTypes fault message thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault fault)
+                (message |> Option.toList |> List.map RuntimeExceptionField.Message)
+                thread
+                state
         | None ->
 
         let arrayType = ConcreteTypeHandle.OneDimArrayZero concreteTypeHandle
@@ -278,10 +288,11 @@ module internal UnaryMetadataArrayOps =
             if tokenElementHandle <> arrayElementHandle then
                 // Don't advance the PC: exception dispatch needs the faulting instruction's
                 // offset for handler search and stack-trace construction.
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    OpcodeFault.ArrayTypeMismatch
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.ArrayTypeMismatch)
+                    []
                     thread
                     state
             else
@@ -338,10 +349,11 @@ module internal UnaryMetadataArrayOps =
             IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arr contents state
         with
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.ArrayTypeMismatch
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.ArrayTypeMismatch)
+                []
                 thread
                 state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->

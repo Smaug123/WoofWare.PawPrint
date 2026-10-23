@@ -42,7 +42,15 @@ with
 
 ## Tier 2: Constructing and throwing a new exception object
 
-Use `IlMachineStateExecution.raiseRuntimeException`. It takes a `TypeInfo`, e.g. as from `BaseClassTypes` (such as `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
+Use `IlMachineStateExecution.raiseRuntimeException`. It takes a `RaiseOrigin`, which says where the exception comes from, and the fields to write once the parameterless constructor has run (`[]` almost everywhere; `RuntimeExceptionField.Message` where CoreCLR passes a message), and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
+
+The origin is the part to get right, because it decides what the raise is checked against:
+
+- `RaiseOrigin.InstructionFault fault` — performing the current instruction faults, as an `OpcodeFault` (a null receiver, an index out of range). `OpcodeFault.resolve` names the exception, and the raise refuses unless the instruction's `OpcodeFaults` entry lists the fault.
+- `RaiseOrigin.InstructionResolution (category, exceptionType)` — resolving the current instruction's token fails in a `ResolutionFault` category: the token fails to bind, or the JIT refuses what it binds to (`TokenBinding`), a `DynamicMethod`'s scope entry is unusable (`ScopeEntry`), an access check fails, or dispatch finds no method. The raise refuses unless the entry lists the category and `ResolutionFault.typeNames` names `exceptionType` for it. Dispatch failures go through `raiseDispatchFailure`, which builds this origin.
+- `RaiseOrigin.Callee exceptionType` — something the instruction handed control to raises it: a native method, an intrinsic, a delegate's constructor or invocation, an array accessor, an `UnsafeAccessor`, a method that cannot be entered. Nothing is checked, because `OpcodeFaults` says nothing of callees. A native handler returns `NativeHandlerResult.RaiseException` instead, which the dispatcher raises as a callee's.
+
+If the check refuses, either the origin is wrong (often: a callee's failure raised as the instruction's) or the table is missing an entry. Decide which from CoreCLR's source or a measurement; don't widen the origin to make the check pass.
 
 This entry point is intended for exceptions the runtime itself synthesises (e.g. `NullReferenceException` from a null deref, `InvalidCastException` from a failed `castclass`). It deliberately skips the exception type's `.cctor`, which is safe for the BCL exception types but not for arbitrary guest-defined types — so don't use it to dispatch guest-thrown exceptions. Those go through Tier 1 (`throwExceptionObject`) after the guest's own `newobj` has already run the cctor.
 
@@ -50,7 +58,8 @@ This entry point is intended for exceptions the runtime itself synthesises (e.g.
 IlMachineStateExecution.raiseRuntimeException
     loggerFactory
     baseClassTypes
-    baseClassTypes.NullReferenceException
+    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+    []
     currentThread
     state
 ```

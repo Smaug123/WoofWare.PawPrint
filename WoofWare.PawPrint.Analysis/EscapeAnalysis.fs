@@ -4173,8 +4173,13 @@ module EscapeAnalysis =
                             | ResolutionFault.MethodAccess
                             | ResolutionFault.FieldAccess
                             | ResolutionFault.TypeAccess -> true
-                            // Bound at `bind`, above.
+                            // Bound at `bind`, above. Not modelled: the JIT refusing an
+                            // instruction for what its token binds to, such as a `box` of a
+                            // byref-like type.
                             | ResolutionFault.TokenBinding -> false
+                            // Only a `DynamicMethod`'s body has scope entries, and the analysis
+                            // reads bodies from metadata.
+                            | ResolutionFault.ScopeEntry -> false
                             // Decided where a call's target is dispatched (`dispatchOn`), whose
                             // failure the call raises (`DispatchOutcome.Raises`), and for a
                             // `constrained. ldftn` from `ConstrainedPointers`.

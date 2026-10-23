@@ -78,10 +78,11 @@ module internal UnaryMetadataObjectOps =
 
                 state, WhatWeDid.Executed
             else
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    OpcodeFault.InvalidCast
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.InvalidCast)
+                    []
                     thread
                     state
         | other -> failwith $"%s{opName}: unexpected eval stack value {other}"
@@ -188,11 +189,11 @@ module internal UnaryMetadataObjectOps =
             // is `[StackTraceHidden]`, so the frame that reports it is this one, at this `newobj`.
             let exceptionType, message = ArrayConstructor.exceptionFor baseClassTypes error
 
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                exceptionType
-                message
+                (IlMachineStateExecution.RaiseOrigin.Callee exceptionType)
+                (message |> Option.toList |> List.map RuntimeExceptionField.Message)
                 thread
                 state
         | Ok allocation ->
@@ -515,12 +516,15 @@ module internal UnaryMetadataObjectOps =
             LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies boxedDefn
             ->
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.InvalidProgramException
+                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                    ResolutionFault.TokenBinding,
+                    baseClassTypes.InvalidProgramException
+                ))
                 // CoreCLR's own message here is InvalidProgramException's default (measured).
-                None
+                []
                 thread
                 state
         | _ ->
@@ -761,10 +765,11 @@ module internal UnaryMetadataObjectOps =
                         $"Unbox_Any: operand at %O{addr} is a boxed Nullable`1 (%O{targetConcreteTypeHandle}), which no PawPrint boxing path can create; CoreCLR's Nullable::UnBox copies it through, but that arm is deliberately unmodelled here"
                 | Some _
                 | None ->
-                    IlMachineStateExecution.raiseOpcodeFault
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
-                        OpcodeFault.InvalidCast
+                        (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.InvalidCast)
+                        []
                         thread
                         state
             | other -> failwith $"Unbox_Any (Nullable`1 target): unexpected eval stack value {other}"
@@ -791,17 +796,19 @@ module internal UnaryMetadataObjectOps =
 
             match typeTest with
             | UnboxTypeTest.NullOperand ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     thread
                     state
             | UnboxTypeTest.WrongType ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    OpcodeFault.InvalidCast
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.InvalidCast)
+                    []
                     thread
                     state
             | UnboxTypeTest.Accepted (_addr, boxed) ->
@@ -852,7 +859,13 @@ module internal UnaryMetadataObjectOps =
 
         match result with
         | UnboxAddress.Faulted fault ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes fault thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault fault)
+                []
+                thread
+                state
         | UnboxAddress.Address ptr ->
             state
             |> IlMachineState.pushToEvalStack (CliType.RuntimePointer (CliRuntimePointer.Managed ptr)) thread

@@ -342,6 +342,40 @@ public class Program
             return 18;
         }
 
+        // 19, 20. Nor is a byref-like type something `box` can make an object of: the JIT refuses
+        // the method with InvalidProgramException (measured). 20 is the control: the same body
+        // without the `box` runs, so the refusal is the `box`'s and not the `Span<int>` value's.
+        Func<int> byrefLikeBox = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeBox();
+            return 19;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        Func<int> byrefLikeUnboxed = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_7);
+            il.Emit(OpCodes.Ret);
+        });
+
+        if (byrefLikeUnboxed() != 7)
+        {
+            return 20;
+        }
+
         return 0;
     }
 }

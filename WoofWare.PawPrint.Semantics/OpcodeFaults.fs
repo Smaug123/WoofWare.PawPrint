@@ -43,13 +43,24 @@ type OpcodeFault =
 /// can see the context decides whether it does.
 [<RequireQualifiedAccess>]
 type ResolutionFault =
-    /// The token fails to bind to a definition. The assembly it refers into may be missing or
-    /// unloadable (`FileNotFoundException`, `FileLoadException`, `BadImageFormatException`), and the
-    /// token may fail to resolve against one that loaded (`TypeLoadException`,
-    /// `MissingFieldException`, `MissingMethodException`, `InvalidProgramException`). CoreCLR's
-    /// JIT resolves every token of a method as it compiles it, so it raises most of these where the
-    /// method is called, before any of its instructions runs.
+    /// The token fails to bind to a definition, or the JIT refuses the instruction for what it binds
+    /// to. The assembly it refers into may be missing or unloadable (`FileNotFoundException`,
+    /// `FileLoadException`, `BadImageFormatException`), and the token may fail to resolve against
+    /// one that loaded (`TypeLoadException`, `MissingFieldException`, `MissingMethodException`,
+    /// `InvalidProgramException`). Or it binds, and the JIT rejects the instruction for what it
+    /// names, with one of the same: `call` or `ldftn` of an abstract method
+    /// (`BadImageFormatException`), `box` of a byref-like type (`InvalidProgramException`), or
+    /// `newarr` of one (`TypeLoadException`). CoreCLR's JIT resolves every token of a method as it
+    /// compiles it, so it raises most of these where the method is called, before any of its
+    /// instructions runs.
     | TokenBinding
+    /// The method is a `DynamicMethod`, and the token names an entry of its scope that the
+    /// instruction cannot use: past the scope's end (`ArgumentOutOfRangeException`, from the
+    /// scope's own list), null or of the wrong kind or shape (`InvalidProgramException`,
+    /// `BadImageFormatException`), not a string for `ldstr` (`NullReferenceException`), or a static
+    /// method for `callvirt` (`MissingMethodException`). Only a `DynamicMethod`'s body has scope
+    /// entries, so no method in metadata raises these.
+    | ScopeEntry
     /// The method may not access the method the token names, the type declaring it, or a type
     /// argument of either, by CoreCLR's visibility rules, which `InternalsVisibleTo` and `IgnoresAccessChecksTo` relax:
     /// `MethodAccessException`. The JIT compiles a failed check to a call that raises it at the
@@ -208,6 +219,14 @@ module ResolutionFault =
                 "System.MissingFieldException"
                 "System.MissingMethodException"
                 "System.InvalidProgramException"
+            ]
+        | ResolutionFault.ScopeEntry ->
+            [
+                "System.ArgumentOutOfRangeException"
+                "System.InvalidProgramException"
+                "System.BadImageFormatException"
+                "System.NullReferenceException"
+                "System.MissingMethodException"
             ]
         | ResolutionFault.MethodAccess -> [ "System.MethodAccessException" ]
         | ResolutionFault.FieldAccess -> [ "System.FieldAccessException" ]
@@ -446,9 +465,12 @@ module OpcodeFaults =
 
     let ofUnaryMetadata (op : UnaryMetadataTokenIlOp) : OpcodeFaults =
         // Every one of these bears a token, which the JIT resolves as it compiles the method, so
-        // each can fail to bind it.
+        // each can fail to bind it, and in a `DynamicMethod` can name a scope entry it cannot use.
         let resolves (own : OpcodeFault list) (resolution : ResolutionFault list) : OpcodeFaults =
-            OpcodeFaults.Raises (own, Set.ofList (ResolutionFault.TokenBinding :: resolution))
+            OpcodeFaults.Raises (
+                own,
+                Set.ofList (ResolutionFault.TokenBinding :: ResolutionFault.ScopeEntry :: resolution)
+            )
 
         // CoreCLR's JIT asks the VM whether the method may access what an instruction's token
         // names, and compiles a refusal to a call of the `ThrowHelpers` method `jithelpers.h` binds
@@ -686,8 +708,10 @@ module OpcodeFaults =
         // (`UnaryStringTokenIlOp.execute` -> `IlMachineState.allocateManagedString`, mirroring
         // CoreCLR's `AddStringLiteral`). ECMA-335 III.4.15 says "Exceptions: None", which is true
         // of the steady state and not of first materialisation.
-        // Its token indexes the method's own module's string heap, so nothing binds.
-        | UnaryStringTokenIlOp.Ldstr -> performs [ OpcodeFault.OutOfMemory ]
+        // Its token indexes the method's own module's string heap, so nothing binds; but in a
+        // `DynamicMethod` it indexes the method's scope, whose entry may not be a string.
+        | UnaryStringTokenIlOp.Ldstr ->
+            OpcodeFaults.Raises ([ OpcodeFault.OutOfMemory ], set [ ResolutionFault.ScopeEntry ])
 
     let ofIlOp (op : IlOp) : OpcodeFaults =
         match op with
