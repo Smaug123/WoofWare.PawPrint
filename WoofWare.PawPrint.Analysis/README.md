@@ -226,9 +226,8 @@ interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the obje
 implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
 helpers' fallback, as it does from `castclass` and `isinst`, that is the assumption
 `DynamicCastsAsDocumented` (below). It does not yet follow `CastHelpers.StelemRef`, which the JIT
-calls at `stelem.ref` and at `stelem` of a reference type, because `StelemRef` calls
-`Object.GetType`, whose slow path is the QCall `RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow`,
-which has no contract row: it can finish loading a type. There the analysis assumes the same
+calls at `stelem.ref` and at `stelem` of a reference type, because `StelemRef` stores through
+`CastHelpers.WriteBarrier`, an FCall with no contract row. There the analysis assumes the same
 without listing it: an implementation that throws anything but the `InvalidCastException` its
 documentation asks for can let that escape unreported. The interface's
 other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
@@ -247,6 +246,17 @@ import, so that calling one of their functions raises nothing: native code raise
 caller can catch, and an exception thrown by a managed function it calls back ends the process.
 Were one of those libraries missing, the runtime would run the program's `ResolvingUnmanagedDll`
 handlers, which could throw anything.
+
+It takes CoreLib's `Object.GetType` to raise only `NullReferenceException` (called on null),
+`OutOfMemoryException`, `StackOverflowException`, and on .NET 11 `NotSupportedException`, for the
+continuation of a runtime-async method, whose type the runtime makes without metadata
+(`ObjectGetType`). Its slow path, the QCall `RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow`, has
+no contract row, because given a type that is not fully loaded it finishes loading it, which can
+bind an assembly and so run the program's `AssemblyLoadContext` resolution. An object's type is
+fully loaded, though: CoreCLR allocates an object only of a type it has fully loaded, as the JIT
+does for the type an instruction names, or of a type whose `RuntimeType` exists, and making that
+loads the type fully or throws. `TestObjectGetType` holds the method's IL and the QCall's C++ to
+that shape.
 
 It assumes that CoreLib's lookup of its own resource strings, `SR.InternalGetResourceString`, which
 gives every CoreLib exception its message, raises only `OutOfMemoryException`,

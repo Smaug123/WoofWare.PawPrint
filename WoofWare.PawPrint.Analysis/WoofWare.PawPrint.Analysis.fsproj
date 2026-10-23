@@ -19,6 +19,7 @@
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
         <Compile Include="ResourceLookup.fs" />
+        <Compile Include="ObjectGetType.fs" />
         <Compile Include="Assumption.fs" />
         <Compile Include="ExceptionMaking.fs" />
         <Compile Include="Escapes.fs" />
