@@ -67,9 +67,13 @@ public static class Natives
     public static System.Threading.Thread Current() => System.Threading.Thread.CurrentThread;
 
     // An object's RuntimeType, which a QCall allocates on first use; a null object raises before
-    // that. The contract table cannot describe the QCall, which finishes loading a type whose load
-    // failed, and loading can run an AssemblyLoadContext's managed resolution.
+    // that. The QCall finishes loading a type whose load failed, but an object's type is fully
+    // loaded.
     public static Type TypeOf(object o) => o.GetType();
+
+    // That RuntimeType, a sealed class, whose override a virtual call on it runs: `GetArrayRank`
+    // throws ArgumentException for a type that is not an array.
+    public static int RankOf(object o) => o.GetType().GetArrayRank();
 
     // A type's module, which CoreLib reads through an FCall the contract table describes, or makes
     // on first use through a QCall it describes; and the type's metadata token, another such FCall.
@@ -992,9 +996,13 @@ public static class SR
                 Unknown = Some false
             }
             { expect "Fixture.Natives" "TypeOf" with
-                Contains = [ "=System.NullReferenceException" ]
-                Unknown = Some true
-                Sources = Some [ runtimeTypeFromHandle ]
+                Contains = [ "=System.NullReferenceException" ; "=System.OutOfMemoryException" ]
+                // It loads no type, so binds no assembly.
+                Excludes = [ "=System.TypeLoadException" ; "=System.IO.FileNotFoundException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "RankOf" with
+                Contains = [ "=System.ArgumentException" ]
             }
             { expect "Fixture.Natives" "ModuleOf" with
                 Unknown = Some false
@@ -2028,6 +2036,72 @@ public static class SR
                 failwith $"Preserving a stack trace is hidden at %A{Set.toList rendered}, not at %s{site}"
 
         analysis, rendered
+
+    [<Test>]
+    let ``Object.GetType raises what making its RuntimeType raises, besides what constructing those exceptions raises``
+        ()
+        : unit
+        =
+        let corelib = hostCoreLib ()
+        let runtime = FrameworkUnderTest.runtime ()
+
+        let key =
+            corelib.Methods
+            |> Seq.filter (fun (KeyValue (handle, _)) -> ObjectGetType.isGetType corelib handle)
+            |> Seq.exactlyOne
+            |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        // Called on null it raises NullReferenceException, and on .NET 11, asked about a runtime-async
+        // continuation, NotSupportedException, each made by its parameterless constructor.
+        let made =
+            match runtime with
+            | EmulatedRuntime.Net10 -> [ "System", "NullReferenceException" ]
+            | EmulatedRuntime.Net11 -> [ "System", "NullReferenceException" ; "System", "NotSupportedException" ]
+
+        // What running each parameterless constructor raises in place of its exception.
+        let analysis, constructing =
+            ((analysis, Set.empty), made)
+            ||> List.fold (fun (analysis, raised) (ns, name) ->
+                let ctor =
+                    corelib.Methods
+                    |> Seq.filter (fun (KeyValue (_, method)) ->
+                        let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+
+                        declaringType.Namespace = ns
+                        && declaringType.Name = name
+                        && method.Name = ".ctor"
+                        && method.Signature.ParameterTypes.IsEmpty
+                    )
+                    |> Seq.exactlyOne
+                    |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+                let analysis, escapes = EscapeAnalysis.escapes analysis ctor
+                escapes.Unknown |> shouldEqual false
+                analysis, Set.union raised (render analysis escapes)
+            )
+
+        let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+        // Allocating the RuntimeType can run out of memory, and its calls out of stack.
+        render analysis escapes
+        |> shouldEqual (
+            made @ [ "System", "OutOfMemoryException" ; "System", "StackOverflowException" ]
+            |> List.map (fun (ns, name) -> $"=%s{ns}.%s{name}")
+            |> Set.ofList
+            |> Set.union constructing
+        )
+
+        escapes.Unknown |> shouldEqual false
 
     [<Test>]
     let ``CoreLib's resource lookup raises exactly its contract, besides what throwing an initializer's exception again does``

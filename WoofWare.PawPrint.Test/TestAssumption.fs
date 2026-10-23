@@ -9,9 +9,10 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Analysis
 
-/// An `Assumption`, and the resource lookup's contract (`ResourceLookup`), each stand in for a
-/// CoreLib method they recognise by name and signature. These tests hold each to the CoreLibs: the
-/// method must be there, as the contract describes it.
+/// An `Assumption`, the resource lookup's contract (`ResourceLookup`) and `Object.GetType`'s
+/// (`ObjectGetType`) each stand in for a CoreLib method they recognise by name and signature. These
+/// tests hold each to the CoreLibs: the method must be there, as the contract describes it
+/// (`TestObjectGetType` holds the last).
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssumption =
@@ -141,6 +142,8 @@ module TestAssumption =
                 for assumption in Assumption.all do
                     yield $"%A{assumption}", Assumption.raises assumption
                 yield "The resource lookup", ResourceLookup.raises
+                for runtime in EmulatedRuntime.supported do
+                    yield $"Object.GetType's contract on %O{runtime}", ObjectGetType.raises runtime
             ]
 
         for contract, raises in contracts do
