@@ -127,9 +127,7 @@ module SignatureComparison =
         match nominal.Token with
         | NominalToken.Definition typeDef -> assemblies, Ok typeDef.Identity
         | NominalToken.Reference typeRef ->
-            let referencing = assemblies.ByDefinitionName nominal.Module.DefinitionFullName
-
-            match LoadedTypeResolution.resolveTypeRef assemblies referencing ImmutableArray.Empty typeRef with
+            match LoadedTypeResolution.resolveTypeRef assemblies nominal.Module ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
             | TypeResolutionResult.NotFound miss -> assemblies, Error miss
             | TypeResolutionResult.FirstLoadAssy loadFirst ->
