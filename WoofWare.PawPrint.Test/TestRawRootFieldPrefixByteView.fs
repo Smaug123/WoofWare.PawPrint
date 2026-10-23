@@ -269,7 +269,11 @@ module TestRawRootFieldPrefixByteView =
 
         match case.RootKind with
         | RootKind.Native ->
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized (blockSize case) state
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                (blockSize case)
+                state
             |> fun (ptr, state) -> state, ptr
         | RootKind.Stack ->
             let state, thread = methodFrame state

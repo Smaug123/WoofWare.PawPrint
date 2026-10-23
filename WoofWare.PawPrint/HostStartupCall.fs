@@ -27,7 +27,11 @@ module HostStartupCall =
     /// two.
     let allocateWideString (s : string) (state : IlMachineState) : ManagedPointerSource * IlMachineState =
         let ptr, state =
-            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized ((s.Length + 1) * 2) state
+            IlMachineState.allocateNativeMemory
+                MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
+                ((s.Length + 1) * 2)
+                state
 
         let blockId =
             match ptr with
@@ -62,6 +66,7 @@ module HostStartupCall =
         let ptr, state =
             IlMachineState.allocateNativeMemory
                 MemoryBlockInitialization.ZeroInitialized
+                NativeBlockAlignment.malloc
                 // A native-int cell is pointer-sized, and `sizeof ptr[char]` in the guest's IL
                 // agrees, so the stride written matches the stride the callee reads. A
                 // disagreement would leave every entry but the first unreadable, which is what

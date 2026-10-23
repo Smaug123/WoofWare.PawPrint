@@ -1068,6 +1068,8 @@ public static class SR
                 Unknown = Some false
                 Assumes = Some constructing
             }
+            // The JIT calls `CastHelpers.ChkCastClass`, which, where the cast cache has no answer,
+            // falls back to the runtime's `IsInstanceOf_NoCacheLookup`.
             { expect "Fixture.Faults" "Cast" with
                 Contains =
                     [
@@ -1075,7 +1077,7 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some constructing
+                Assumes = Some (Assumption.NamedTypesLoad :: Assumption.DynamicCastsAsDocumented :: constructing)
             }
             { expect "Fixture.Faults" "Sum" with
                 Contains = [ "=System.OverflowException" ; "=System.Threading.ThreadInterruptedException" ]
@@ -2183,6 +2185,176 @@ public static class SR
         if not (rendered.Contains site) then
             failwith
                 $"Without DynamicCastsAsDocumented, ChkCastAny is hidden at %A{Set.toList rendered}, not at %s{site}"
+
+    /// Casts of each shape whose `CastHelpers` method `getCastingHelperStatic` (jitinterface.cpp)
+    /// picks, which the JIT calls at each `isinst`, `castclass` and `unbox.any` of a reference type
+    /// at tier 0 (`impCastClassOrIsInstToTree`), and generic ones whose instance decides it.
+    let private castSource =
+        """
+using System;
+using System.Collections.Generic;
+
+namespace Casts;
+
+public class Open { }
+
+public struct Comparable : IComparable
+{
+    public int CompareTo(object o) => 0;
+}
+
+public static class Cases
+{
+    public static object Nothing(object o) => o;
+
+    public static object AsString(object o) => o as string;
+    public static object AsOpen(object o) => o as Open;
+    public static bool IsInt(object o) => o is int;
+    public static bool IsNullableInt(object o) => o is int?;
+    public static object AsDelegate(object o) => o as Action;
+    public static object AsInterface(object o) => o as IDisposable;
+    public static object AsGenericInterface(object o) => o as IList<int>;
+    public static object AsVariantInterface(object o) => o as IEnumerable<object>;
+    public static object AsVariantDelegate(object o) => o as Action<object>;
+    public static object AsArray(object o) => o as string[];
+
+    public static object CastOpen(object o) => (Open)o;
+    public static object CastInterface(object o) => (IDisposable)o;
+    public static object CastVariantInterface(object o) => (IEnumerable<object>)o;
+    public static object CastArray(object o) => (int[])o;
+
+    // `unbox.any` of a value type unboxes, calling no cast helper.
+    public static int UnboxInt(object o) => (int)o;
+    public static Comparable UnboxStruct(object o) => (Comparable)o;
+    public static int? UnboxNullable(object o) => (int?)o;
+
+    // The JIT folds this to a constant, making no call; the analysis follows the call regardless.
+    public static bool BoxedIsInterface(Comparable c) => (object)c is IComparable;
+
+    public static bool Is<T>(object o) => o is T;
+    public static bool IsOfString(object o) => Is<string>(o);
+    public static bool IsOfInt(object o) => Is<int>(o);
+    public static bool IsOfNullableInt(object o) => Is<int?>(o);
+    public static bool IsOfSharedStruct(object o) => Is<KeyValuePair<int, string>>(o);
+    public static bool IsOfNullableSharedStruct(object o) => Is<KeyValuePair<int, string>?>(o);
+
+    public static bool IsNullable<T>(object o) where T : struct => o is T?;
+    public static bool IsNullableOfInt(object o) => IsNullable<int>(o);
+    public static bool IsNullableOfSharedStruct(object o) => IsNullable<KeyValuePair<int, string>>(o);
+
+    public static bool IsList<T>(object o) => o is List<T>;
+    public static bool IsListOfString(object o) => IsList<string>(o);
+
+    // `unbox.any` of a type variable: `castclass` where it is a reference type.
+    public static T Cast<T>(object o) => (T)o;
+    public static string CastOfString(object o) => Cast<string>(o);
+    public static int CastOfInt(object o) => Cast<int>(o);
+}
+"""
+
+    /// The `CastHelpers` methods the JIT calls for a cast, by name.
+    let private castEntries : string list =
+        [
+            "IsInstanceOfAny"
+            "IsInstanceOfInterface"
+            "IsInstanceOfClass"
+            "ChkCastAny"
+            "ChkCastInterface"
+            "ChkCastClass"
+        ]
+
+    /// Which of `castEntries` `method` of `fixture` reaches, besides those constructing an
+    /// `InvalidCastException` does.
+    let private castsReached
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (method : string)
+        : EscapeAnalysisState * Set<string>
+        =
+        let corelib = hostCoreLib ()
+
+        let entries =
+            castEntries
+            |> List.map (fun name -> methodNamed corelib "System.Runtime.CompilerServices.CastHelpers" name, name)
+            |> Map.ofList
+
+        let analysis, reached =
+            EscapeAnalysis.reachable analysis (methodNamed fixture "Casts.Cases" method)
+
+        let analysis, constructing =
+            EscapeAnalysis.reachable analysis (parameterlessConstructor corelib "System" "InvalidCastException")
+
+        let named (keys : Set<MethodKey>) : Set<string> =
+            keys |> Seq.choose (fun key -> Map.tryFind key entries) |> Set.ofSeq
+
+        analysis, Set.difference (named reached) (named constructing)
+
+    [<Test>]
+    let ``a cast calls the CastHelpers method the JIT picks for its type`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Casts" OutputKind.DynamicallyLinkedLibrary [ castSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "Casts.dll") (new MemoryStream (image))
+
+        let expectations =
+            [
+                "Nothing", []
+                "AsString", [ "IsInstanceOfClass" ]
+                "AsOpen", [ "IsInstanceOfClass" ]
+                "IsInt", [ "IsInstanceOfClass" ]
+                // CoreCLR's `isinst` of `Nullable<T>` asks about a boxed `T` (ECMA-335 III.4.6).
+                "IsNullableInt", [ "IsInstanceOfClass" ]
+                "AsDelegate", [ "IsInstanceOfClass" ]
+                "AsInterface", [ "IsInstanceOfInterface" ]
+                "AsGenericInterface", [ "IsInstanceOfInterface" ]
+                "AsVariantInterface", [ "IsInstanceOfAny" ]
+                "AsVariantDelegate", [ "IsInstanceOfAny" ]
+                // `jithelpers.h` binds the array helper to the `Any` one.
+                "AsArray", [ "IsInstanceOfAny" ]
+                "CastOpen", [ "ChkCastClass" ]
+                "CastInterface", [ "ChkCastInterface" ]
+                "CastVariantInterface", [ "ChkCastAny" ]
+                "CastArray", [ "ChkCastAny" ]
+                "UnboxInt", []
+                "UnboxStruct", []
+                "UnboxNullable", []
+                "BoxedIsInterface", [ "IsInstanceOfInterface" ]
+                // Shared code looks the type up, and casts to `__Canon` by the `Any` helper.
+                "IsOfString", [ "IsInstanceOfAny" ]
+                "IsOfInt", [ "IsInstanceOfClass" ]
+                "IsOfNullableInt", [ "IsInstanceOfClass" ]
+                // A value type shared by its argument is still a class to cast to.
+                "IsOfSharedStruct", [ "IsInstanceOfClass" ]
+                // Shared, `Nullable<T>` is not asked about as `T`, so takes the `Any` helper.
+                "IsOfNullableSharedStruct", [ "IsInstanceOfAny" ]
+                "IsNullableOfInt", [ "IsInstanceOfClass" ]
+                "IsNullableOfSharedStruct", [ "IsInstanceOfAny" ]
+                "IsListOfString", [ "IsInstanceOfClass" ]
+                "CastOfString", [ "ChkCastAny" ]
+                // `unbox.any` of a value type unboxes, which calls no cast helper.
+                "CastOfInt", []
+                // The definitions stand for every instantiation.
+                "Is", [ "IsInstanceOfAny" ; "IsInstanceOfClass" ]
+                "IsNullable", [ "IsInstanceOfAny" ; "IsInstanceOfClass" ]
+                "IsList", [ "IsInstanceOfClass" ]
+                "Cast", [ "ChkCastAny" ]
+            ]
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let failures =
+            [
+                for method, expected in expectations do
+                    let next, reached = castsReached analysis fixture method
+                    analysis <- next
+
+                    if reached <> Set.ofList expected then
+                        yield $"%s{method}: reaches %A{Set.toList reached}, not %A{expected}"
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
 
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
@@ -5124,11 +5296,15 @@ public class Child : System.ComponentModel.Component
     public int Divide(int a, int b) => a / b;
 }
 
+public class GenericChild<T> : System.ComponentModel.Component { }
+
 public static class Spells
 {
     public static bool Check(object x) => x is Child;
     public static Child Cast(object x) => (Child)x;
     public static object Make() => new Child();
+    public static bool CheckGeneric(object x) => x is GenericChild<int>;
+    public static GenericChild<int> CastGeneric(object x) => (GenericChild<int>)x;
 }
 """
 
@@ -5148,7 +5324,7 @@ public static class Spells
             failwith $"Child.Divide: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
         // Answering at all is the claim: it is a summary rather than a crash.
-        for name in [ "Check" ; "Cast" ; "Make" ] do
+        for name in [ "Check" ; "Cast" ; "Make" ; "CheckGeneric" ; "CastGeneric" ] do
             EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Spells" name)
             |> ignore<EscapeAnalysisState * Escapes>
 

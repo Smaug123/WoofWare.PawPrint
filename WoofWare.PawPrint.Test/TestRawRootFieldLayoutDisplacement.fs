@@ -545,7 +545,11 @@ public unsafe struct Nest
         let state, blockStart =
             match rootKind with
             | RootKind.Native ->
-                IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized blockSize baseState
+                IlMachineState.allocateNativeMemory
+                    MemoryBlockInitialization.ZeroInitialized
+                    NativeBlockAlignment.malloc
+                    blockSize
+                    baseState
                 |> fun (ptr, state) -> state, ptr
             | RootKind.Stack ->
                 let state, thread = methodFrame baseState
