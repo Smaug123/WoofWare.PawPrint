@@ -1313,30 +1313,34 @@ public static class SR
         )
         |> Set.ofSeq
 
-    /// Whether `key`'s answer, over a CoreLib of `runtime`, is unknown only where it reaches the
-    /// QCalls that .NET 11's `SpanHelpers` copies and clears memory through, which the contract
-    /// table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`). Never on .NET 10.
+    /// Whether `site`, over a CoreLib of `runtime`, is one of the QCalls that .NET 11's
+    /// `SpanHelpers` copies and clears memory through, which the contract table has no row for
+    /// (`Net11Frontier.spanHelpersMemoryQCalls`). Never on .NET 10.
+    let private isNet11MemoryQCall
+        (runtime : EmulatedRuntime)
+        (analysis : EscapeAnalysisState)
+        (site : OpaqueSite)
+        : bool
+        =
+        match runtime with
+        | EmulatedRuntime.Net10 -> false
+        | EmulatedRuntime.Net11 ->
+            site.Reason = Opacity.NativeBody
+            && Set.contains
+                (EscapeAnalysis.methodName analysis site.Method)
+                (Set.ofList [ "System.SpanHelpers::memmove" ; "System.SpanHelpers::memset" ])
+
+    /// Whether `key`'s answer, over a CoreLib of `runtime`, is unknown only where it reaches one of
+    /// the QCalls `isNet11MemoryQCall` names. Never on .NET 10.
     let private unknownOnlyThroughNet11MemoryQCalls
         (runtime : EmulatedRuntime)
         (analysis : EscapeAnalysisState)
         (key : MethodKey)
         : EscapeAnalysisState * bool
         =
-        match runtime with
-        | EmulatedRuntime.Net10 -> analysis, false
-        | EmulatedRuntime.Net11 ->
-            let analysis, sources = EscapeAnalysis.unknownSources analysis key
+        let analysis, sources = EscapeAnalysis.unknownSources analysis key
 
-            let memoryQCalls =
-                Set.ofList [ "System.SpanHelpers::memmove" ; "System.SpanHelpers::memset" ]
-
-            analysis,
-            not sources.IsEmpty
-            && sources
-               |> Seq.forall (fun site ->
-                   site.Reason = Opacity.NativeBody
-                   && memoryQCalls.Contains (EscapeAnalysis.methodName analysis site.Method)
-               )
+        analysis, not sources.IsEmpty && Seq.forall (isNet11MemoryQCall runtime analysis) sources
 
     /// A place the analysis cannot see through, as the expectations spell it: the method it is in,
     /// `IL` at an instruction of the method's IL or `entry` at none, why, and the method the
@@ -9599,11 +9603,14 @@ public static class Runners
             Assembly.read loggerFactory (Some "Refusals.dll") (new MemoryStream (fabricateRefusals ()))
 
         let mutable analysis = analysisOver [ fixture ] id
+        // `analysisOver` reads the CoreLib of the runtime under test.
+        let runtime = EmulatedRuntime.ofCoreLib (hostCoreLib ())
 
         let failures =
             [
                 // Whether the type is byref-like decides these, and the open definition does not
-                // say.
+                // say. A box of a type variable may call `CastHelpers.Box`, which on .NET 11
+                // reaches a memory QCall the contract table has no row for.
                 for name, dependsOnInstantiation in
                     [ "BoxT", true ; "NewarrT", true ; "BoxTBranch", false ; "BoxU", false ] do
                     let key = methodNamed fixture "Refusals.Runners" name
@@ -9611,7 +9618,11 @@ public static class Runners
                     let next, sources = EscapeAnalysis.unknownSources next key
                     analysis <- next
 
-                    let reasons = sources |> Seq.map _.Reason |> Set.ofSeq
+                    let reasons =
+                        sources
+                        |> Seq.filter (isNet11MemoryQCall runtime analysis >> not)
+                        |> Seq.map _.Reason
+                        |> Set.ofSeq
 
                     let expected =
                         if dependsOnInstantiation then
@@ -9619,9 +9630,9 @@ public static class Runners
                         else
                             Set.empty
 
-                    if escapes.Unknown <> dependsOnInstantiation || reasons <> expected then
+                    if reasons <> expected then
                         yield
-                            $"%s{name}: unknown %b{escapes.Unknown} through %A{Set.toList reasons}; expected %A{Set.toList expected}"
+                            $"%s{name}: unknown %b{escapes.Unknown} through %A{Set.toList reasons}, beyond .NET 11's memory QCalls; expected %A{Set.toList expected}"
 
                     // Where an instance decides it, the definition's answer is opaque instead.
                     let shown = render analysis escapes
