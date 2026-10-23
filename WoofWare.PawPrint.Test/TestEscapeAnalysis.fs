@@ -4929,7 +4929,7 @@ public static class Uses
         try { f(); return 0; }
         catch (System.Exception) { return 1; }
     }
-    public static void PassGoneAsVararg() { Provider.Parent.Varargs(__arglist((Provider.GoneType)null)); }
+    public static void PassGoneAsVararg() { Provider.Parent.Varargs(__arglist(default(Provider.GoneStruct))); }
     public static bool CaughtLocalOfGone()
     {
         try
@@ -5062,7 +5062,8 @@ public static class Uses
                 "CatchGone", "=System.TypeLoadException"
                 // Named only by the signature of the method called.
                 "PassGone", "=System.TypeLoadException"
-                // Named only by a vararg call site's extra arguments, which no definition declares.
+                // Named only by a vararg call site's extra arguments, which no definition declares: a
+                // value type, which the JIT loads where a call passes it.
                 "PassGoneAsVararg", "=System.TypeLoadException"
                 // Named only by an indirect call's signature.
                 "CallGoneIndirectly", "=System.TypeLoadException"
