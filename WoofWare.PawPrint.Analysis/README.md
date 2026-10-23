@@ -121,6 +121,15 @@ method) may add more:
   only where it optimises fully, or where it folds a `box` the cast tests, which the analysis does
   not follow: it follows the call there too. It takes the runtime to be a Unix one, which casts to
   no type by type equivalence;
+* `unbox`, and `unbox.any` of a value type, call `CastHelpers.Unbox`, or `Unbox_Nullable` for a
+  `Nullable<T>` (`getUnBoxHelper`); `box` of a struct calls `Box`, and of a `Nullable<T>`,
+  `Box_Nullable`, while the JIT boxes a primitive type or an enum inline and a reference type not at
+  all (`impImportAndPushBox`); and `ldelema` of a reference type with no `readonly.` prefix calls
+  `LdelemaRef`. The analysis follows each, and, where a type variable decides the method, a generic
+  definition calls each some instance does, and an instance the one its code does. The JIT boxes
+  without the call where it optimises fully, or where it folds the box, which the analysis does not
+  follow. A `constrained.` call that boxes a value type, to call a method the type inherits, boxes
+  it the same way (`CORINFO_BOX_THIS`), which the analysis does not follow yet;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
@@ -216,9 +225,12 @@ Casting an object to an interface, or storing it in an array (whose element type
 interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class
 implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
 helpers' fallback, as it does from `castclass` and `isinst`, that is the assumption
-`DynamicCastsAsDocumented` (below). It does not yet follow `stelem.ref`'s helper, and there it
-assumes the same without listing it: an implementation that throws anything but the
-`InvalidCastException` its documentation asks for can let that escape unreported. The interface's
+`DynamicCastsAsDocumented` (below). It does not yet follow `CastHelpers.StelemRef`, which the JIT
+calls at `stelem.ref` and at `stelem` of a reference type, because `StelemRef` calls
+`Object.GetType`, whose slow path is the QCall `RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow`,
+which has no contract row: it can finish loading a type. There the analysis assumes the same
+without listing it: an implementation that throws anything but the `InvalidCastException` its
+documentation asks for can let that escape unreported. The interface's
 other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
 an object whose class does not implement the interface. The analysis counts an interface
 `ldvirtftn` as opaque, and resolves an interface call only through a `constrained.` type that
