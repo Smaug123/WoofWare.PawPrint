@@ -140,8 +140,8 @@ method) may add more:
   so such a call is opaque in it, as is one of an instance method on a class that may be derived
   from, whose instance may be of a class that overrides the method, one whose default bodies conflict through a variant
   interface, one on a type whose base types or interfaces, or the signature of a method of any of
-  them, name a type that is not there, and one naming a method whose own body has a local of such a
-  type. An instantiation nested more than eight deep is analysed as its definition, so that a
+  them, name a type that is not there, one naming a method whose own body has a local of such a
+  type, and one naming a method whose signature names a type that does not load. An instantiation nested more than eight deep is analysed as its definition, so that a
   method calling itself at ever deeper instantiations reaches finitely many;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
@@ -155,19 +155,24 @@ method) may add more:
   type that is static, a constructor, or an instance method of a value type or an interface, unless
   the type is marked `beforefieldinit`. A generic type's initializer runs for the instantiation
   the access or call names;
-* every token a body names, a `catch` clause's included, and the signature of every method it
-  calls, directly or through `calli`, is bound against the assemblies actually loaded, and a member
-  or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
-  `TypeLoadException` the JIT would throw. A member of one of the method's type variables
-  (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown". The type
-  a type token names, each type argument of a method a call instantiates, the type of each local
-  the body declares, and the method's own return type and parameter types, the JIT loads in full,
-  as it does a member reference's parent: what each derives from and implements, and the type of
-  each of its value-type fields, transitively, must be there too (`TypeLoad`). A local or parameter
-  of a pointer, byref or function pointer type it does not load at all, nor what that points to
-  (`JitTypeLoads`), unless Swift's calling convention calls the method, which the analysis takes
-  any `[UnmanagedCallersOnly]` method to be; a return type of such a type it loads with what it
-  points to;
+* every token a body names, a `catch` clause's included, and the signature of every method whose
+  address it takes (`ldftn`, `ldvirtftn`), is bound against the assemblies actually loaded, and a
+  member or type that is not there contributes the `MissingMethodException`,
+  `MissingFieldException` or `TypeLoadException` the JIT would throw. A member of one of the
+  method's type variables (`!!0::Value`) exists or not depending on the instantiation, so binding
+  it is "unknown". The type a type token names, each type argument of a method a call
+  instantiates, the type of each local the body declares, the method's own return type and
+  parameter types, and the return type of each method it calls (directly, through managed `calli`,
+  or by `jmp`) with the type of each parameter of a call that is a value type, the JIT loads in
+  full, as it does a member reference's parent: what each derives from and implements, and the
+  type of each of its value-type fields, transitively, must be there too (`TypeLoad`). A parameter
+  of a class type it loads where the method called is compiled, which that method's own answer
+  says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
+  nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method,
+  which the analysis takes any `[UnmanagedCallersOnly]` method to be; a return type of such a type
+  it loads with what it points to. What the JIT loads of a call of unmanaged code (a P/Invoke, or
+  `calli` by an unmanaged calling convention) depends on the marshalling the call needs, and the
+  analysis takes it to load every type of the signature in full;
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
   assembly. A module initializer is a type initializer, and the answer has what it raises and
@@ -366,12 +371,12 @@ needs rebuilding (or, for a package, a different version). Other ways such a cha
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
 constraint added since now rejects, and a type whose own base type, interfaces or fields are no
-longer there (`TypeLoadException`) where only the signature of a method that the body calls names
-it, or it declares a method or field that the body names by its definition.
+longer there (`TypeLoadException`) where only the signature of a method whose address the body
+takes names it, or it declares a method or field that the body names by its definition.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`
-clause or the method's own signature names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
+clause, the method's own signature or the signature of a method it calls names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
 `AppDomain.AssemblyResolve` handlers, which may throw (the runtime then raises a `FileLoadException`
 wrapping what they threw), or load an assembly in its place whose code then runs.
 

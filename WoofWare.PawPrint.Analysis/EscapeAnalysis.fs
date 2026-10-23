@@ -1984,13 +1984,9 @@ module EscapeAnalysis =
         let dependsOnInstantiation = OutsideBodyFact.Opaque Opacity.DependsOnInstantiation
 
         match token with
-        | MetadataToken.MethodDef handle ->
+        | MetadataToken.MethodDef _ ->
             let state, target = callTarget state assembly token
-
-            let state, failure =
-                firstBindFailure state assembly (signatureTypes assembly.Methods.[handle].Signature)
-
-            state, Some target, raisesOf failure
+            state, Some target, []
         | MetadataToken.MethodSpecification handle ->
             let spec = assembly.MethodSpecs.[handle]
             let state, _, failures = bindToken state assembly spec.Method
@@ -2011,28 +2007,21 @@ module EscapeAnalysis =
 
             let state, target, failures =
                 match assembly.Members.[handle].Signature with
-                | MemberSignature.Method signature ->
-                    let state, signatureFailure =
-                        firstBindFailure state assembly (signatureTypes signature)
-
-                    let signatureFailures = raisesOf signatureFailure
-
+                | MemberSignature.Method _ ->
                     match callTarget state assembly token with
                     | state, CallTarget.Missing ->
                         let thrown, made = constructedRaise state "System.MissingMethodException"
 
                         state,
                         Some CallTarget.Missing,
-                        OutsideBodyFact.Raises thrown
-                        :: OutsideBodyFact.Runs (made, [])
-                        :: signatureFailures
+                        [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
                     | state, CallTarget.TypeMissing ->
                         state, Some CallTarget.TypeMissing, raisesOf (Some BindFailure.TypeAbsent)
                     | state, CallTarget.AssemblyMissing ->
                         state, Some CallTarget.AssemblyMissing, raisesOf (Some BindFailure.AssemblyUnavailable)
                     | state, CallTarget.DependsOnInstantiation ->
-                        state, Some CallTarget.DependsOnInstantiation, dependsOnInstantiation :: signatureFailures
-                    | state, target -> state, Some target, signatureFailures
+                        state, Some CallTarget.DependsOnInstantiation, [ dependsOnInstantiation ]
+                    | state, target -> state, Some target, []
                 | MemberSignature.Field _ ->
                     let assemblies, target =
                         FieldReferenceResolution.resolve
@@ -2078,16 +2067,97 @@ module EscapeAnalysis =
                 spellingLoadFailure state assembly assembly.TypeSpecs.[handle].Signature
 
             state, None, raisesOf failure
-        | MetadataToken.StandaloneSignature handle ->
-            // A `calli`'s call-site signature.
-            let signature =
-                (assembly.PeReader.GetMetadataReader().GetStandaloneSignature handle)
-                    .DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
-                |> TypeMethodSignature.make
-
-            let state, failure = firstBindFailure state assembly (signatureTypes signature)
-            state, None, raisesOf failure
         | _ -> state, None, []
+
+    /// The signature of the method `token` names, as `assembly` spells it at the token, or a
+    /// `calli`'s call-site signature; `None` for a token naming anything else.
+    let rec private spelledSignature
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : TypeMethodSignature<TypeDefn> option
+        =
+        match token with
+        | MetadataToken.MethodDef handle -> Some assembly.Methods.[handle].Signature
+        | MetadataToken.MethodSpecification handle -> spelledSignature assembly assembly.MethodSpecs.[handle].Method
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.[handle].Signature with
+            | MemberSignature.Method signature -> Some signature
+            | MemberSignature.Field _ -> None
+        | MetadataToken.StandaloneSignature handle ->
+            (assembly.PeReader.GetMetadataReader().GetStandaloneSignature handle)
+                .DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
+            |> TypeMethodSignature.make
+            |> Some
+        | _ -> None
+
+    /// What an instruction with opcode `op` does with the method it names, whose signature is
+    /// `signature`, given what `bindToken` bound its token to; `None` for `ldftn` and `ldvirtftn`,
+    /// and for an instruction that names no method. Which CoreCLR implements by a P/Invoke is the
+    /// target's to say; a `calli`'s calling convention is the signature's.
+    let private memberOperand
+        (state : EscapeAnalysisState)
+        (op : UnaryMetadataTokenIlOp)
+        (signature : TypeMethodSignature<TypeDefn>)
+        (target : CallTarget option)
+        : MemberOperand option
+        =
+        match op with
+        | UnaryMetadataTokenIlOp.Call
+        | UnaryMetadataTokenIlOp.Callvirt
+        | UnaryMetadataTokenIlOp.Newobj ->
+            match target with
+            | Some (CallTarget.Method callee) ->
+                match (snd (methodOf state callee.Callee)).Body with
+                | MethodBody.PInvoke -> Some MemberOperand.UnmanagedCall
+                | _ -> Some MemberOperand.Call
+            | _ -> Some MemberOperand.Call
+        | UnaryMetadataTokenIlOp.Jmp -> Some MemberOperand.Jump
+        | UnaryMetadataTokenIlOp.Calli ->
+            match signature.Header.Get.CallingConvention with
+            | SignatureCallingConvention.Default
+            | SignatureCallingConvention.VarArgs -> Some MemberOperand.Call
+            | _ -> Some MemberOperand.UnmanagedCall
+        | UnaryMetadataTokenIlOp.Ldtoken -> Some MemberOperand.Token
+        | _ -> None
+
+    /// The first type of `signature`, which `assembly` spells, whose load fails where the JIT
+    /// compiling an instruction with operand `operand` loads it (`JitTypeLoads.memberPositions`),
+    /// and why. Where `JitTypeLoads` does not describe where, every type of the signature is taken
+    /// to load in full.
+    let private calleeSignatureLoadFailure
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (operand : MemberOperand)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : EscapeAnalysisState * BindFailure option
+        =
+        match JitTypeLoads.memberPositions operand with
+        | MemberPositions.Undescribed -> firstLoadFailure state assembly (signatureTypes signature)
+        | MemberPositions.Described positions ->
+            positions
+            |> List.collect (fun position ->
+                let spellings =
+                    match position with
+                    | JitTypePosition.CalleeReturn ->
+                        match signature.ReturnType with
+                        | MethodReturnType.Void -> []
+                        | MethodReturnType.Returns returned -> [ returned ]
+                    | JitTypePosition.CalleeParameter -> signature.ParameterTypes
+                    | JitTypePosition.FunctionPointerSignature
+                    | JitTypePosition.PossibleFunctionPointerSignature -> signatureTypes signature
+                    | other -> failwith $"BUG: JitTypeLoads.memberPositions answers %O{other} for %O{operand}"
+
+                spellings
+                |> List.choose (JitTypeLoads.load position)
+                |> List.map (fun load ->
+                    match load with
+                    | JitTypeLoad.InFull loaded -> loaded
+                    | load ->
+                        failwith
+                            $"BUG: JitTypeLoads.load answers %O{load} at %O{position} for %O{operand}, which this does not load"
+                )
+            )
+            |> firstLoadFailure state assembly
 
     /// What CoreCLR's JIT checks a method of `assembly` may access where an instruction's token is
     /// `token`, given what `bindToken` bound a method token to; `None` where the analysis does not
@@ -3255,6 +3325,39 @@ module EscapeAnalysis =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, target, failures = bindToken state assembly token.Token
+
+                    // Once the token binds, the JIT loads the types of the signature of the method
+                    // it names where `JitTypeLoads.memberPositions` says. Every type reference an
+                    // `ldftn`'s or `ldvirtftn`'s signature spells is taken to bind.
+                    let state, failures =
+                        let bound =
+                            failures
+                            |> List.forall (fun fact ->
+                                match fact with
+                                | OutsideBodyFact.Raises _ -> false
+                                | OutsideBodyFact.Runs _
+                                | OutsideBodyFact.Opaque _ -> true
+                            )
+
+                        let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
+                            failure |> Option.map (bindFailureFacts state) |> Option.defaultValue []
+
+                        match spelledSignature assembly token.Token with
+                        | Some signature when bound ->
+                            match tokenOp with
+                            | UnaryMetadataTokenIlOp.Ldftn
+                            | UnaryMetadataTokenIlOp.Ldvirtftn ->
+                                let state, failure = firstBindFailure state assembly (signatureTypes signature)
+
+                                state, failures @ raisesOf failure
+                            | _ ->
+                                match memberOperand state tokenOp signature target with
+                                | None -> state, failures
+                                | Some operand ->
+                                    let state, failure = calleeSignatureLoadFailure state assembly operand signature
+
+                                    state, failures @ raisesOf failure
+                        | _ -> state, failures
 
                     // A token that fails to bind names nothing to instantiate: the JIT throws
                     // before the body runs.
@@ -4851,6 +4954,21 @@ module EscapeAnalysis =
                     else
                         state, false
                 )
+            else
+                state, false
+
+        // It builds every type of the method's signature too, which fails where one does not load.
+        // The JIT loads a parameter's class only where the method that runs is compiled, and so
+        // which method that is, and what its compilation raises, is left undecided here.
+        let state, binds =
+            if binds then
+                let state, failure =
+                    firstLoadFailure
+                        state
+                        (assemblyOf state definition.DeclaringAssemblyFullName)
+                        (signatureTypes definition.Signature)
+
+                state, failure.IsNone
             else
                 state, false
 
