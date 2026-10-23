@@ -270,45 +270,106 @@ module TestBoxPattern =
             |> BoxPattern.foldsByRefLike (=) (fun _ target -> Some (target <> "Nullable`1")) "Held"
             |> Option.get
 
-        let context =
-            System.Runtime.Loader.AssemblyLoadContext ("BoxPattern", isCollectible = true)
+        // The JIT under test is the selected runtime's, so the cases run in a process of their own
+        // on it: a driver writes one line per case, whether the JIT refused `M<i>` and `C<i>`.
+        let driverSource =
+            """
+using System;
+using System.IO;
+using System.Reflection;
 
+public static class Driver
+{
+    private static bool Refused(string name)
+    {
         try
-            let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Runners"
+        {
+            typeof(Runners).GetMethod(name).Invoke(null, new object[] { false });
+            return false;
+        }
+        catch (TargetInvocationException e)
+        {
+            return e.InnerException is InvalidProgramException;
+        }
+    }
 
-            // Whether the JIT refuses to compile the method.
-            let refused (name : string) : bool =
-                try
-                    ty.GetMethod(name).Invoke ((null : obj), [| box false |]) |> ignore<obj>
-                    false
-                with :? TargetInvocationException as e ->
-                    e.InnerException :? InvalidProgramException
+    public static int Main(string[] args)
+    {
+        int count = int.Parse(args[1]);
+        using (var output = new StreamWriter(args[0]))
+        {
+            for (int i = 0; i < count; i++)
+            {
+                output.WriteLine((Refused("M" + i) ? "1" : "0") + (Refused("C" + i) ? "1" : "0"));
+            }
+        }
+        return 0;
+    }
+}
+"""
 
-            let compared =
-                cases
-                |> List.mapi (fun index case -> index, case)
-                |> List.filter (fun (index, _) -> not (refused $"C%d{index}"))
-
-            let failures =
+        let driver =
+            Roslyn.compileAssembly
+                "BoxPatternDriver"
+                Microsoft.CodeAnalysis.OutputKind.ConsoleApplication
                 [
-                    for index, (sequence, landedOn) in compared do
-                        let predicted = predictedFolded index
-                        let actual = not (refused $"M%d{index}")
-
-                        if predicted <> actual then
-                            yield
-                                $"%A{sequence} (landed on: %b{landedOn}): the JIT folded %b{actual}, BoxPattern %b{predicted}"
+                    Microsoft.CodeAnalysis.MetadataReference.CreateFromImage (
+                        System.Collections.Immutable.ImmutableArray.CreateRange image
+                    )
                 ]
+                [ driverSource ]
 
-            // The comparison covers both answers, and most of the cases.
-            let folded =
-                compared |> List.filter (fun (index, _) -> predictedFolded index) |> List.length
+        let directory = Directory.CreateTempSubdirectory "box-pattern"
 
-            (folded > 50, compared.Length - folded > 50, compared.Length * 2 > cases.Length)
-            |> shouldEqual (true, true, true)
+        let outcomes =
+            try
+                File.WriteAllBytes (Path.Combine (directory.FullName, "BoxPattern.dll"), image)
+                let driverPath = Path.Combine (directory.FullName, "BoxPatternDriver.dll")
+                File.WriteAllBytes (driverPath, driver)
+                let outcomesPath = Path.Combine (directory.FullName, "outcomes.txt")
 
-            match failures with
-            | [] -> ()
-            | failures -> failures |> String.concat Environment.NewLine |> failwith
-        finally
-            context.Unload ()
+                match RealRuntime.executeAssemblyInPlace [| outcomesPath ; string cases.Length |] driverPath with
+                | RealRuntimeResult.NormalExit 0 -> ()
+                | other -> failwith $"the driver did not exit cleanly on the real runtime: %O{other}"
+
+                File.ReadAllLines outcomesPath
+            finally
+                directory.Delete true
+
+        outcomes.Length |> shouldEqual cases.Length
+
+        // Each case whose control the JIT compiles, with whether it refused the box.
+        let compared =
+            outcomes
+            |> Array.toList
+            |> List.mapi (fun index line -> index, line)
+            |> List.choose (fun (index, line) ->
+                match line with
+                | "00" -> Some (index, false)
+                | "10" -> Some (index, true)
+                | "01"
+                | "11" -> None
+                | other -> failwith $"BUG: the driver wrote %s{other} for case %d{index}"
+            )
+
+        let failures =
+            [
+                for index, refused in compared do
+                    let sequence, landedOn = cases.[index]
+                    let predicted = predictedFolded index
+
+                    if predicted = refused then
+                        yield
+                            $"%A{sequence} (landed on: %b{landedOn}): the JIT folded %b{not refused}, BoxPattern %b{predicted}"
+            ]
+
+        // The comparison covers both answers, and most of the cases.
+        let folded =
+            compared |> List.filter (fun (index, _) -> predictedFolded index) |> List.length
+
+        (folded > 50, compared.Length - folded > 50, compared.Length * 2 > cases.Length)
+        |> shouldEqual (true, true, true)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
