@@ -526,6 +526,60 @@ module TestIntrinsicBody =
             | Some substituted, Some stub -> substituted.Instructions.Length |> shouldEqual stub.Instructions.Length
             | _ -> failwith $"%s{describe m}: a placeholder with no stub to run"
 
+    /// The class `corelib.h` binds as `STRUCTURE_MARSHALER` on `runtime`, whose intrinsics' bodies
+    /// `getMethodInfoWorker` (jitinterface.cpp) asks `TryGenerateStructMarshallingMethod` to
+    /// replace: its namespace and name, or `None` where the runtime has no such row.
+    let private structureMarshalerClass (runtime : EmulatedRuntime) : (string * string) option =
+        let corelibH =
+            Path.Combine (FrameworkUnderTest.requireRuntimeSourceOf runtime, "src", "coreclr", "vm", "corelib.h")
+
+        let rows =
+            File.ReadAllLines corelibH
+            |> Array.map _.Trim()
+            |> Array.filter _.StartsWith("DEFINE_CLASS(STRUCTURE_MARSHALER,")
+            |> List.ofArray
+
+        match rows with
+        | [] -> None
+        | [ row ] ->
+            match row.Substring(row.IndexOf '(' + 1).TrimEnd(')').Split ',' |> Array.map _.Trim() with
+            // `g_StubHelpersNS` is `System.StubHelpers`.
+            | [| _ ; "StubHelpers" ; name |] -> Some ("System.StubHelpers", name)
+            | _ -> failwith $"corelib.h's STRUCTURE_MARSHALER row is not of a shape this test reads: %s{row}"
+        | several -> failwith $"corelib.h has %d{several.Length} STRUCTURE_MARSHALER rows"
+
+    let runtimes : TestCaseData list = FrameworkUnderTest.everyRuntime
+
+    [<TestCaseSource(nameof runtimes)>]
+    let ``StructMarshalling is exactly the intrinsics of the class corelib.h binds as STRUCTURE_MARSHALER``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        let corelib = readCoreLib (FrameworkUnderTest.requireCoreLibPathOf runtime)
+        let methods = methodsOf corelib
+
+        let expected =
+            match structureMarshalerClass runtime with
+            | None -> Set.empty
+            | Some (ns, cls) ->
+                let ofClass =
+                    methods
+                    |> List.filter (fun m ->
+                        m.Namespace = ns && m.Class = cls && IntrinsicBody.isIntrinsic corelib m.Handle
+                    )
+
+                ofClass |> List.length |> shouldBeGreaterThan 0
+                ofClass |> List.map describe |> Set.ofList
+
+        methods
+        |> List.filter (fun m ->
+            IntrinsicBody.isIntrinsic corelib m.Handle
+            && IntrinsicBody.classify corelib m.Handle = IntrinsicBody.StructMarshalling
+        )
+        |> List.map describe
+        |> Set.ofList
+        |> shouldEqual expected
+
     [<Test>]
     let ``the pinned linux-x64 CoreLib has thousands of JIT expansions`` () : unit =
         // A floor, not a snapshot: if resolving a self-call through a MemberRef or MethodSpec

@@ -213,7 +213,7 @@ module TestMarshalBoolCharFields =
             | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason
             | Result.Ok (size, placements) ->
                 let blittable =
-                    StructMarshalStub.isBlittableStruct
+                    Blittability.isBlittableStruct
                         state.TypeSystem.ConcreteTypes
                         state.TypeSystem._LoadedAssemblies
                         bct

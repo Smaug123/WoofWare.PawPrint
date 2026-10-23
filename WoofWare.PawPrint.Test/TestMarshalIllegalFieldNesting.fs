@@ -285,7 +285,7 @@ public class LayoutClass { public int A; }
 
         let stub =
             if
-                StructMarshalStub.isBlittableStruct
+                Blittability.isBlittableStruct
                     state.TypeSystem.ConcreteTypes
                     state.TypeSystem._LoadedAssemblies
                     bct

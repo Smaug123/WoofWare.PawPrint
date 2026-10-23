@@ -17,9 +17,9 @@ module Net11Frontier =
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
 
-    /// The `MarshalNative_HasLayout` QCall, which .NET 11's `Marshal` asks before laying out a type.
-    let marshalHasLayout : string =
-        "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."
+    /// The body CoreCLR's VM gives `StructureMarshaler<T>` for a struct that is not blittable.
+    let structureMarshalerStub : string =
+        "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `DestroyStructure` marshal a struct through `StructureMarshaler<T>`, and for a struct that is not blittable CoreCLR's VM replaces the bodies of its `ConvertToUnmanagedCore`, `ConvertToManaged` and `FreeCore` with a stub that marshals the struct field by field (`StructMarshalStubs::TryGenerateStructMarshallingMethod`, dllimport.cpp). PawPrint does not run that stub, and refuses at the first of them the guest reaches: \"TODO: CoreCLR's VM replaces the body of System.Private.CoreLib System.StubHelpers.StructureMarshaler`1.ConvertToUnmanagedCore(&, *, &) : void with a stub that marshals Program+S#4 [PawPrintTestAssembly] field by field, since that struct is not blittable, and PawPrint does not run that stub\". Un-park when PawPrint's struct-marshal plan runs in their place."
 
     /// The checked-in native contract table is .NET 10's.
     let nativeContractTable : string =
