@@ -2104,6 +2104,46 @@ public static class SR
         escapes.Unknown |> shouldEqual false
 
     [<Test>]
+    let ``the cast helper that stores into an array of references is known, write barrier and all`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let key =
+            corelib.Methods
+            |> Seq.filter (fun (KeyValue (_, method)) ->
+                let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+
+                declaringType.Namespace = "System.Runtime.CompilerServices"
+                && declaringType.Name = "CastHelpers"
+                && method.Name = "StelemRef"
+            )
+            |> Seq.exactlyOne
+            |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        let analysis, escapes = EscapeAnalysis.escapes analysis key
+        let rendered = render analysis escapes
+
+        // A null array, an index out of its bounds, and an element of a type it cannot hold.
+        for raised in
+            [
+                "=System.NullReferenceException"
+                "=System.IndexOutOfRangeException"
+                "=System.ArrayTypeMismatchException"
+            ] do
+            rendered |> shouldContain raised
+
+        escapes.Unknown |> shouldEqual false
+
+    [<Test>]
     let ``CoreLib's resource lookup raises exactly its contract, besides what throwing an initializer's exception again does``
         ()
         : unit

@@ -580,6 +580,56 @@ module TestNativeContractTable =
         raises.Contains raised.Value |> shouldEqual true
         row.Contract.CanReturn |> shouldEqual false
 
+    /// Stores a reference through a reference to a location.
+    type private Store = delegate of byref<obj> * obj -> unit
+
+    [<Test>]
+    let ``what the cast helpers' write barrier raises on the real runtime is in its row`` () : unit =
+        let row =
+            (NativeContractTable.fcalls.Force ()).[("System.Runtime.CompilerServices.CastHelpers", "WriteBarrier")]
+
+        let raises =
+            row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
+
+        let writeBarrier =
+            typeof<obj>.Assembly
+                .GetType("System.Runtime.CompilerServices.CastHelpers", true)
+                .GetMethod ("WriteBarrier", BindingFlags.Static ||| BindingFlags.NonPublic)
+
+        // A private method of CoreLib, which only code that skips visibility checks can call.
+        let store =
+            let method =
+                Emit.DynamicMethod (
+                    "Store",
+                    typeof<Void>,
+                    [| typeof<obj>.MakeByRefType () ; typeof<obj> |],
+                    typeof<obj>.Module,
+                    true
+                )
+
+            let il = method.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit (Emit.OpCodes.Call, writeBarrier)
+            il.Emit Emit.OpCodes.Ret
+            method.CreateDelegate typeof<Store> :?> Store
+
+        let mutable location : obj = null
+        let stored = obj ()
+        store.Invoke (&location, stored)
+        Object.ReferenceEquals (location, stored) |> shouldEqual true
+        row.Contract.CanReturn |> shouldEqual true
+
+        let raised =
+            try
+                store.Invoke (&Runtime.CompilerServices.Unsafe.NullRef<obj> (), stored)
+                None
+            with e ->
+                Some (e.GetType().FullName)
+
+        raised |> shouldEqual (Some "System.NullReferenceException")
+        raises.Contains raised.Value |> shouldEqual true
+
     /// The rows whose cited code calls a routine vouched for as loading types, by native.
     let private loadingRows () : Set<string> =
         let loading =
