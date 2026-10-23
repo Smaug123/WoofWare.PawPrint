@@ -2406,8 +2406,8 @@ public static class SR
     /// reference type call the method `getCastingHelperStatic` (jitinterface.cpp) picks
     /// (`impCastClassOrIsInstToTree`); `unbox` and `unbox.any` of a value type, the one
     /// `getUnBoxHelper` picks; `box` of a struct, the one `getBoxHelper` picks
-    /// (`impImportAndPushBox`); and `ldelema` of a reference type with no `readonly.` prefix,
-    /// `LdelemaRef` (importer.cpp).
+    /// (`impImportAndPushBox`); `ldelema` of a reference type with no `readonly.` prefix,
+    /// `LdelemaRef`; and `stelem.ref`, and `stelem` of a reference type, `StelemRef` (importer.cpp).
     let private castSource =
         """
 using System;
@@ -2479,7 +2479,14 @@ public static class Cases
     public static int HashOfElement<T>(T[] a) => a[0].GetHashCode();
 
     public static void Store(object[] a, object o) => a[0] = o;
+    public static void StoreString(string[] a, string s) => a[0] = s;
+    public static void StoreNull(object[] a) => a[0] = null;
+    public static void StoreInt(int[] a, int i) => a[0] = i;
+    public static void StoreStruct(Comparable[] a, Comparable c) => a[0] = c;
     public static void StoreOf<T>(T[] a, T t) => a[0] = t;
+    public static void StoreOfString(string[] a, string s) => StoreOf(a, s);
+    public static void StoreOfInt(int[] a, int i) => StoreOf(a, i);
+    public static void StoreOfStruct(Comparable[] a, Comparable c) => StoreOf(a, c);
 
     public static bool Is<T>(object o) => o is T;
     public static bool IsOfString(object o) => Is<string>(o);
@@ -2503,8 +2510,7 @@ public static class Cases
 }
 """
 
-    /// The `CastHelpers` methods the JIT calls for an instruction, by name. The analysis does not
-    /// follow `StelemRef` yet, which `stelem.ref` calls.
+    /// The `CastHelpers` methods the JIT calls for an instruction, by name.
     let private helperEntries : string list =
         [
             "IsInstanceOfAny"
@@ -2600,8 +2606,16 @@ public static class Cases
                 "ElementOfString", [ "LdelemaRef" ]
                 "ElementOfInt", []
                 "HashOfElement", []
-                "Store", []
-                "StoreOf", []
+                // A store of null calls it too, which tests for null itself.
+                "Store", [ "StelemRef" ]
+                "StoreString", [ "StelemRef" ]
+                "StoreNull", [ "StelemRef" ]
+                "StoreInt", []
+                "StoreStruct", []
+                // Shared code stores a `__Canon`, a reference type's, by `stelem` of the type variable.
+                "StoreOfString", [ "StelemRef" ]
+                "StoreOfInt", []
+                "StoreOfStruct", []
                 // Shared code looks the type up, and casts to `__Canon` by the `Any` helper.
                 "IsOfString", [ "IsInstanceOfAny" ]
                 "IsOfInt", [ "IsInstanceOfClass" ]
@@ -2625,6 +2639,7 @@ public static class Cases
                 "BoxOf", [ "Box" ; "Box_Nullable" ]
                 "IsNull", [ "Box" ; "Box_Nullable" ]
                 "ElementOf", [ "LdelemaRef" ]
+                "StoreOf", [ "StelemRef" ]
             ]
 
         let mutable analysis = analysisOver [ fixture ] id
@@ -2641,6 +2656,50 @@ public static class Cases
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
+
+    [<Test>]
+    let ``a store into an array of references relies on what the cast helpers' fallback does`` () : unit =
+        Net11Frontier.park Net11Frontier.nativeContractTable
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Casts" OutputKind.DynamicallyLinkedLibrary [ castSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "Casts.dll") (new MemoryStream (image))
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                [ fixture ]
+                id
+
+        let key = methodNamed fixture "Casts.Cases" "Store"
+
+        let assuming, escapes = EscapeAnalysis.escapes (analysis Assumption.all) key
+        escapes.Unknown |> shouldEqual false
+
+        Set.intersect escapes.Assumes castFallbackAssumes
+        |> shouldEqual castFallbackAssumes
+
+        render assuming escapes |> shouldContain "=System.ArrayTypeMismatchException"
+
+        // Without what an `IDynamicInterfaceCastable` answers, the store is hidden where the
+        // fallback asks it.
+        let undynamic, sources =
+            EscapeAnalysis.unknownSources (analysis (Set.remove Assumption.DynamicCastsAsDocumented Assumption.all)) key
+
+        let rendered = sources |> Seq.map (renderSite undynamic) |> Set.ofSeq
+
+        let site =
+            "System.Runtime.InteropServices.DynamicInterfaceCastableHelpers::IsInterfaceImplemented IL VirtualCall "
+            + "System.Runtime.InteropServices.IDynamicInterfaceCastable::IsInterfaceImplemented"
+
+        if not (rendered.Contains site) then
+            failwith $"Without DynamicCastsAsDocumented, a store is hidden at %A{Set.toList rendered}, not at %s{site}"
 
     /// C# unboxes a `Nullable<T>` only by `unbox.any`, but `unbox` of one is IL too, and the JIT
     /// calls `Unbox_Nullable` for it (`getUnBoxHelper`).
