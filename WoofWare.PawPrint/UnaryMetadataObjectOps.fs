@@ -447,15 +447,120 @@ module internal UnaryMetadataObjectOps =
         constructObject loggerFactory logger baseClassTypes thread concretizedCtor declaringTypeHandle true state,
         WhatWeDid.Executed
 
+    /// Whether the JIT folds away the `box` of `boxed`, a byref-like type, at which the executing
+    /// method is, rather than refusing to compile the method over it: whether the instructions
+    /// after it in its block test or unbox the box at once (`BoxPattern`). `boxedSpelling` is how the
+    /// method spells the type, where its operand is a metadata token. Fails where the answer turns
+    /// on whether the JIT inlines the method into its caller, which PawPrint does not model.
+    let private byRefLikeBoxFolds
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (boxed : ConcreteTypeHandle)
+        (boxedSpelling : TypeDefn option)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        let frame = state.ThreadState.[thread].MethodState
+        let method = frame.ExecutingMethod
+
+        let body =
+            match method.Body with
+            | MethodBody.Il instructions -> instructions
+            | other -> failwith $"BUG: a box is executing in %s{method.Name}, which has no IL body (%A{other})"
+
+        // The type an instruction after the box names, as `isinst` and `unbox.any` resolve it, with
+        // its spelling where it is a metadata token. The JIT resolves it as it matches the pattern.
+        let resolve (state : IlMachineState) (operand : MetadataOperand) =
+            match operand with
+            | MetadataOperand.FromMetadata sourced ->
+                let activeAssy =
+                    state.LoadedAssembly sourced.SourceAssembly.FullName
+                    |> Option.defaultWith (fun () ->
+                        failwith $"BUG: metadata token source assembly %O{sourced.SourceAssembly} is not loaded"
+                    )
+
+                let state, spelling, _ =
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy sourced.Token
+
+                let state, handle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy.DefinitionFullName
+                        method.DeclaringTypeGenerics
+                        method.Generics
+                        spelling
+
+                state, (handle, Some spelling)
+            | MetadataOperand.FromDynamicScope scopeIndex ->
+                let scope = DynamicScopeOperand.executingScope "Box" state thread
+
+                match DynamicScopeOperand.closedType baseClassTypes "Box" scopeIndex state scope with
+                | Ok handle -> state, (handle, None)
+                | Error (_, why) ->
+                    failwith
+                        $"TODO: the box of byref-like %O{boxed} in dynamic method %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction whose DynamicScope entry %d{scopeIndex} the JIT refuses (%s{why}); it raises that refusal as it matches the pattern, which PawPrint does not model"
+
+        let state, follower =
+            match BoxPattern.follower body frame.IlOpIndex with
+            | BoxFollower.Branch -> state, BoxFollower.Branch
+            | BoxFollower.Other -> state, BoxFollower.Other
+            | BoxFollower.TestedCast cast ->
+                let state, cast = resolve state cast
+                state, BoxFollower.TestedCast cast
+            | BoxFollower.Unboxed unboxed ->
+                let state, unboxed = resolve state unboxed
+                state, BoxFollower.Unboxed unboxed
+            | BoxFollower.CastUnboxed (cast, unboxed) ->
+                let state, cast = resolve state cast
+                let state, unboxed = resolve state unboxed
+                state, BoxFollower.CastUnboxed (cast, unboxed)
+
+        let typeArguments = List.ofSeq method.DeclaringTypeGenerics
+        let methodArguments = List.ofSeq method.Generics
+
+        // The type as the JIT sees it: as it compiles the method, in its canonical form where the
+        // method is shared code over it, or as it is, where it inlines the method into a caller
+        // that names it exactly.
+        let view (compiled : bool) (handle : ConcreteTypeHandle, spelling : TypeDefn option) : JitTypeView =
+            {
+                Type = handle
+                Canonical =
+                    compiled
+                    && spelling
+                       |> Option.exists (
+                           CodeSharing.namesSharedArgument baseClassTypes state.TypeSystem typeArguments methodArguments
+                       )
+            }
+
+        let folds (compiled : bool) : bool option =
+            BoxPattern.foldsByRefLike
+                JitTypeComparison.provesEqual
+                (JitTypeComparison.decidesCastFromValueType baseClassTypes state.TypeSystem)
+                (view compiled (boxed, boxedSpelling))
+                (BoxFollower.map (view compiled) follower)
+
+        match folds true, folds false with
+        | Some compiled, Some inlined when compiled = inlined -> state, compiled
+        | Some compiled, Some inlined ->
+            failwith
+                $"Whether the JIT folds the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex}, which %A{follower} follows, depends on whether it inlines the method into its caller: shared code sees the type in its canonical form, which does not decide the comparison, but a copy inlined into a caller that names it exactly sees it as it is. PawPrint does not model inlining, so refuses to guess (folded as shared code: %b{compiled}; inlined: %b{inlined})."
+        | None, _
+        | _, None ->
+            failwith
+                $"TODO: whether the JIT folds the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex}, which %A{follower} follows, turns on CanCastTo over the canonical form of a type the method's shared code names, which PawPrint does not build"
+
     let executeBox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, typeHandle =
+        let state, typeHandle, spelling =
             match ctx.TypeOperand with
-            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromScope handle -> state, handle, None
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, ty, assy =
                     match metadataToken with
@@ -467,14 +572,17 @@ module internal UnaryMetadataObjectOps =
                     | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                     | _ -> failwith $"unexpected token {metadataToken} in Box"
 
-                IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    assy.DefinitionFullName
-                    currentMethod.DeclaringTypeGenerics
-                    currentMethod.Generics
-                    ty
+                let state, handle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        assy.DefinitionFullName
+                        currentMethod.DeclaringTypeGenerics
+                        currentMethod.Generics
+                        ty
+
+                state, handle, Some ty
 
         let toBox, state = state |> IlMachineState.popEvalStack thread
 
@@ -505,16 +613,29 @@ module internal UnaryMetadataObjectOps =
                 typeHandle
         | ConcreteTypeHandle.Concrete _ ->
 
-        // A byref-like type is stack-only, so boxing one is not a program the runtime will accept:
-        // measured on real .NET as InvalidProgramException, against `sizeof Span<int>` as a control
-        // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
-        // is only *reachable* from a `DynamicScope` operand, because no compiler emits it.
-        match
-            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes typeHandle
-        with
-        | Some (_, boxedDefn) when
-            LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies boxedDefn
-            ->
+        // A byref-like type is stack-only, so the JIT refuses to compile a method over a box of one
+        // with InvalidProgramException, unless the box's block goes on to test or unbox it at once
+        // and the JIT folds the box away. PawPrint refuses at the box rather than when the method
+        // is first called (docs/divergences.md). Where it folds, PawPrint boxes the value as for
+        // any other value type, and the object is unreachable once the instructions the pattern
+        // names have consumed it.
+        let state, refused =
+            match
+                AllConcreteTypes.tryTypeInfo
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    typeHandle
+            with
+            | Some (_, boxedDefn) when
+                LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies boxedDefn
+                ->
+                let state, folds =
+                    byRefLikeBoxFolds loggerFactory baseClassTypes thread typeHandle spelling state
+
+                state, not folds
+            | _ -> state, false
+
+        if refused then
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
@@ -527,7 +648,7 @@ module internal UnaryMetadataObjectOps =
                 []
                 thread
                 state
-        | _ ->
+        else
 
         let targetType =
             AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes |> Option.get

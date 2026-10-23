@@ -63,7 +63,10 @@ module TestFabricatedByRefLikeBox =
 
         let plain =
             let ty = byRefLike "Plain"
-            ty.DefineField ("X", typeof<int>, FieldAttributes.Public) |> ignore<FieldBuilder>
+
+            ty.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<FieldBuilder>
+
             ty.CreateType ()
 
         let holder =
@@ -113,7 +116,8 @@ module TestFabricatedByRefLikeBox =
             il.Emit (OpCodes.Box, span)
 
         let define (name : string) (emit : ILGenerator -> unit) : unit =
-            boxes.DefineMethod(name, staticAttributes, typeof<int>, Type.EmptyTypes).GetILGenerator () |> emit
+            boxes.DefineMethod(name, staticAttributes, typeof<int>, Type.EmptyTypes).GetILGenerator ()
+            |> emit
 
         // `int name<T>(T)`, whose `T` allows a byref-like type, ending in a return of `value`
         // unless `emit` returns first.
@@ -261,6 +265,27 @@ module TestFabricatedByRefLikeBox =
         landedOn.MarkLabel tests
         branches OpCodes.Brtrue landedOn
 
+        // A protected block starting between the box and the branch starts a block there too. The
+        // IL is invalid, the stack not being empty where the protected block starts, but the JIT
+        // refuses it over the box.
+        define
+            "BoxBranchInTry"
+            (fun il ->
+                let result = il.DeclareLocal typeof<int>
+                boxesHeld il
+                il.BeginExceptionBlock () |> ignore<Label>
+                let next = il.DefineLabel ()
+                il.Emit (OpCodes.Brtrue, next)
+                il.MarkLabel next
+                il.Emit OpCodes.Ldc_I4_2
+                il.Emit (OpCodes.Stloc, result)
+                il.BeginCatchBlock typeof<exn>
+                il.Emit OpCodes.Pop
+                il.EndExceptionBlock ()
+                il.Emit (OpCodes.Ldloc, result)
+                il.Emit OpCodes.Ret
+            )
+
         // The generic shapes, which only an instance decides.
         let boxTPop = generic "BoxTPop" 3 (fun il _ -> il.Emit OpCodes.Pop)
 
@@ -286,6 +311,23 @@ module TestFabricatedByRefLikeBox =
                     returns il 1
                     il.MarkLabel taken
                 )
+
+        // Casts the JIT decides from a canonical form only where the target is an interface, and to
+        // a generic one only where the canonical form casts to it.
+        let castingTo (name : string) (target : Type) =
+            generic
+                name
+                2
+                (fun il _ ->
+                    let taken = il.DefineLabel ()
+                    il.Emit (OpCodes.Isinst, target)
+                    il.Emit (OpCodes.Brtrue, taken)
+                    returns il 1
+                    il.MarkLabel taken
+                )
+
+        let boxTCastObject = castingTo "BoxTCastObject" typeof<obj>
+        let boxTCastEquatable = castingTo "BoxTCastEquatable" typeof<IEquatable<int>>
 
         let boxTUnbox =
             generic
@@ -324,10 +366,14 @@ module TestFabricatedByRefLikeBox =
         calls "CallsBoxTCastUnshared" boxTCast unsharedHolder (pushesDefault unsharedHolder)
         calls "CallsBoxTUnboxHeld" boxTUnbox held pushesHeld
         calls "CallsBoxTUnboxUnshared" boxTUnbox unsharedHolder (pushesDefault unsharedHolder)
-        // Code over `Holder<string>` is shared, and sees `Holder<__Canon>`, whose cast and unbox the
-        // JIT does not decide unless it inlines the callee into this caller, which sees the type as
-        // it is. Whether it does is up to the JIT.
+        // Code over `Holder<string>` is shared, and sees `Holder<__Canon>`. The JIT decides its cast
+        // to an interface with no type arguments all the same.
         calls "CallsBoxTCastShared" boxTCast sharedHolder (pushesDefault sharedHolder)
+        // But not its cast to a class, nor its unbox, unless it inlines the callee into this caller,
+        // which sees the type as it is; whether it does is up to the JIT. Nor its cast to a generic
+        // interface, unless `Holder<__Canon>` implements it, which PawPrint cannot tell.
+        calls "CallsBoxTCastObjectShared" boxTCastObject sharedHolder (pushesDefault sharedHolder)
+        calls "CallsBoxTCastEquatableShared" boxTCastEquatable sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxTUnboxShared" boxTUnbox sharedHolder (pushesDefault sharedHolder)
 
         boxes.CreateType () |> ignore<Type>
@@ -391,6 +437,7 @@ public static class Driver
         if ((r = ExpectRefused(Boxes.BoxIsinstObjectUnboxSame, 27, 28)) != 0) return r;
         if ((r = ExpectRefused(Boxes.BoxIsinstNullableBrtrue, 29, 30)) != 0) return r;
         if ((r = ExpectRefused(() => Boxes.BoxBranchLandedOn(false), 31, 32)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.BoxBranchInTry, 53, 54)) != 0) return r;
 
         if ((r = ExpectRefused(Boxes.CallsBoxTPopHeld, 33, 34)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTPopInt, 3, 35)) != 0) return r;
@@ -401,6 +448,7 @@ public static class Driver
         if ((r = Expect(Boxes.CallsBoxTCastUnshared, 1, 45)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTUnboxHeld, 4, 47)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTUnboxUnshared, 4, 49)) != 0) return r;
+        if ((r = Expect(Boxes.CallsBoxTCastShared, 1, 51)) != 0) return r;
 
         return 0;
     }
@@ -437,9 +485,14 @@ public static class Driver
 }
 """
 
-    [<TestCase("CallsBoxTCastShared", 1)>]
-    [<TestCase("CallsBoxTUnboxShared", 4)>]
-    let ``PawPrint refuses to guess whether the JIT folds a box in shared code`` (callee : string) (folded : int) =
+    [<TestCase("CallsBoxTCastObjectShared", 2, "inlines")>]
+    [<TestCase("CallsBoxTUnboxShared", 4, "inlines")>]
+    [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form")>]
+    let ``PawPrint refuses to guess whether the JIT folds a box in shared code``
+        (callee : string)
+        (folded : int)
+        (reason : string)
+        =
         let onHost, onPawPrint =
             FabricatedGuest.runOnBoth "ByRefLikeBox" (fabricate ()) $"%s{callee}Driver" (sharedDriver callee folded)
 
@@ -452,9 +505,12 @@ public static class Driver
         match onPawPrint with
         | FabricatedOutcome.Failed e ->
             let rec messages (e : exn) : string list =
-                if isNull e then [] else e.Message :: messages e.InnerException
+                if isNull e then
+                    []
+                else
+                    e.Message :: messages e.InnerException
 
             messages e
-            |> List.exists (fun message -> message.Contains "inlines")
+            |> List.exists (fun message -> message.Contains reason)
             |> shouldEqual true
         | FabricatedOutcome.Exited code -> failwith $"PawPrint ran the guest to exit code %d{code}"
