@@ -9877,6 +9877,32 @@ public static class Cases
                 ovf
                 [ overflow ]
                 [ divideByZero ]
+            // An int32 and a native int join, but a literal false decides the branch, which the
+            // importer folds even where it does not optimise, so only the int32 reaches the join:
+            // the least int32 by -1 overflows, though as a native int it would not.
+            case
+                "FoldedJoinLeastByMinusOne"
+                typeof<int>
+                [
+                    fun il ->
+                        let native = il.DefineLabel ()
+                        let joined = il.DefineLabel ()
+                        il.Emit Emit.OpCodes.Ldc_I4_0
+                        il.Emit (Emit.OpCodes.Brtrue, native)
+                        il.Emit (Emit.OpCodes.Ldc_I4, Int32.MinValue)
+                        il.Emit (Emit.OpCodes.Br, joined)
+                        il.MarkLabel native
+                        il.Emit Emit.OpCodes.Ldc_I4_0
+                        il.Emit Emit.OpCodes.Conv_I
+                        il.MarkLabel joined
+                        il.Emit Emit.OpCodes.Ldc_I4_M1
+                        il.Emit Emit.OpCodes.Div
+                        il.Emit Emit.OpCodes.Conv_I4
+                ]
+                (box 7)
+                ovf
+                [ overflow ]
+                [ divideByZero ]
         ]
 
     let private emitDivisions () : byte[] =
@@ -9957,3 +9983,389 @@ public static class Cases
         match unmet (analysisOver [ assembly ] id) assembly expectations with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// The stack type of an integer (ECMA-335 III.1.1).
+    [<RequireQualifiedAccess>]
+    type private IntegerWidth =
+        | Int32
+        | Int64
+        | Native
+
+    /// A `conv` of an integer that does not check for overflow, and the stack type it pushes
+    /// (ECMA-335 III.3.27).
+    type private Conversion =
+        {
+            Op : Emit.OpCode
+            Pushes : IntegerWidth
+        }
+
+    let private conversions : Conversion list =
+        [
+            Emit.OpCodes.Conv_I1, IntegerWidth.Int32
+            Emit.OpCodes.Conv_I2, IntegerWidth.Int32
+            Emit.OpCodes.Conv_I4, IntegerWidth.Int32
+            Emit.OpCodes.Conv_I8, IntegerWidth.Int64
+            Emit.OpCodes.Conv_U1, IntegerWidth.Int32
+            Emit.OpCodes.Conv_U2, IntegerWidth.Int32
+            Emit.OpCodes.Conv_U4, IntegerWidth.Int32
+            Emit.OpCodes.Conv_U8, IntegerWidth.Int64
+            Emit.OpCodes.Conv_I, IntegerWidth.Native
+            Emit.OpCodes.Conv_U, IntegerWidth.Native
+        ]
+        |> List.map (fun (op, pushes) ->
+            {
+                Op = op
+                Pushes = pushes
+            }
+        )
+
+    /// What a body does to the integer on top of the stack.
+    [<RequireQualifiedAccess>]
+    type private IntegerStep =
+        | Convert of Conversion
+        /// `neg`, which keeps the stack type.
+        | Negate
+
+        override this.ToString () : string =
+            match this with
+            | IntegerStep.Convert conversion -> conversion.Op.Name
+            | IntegerStep.Negate -> "neg"
+
+    /// An integer that a body makes of constants and divides its argument by, or branches on. It
+    /// pushes `Constant` (`ldc.i8` where `Wide`, `ldc.i4` of its low 32 bits otherwise), then takes
+    /// each of `Steps`. Where `JoinedWith` is `Some`, it pushes that int32 constant instead where
+    /// its Boolean argument is false, and takes `Constant` by `conv.i` where it is true, so that the
+    /// two paths meet with an int32 and a native int, which CoreCLR merges as a native int
+    /// (ECMA-335 III.1.8.1.3) unless the JIT folds the branch; then it takes `Steps`.
+    type private ConvertedDivision =
+        {
+            Constant : int64
+            Wide : bool
+            JoinedWith : int32 option
+            Steps : IntegerStep list
+            Division : Emit.OpCode
+        }
+
+        /// The stack type of the divisor, and so of the dividend, which the argument is.
+        member this.Width : IntegerWidth =
+            let start =
+                match this.JoinedWith with
+                | Some _ -> IntegerWidth.Native
+                | None -> if this.Wide then IntegerWidth.Int64 else IntegerWidth.Int32
+
+            (start, this.Steps)
+            ||> List.fold (fun width step ->
+                match step with
+                | IntegerStep.Convert conversion -> conversion.Pushes
+                | IntegerStep.Negate -> width
+            )
+
+    let private convertedDivisionGen : FsCheck.Gen<ConvertedDivision> =
+        // Most constants that conversions can make zero or -1 have all their low 8, 16 or 32 bits
+        // clear, or all set.
+        let constant =
+            FsCheck.FSharp.Gen.oneof
+                [
+                    FsCheck.FSharp.Gen.choose (-3, 3) |> FsCheck.FSharp.Gen.map int64
+                    FsCheck.FSharp.Gen.map3
+                        (fun (high : int) (bits : int) (allSet : bool) ->
+                            let shifted = int64 high <<< bits
+                            if allSet then shifted ||| ((1L <<< bits) - 1L) else shifted
+                        )
+                        (FsCheck.FSharp.Gen.choose (-4, 4))
+                        (FsCheck.FSharp.Gen.elements [ 8 ; 16 ; 32 ])
+                        (FsCheck.FSharp.Gen.elements [ false ; true ])
+                    FsCheck.FSharp.Gen.elements
+                        [
+                            Int64.MinValue
+                            Int64.MaxValue
+                            int64 Int32.MinValue
+                            int64 Int32.MaxValue
+                        ]
+                    FsCheck.FSharp.ArbMap.defaults |> FsCheck.FSharp.ArbMap.generate<int64>
+                ]
+
+        let step =
+            FsCheck.FSharp.Gen.frequency
+                [
+                    4,
+                    FsCheck.FSharp.Gen.elements conversions
+                    |> FsCheck.FSharp.Gen.map IntegerStep.Convert
+                    1, FsCheck.FSharp.Gen.constant IntegerStep.Negate
+                ]
+
+        // An int32 joined with a native int differs from the int32 alone only where it is
+        // negative, as conversions then extend it.
+        let joined =
+            FsCheck.FSharp.Gen.frequency
+                [
+                    2, FsCheck.FSharp.Gen.constant None
+                    1,
+                    FsCheck.FSharp.Gen.elements [ -1 ; 0 ; 1 ; Int32.MinValue ]
+                    |> FsCheck.FSharp.Gen.map Some
+                    1, constant |> FsCheck.FSharp.Gen.map (int32 >> Some)
+                ]
+
+        FsCheck.FSharp.Gen.map5
+            (fun constant wide joinedWith steps division ->
+                {
+                    Constant = constant
+                    Wide = wide
+                    JoinedWith = joinedWith
+                    Steps = steps
+                    Division = division
+                }
+            )
+            constant
+            (FsCheck.FSharp.Gen.elements [ false ; true ])
+            joined
+            (FsCheck.FSharp.Gen.choose (0, 3)
+             |> FsCheck.FSharp.Gen.bind (fun count -> FsCheck.FSharp.Gen.listOfLength count step))
+            (FsCheck.FSharp.Gen.elements
+                [
+                    Emit.OpCodes.Div
+                    Emit.OpCodes.Rem
+                    Emit.OpCodes.Div_Un
+                    Emit.OpCodes.Rem_Un
+                ])
+
+    /// An image whose type `Run` has, for the `i`th of `cases`, a method `Case<i>` of a dividend and
+    /// a Boolean that divides as the case says, and a method `Branch<i>` of a Boolean that makes
+    /// the case's integer as it says, then throws an `ArgumentException` where that is not zero, and
+    /// a `FormatException` where it is.
+    let private emitConvertedDivisions (cases : ConvertedDivision list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "ConvertedDivisions", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "ConvertedDivisions"
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        // Pushes the case's integer, reading the Boolean as the argument at `flag`.
+        let integer (il : Emit.ILGenerator) (flag : int16) (case : ConvertedDivision) : unit =
+            let pushConstant () =
+                if case.Wide then
+                    il.Emit (Emit.OpCodes.Ldc_I8, case.Constant)
+                else
+                    il.Emit (Emit.OpCodes.Ldc_I4, int32 case.Constant)
+
+            match case.JoinedWith with
+            | None -> pushConstant ()
+            | Some joinedWith ->
+                let native = il.DefineLabel ()
+                let joined = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Ldarg, flag)
+                il.Emit (Emit.OpCodes.Brtrue, native)
+                il.Emit (Emit.OpCodes.Ldc_I4, joinedWith)
+                il.Emit (Emit.OpCodes.Br, joined)
+                il.MarkLabel native
+                pushConstant ()
+                il.Emit Emit.OpCodes.Conv_I
+                il.MarkLabel joined
+                // The analysis follows both ways a `brtrue` that a branch lands on.
+                il.Emit Emit.OpCodes.Nop
+
+            for step in case.Steps do
+                match step with
+                | IntegerStep.Convert conversion -> il.Emit conversion.Op
+                | IntegerStep.Negate -> il.Emit Emit.OpCodes.Neg
+
+        cases
+        |> List.iteri (fun index case ->
+            let parameter =
+                match case.Width with
+                | IntegerWidth.Int32 -> typeof<int>
+                | IntegerWidth.Int64 -> typeof<int64>
+                | IntegerWidth.Native -> typeof<nativeint>
+
+            let il =
+                run
+                    .DefineMethod(
+                        $"Case%d{index}",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        parameter,
+                        [| parameter ; typeof<bool> |]
+                    )
+                    .GetILGenerator ()
+
+            il.Emit Emit.OpCodes.Ldarg_0
+            integer il 1s case
+            il.Emit case.Division
+            il.Emit Emit.OpCodes.Ret
+
+            let il =
+                run
+                    .DefineMethod(
+                        $"Branch%d{index}",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        [| typeof<bool> |]
+                    )
+                    .GetILGenerator ()
+
+            let nonZero = il.DefineLabel ()
+            integer il 0s case
+            il.Emit (Emit.OpCodes.Brtrue, nonZero)
+            il.Emit (Emit.OpCodes.Newobj, typeof<FormatException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+            il.MarkLabel nonZero
+            il.Emit (Emit.OpCodes.Newobj, typeof<ArgumentException>.GetConstructor Type.EmptyTypes)
+            il.Emit Emit.OpCodes.Throw
+        )
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// Every division of a batch is asked of the real runtime with a dividend of 7, which faults
+    /// only on a zero divisor, and with the least dividend of its width, which a signed division by
+    /// -1 overflows, each way its Boolean can decide the divisor; the analysis must find exactly
+    /// the faults those raise, as the divisor is one of the constants. It must find exactly the
+    /// exceptions each branch throws, too. Where an int32 joins a native int, whose width the JIT
+    /// decides, it must find at least those.
+    [<Test>]
+    let ``a converted constant decides a division's faults and a branch as on the real runtime`` () : unit =
+        let property (cases : ConvertedDivision list) : unit =
+            let image = emitConvertedDivisions cases
+
+            let onRealRuntime : (Set<string> * Set<string>) list =
+                let context =
+                    System.Runtime.Loader.AssemblyLoadContext ("ConvertedDivisions", isCollectible = true)
+
+                try
+                    let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                    cases
+                    |> List.mapi (fun index case ->
+                        let dividends : obj list =
+                            match case.Width with
+                            | IntegerWidth.Int32 -> [ box 7 ; box Int32.MinValue ]
+                            | IntegerWidth.Int64 -> [ box 7L ; box Int64.MinValue ]
+                            | IntegerWidth.Native -> [ box 7n ; box (nativeint Int64.MinValue) ]
+
+                        let flags : obj list =
+                            match case.JoinedWith with
+                            | Some _ -> [ box false ; box true ]
+                            | None -> [ box false ]
+
+                        let raised (name : string) (argument : obj[]) : string option =
+                            try
+                                run.GetMethod(name).Invoke ((null : obj), argument) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some ("=" + e.InnerException.GetType().FullName)
+
+                        let divided =
+                            [
+                                for dividend in dividends do
+                                    for flag in flags do
+                                        yield! Option.toList (raised $"Case%d{index}" [| dividend ; flag |])
+                            ]
+                            |> Set.ofList
+
+                        let branched =
+                            flags
+                            |> List.map (fun flag ->
+                                match raised $"Branch%d{index}" [| flag |] with
+                                | Some raised -> raised
+                                | None -> failwith $"Branch%d{index} returned on the real runtime"
+                            )
+                            |> Set.ofList
+
+                        divided, branched
+                    )
+                finally
+                    context.Unload ()
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let assembly =
+                Assembly.read loggerFactory (Some "ConvertedDivisions.dll") (new MemoryStream (image))
+
+            let arithmetic = Set.ofList [ divideByZero ; overflow ]
+
+            let thrown = Set.ofList [ "=System.ArgumentException" ; "=System.FormatException" ]
+
+            let _, failures =
+                ((analysisOver [ assembly ] id, []), List.indexed (List.zip cases onRealRuntime))
+                ||> List.fold (fun (analysis, failures) (index, (case, (divided, branched))) ->
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assembly "Run" $"Case%d{index}")
+
+                    let found = Set.intersect arithmetic (render analysis escapes)
+
+                    // Whether what the analysis finds is what the real runtime raises.
+                    let agrees (found : Set<string>) (raised : Set<string>) : bool =
+                        match case.JoinedWith with
+                        | Some _ -> Set.isSubset raised found
+                        | None -> found = raised
+
+                    let failures =
+                        if escapes.Unknown || not (agrees found divided) then
+                            $"%A{case}: the division finds %A{Set.toList found}, unknown %b{escapes.Unknown}; the real runtime raised %A{Set.toList divided}"
+                            :: failures
+                        else
+                            failures
+
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assembly "Run" $"Branch%d{index}")
+
+                    let found = Set.intersect thrown (render analysis escapes)
+
+                    let failures =
+                        if escapes.Unknown || not (agrees found branched) then
+                            $"%A{case}: the branch finds %A{Set.toList found}, unknown %b{escapes.Unknown}; the real runtime raised %A{Set.toList branched}"
+                            :: failures
+                        else
+                            failures
+
+                    analysis, failures
+                )
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+        let conversion (op : Emit.OpCode) : IntegerStep =
+            conversions
+            |> List.find (fun conversion -> conversion.Op = op)
+            |> IntegerStep.Convert
+
+        // Cases a random batch rarely holds.
+        property
+            [
+                // -1, which overflows the least dividend.
+                {
+                    Constant = 1L
+                    Wide = false
+                    JoinedWith = None
+                    Steps = [ IntegerStep.Negate ; conversion Emit.OpCodes.Conv_I8 ]
+                    Division = Emit.OpCodes.Div
+                }
+                // An int32 -1 joined with a native int is a native int -1, which conv.u8 keeps.
+                {
+                    Constant = 1L
+                    Wide = false
+                    JoinedWith = Some -1
+                    Steps = [ conversion Emit.OpCodes.Conv_U8 ]
+                    Division = Emit.OpCodes.Div
+                }
+                // The least int32 negates to itself, whose low byte is zero.
+                {
+                    Constant = int64 Int32.MinValue
+                    Wide = false
+                    JoinedWith = None
+                    Steps = [ IntegerStep.Negate ; conversion Emit.OpCodes.Conv_U1 ]
+                    Division = Emit.OpCodes.Div
+                }
+            ]
+
+        FsCheck.Check.One (
+            FsCheck.Config.QuickThrowOnFailure.WithMaxTest 20,
+            FsCheck.FSharp.Prop.forAll
+                (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf convertedDivisionGen))
+                property
+        )

@@ -111,7 +111,8 @@ module StackShape =
             match pushed with
             | Pushed.Argument index -> fixedShape inputs.Arguments.[index]
             | Pushed.Local index -> fixedShape inputs.Locals.[index]
-            | Pushed.Operand fromTop -> Ok (fun popped -> popped.[fromTop])
+            | Pushed.Operand fromTop
+            | Pushed.Negated fromTop -> Ok (fun popped -> popped.[fromTop])
             | Pushed.Arithmetic -> Ok arithmetic
             | Pushed.Number StackNumber.Float32 -> fixedShape (SlotShape.Float FloatWidth.Single)
             | Pushed.Number StackNumber.Float64 -> fixedShape (SlotShape.Float FloatWidth.Double)

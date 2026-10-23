@@ -94,8 +94,11 @@ type Pushed =
     /// `ldloc`.
     | Local of index : int
     /// One of the values the instruction popped, unchanged, counted from the top: what `dup`
-    /// pushes twice, and what `neg` and `ckfinite` return.
+    /// pushes twice, and what `ckfinite` returns.
     | Operand of fromTop : int
+    /// The negation of one of the values the instruction popped, counted from the top, of its
+    /// stack type: what `neg` returns.
+    | Negated of fromTop : int
     /// What `add`, `sub`, `mul`, `div` or `rem`, in any of their forms, make of the two values
     /// popped.
     | Arithmetic
@@ -250,7 +253,7 @@ module StackEffect =
         | NullaryIlOp.Shl
         | NullaryIlOp.Shr
         | NullaryIlOp.Shr_un -> Ok (effect 2 [ Pushed.Bitwise ])
-        | NullaryIlOp.Neg
+        | NullaryIlOp.Neg -> Ok (effect 1 [ Pushed.Negated 0 ])
         | NullaryIlOp.Ckfinite -> Ok (effect 1 [ Pushed.Operand 0 ])
         | NullaryIlOp.Not -> Ok (effect 1 [ Pushed.Bitwise ])
         | NullaryIlOp.Conv_I
