@@ -415,6 +415,7 @@
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
+    <Compile Include="TestLowLevelFutex.fs" />
     <Compile Include="TestEvpDigestNatives.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />

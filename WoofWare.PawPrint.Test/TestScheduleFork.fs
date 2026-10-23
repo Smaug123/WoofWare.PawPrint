@@ -240,24 +240,8 @@ module TestScheduleFork =
             0x5555555555555555UL
         ]
 
-    /// Why each forking guest is parked on .NET 11, if it is.
-    let private forkingParkedOnNet11 : Map<string, string> =
-        [
-            "ForkAfterSoloSleep.cs", Net11Frontier.linuxFutex
-            "ForkAfterSoloYield.cs", Net11Frontier.linuxFutex
-            "InvertedMonitorDeadlock.cs", Net11Frontier.linuxFutex
-            "JustABoolNotAMutex.cs", Net11Frontier.linuxFutex
-            "LostUpdate.cs", Net11Frontier.linuxFutex
-            "QueueIsNotThreadSafe.cs", Net11Frontier.linuxFutex
-            "SimultaneousCounter.cs", Net11Frontier.linuxFutex
-            "TwoCountersSeparated.cs", Net11Frontier.linuxFutex
-        ]
-        |> Map.ofList
-
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming a fork point reproduces the from-scratch run exactly`` (sourceName : string) : unit =
-        forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
-
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
 
@@ -313,8 +297,6 @@ module TestScheduleFork =
 
     [<TestCaseSource(nameof forkingGuests)>]
     let ``resuming with no seed reproduces the round-robin run`` (sourceName : string) : unit =
-        forkingParkedOnNet11 |> Map.tryFind sourceName |> Option.iter Net11Frontier.park
-
         // The degenerate case, and the one that checks `LastRan` survived the snapshot: round
         // robin's whole choice is "lowest id above `LastRan`", so a snapshot that dropped it
         // would pick a different thread at the fork and diverge immediately.

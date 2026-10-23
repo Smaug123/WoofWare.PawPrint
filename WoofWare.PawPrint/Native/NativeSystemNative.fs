@@ -6504,8 +6504,7 @@ module NativeSystemNative =
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Write`, which finishes a send as it finishes a write.
             match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
-            | Some (ParkedSyscall.ConnectionWrite _)
-            | Some (ParkedSyscall.Futex _) ->
+            | Some (ParkedSyscall.ConnectionWrite _) ->
                 let fd = fdArgument operation instruction.Arguments.[0]
 
                 let progress =
@@ -8448,8 +8447,7 @@ module NativeSystemNative =
             // real write copies it only as room appears.
             match UnixThreadState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some (ParkedSyscall.PipeWrite _)
-            | Some (ParkedSyscall.ConnectionWrite _)
-            | Some (ParkedSyscall.Futex _) ->
+            | Some (ParkedSyscall.ConnectionWrite _) ->
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
                 let progress =

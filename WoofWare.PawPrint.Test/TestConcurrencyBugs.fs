@@ -428,14 +428,4 @@ module TestConcurrencyBugs =
                 $"%s{scenario.SourceName}: %s{scenario.Description}\nPCT swept %d{visited.Count} seeds (of %d{List.length scenario.Seeds}) and never matched the bad outcome %A{scenario.Bad}. Observed (summary, example seed, count): %A{observed}"
 
     [<TestCaseSource(nameof scenarios)>]
-    let ``PCT exhibits the bad interleaving`` (scenario : Scenario) : unit =
-        match scenario.SourceName with
-        | "InvertedMonitorDeadlock.cs"
-        | "QueueIsNotThreadSafe.cs"
-        | "LostUpdate.cs"
-        | "TwoCountersSeparated.cs"
-        | "JustABoolNotAMutex.cs"
-        | "SimultaneousCounter.cs" -> Net11Frontier.park Net11Frontier.linuxFutex
-        | _ -> ()
-
-        demonstrate scenario
+    let ``PCT exhibits the bad interleaving`` (scenario : Scenario) : unit = demonstrate scenario

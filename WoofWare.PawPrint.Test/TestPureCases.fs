@@ -183,24 +183,6 @@ module TestPureCases =
                     "SocketPollTimeout.cs"
                 ]
                 |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
-            yield!
-                [
-                    "CancellationTokenRegistrationDisposeCrossThread.cs"
-                    "MonitorInflationContended.cs"
-                    "TaskConfigureAwaitBool.cs"
-                    "TaskConfigureAwaitOptions.cs"
-                    "TaskDelayWait.cs"
-                    "TaskMultipleBlockingWaits.cs"
-                    "TaskMultipleContinuations.cs"
-                    "TaskRunThrowSetsFaulted.cs"
-                    "TaskWhenAll.cs"
-                    "ThreadStartFlowsAsyncLocal.cs"
-                    "ThreadStateObserved.cs"
-                    "ThreadStateOfIdlePoolWorker.cs"
-                    "Threads.cs"
-                    "ValueTaskConfigureAwait.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
         ]
