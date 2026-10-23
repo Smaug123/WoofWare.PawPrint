@@ -265,6 +265,15 @@ module TestFabricatedByRefLikeBox =
         landedOn.MarkLabel tests
         branches OpCodes.Brtrue landedOn
 
+        // `System.Void` is no type `isinst` takes, which the JIT refuses as it resolves the token.
+        define
+            "BoxIsinstVoidBrtrue"
+            (fun il ->
+                boxesHeld il
+                il.Emit (OpCodes.Isinst, typeof<Void>)
+                branches OpCodes.Brtrue il
+            )
+
         // A protected block starting between the box and the branch starts a block there too. The
         // IL is invalid, the stack not being empty where the protected block starts, but the JIT
         // refuses it over the box.
@@ -364,6 +373,40 @@ module TestFabricatedByRefLikeBox =
             method.SetImplementationFlags MethodImplAttributes.NoInlining
             method
 
+        // Nor does it resolve the `unbox.any` operand after an `isinst` unless it proves the
+        // `isinst` operand is the boxed type, which in shared code it does not. This one names a
+        // type of an assembly that is nowhere to be found where the guest runs.
+        let absent =
+            let absentBuilder =
+                PersistedAssemblyBuilder (AssemblyName "ByRefLikeBoxAbsent", typeof<obj>.Assembly)
+
+            let ty =
+                absentBuilder
+                    .DefineDynamicModule("ByRefLikeBoxAbsent")
+                    .DefineType (
+                        "Absent",
+                        TypeAttributes.Public
+                        ||| TypeAttributes.Sealed
+                        ||| TypeAttributes.SequentialLayout,
+                        typeof<ValueType>
+                    )
+
+            ty.CreateType ()
+
+        let boxTCastUnboxAbsentNoInlining =
+            let method =
+                generic
+                    "BoxTCastUnboxAbsentNoInlining"
+                    4
+                    (fun il parameter ->
+                        il.Emit (OpCodes.Isinst, parameter)
+                        il.Emit (OpCodes.Unbox_Any, absent)
+                        il.Emit OpCodes.Pop
+                    )
+
+            method.SetImplementationFlags MethodImplAttributes.NoInlining
+            method
+
         // A default value of `ty`, through a local.
         let pushesDefault (ty : Type) (il : ILGenerator) =
             let local = il.DeclareLocal ty
@@ -403,6 +446,9 @@ module TestFabricatedByRefLikeBox =
         calls "CallsBoxTUnboxShared" boxTUnbox sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxHeldCastTUnshared" boxHeldCastT typeof<int> ignore
         calls "CallsBoxTUnboxNoInliningShared" boxTUnboxNoInlining sharedHolder (pushesDefault sharedHolder)
+
+        calls "CallsBoxTCastUnboxAbsentShared" boxTCastUnboxAbsentNoInlining sharedHolder (pushesDefault sharedHolder)
+
         calls "CallsBoxTUnboxNoInliningUnshared" boxTUnboxNoInlining unsharedHolder (pushesDefault unsharedHolder)
         calls "CallsBoxHeldCastTShared" boxHeldCastT typeof<string> ignore
 
@@ -482,6 +528,7 @@ public static class Driver
         if ((r = Expect(Boxes.CallsBoxHeldCastTUnshared, 1, 55)) != 0) return r;
         if ((r = ExpectRefused(Boxes.CallsBoxTUnboxNoInliningShared, 57, 58)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTUnboxNoInliningUnshared, 4, 59)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.CallsBoxTCastUnboxAbsentShared, 61, 62)) != 0) return r;
 
         return 0;
     }
@@ -498,7 +545,7 @@ public static class Driver
         FabricatedGuest.run "ByRefLikeBox" (fabricate ()) "ByRefLikeBoxDriver" driverSource 0
 
     /// A driver that calls `callee`, exiting 0 where the JIT folds its box and 1 where it refuses it.
-    let private sharedDriver (callee : string) (folded : int) : string =
+    let private refusalDriver (callee : string) (folded : int) : string =
         $$"""
 using System;
 
@@ -518,23 +565,28 @@ public static class Driver
 }
 """
 
-    [<TestCase("CallsBoxTCastObjectShared", 2, "inlines")>]
-    [<TestCase("CallsBoxTUnboxShared", 4, "inlines")>]
-    [<TestCase("CallsBoxHeldCastTShared", 1, "inlines")>]
-    [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form")>]
-    let ``PawPrint refuses to guess whether the JIT folds a box in shared code``
+    /// Where whether the JIT folds a box turns on whether it inlines the method, on what it decides
+    /// for a canonical form PawPrint does not build, or on its refusing a metadata operand, which
+    /// PawPrint does not validate, PawPrint stops rather than guess. Under `inliningDecides`, the
+    /// real runtime may fold the box or refuse it; otherwise it refuses it.
+    [<TestCase("CallsBoxTCastObjectShared", 2, "inlines", true)>]
+    [<TestCase("CallsBoxTUnboxShared", 4, "inlines", true)>]
+    [<TestCase("CallsBoxHeldCastTShared", 1, "inlines", true)>]
+    [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form", true)>]
+    [<TestCase("BoxIsinstVoidBrtrue", 1, "System.Void", false)>]
+    let ``PawPrint refuses to guess whether the JIT folds a box``
         (callee : string)
         (folded : int)
         (reason : string)
+        (inliningDecides : bool)
         =
         let onHost, onPawPrint =
-            FabricatedGuest.runOnBoth "ByRefLikeBox" (fabricate ()) $"%s{callee}Driver" (sharedDriver callee folded)
+            FabricatedGuest.runOnBoth "ByRefLikeBox" (fabricate ()) $"%s{callee}Driver" (refusalDriver callee folded)
 
-        // Either is the real runtime's, depending on whether the JIT inlines the callee.
         match onHost with
-        | RealRuntimeResult.NormalExit 0
+        | RealRuntimeResult.NormalExit 0 when inliningDecides -> ()
         | RealRuntimeResult.NormalExit 1 -> ()
-        | other -> failwith $"real runtime neither folded nor refused the box: %O{other}"
+        | other -> failwith $"real runtime did not exit as expected: %O{other}"
 
         match onPawPrint with
         | FabricatedOutcome.Failed e ->

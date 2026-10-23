@@ -494,6 +494,18 @@ module internal UnaryMetadataObjectOps =
                         method.Generics
                         spelling
 
+                // The JIT refuses a byref or `System.Void` as the type operand of these, as
+                // `DynamicScopeOperand.closedType` does for a scope entry; PawPrint does not
+                // validate a metadata operand, at this instruction or by itself.
+                match handle with
+                | ConcreteTypeHandle.Byref _ ->
+                    failwith
+                        $"TODO: the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction naming the byref type %O{handle}, which the JIT refuses; PawPrint does not validate a metadata type operand"
+                | _ when DynamicScopeOperand.isCorelibType baseClassTypes.Void state handle ->
+                    failwith
+                        $"TODO: the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction naming System.Void, which the JIT refuses; PawPrint does not validate a metadata type operand"
+                | _ -> ()
+
                 state, (handle, Some spelling)
             | MetadataOperand.FromDynamicScope scopeIndex ->
                 let scope = DynamicScopeOperand.executingScope "Box" state thread
@@ -503,6 +515,35 @@ module internal UnaryMetadataObjectOps =
                 | Error (_, why) ->
                     failwith
                         $"TODO: the box of byref-like %O{boxed} in dynamic method %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction whose DynamicScope entry %d{scopeIndex} the JIT refuses (%s{why}); it raises that refusal as it matches the pattern, which PawPrint does not model"
+
+        let typeArguments = List.ofSeq method.DeclaringTypeGenerics
+        let methodArguments = List.ofSeq method.Generics
+
+        // The type as the JIT sees it: as it compiles the method, in its canonical form where the
+        // method is shared code over it, or as it is, where it inlines the method into a caller
+        // that names it exactly.
+        let view
+            (state : IlMachineState)
+            (compiled : bool)
+            (handle : ConcreteTypeHandle, spelling : TypeDefn option)
+            : JitTypeView
+            =
+            {
+                Type = handle
+                Canonical =
+                    compiled
+                    && spelling
+                       |> Option.exists (
+                           CodeSharing.namesSharedArgument baseClassTypes state.TypeSystem typeArguments methodArguments
+                       )
+            }
+
+        // Whether the JIT may see the types as they are: it never inlines a method that forbids
+        // it. A dynamic method is never shared, so it sees them as they are anyway.
+        let inlinable =
+            match method with
+            | MethodInfo.Metadata (_, facts) -> not (facts.ImplAttributes.HasFlag MethodImplAttributes.NoInlining)
+            | MethodInfo.Synthesised _ -> true
 
         let state, follower =
             match BoxPattern.follower body frame.IlOpIndex with
@@ -518,42 +559,24 @@ module internal UnaryMetadataObjectOps =
                 let state, cast = resolve state cast
 
                 // The JIT resolves the `unbox.any` operand only once it has proved the `isinst`
-                // operand is the boxed type, which it proves of no other type in any view.
-                if fst cast = boxed then
+                // operand is the boxed type, in a view in which it may compile the method.
+                let provedIn (compiled : bool) : bool =
+                    JitTypeComparison.provesEqual
+                        (view state compiled cast)
+                        (view state compiled (boxed, boxedSpelling))
+
+                if provedIn true || (inlinable && provedIn false) then
                     let state, unboxed = resolve state unboxed
                     state, BoxFollower.CastUnboxed (cast, unboxed)
                 else
                     state, BoxFollower.Other
 
-        let typeArguments = List.ofSeq method.DeclaringTypeGenerics
-        let methodArguments = List.ofSeq method.Generics
-
-        // The type as the JIT sees it: as it compiles the method, in its canonical form where the
-        // method is shared code over it, or as it is, where it inlines the method into a caller
-        // that names it exactly.
-        let view (compiled : bool) (handle : ConcreteTypeHandle, spelling : TypeDefn option) : JitTypeView =
-            {
-                Type = handle
-                Canonical =
-                    compiled
-                    && spelling
-                       |> Option.exists (
-                           CodeSharing.namesSharedArgument baseClassTypes state.TypeSystem typeArguments methodArguments
-                       )
-            }
-
         let folds (compiled : bool) : bool option =
             BoxPattern.foldsByRefLike
                 JitTypeComparison.provesEqual
                 (JitTypeComparison.decidesCastFromValueType baseClassTypes state.TypeSystem)
-                (view compiled (boxed, boxedSpelling))
-                (BoxFollower.map (view compiled) follower)
-
-        // A dynamic method is never shared, so inlining one would not change the answer.
-        let inlinable =
-            match method with
-            | MethodInfo.Metadata (_, facts) -> not (facts.ImplAttributes.HasFlag MethodImplAttributes.NoInlining)
-            | MethodInfo.Synthesised _ -> true
+                (view state compiled (boxed, boxedSpelling))
+                (BoxFollower.map (view state compiled) follower)
 
         match folds true, folds false with
         | Some compiled, _ when not inlinable -> state, compiled

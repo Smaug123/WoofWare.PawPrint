@@ -866,7 +866,8 @@ instructions after it have consumed it. Where the fold turns on whether the JIT 
 PawPrint stops with an error that says so rather than pick one, unless the method is marked
 `MethodImplOptions.NoInlining`, which leaves only shared code's answer; and likewise where it turns on what
 `compareTypesForCast` answers for the canonical form of a type cast to a generic interface, which
-PawPrint does not build.
+PawPrint does not build, and where an instruction after the box names a byref or `System.Void` in
+metadata, which the JIT refuses as an operand but PawPrint does not validate.
 
 **Spec status**: ECMA-335 does not mention byref-like types; their rules are CoreCLR's.
 
