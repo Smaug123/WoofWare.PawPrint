@@ -2200,6 +2200,31 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "IsCollectible",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
+            // .NET 11's FCall in place of .NET 10's `RuntimeMethodHandle_GetIsCollectible` QCall,
+            // and the same question: CoreCLR is `FC_RETURN_BOOL(pMethod->IsCollectible())`
+            // (runtimehandles.cpp:1337), on a `MethodDesc*` it asserts non-null, and a method is
+            // collectible exactly when its loader allocator is. The handle is resolved for the
+            // QCall's reason.
+            let operation = "RuntimeMethodHandle.IsCollectible"
+
+            MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            |> ignore<MethodHandle>
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.ofBool (LoaderAllocator.isCollectible LoaderAllocator.Global))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsDynamicMethod",
           [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when

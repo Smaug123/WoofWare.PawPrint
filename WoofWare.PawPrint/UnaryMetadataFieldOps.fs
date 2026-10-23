@@ -593,6 +593,12 @@ module internal UnaryMetadataFieldOps =
                 | None ->
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}"
+            | EvalStackValue.NativeInt (NativeIntSource.TypeDescPtr typeDescFor) ->
+                match MethodTableProjection.tryProjectTypeDescField baseClassTypes field typeDescFor with
+                | Some value -> IlMachineState.pushToEvalStack value thread state
+                | None ->
+                    failwith
+                        $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through TypeDescPtr %O{typeDescFor}"
             | EvalStackValue.NativeInt nativeIntSource -> failwith $"todo: nativeint {nativeIntSource}"
             | EvalStackValue.Float f -> failwith "todo: float"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"

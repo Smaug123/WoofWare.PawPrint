@@ -5160,7 +5160,7 @@ module TestImpureCases =
                 [ "SignalRetryKeepsShimCopies.cs" ]
                 |> List.map (fun case -> case, Net11Frontier.linuxFutex)
             "DynamicAssemblyHosting.cs",
-            """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered."""
+            """On .NET 11, the `RuntimeModule_GetTypes` QCall takes a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: "Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)". Un-park when the handler takes .NET 11's signature."""
         ]
         |> Map.ofList
 

@@ -18,6 +18,10 @@ module internal MethodTableProjection =
     /// collide here.
     let private isByRefLikeFlag : int32 = 0x00001000
 
+    /// `enum_flag_Collectible` (methodtable.h), set on a MethodTable whose loader allocator is
+    /// collectible; .NET 11's `RuntimeType.IsCollectible` reads it.
+    let private collectibleFlag : int32 = 0x00200000
+
     let private genericsMaskNonGeneric : int32 = 0x00000000
     let private genericsMaskGenericInst : int32 = 0x00000010
     let private genericsMaskTypicalInst : int32 = 0x00000030
@@ -1002,6 +1006,10 @@ module internal MethodTableProjection =
             ||| (if hasComponentSize then hasComponentSizeFlag else 0)
             ||| (if isByRefLike then isByRefLikeFlag else 0)
             ||| (if containsGcPointers then containsGcPointersFlag else 0)
+            ||| (if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                     collectibleFlag
+                 else
+                     0)
             ||| (if hasComponentSize then
                      0
                  else
@@ -1393,6 +1401,72 @@ module internal MethodTableProjection =
                     // if a future path mistakenly reaches here.
                     None
             | _ -> None
+
+    /// `TypeDesc::_typeAndFlags` (typedesc.h) for a TypeDesc-shaped target, as CoreCLR holds it
+    /// once the type is fully loaded, which it is by the time a guest holds its handle.
+    let private typeDescTypeAndFlags (runtime : EmulatedRuntime) (typeDescFor : RuntimeTypeHandleTarget) : uint32 =
+        // The low byte is the TypeDesc's CorElementType. A ParamTypeDesc (byref, pointer) starts
+        // out `enum_flag_IsNotFullyLoaded` and is loaded through `TypeDesc::DoFullyLoad`, which
+        // sets `enum_flag_DependenciesLoaded` on its way to clearing that (typedesc.cpp:643); a
+        // type variable and a function pointer are constructed fully loaded and never set it.
+        // `enum_flag_HasTypeEquivalence` needs FEATURE_TYPEEQUIVALENCE, which only Windows builds
+        // define.
+        let dependenciesLoaded = 0x2000u
+
+        let elementTypeAndLoad =
+            match typeDescFor with
+            | RuntimeTypeHandleTarget.GenericParameter _ -> uint32 SignatureTypeCode.GenericTypeParameter
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> uint32 SignatureTypeCode.GenericMethodParameter
+            | RuntimeTypeHandleTarget.FunctionPointer _
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->
+                uint32 SignatureTypeCode.FunctionPointer
+            | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
+                uint32 SignatureTypeCode.ByReference ||| dependenciesLoaded
+            | RuntimeTypeHandleTarget.Composite (CompositeShape.Pointer, _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _) ->
+                uint32 SignatureTypeCode.Pointer ||| dependenciesLoaded
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ | ConcreteTypeHandle.OneDimArrayZero _ | ConcreteTypeHandle.Array _)
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                failwith
+                    $"TypeDesc::_typeAndFlags: %O{typeDescFor} has a MethodTable, not a TypeDesc, so no TypeDesc pointer names it (`TypeHandleTag.forTarget` is the classifier)"
+
+        // .NET 11 records a TypeDesc's collectibility in it (`enum_flag_IsCollectible`), from the
+        // loader allocator of its module or of its argument; .NET 10 leaves that bit unused.
+        let collectible =
+            match runtime with
+            | EmulatedRuntime.Net10 -> 0u
+            | EmulatedRuntime.Net11 ->
+                if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                    0x100u
+                else
+                    0u
+
+        elementTypeAndLoad ||| collectible
+
+    /// The value of a field on a `TypeDesc*`, the untagged form of a TypeDesc-shaped type handle
+    /// (see `NativeIntSource.TypeDescPtr`), or `None` for a field this does not model or a field
+    /// of another type. Only `_typeAndFlags` is modelled; `_exposedClassObject` is reached through
+    /// `tryProjectTypeDescFieldAddress`.
+    let tryProjectTypeDescField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (typeDescFor : RuntimeTypeHandleTarget)
+        : CliType option
+        =
+        if not (isTypeDescField baseClassTypes field) then
+            None
+        else
+
+        match field.Name with
+        | "_typeAndFlags" ->
+            typeDescTypeAndFlags (EmulatedRuntime.ofCoreLib baseClassTypes.Corelib) typeDescFor
+            |> uint32Field
+            |> Some
+        | _ -> None
 
     /// Address of a field on a `TypeDesc*`, the untagged form of a TypeDesc-shaped
     /// type handle (see `NativeIntSource.TypeDescPtr`).
