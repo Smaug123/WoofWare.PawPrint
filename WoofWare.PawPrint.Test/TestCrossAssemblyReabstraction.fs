@@ -240,6 +240,36 @@ public static class Cases
         return Expect<EntryPointNotFoundException>(() => d(new C()));
     }
 
+    /// A multicast delegate's elements are invoked by the runtime's own stub, which dispatches each.
+    public static int CaseMulticastOpenDelegate()
+    {
+        var d = (Func<IFoo, int>)Delegate.CreateDelegate(typeof(Func<IFoo, int>), typeof(IFoo).GetMethod("Frob"));
+        d += d;
+        return Expect<EntryPointNotFoundException>(() => d(new C()));
+    }
+
+    /// Reflection invokes the delegate, whose `Invoke` dispatches on the receiver it is passed.
+    public static int CaseOpenDelegateDynamicInvoke()
+    {
+        var d = (Func<IFoo, int>)Delegate.CreateDelegate(typeof(Func<IFoo, int>), typeof(IFoo).GetMethod("Frob"));
+
+        try
+        {
+            d.DynamicInvoke(new C());
+            return Returned;
+        }
+        catch (System.Reflection.TargetInvocationException e) when (e.InnerException is EntryPointNotFoundException)
+        {
+            return Threw;
+        }
+    }
+
+    [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "Frob")]
+    static extern int AccessFrob(IFoo receiver);
+
+    /// An `UnsafeAccessor` of an interface method dispatches on its argument as the accessor runs.
+    public static int CaseUnsafeAccessor() => Expect<EntryPointNotFoundException>(() => AccessFrob(new C()));
+
     public static int CaseReimplementedBelowReabstraction() =>
         Expect<EntryPointNotFoundException>(() => ThroughInterface(new Reimplemented()));
 
@@ -378,6 +408,18 @@ public static class Program
     [<Test>]
     let ``an open delegate invoked on a receiver whose slot is reabstracted throws`` () : unit =
         agrees "CaseOpenDelegate" 0
+
+    [<Test>]
+    let ``a multicast delegate invoked on a receiver whose slot is reabstracted throws`` () : unit =
+        agrees "CaseMulticastOpenDelegate" 0
+
+    [<Test>]
+    let ``an UnsafeAccessor of a reabstracted interface method throws`` () : unit = agrees "CaseUnsafeAccessor" 0
+
+    [<Test>]
+    let ``an open delegate invoked by reflection on a receiver whose slot is reabstracted throws`` () : unit =
+        Net11Frontier.park Net11Frontier.isAsyncMethod
+        agrees "CaseOpenDelegateDynamicInvoke" 0
 
     [<Test>]
     let ``a body below the reabstraction is more specific than it`` () : unit =

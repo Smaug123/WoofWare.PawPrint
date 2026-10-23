@@ -24,6 +24,7 @@
     <Compile Include="Net11Frontier.fs" />
     <Compile Include="SleepAndJoinStatus.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
+    <Compile Include="TestDispatchFailureRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestRoslyn.fs" />
@@ -510,6 +511,8 @@
     <EmbeddedResource Include="sourcesAspNet\*.cs" />
     <!-- This project's own F# sources, which TestFrameworkLocatorRatchet scans. -->
     <EmbeddedResource Include="@(Compile)" LogicalName="PawPrintTestSource/%(Filename)%(Extension)" />
+    <!-- WoofWare.PawPrint's F# sources, which TestDispatchFailureRatchet scans. -->
+    <EmbeddedResource Include="..\WoofWare.PawPrint\**\*.fs" Exclude="..\WoofWare.PawPrint\bin\**;..\WoofWare.PawPrint\obj\**" LogicalName="PawPrintLibrarySource/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

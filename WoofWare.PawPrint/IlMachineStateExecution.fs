@@ -44,8 +44,26 @@ module IlMachineStateExecution =
         | Runs of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         /// Nothing overrides the method the call names, which for a `callvirt` means that method runs.
         | NotOverridden
-        /// There is no method to run, and the call throws `DispatchFailure.exceptionType` instead.
+        /// There is no method to run, and the call raises what `raiseDispatchFailure` does instead.
         | Fails of DispatchFailure
+
+    /// What an instruction dispatched on, where dispatch found no method to run.
+    [<RequireQualifiedAccess>]
+    type DispatchSite =
+        /// The class of its receiver: `callvirt`, or `ldvirtftn`.
+        | Receiver
+        /// The type a `constrained.` prefix names.
+        | ConstrainedType
+
+    /// Where a dispatch that found no method to run was made.
+    [<RequireQualifiedAccess>]
+    type DispatchOrigin =
+        /// At the instruction the thread is positioned at, dispatching on this.
+        | Instruction of DispatchSite
+        /// In a method the instruction called that the runtime provides in place of IL, as it runs:
+        /// a delegate's `Invoke`, an `UnsafeAccessor`, reflection's invocation of a method. The
+        /// failure reaches the instruction as anything else that method raises does.
+        | Callee
 
     /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system,
     /// with the method it finds instantiated. Refuses where the type system does not model the
@@ -99,14 +117,17 @@ module IlMachineStateExecution =
         | Direct
         /// Run the implementation of the named virtual method that this receiver's runtime type
         /// selects. The receiver is the object the call passes as `this`. It is never null: a call
-        /// site raises NullReferenceException for a null receiver before it dispatches.
-        | Virtual of receiver : ManagedHeapAddress
+        /// site raises NullReferenceException for a null receiver before it dispatches. `origin`
+        /// is where the dispatch is made, which raises what it fails with.
+        | Virtual of receiver : ManagedHeapAddress * origin : DispatchOrigin
 
     /// The dispatch for a call site that dispatches on its receiver `this`: `Virtual` when
     /// `methodToCall` dispatches virtually, and `Direct` otherwise. The caller must already have
     /// raised NullReferenceException for a null receiver; `site` names the call site in the failure
-    /// when it has not, or when `this` is not an object reference at all.
+    /// when it has not, or when `this` is not an object reference at all. `origin` is where the
+    /// dispatch is made.
     let dispatchOnReceiver
+        (origin : DispatchOrigin)
         (site : string)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (this : EvalStackValue)
@@ -117,7 +138,7 @@ module IlMachineStateExecution =
         else
 
         match this with
-        | EvalStackValue.ObjectRef receiver -> CallDispatch.Virtual receiver
+        | EvalStackValue.ObjectRef receiver -> CallDispatch.Virtual (receiver, origin)
         | EvalStackValue.NullObjectRef ->
             failwith
                 $"BUG: %s{site}: virtual dispatch of %O{methodToCall} reached a null receiver; the call site must raise NullReferenceException before dispatching"
@@ -380,7 +401,7 @@ module IlMachineStateExecution =
         let state, dispatched =
             match dispatch with
             | CallDispatch.Direct -> state, Ok methodToCall
-            | CallDispatch.Virtual receiver ->
+            | CallDispatch.Virtual (receiver, origin) ->
                 if not methodToCall.DispatchesVirtually then
                     failwith
                         $"BUG: virtual dispatch requested for %O{methodToCall}, which does not dispatch virtually; build the dispatch with `dispatchOnReceiver`"
@@ -409,16 +430,13 @@ module IlMachineStateExecution =
                 match resolved with
                 | ResolvedVirtualCall.Runs implementation -> state, Ok implementation
                 | ResolvedVirtualCall.NotOverridden -> state, Ok methodToCall
-                | ResolvedVirtualCall.Fails failure -> state, Error failure
+                | ResolvedVirtualCall.Fails failure -> state, Error (failure, origin)
 
         match dispatched with
-        | Error failure ->
+        | Error (failure, origin) ->
             // The call consumes its receiver and arguments, and raises at the call site, which is
             // where exception dispatch must find the program counter. A delegate's invocation
-            // reaches here with it already past the `callvirt Invoke`, and says where it was. The
-            // message is the parameterless constructor's, where CoreCLR's
-            // (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`, `IDS_CLASSLOAD_AMBIGUOUS_OVERRIDE`) names the
-            // method, interface, receiver type and its assembly.
+            // reaches here with it already past the `callvirt Invoke`, and says where it was.
             let state =
                 (state, [ 0 .. MethodInfo.arity methodToCall ])
                 ||> List.fold (fun state _ -> IlMachineState.popEvalStack thread state |> snd)
@@ -434,12 +452,7 @@ module IlMachineStateExecution =
                         state
 
             let state, _ =
-                raiseRuntimeException
-                    loggerFactory
-                    baseClassTypes
-                    (DispatchFailure.exceptionType baseClassTypes failure)
-                    thread
-                    state
+                raiseDispatchFailure loggerFactory baseClassTypes origin failure thread state
 
             state, CallCommitment.Raised
         | Ok methodToCall ->
@@ -1897,6 +1910,51 @@ module IlMachineStateExecution =
             baseClassTypes
             (OpcodeFault.resolve baseClassTypes fault)
             message
+            currentThread
+            state
+
+    /// Raise what CoreCLR raises where a dispatch made at `origin` found `failure` in place of a
+    /// method to run, with the parameterless constructor's message, where CoreCLR's
+    /// (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`, `IDS_CLASSLOAD_AMBIGUOUS_OVERRIDE`) names the
+    /// method, interface, receiver type and its assembly.
+    ///
+    /// For an instruction, the thread must be positioned at it, and this refuses unless
+    /// `OpcodeFaults` says resolving it can fail by dispatching on that site, as
+    /// `raiseOpcodeFault` refuses a fault the table does not list.
+    and raiseDispatchFailure
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (origin : DispatchOrigin)
+        (failure : DispatchFailure)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let methodState = state.ThreadState.[currentThread].MethodState
+
+        let where =
+            $"%s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name}"
+
+        match origin with
+        | DispatchOrigin.Instruction site ->
+            let category =
+                match site with
+                | DispatchSite.Receiver -> ResolutionFault.DispatchOnReceiver
+                | DispatchSite.ConstrainedType -> ResolutionFault.DispatchOnConstrainedType
+
+            let permitted = faultsOfCurrentInstruction currentThread state
+
+            if not (OpcodeFaults.mayFailResolving category permitted) then
+                failwith
+                    $"logic error: %s{where} at IL_%04X{methodState.IlOpIndex} failed to dispatch on %O{site}, finding %s{DispatchFailure.describe failure}, but OpcodeFaults says that instruction's resolution fails only as %O{permitted}. Either the interpreter is raising a callee's failure as the instruction's, or the table is missing an entry; both are bugs and only a human can say which."
+        // What the frame making the call is says nothing here: a delegate's invocation pops the
+        // delegate's own frame before it dispatches, leaving whichever called `Invoke`.
+        | DispatchOrigin.Callee -> ()
+
+        raiseRuntimeException
+            loggerFactory
+            baseClassTypes
+            (DispatchFailure.exceptionType baseClassTypes failure)
             currentThread
             state
 

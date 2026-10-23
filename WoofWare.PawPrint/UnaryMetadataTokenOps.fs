@@ -419,7 +419,6 @@ module internal UnaryMetadataTokenOps =
             | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
                 pushTarget implementation state
             | state, ConstrainedStaticImplementation.Fails failure ->
-                let thrown = DispatchFailure.exceptionType ctx.BaseClassTypes failure
                 let frame = state.ThreadState.[thread].MethodState.ExecutingMethod
 
                 // Where CoreCLR raises depends on whether it compiled this frame as shared code.
@@ -432,14 +431,14 @@ module internal UnaryMetadataTokenOps =
                 // `DOTNET_TieredCompilation=0` an inlined one throws at the `ldftn`.
                 if CodeSharing.isShared ctx.BaseClassTypes state.TypeSystem frame then
                     failwith
-                        $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}, in %s{frame.Name}, which CoreCLR runs as shared generic code. Measured: real .NET then makes a delegate over a stub, and invoking it throws %s{thrown.Namespace}.%s{thrown.Name}, unless the JIT inlined the frame into exact code, where the ldftn throws; which one happens depends on the JIT"
+                        $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}, in %s{frame.Name}, which CoreCLR runs as shared generic code. Measured: real .NET then makes a delegate over a stub, and invoking it raises what that failure does, unless the JIT inlined the frame into exact code, where the ldftn throws; which one happens depends on the JIT"
                 else
-                    // With the parameterless constructor's message, as at a virtual call's dispatch
-                    // in `callMethodWithCommitment`.
-                    IlMachineStateExecution.raiseRuntimeException
+                    IlMachineStateExecution.raiseDispatchFailure
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
-                        thrown
+                        (IlMachineStateExecution.DispatchOrigin.Instruction
+                            IlMachineStateExecution.DispatchSite.ConstrainedType)
+                        failure
                         thread
                         state
         | None ->
@@ -561,13 +560,12 @@ module internal UnaryMetadataTokenOps =
 
             match target with
             | Error failure ->
-                // Measured: real .NET raises as it resolves the slot, so no delegate is made. With
-                // the parameterless constructor's message, as at a virtual call's dispatch in
-                // `callMethodWithCommitment`.
-                IlMachineStateExecution.raiseRuntimeException
+                // Measured: real .NET raises as it resolves the slot, so no delegate is made.
+                IlMachineStateExecution.raiseDispatchFailure
                     loggerFactory
                     baseClassTypes
-                    (DispatchFailure.exceptionType baseClassTypes failure)
+                    (IlMachineStateExecution.DispatchOrigin.Instruction IlMachineStateExecution.DispatchSite.Receiver)
+                    failure
                     thread
                     state
             | Ok target ->
