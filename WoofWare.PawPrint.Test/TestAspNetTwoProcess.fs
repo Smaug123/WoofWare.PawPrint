@@ -348,8 +348,14 @@ module TestAspNetTwoProcess =
         pawPrintClient.Stdout |> shouldEqual clientStdout
         pawPrintServer.Stdout |> shouldEqual serverStdout
 
+    /// Why both tests are parked on .NET 11.
+    let private runtimeAsync : string =
+        "On .NET 11 the guests run the Linux CoreLib, and past its futex waits reach `AsyncHelpers.Await`, a runtime-async method's, whose `TailAwait` call PawPrint refuses: \"CoreCLR's JIT replaces every call to this method with code of its own\" (measured on 11.0.0-rc.1 on 2026-10-23). Un-park when runtime-async methods run."
+
     [<Test>]
     let ``Kestrel and HttpClient as two processes on one machine agree with two real processes`` () : unit =
+        Net11Frontier.park runtimeAsync
+
         agree
             requests
             "server: listening\nserver: stopped after serving both item requests\n"
@@ -367,6 +373,8 @@ module TestAspNetTwoProcess =
     /// the client's next request goes over a new connection; see the module's docstring.
     [<Test>]
     let ``Kestrel closing an idle connection under a live HttpClient agrees with two real processes`` () : unit =
+        Net11Frontier.park runtimeAsync
+
         agree
             idleClose
             "server: listening\nserver: stopped after accepting a second connection once the first had ended\n"

@@ -220,6 +220,11 @@ module TestRaces =
         ()
         : unit
         =
+        // The CoreLib that runs is the host's, whatever kernel the guest is given.
+        if HostPlatform.flavour () = Some SimulatedUnixFlavour.Linux then
+            Net11Frontier.park
+                "On a Linux host the guest runs .NET 11's Linux CoreLib, whose thread-pool workers block through `futex(2)`, which the Darwin kernel this test gives it does not have, so the kernel refuses the call (measured at PCT seed 6). Un-park when this test runs a Darwin CoreLib under its Darwin kernel."
+
         // Under Darwin the signal beats the connection: the accept is interrupted, the handler
         // runs, and the accept restarts and takes the connection.
         let image = compileImage acceptMeetsSigterm
