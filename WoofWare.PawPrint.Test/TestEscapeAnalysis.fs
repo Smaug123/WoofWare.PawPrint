@@ -8950,6 +8950,691 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    let private invalidProgram = "System.InvalidProgramException"
+    let private typeLoad = "System.TypeLoadException"
+    let private badImageFormat = "System.BadImageFormatException"
+
+    /// An image of instructions the JIT refuses to compile a method over, for what their tokens
+    /// name, which no C# spells: `box` and `newarr` of `Span<int>`, and `call` and `ldftn` of the
+    /// abstract `Stream.Flush`. The JIT folds a `box` of a byref-like type away where the
+    /// instructions after it in its block test or unbox it (`impBoxPatternMatch`), and refuses
+    /// every other. Each method of `Refusals.Runners` but the generic ones takes a `bool` it may
+    /// branch on; the generic ones, whose type parameter allows a byref-like type but for `BoxU`'s:
+    ///   - `BoxT<T>(T)`, `box !!0; pop`, and `BoxTBranch<T>(T)`, `box !!0; brtrue`;
+    ///   - `NewarrT<T>()`, `ldc.i4.0; newarr !!0; pop`;
+    ///   - `BoxU<U>(U)`, `box !!0; pop`.
+    let private fabricateRefusals () : byte[] =
+        // F# refuses `typeof` of a byref-like type (FS0412).
+        let ofInt (definition : string) : Type =
+            typeof<obj>.Assembly.GetType(definition, true).MakeGenericType [| typeof<int> |]
+
+        let span = ofInt "System.Span`1"
+        let readOnlySpan = ofInt "System.ReadOnlySpan`1"
+        let empty = span.GetProperty("Empty").GetMethod
+        let flush = typeof<Stream>.GetMethod ("Flush", Type.EmptyTypes)
+
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Refusals", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Refusals"
+
+        let runners =
+            modul.DefineType (
+                "Refusals.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+            )
+
+        let staticAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+
+        let byRefLike (name : string) : Emit.TypeBuilder =
+            let ty =
+                modul.DefineType (
+                    name,
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            ty.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<Runtime.CompilerServices.IsByRefLikeAttribute>.GetConstructor Type.EmptyTypes,
+                    [||]
+                )
+            )
+
+            ty
+
+        // A byref-like type that a type argument instantiates, so that code over `Holder<string>`
+        // is shared.
+        let holder =
+            let ty = byRefLike "Refusals.Holder"
+
+            ty.DefineGenericParameters [| "T" |]
+            |> ignore<Emit.GenericTypeParameterBuilder[]>
+
+            ty.CreateType ()
+
+        // A byref-like type implementing `IDynamicInterfaceCastable`, which no value type is to the
+        // runtime, so that the JIT decides a cast from it.
+        let castable =
+            let ty = byRefLike "Refusals.Castable"
+            ty.AddInterfaceImplementation typeof<Runtime.InteropServices.IDynamicInterfaceCastable>
+
+            let implementation (name : string) (returns : Type) (parameters : Type[]) (emit : Emit.OpCode) =
+                let il =
+                    ty
+                        .DefineMethod(
+                            name,
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Virtual
+                            ||| MethodAttributes.Final
+                            ||| MethodAttributes.NewSlot
+                            ||| MethodAttributes.HideBySig,
+                            returns,
+                            parameters
+                        )
+                        .GetILGenerator ()
+
+                il.Emit emit
+                il.Emit Emit.OpCodes.Ret
+
+            implementation
+                "GetInterfaceImplementation"
+                typeof<RuntimeTypeHandle>
+                [| typeof<RuntimeTypeHandle> |]
+                Emit.OpCodes.Ldarg_1
+
+            implementation
+                "IsInterfaceImplemented"
+                typeof<bool>
+                [| typeof<RuntimeTypeHandle> ; typeof<bool> |]
+                Emit.OpCodes.Ldc_I4_0
+
+            ty.CreateType ()
+
+        let generic
+            (name : string)
+            (allowsByRefLike : bool)
+            (takesArgument : bool)
+            (emit : Emit.ILGenerator -> Type -> unit)
+            : Emit.MethodBuilder
+            =
+            let method = runners.DefineMethod (name, staticAttributes)
+            let parameter = method.DefineGenericParameters([| "T" |]).[0]
+
+            if allowsByRefLike then
+                parameter.SetGenericParameterAttributes GenericParameterAttributes.AllowByRefLike
+
+            method.SetReturnType typeof<int>
+            method.SetParameters (if takesArgument then [| parameter :> Type |] else [||])
+            let il = method.GetILGenerator ()
+            emit il parameter
+            il.Emit Emit.OpCodes.Ldc_I4_1
+            il.Emit Emit.OpCodes.Ret
+            method
+
+        let boxT =
+            generic
+                "BoxT"
+                true
+                true
+                (fun il parameter ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Box, parameter)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+        let boxTBranch =
+            generic
+                "BoxTBranch"
+                true
+                true
+                (fun il parameter ->
+                    let next = il.DefineLabel ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Box, parameter)
+                    il.Emit (Emit.OpCodes.Brtrue, next)
+                    il.MarkLabel next
+                )
+
+        let boxTCast =
+            generic
+                "BoxTCast"
+                true
+                true
+                (fun il parameter ->
+                    let next = il.DefineLabel ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Box, parameter)
+                    il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+                    il.Emit (Emit.OpCodes.Brtrue, next)
+                    il.MarkLabel next
+                )
+
+        let boxTUnbox =
+            generic
+                "BoxTUnbox"
+                true
+                true
+                (fun il parameter ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Box, parameter)
+                    il.Emit (Emit.OpCodes.Unbox_Any, parameter)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+        let newarrT =
+            generic
+                "NewarrT"
+                true
+                false
+                (fun il parameter ->
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                    il.Emit (Emit.OpCodes.Newarr, parameter)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+        let boxU =
+            generic
+                "BoxU"
+                false
+                true
+                (fun il parameter ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Box, parameter)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+        let define (name : string) (emit : Emit.ILGenerator -> unit) =
+            runners.DefineMethod(name, staticAttributes, typeof<int>, [| typeof<bool> |]).GetILGenerator ()
+            |> emit
+
+        let returns (il : Emit.ILGenerator) (value : int) =
+            il.Emit (Emit.OpCodes.Ldc_I4, value)
+            il.Emit Emit.OpCodes.Ret
+
+        let boxed (il : Emit.ILGenerator) =
+            il.Emit (Emit.OpCodes.Call, empty)
+            il.Emit (Emit.OpCodes.Box, span)
+
+        // `op` to a return of 2, past a return of 1.
+        let branches (op : Emit.OpCode) (il : Emit.ILGenerator) =
+            let taken = il.DefineLabel ()
+            il.Emit (op, taken)
+            returns il 1
+            il.MarkLabel taken
+            returns il 2
+
+        // `emit` only where the argument is true.
+        let onlyIf (emit : Emit.ILGenerator -> unit) (il : Emit.ILGenerator) =
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            emit il
+            il.MarkLabel skip
+            returns il 0
+
+        // `before`, then `branches`, where a branch from above also lands on the branch.
+        let landedOn (before : Emit.ILGenerator -> unit) (il : Emit.ILGenerator) =
+            let pushes = il.DefineLabel ()
+            let tests = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Brfalse, pushes)
+            il.Emit Emit.OpCodes.Ldnull
+            il.Emit (Emit.OpCodes.Br, tests)
+            il.MarkLabel pushes
+            before il
+            il.MarkLabel tests
+            branches Emit.OpCodes.Brtrue il
+
+        let popped (emit : Emit.ILGenerator -> unit) (il : Emit.ILGenerator) =
+            emit il
+            il.Emit Emit.OpCodes.Pop
+
+        let newarr (il : Emit.ILGenerator) =
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Newarr, span)
+
+        let callsFlush (il : Emit.ILGenerator) =
+            il.Emit Emit.OpCodes.Ldnull
+            il.Emit (Emit.OpCodes.Call, flush)
+
+        let calls (callee : MethodInfo) (pushes : Emit.ILGenerator -> unit) (il : Emit.ILGenerator) =
+            pushes il
+            il.Emit (Emit.OpCodes.Call, callee)
+            il.Emit Emit.OpCodes.Ret
+
+        let pushesSpan (il : Emit.ILGenerator) = il.Emit (Emit.OpCodes.Call, empty)
+        let pushesInt (il : Emit.ILGenerator) = il.Emit Emit.OpCodes.Ldc_I4_0
+
+        define
+            "BoxPop"
+            (fun il ->
+                popped boxed il
+                returns il 0
+            )
+
+        define
+            "BoxBrtrue"
+            (fun il ->
+                boxed il
+                branches Emit.OpCodes.Brtrue il
+            )
+
+        define
+            "BoxBrfalse"
+            (fun il ->
+                boxed il
+                branches Emit.OpCodes.Brfalse il
+            )
+
+        define
+            "BoxIsinstObjectBrtrue"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+                branches Emit.OpCodes.Brtrue il
+            )
+
+        define
+            "BoxIsinstDisposableBrfalse"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<IDisposable>)
+                branches Emit.OpCodes.Brfalse il
+            )
+
+        define
+            "BoxIsinstLdnullCgtun"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+                il.Emit Emit.OpCodes.Ldnull
+                il.Emit Emit.OpCodes.Cgt_Un
+                il.Emit Emit.OpCodes.Ret
+            )
+
+        define
+            "BoxIsinstPop"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+                il.Emit Emit.OpCodes.Pop
+                returns il 0
+            )
+
+        for name, unboxed in [ "BoxUnboxSame", span ; "BoxUnboxOther", readOnlySpan ] do
+            define
+                name
+                (fun il ->
+                    boxed il
+                    il.Emit (Emit.OpCodes.Unbox_Any, unboxed)
+                    il.Emit Emit.OpCodes.Pop
+                    returns il 0
+                )
+
+        for name, cast in [ "BoxIsinstSameUnboxSame", span ; "BoxIsinstObjectUnboxSame", typeof<obj> ] do
+            define
+                name
+                (fun il ->
+                    boxed il
+                    il.Emit (Emit.OpCodes.Isinst, cast)
+                    il.Emit (Emit.OpCodes.Unbox_Any, span)
+                    il.Emit Emit.OpCodes.Pop
+                    returns il 0
+                )
+
+        define "BoxBranchLandedOn" (landedOn boxed)
+
+        define
+            "BoxIsinstBranchLandedOn"
+            (landedOn (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+            ))
+
+        define
+            "BoxInTry"
+            (fun il ->
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                popped boxed il
+                il.BeginCatchBlock typeof<exn>
+                il.Emit Emit.OpCodes.Pop
+                il.EndExceptionBlock ()
+                returns il 0
+            )
+
+        define "BoxIfArg" (onlyIf (popped boxed))
+
+        define
+            "BoxDead"
+            (fun il ->
+                let past = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Br, past)
+                popped boxed il
+                il.MarkLabel past
+                returns il 0
+            )
+
+        define
+            "BoxPastCapabilityBranch"
+            (fun il ->
+                let skip = il.DefineLabel ()
+
+                il.Emit (
+                    Emit.OpCodes.Call,
+                    typeof<Runtime.Intrinsics.Vector128>.GetProperty("IsHardwareAccelerated").GetMethod
+                )
+
+                il.Emit (Emit.OpCodes.Brtrue, skip)
+                popped boxed il
+                il.MarkLabel skip
+                returns il 0
+            )
+
+        define
+            "BoxPastNewobjBranch"
+            (fun il ->
+                let skip = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Newobj, typeof<obj>.GetConstructor Type.EmptyTypes)
+                il.Emit (Emit.OpCodes.Brtrue, skip)
+                popped boxed il
+                il.MarkLabel skip
+                returns il 0
+            )
+
+        define
+            "NewarrPop"
+            (fun il ->
+                popped newarr il
+                returns il 0
+            )
+
+        define "NewarrIfArg" (onlyIf (popped newarr))
+
+        define
+            "CallAbstract"
+            (fun il ->
+                callsFlush il
+                returns il 0
+            )
+
+        define "CallAbstractIfArg" (onlyIf callsFlush)
+
+        define
+            "LdftnAbstract"
+            (fun il ->
+                il.Emit (Emit.OpCodes.Ldftn, flush)
+                il.Emit Emit.OpCodes.Pop
+                returns il 0
+            )
+
+        define "CallsBoxTSpan" (calls (boxT.MakeGenericMethod [| span |]) pushesSpan)
+        define "CallsBoxTInt" (calls (boxT.MakeGenericMethod [| typeof<int> |]) pushesInt)
+        define "CallsBoxTBranchSpan" (calls (boxTBranch.MakeGenericMethod [| span |]) pushesSpan)
+        define "CallsNewarrTSpan" (calls (newarrT.MakeGenericMethod [| span |]) ignore)
+        define "CallsNewarrTInt" (calls (newarrT.MakeGenericMethod [| typeof<int> |]) ignore)
+        define "CallsBoxUInt" (calls (boxU.MakeGenericMethod [| typeof<int> |]) pushesInt)
+
+        // A default value of `ty`, through a local.
+        let pushesDefault (ty : Type) (il : Emit.ILGenerator) =
+            let local = il.DeclareLocal ty
+            il.Emit (Emit.OpCodes.Ldloca, local)
+            il.Emit (Emit.OpCodes.Initobj, ty)
+            il.Emit (Emit.OpCodes.Ldloc, local)
+
+        let holderOf (argument : Type) : Type = holder.MakeGenericType [| argument |]
+
+        define
+            "BoxIsinstNullableBrtrue"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, typeof<Nullable<int>>)
+                branches Emit.OpCodes.Brtrue il
+            )
+
+        define
+            "BoxCastableIsinstBrtrue"
+            (fun il ->
+                pushesDefault castable il
+                il.Emit (Emit.OpCodes.Box, castable)
+                il.Emit (Emit.OpCodes.Isinst, typeof<obj>)
+                branches Emit.OpCodes.Brtrue il
+            )
+
+        for name, argument in [ "Shared", typeof<string> ; "Unshared", typeof<int> ] do
+            let held = holderOf argument
+            define $"CallsBoxTCast%s{name}" (calls (boxTCast.MakeGenericMethod [| held |]) (pushesDefault held))
+            define $"CallsBoxTUnbox%s{name}" (calls (boxTUnbox.MakeGenericMethod [| held |]) (pushesDefault held))
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// What the JIT does compiling a runner of `fabricateRefusals`, or the method it calls,
+    /// whatever its argument.
+    [<RequireQualifiedAccess>]
+    type private Refusal =
+        | Compiles
+        /// It refuses, raising this.
+        | Raises of string
+        /// It refuses the callee's shared code, raising this, but not where it inlines the callee,
+        /// which it may: there it sees the callee's types as they are. The analysis reports it.
+        | UnlessInlined of string
+
+    /// Each runner of `fabricateRefusals`, and what the JIT does compiling it.
+    let private refusals : (string * Refusal) list =
+        [
+            "BoxPop", Refusal.Raises invalidProgram
+            "BoxBrtrue", Refusal.Compiles
+            "BoxBrfalse", Refusal.Compiles
+            "BoxIsinstObjectBrtrue", Refusal.Compiles
+            "BoxIsinstDisposableBrfalse", Refusal.Compiles
+            // The JIT folds `isinst; ldnull; cgt.un` after a box of any other type.
+            "BoxIsinstLdnullCgtun", Refusal.Raises invalidProgram
+            "BoxIsinstPop", Refusal.Raises invalidProgram
+            "BoxUnboxSame", Refusal.Compiles
+            "BoxUnboxOther", Refusal.Raises invalidProgram
+            "BoxIsinstSameUnboxSame", Refusal.Compiles
+            "BoxIsinstObjectUnboxSame", Refusal.Raises invalidProgram
+            // A branch landing on the instruction after the box starts a block there, and the JIT
+            // matches a pattern only within the box's block.
+            "BoxBranchLandedOn", Refusal.Raises invalidProgram
+            "BoxIsinstBranchLandedOn", Refusal.Raises invalidProgram
+            // The method's own handlers never see what compiling it raises.
+            "BoxInTry", Refusal.Raises invalidProgram
+            // Nor does it matter whether a run reaches the instruction, so long as the JIT does.
+            "BoxIfArg", Refusal.Raises invalidProgram
+            "BoxDead", Refusal.Compiles
+            // Nor where the JIT folds a branch on a capability query past it.
+            "BoxPastCapabilityBranch", Refusal.Compiles
+            // No run reaches the box, a branch on an object `newobj` made always being taken, but
+            // the JIT compiles it.
+            "BoxPastNewobjBranch", Refusal.Raises invalidProgram
+            "NewarrPop", Refusal.Raises typeLoad
+            "NewarrIfArg", Refusal.Raises typeLoad
+            "CallAbstract", Refusal.Raises badImageFormat
+            "CallAbstractIfArg", Refusal.Raises badImageFormat
+            "LdftnAbstract", Refusal.Raises badImageFormat
+            "CallsBoxTSpan", Refusal.Raises invalidProgram
+            "CallsBoxTInt", Refusal.Compiles
+            "CallsBoxTBranchSpan", Refusal.Compiles
+            "CallsNewarrTSpan", Refusal.Raises typeLoad
+            "CallsNewarrTInt", Refusal.Compiles
+            "CallsBoxUInt", Refusal.Compiles
+            // The JIT decides no cast to a `Nullable<T>`.
+            "BoxIsinstNullableBrtrue", Refusal.Raises invalidProgram
+            "BoxCastableIsinstBrtrue", Refusal.Compiles
+            // Code over `Holder<string>` is shared, and sees `Holder<__Canon>`, which it does not
+            // decide is any type in particular.
+            "CallsBoxTCastShared", Refusal.UnlessInlined invalidProgram
+            "CallsBoxTUnboxShared", Refusal.UnlessInlined invalidProgram
+            "CallsBoxTCastUnshared", Refusal.Compiles
+            "CallsBoxTUnboxUnshared", Refusal.Compiles
+        ]
+
+    [<Test>]
+    let ``the JIT refuses a method whose instruction names what it cannot compile, wherever it is`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateRefusals ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Refusals.dll") (new MemoryStream (image))
+
+        // The fixture exercises what it claims to: the real runtime raises exactly that exception,
+        // for either argument, or none.
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Refusals", isCollectible = true)
+
+        let runtimeFailures =
+            try
+                let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Refusals.Runners"
+
+                [
+                    for name, refused in refusals do
+                        let raised =
+                            [ false ; true ]
+                            |> List.choose (fun argument ->
+                                try
+                                    ty.GetMethod(name).Invoke ((null : obj), [| box argument |]) |> ignore<obj>
+                                    None
+                                with :? TargetInvocationException as e ->
+                                    Some (e.InnerException.GetType().FullName)
+                            )
+
+                        let expected =
+                            match refused with
+                            | Refusal.Compiles -> [ [] ]
+                            | Refusal.Raises refusal -> [ List.replicate 2 refusal ]
+                            | Refusal.UnlessInlined refusal -> [ [] ; List.replicate 2 refusal ]
+
+                        if not (List.contains raised expected) then
+                            yield $"%s{name}: the real runtime raised %A{raised}, not one of %A{expected}"
+                ]
+            finally
+                context.Unload ()
+
+        let refusalTypes = Set.ofList [ invalidProgram ; typeLoad ; badImageFormat ]
+
+        // Every CPU .NET supports accelerates `Vector128`, as this profile says.
+        let profile =
+            { HardwareIntrinsicsProfile.ScalarOnly with
+                IsHardwareAccelerated =
+                    Set.singleton
+                        {
+                            Namespace = "System.Runtime.Intrinsics"
+                            Path = [ "Vector128" ]
+                        }
+            }
+
+        let mutable analysis = analysisUnder profile [ fixture ] id
+
+        let shownRefusals (shown : Set<string>) : Set<string> =
+            refusalTypes |> Set.filter (fun ty -> shown.Contains ("=" + ty))
+
+        // What the runtime runs to make the exception of a refusal, which escapes in its place
+        // (`ExceptionMaking`): what that raises, and where it is opaque.
+        let made (refusal : string) : Set<string> * Set<string> =
+            let maker =
+                if refusal = typeLoad then
+                    typeLoadConstructor ()
+                else
+                    let dot = refusal.LastIndexOf '.'
+                    parameterlessConstructor (hostCoreLib ()) (refusal.Substring (0, dot)) (refusal.Substring (dot + 1))
+
+            let next, escapes = EscapeAnalysis.escapes analysis maker
+            let next, sources = EscapeAnalysis.unknownSources next maker
+            analysis <- next
+            render analysis escapes, Set.map (renderSite analysis) sources
+
+        let analysisFailures =
+            [
+                for name, refused in refusals do
+                    let key = methodNamed fixture "Refusals.Runners" name
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+                    let next, sources = EscapeAnalysis.unknownSources next key
+                    analysis <- next
+                    let shown = render analysis escapes
+                    let opaque = Set.map (renderSite analysis) sources
+
+                    // Nothing is opaque, and no other refusal is reported, but what making the
+                    // exception is and reports.
+                    let reported =
+                        match refused with
+                        | Refusal.Compiles -> None
+                        | Refusal.Raises refusal
+                        | Refusal.UnlessInlined refusal -> Some refusal
+
+                    let madeShown, madeOpaque =
+                        match reported with
+                        | Some refusal -> made refusal
+                        | None -> Set.empty, Set.empty
+
+                    let expected =
+                        reported |> Option.toList |> Set.ofList |> Set.union (shownRefusals madeShown)
+
+                    if not (Set.isSubset opaque madeOpaque) || shownRefusals shown <> expected then
+                        yield
+                            $"%s{name}: %A{Set.toList shown}, opaque at %A{Set.toList opaque}; expected %A{Set.toList expected} of the refusals, and nothing opaque beyond making it"
+            ]
+
+        match runtimeFailures @ analysisFailures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``only an instance decides whether the JIT refuses a box or newarr of a type variable that allows a byref-like type``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Refusals.dll") (new MemoryStream (fabricateRefusals ()))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let failures =
+            [
+                // Whether the type is byref-like decides these, and the open definition does not
+                // say.
+                for name, dependsOnInstantiation in
+                    [ "BoxT", true ; "NewarrT", true ; "BoxTBranch", false ; "BoxU", false ] do
+                    let key = methodNamed fixture "Refusals.Runners" name
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+                    let next, sources = EscapeAnalysis.unknownSources next key
+                    analysis <- next
+
+                    let reasons = sources |> Seq.map _.Reason |> Set.ofSeq
+
+                    let expected =
+                        if dependsOnInstantiation then
+                            Set.singleton Opacity.DependsOnInstantiation
+                        else
+                            Set.empty
+
+                    if escapes.Unknown <> dependsOnInstantiation || reasons <> expected then
+                        yield
+                            $"%s{name}: unknown %b{escapes.Unknown} through %A{Set.toList reasons}; expected %A{Set.toList expected}"
+
+                    // Where an instance decides it, the definition's answer is opaque instead.
+                    let shown = render analysis escapes
+
+                    for refusal in [ invalidProgram ; typeLoad ] do
+                        if shown.Contains ("=" + refusal) then
+                            yield $"%s{name}: %A{Set.toList shown}, which the open definition does not decide"
+            ]
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// The integer types narrower than 64 bits that a parameter may have, each with whether a
     /// constant `int32` passed as one is zero once the parameter holds it.
     let private narrowParameters : (Type * (int32 -> bool)) list =
