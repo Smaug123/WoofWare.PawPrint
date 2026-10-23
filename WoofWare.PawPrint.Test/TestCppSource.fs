@@ -192,6 +192,32 @@ LOCAL_LABEL(Fail):
             ]
 
     [<Test>]
+    let ``a write barrier is a routine, a marked end ends one, and neither a symbol in a memory operand nor a routine's own label is called``
+        ()
+        : unit
+        =
+        CppSource.assemblyRoutines
+            """
+WRITE_BARRIER_ENTRY Barrier
+        jmp     [rip + C_FUNC(Cell)]
+WRITE_BARRIER_END Barrier
+
+LEAF_ENTRY Marked, _TEXT
+        mov     rax, [rip + C_FUNC(Data)]
+        jne     Done
+        jmp     Done
+        b       C_FUNC(Target)
+    Done:
+LEAF_END_MARKED Marked, _TEXT
+
+LEAF_ENTRY After, _TEXT
+        ret
+LEAF_END After, _TEXT
+"""
+        |> List.map (fun routine -> routine.Name, List.ofSeq routine.Calls)
+        |> shouldEqual [ "Barrier", [ "<indirect>" ] ; "Marked", [ "Target" ] ; "After", [] ]
+
+    [<Test>]
     let ``a symbol names a call spelled with its last qualifiers, and a type names its constructor`` () : unit =
         CppSource.names "A::B::F" "B::F" |> shouldEqual true
         CppSource.names "A::B::F" "F" |> shouldEqual true

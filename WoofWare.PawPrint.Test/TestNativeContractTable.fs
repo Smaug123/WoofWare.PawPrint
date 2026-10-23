@@ -244,6 +244,20 @@ module TestNativeContractTable =
             )
             .Force ()
 
+    /// The macros that a header of the pinned source's `vm` defines as exactly `name`.
+    let private aliasesOf (name : string) : string list =
+        let definition =
+            Text.RegularExpressions.Regex (
+                $@"^\s*#define\s+(\w+)\s+%s{Text.RegularExpressions.Regex.Escape name}\s*$",
+                Text.RegularExpressions.RegexOptions.Multiline
+            )
+
+        [
+            for header in Directory.GetFiles (Path.Combine (coreclr (), "vm"), "*.h") do
+                for m in definition.Matches (File.ReadAllText header) do
+                    yield m.Groups.[1].Value
+        ]
+
     [<Test>]
     let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
         Net11Frontier.park Net11Frontier.nativeContractTable
@@ -275,12 +289,21 @@ module TestNativeContractTable =
             match row.Native with
             | TabulatedNative.FCall (_, method)
             | TabulatedNative.InstanceFCall (_, method) ->
+                // A binding may name the function by a macro that a header of `vm` defines as its
+                // name, as `WriteBarrier_Helper` is `JIT_WriteBarrier_Callable`, and in the global
+                // namespace by `::`.
+                let byName =
+                    bound :: aliasesOf bound
+                    |> List.exists (fun name ->
+                        ecalls.Contains $"FCFuncElement(\"%s{method}\", %s{name})"
+                        || ecalls.Contains $"FCFuncElement(\"%s{method}\", ::%s{name})"
+                    )
+
                 // `FCDynamic` binds the method to a slot whose implementation is assigned at
                 // startup, defaulting to the one `vm/ecall.h` names.
-                let byName = $"FCFuncElement(\"%s{method}\", %s{bound})"
                 let dynamic = $"FCDynamic(\"%s{method}\", ECall::%s{method})"
 
-                if not (ecalls.Contains byName || ecalls.Contains dynamic) then
+                if not (byName || ecalls.Contains dynamic) then
                     failwith $"vm/ecalllist.h binds %s{method} to neither %s{bound} nor a dynamic slot"
             | TabulatedNative.QCall entryPoint ->
                 bound |> shouldEqual entryPoint
@@ -301,18 +324,28 @@ module TestNativeContractTable =
         /// says, without the program's assembly resolution handlers; the row must hold under it.
         | Loads
 
+    /// What a row of `NativeContractCallees.tsv` vouches for.
+    [<RequireQualifiedAccess>]
+    type private Vouched =
+        /// The calls of a function or macro, wherever they are made, by the name they spell.
+        /// `path` is the file under `src/coreclr` that defines it, or None for the C library or the
+        /// operating system; `spelledAs` is the text by which the file defines it, where a macro
+        /// pastes its name together, as `_GETFLD(GenericParam,Flags)` defines
+        /// `getFlagsOfGenericParam`.
+        | Callee of path : string option * symbol : string * spelledAs : string option
+        /// The branches through a register or memory that the assembly routine `routine` of the
+        /// file `path` makes, whose targets its text does not name.
+        | IndirectBranchesOf of path : string * routine : string
+
     /// A row of `NativeContractCallees.tsv`.
     type private Vouch =
         {
-            /// The file under `src/coreclr` that defines it, or None for the C library or the
-            /// operating system.
-            Path : string option
-            Symbol : string
-            /// The text by which the file defines it, where a macro pastes its name together, as
-            /// `_GETFLD(GenericParam,Flags)` defines `getFlagsOfGenericParam`.
-            SpelledAs : string option
+            Vouched : Vouched
             Runs : VouchedRuns
         }
+
+    /// How a vouch for a routine's indirect branches spells its symbol, after the routine's name.
+    let private indirectBranchesSuffix : string = "::" + CppSource.indirectBranch
 
     let private vouches : Lazy<Vouch list> =
         lazy
@@ -333,13 +366,31 @@ module TestNativeContractTable =
                              if colon <= 0 || colon = callee.Length - 1 then
                                  failwith $"A vouch names %s{callee}, which is not path:symbol"
 
-                             let symbol, spelledAs =
-                                 match callee.Substring(colon + 1).Split ('=', 2) with
-                                 | [| symbol ; spelling |] when symbol <> "" && spelling <> "" -> symbol, Some spelling
-                                 | [| symbol |] -> symbol, None
-                                 | _ ->
-                                     failwith
-                                         $"A vouch names %s{callee}, which is not path:symbol or path:symbol=spelling"
+                             let path =
+                                 match callee.Substring (0, colon) with
+                                 | "-" -> None
+                                 | path -> Some path
+
+                             let named = callee.Substring (colon + 1)
+
+                             let vouched =
+                                 if named.EndsWith (indirectBranchesSuffix, StringComparison.Ordinal) then
+                                     let routine = named.Substring (0, named.Length - indirectBranchesSuffix.Length)
+
+                                     match path with
+                                     | Some path when Text.RegularExpressions.Regex.IsMatch (routine, @"^\w+$") ->
+                                         Vouched.IndirectBranchesOf (path, routine)
+                                     | _ ->
+                                         failwith
+                                             $"A vouch names %s{callee}, which is not path:routine%s{indirectBranchesSuffix}"
+                                 else
+                                     match named.Split ('=', 2) with
+                                     | [| symbol ; spelling |] when symbol <> "" && spelling <> "" ->
+                                         Vouched.Callee (path, symbol, Some spelling)
+                                     | [| symbol |] -> Vouched.Callee (path, symbol, None)
+                                     | _ ->
+                                         failwith
+                                             $"A vouch names %s{callee}, which is not path:symbol or path:symbol=spelling"
 
                              let runs =
                                  match runs with
@@ -351,12 +402,7 @@ module TestNativeContractTable =
 
                              yield
                                  {
-                                     Path =
-                                         match callee.Substring (0, colon) with
-                                         | "-" -> None
-                                         | path -> Some path
-                                     Symbol = symbol
-                                     SpelledAs = spelledAs
+                                     Vouched = vouched
                                      Runs = runs
                                  }
                          | _ -> failwith $"Malformed vouch: %s{line}"
@@ -376,6 +422,60 @@ module TestNativeContractTable =
                         yield source, routine
         ]
 
+    /// Whether `vouch` covers the call of `called` that the routine `routine` of the file `path`
+    /// makes. A vouch for a callee covers its calls wherever they are, and one for a routine's
+    /// indirect branches covers those alone.
+    let private covers (vouch : Vouch) (path : string) (routine : string) (called : string) : bool =
+        match vouch.Vouched with
+        | Vouched.Callee (_, symbol, _) -> called <> CppSource.indirectBranch && CppSource.names symbol called
+        | Vouched.IndirectBranchesOf (vouchedPath, vouchedRoutine) ->
+            called = CppSource.indirectBranch
+            && vouchedPath = path
+            && vouchedRoutine = routine
+
+    [<Test>]
+    let ``a vouch for a routine's indirect branches covers those alone, and a vouch for a callee covers none``
+        ()
+        : unit
+        =
+        // A vouch for a callee spelled as an indirect branch, too, which must cover no branch.
+        let word : Gen<string> =
+            Gen.elements [ "A" ; "B" ; "vm/a.S" ; "vm/b.S" ; CppSource.indirectBranch ]
+
+        let called : Gen<string> =
+            Gen.oneof [ word ; Gen.constant CppSource.indirectBranch ]
+
+        let property
+            (vouchedPath : string, vouchedRoutine : string, (path : string, routine : string, called : string))
+            : unit
+            =
+            let indirect =
+                {
+                    Vouched = Vouched.IndirectBranchesOf (vouchedPath, vouchedRoutine)
+                    Runs = VouchedRuns.Nothing
+                }
+
+            let callee =
+                {
+                    Vouched = Vouched.Callee (Some vouchedPath, vouchedRoutine, None)
+                    Runs = VouchedRuns.Nothing
+                }
+
+            covers indirect path routine called
+            |> shouldEqual (
+                called = CppSource.indirectBranch
+                && path = vouchedPath
+                && routine = vouchedRoutine
+            )
+
+            covers callee path routine called
+            |> shouldEqual (called <> CppSource.indirectBranch && called = vouchedRoutine)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 400,
+            Prop.forAll (Arb.fromGen (Gen.zip3 word word (Gen.zip3 word word called))) property
+        )
+
     /// What runs managed code from the VM: a call site of the runtime's binder, or the routine
     /// every such call goes through.
     let private managedCall : Text.RegularExpressions.Regex =
@@ -392,7 +492,7 @@ module TestNativeContractTable =
     let ``every call a routine a row cites makes is to one the row cites or one vouched for`` () : unit =
         Net11Frontier.park Net11Frontier.nativeContractTable
 
-        let vouched = vouches.Force () |> List.map (fun vouch -> vouch.Symbol)
+        let vouches = vouches.Force ()
 
         let uncovered =
             [
@@ -404,7 +504,9 @@ module TestNativeContractTable =
                             // The next test holds each managed call to the methods the row runs.
                             let covered =
                                 (managedCall.IsMatch routine.Text && managedCallNames.IsMatch called)
-                                || cited @ vouched |> List.exists (fun symbol -> CppSource.names symbol called)
+                                || cited |> List.exists (fun symbol -> CppSource.names symbol called)
+                                || vouches
+                                   |> List.exists (fun vouch -> covers vouch source.Path routine.Name called)
 
                             if not covered then
                                 yield $"%A{row.Native}: %s{source.Path}:%s{routine.Name} calls %s{called}"
@@ -451,31 +553,42 @@ module TestNativeContractTable =
         let problems =
             [
                 for vouch in vouches.Force () do
-                    match vouch.Path with
-                    | None -> ()
-                    | Some path when not (File.Exists (Path.Combine (coreclr (), path))) ->
-                        yield $"%s{vouch.Symbol} is vouched for in %s{path}, which the pinned source lacks"
-                    | Some path ->
+                    match vouch.Vouched with
+                    | Vouched.Callee (None, _, _) -> ()
+                    | Vouched.Callee (Some path, symbol, _)
+                    | Vouched.IndirectBranchesOf (path, symbol) when not (File.Exists (Path.Combine (coreclr (), path))) ->
+                        yield $"%s{symbol} is vouched for in %s{path}, which the pinned source lacks"
+                    | Vouched.Callee (Some path, symbol, spelledAs) ->
                         let text = File.ReadAllText (Path.Combine (coreclr (), path))
 
                         let mentioned =
-                            match vouch.SpelledAs with
+                            match spelledAs with
                             | Some spelling -> text.Contains spelling
                             | None ->
-                                text.Contains vouch.Symbol
+                                text.Contains symbol
                                 || routinesOf path
-                                   |> List.exists (fun routine -> CppSource.names routine.Name vouch.Symbol)
+                                   |> List.exists (fun routine -> CppSource.names routine.Name symbol)
 
                         if not mentioned then
-                            yield $"%s{vouch.Symbol} is vouched for in %s{path}, which neither defines nor mentions it"
+                            yield $"%s{symbol} is vouched for in %s{path}, which neither defines nor mentions it"
 
                         for routine in routinesOf path do
                             if
                                 vouch.Runs <> VouchedRuns.Unreached
-                                && CppSource.names routine.Name vouch.Symbol
+                                && CppSource.names routine.Name symbol
                                 && managedCall.IsMatch routine.Text
                             then
                                 yield $"%s{path}:%s{routine.Name} is vouched for, and calls managed code"
+                    | Vouched.IndirectBranchesOf (path, routine) ->
+                        let branches =
+                            routinesOf path
+                            |> List.exists (fun defined ->
+                                defined.Name = routine && defined.Calls.Contains CppSource.indirectBranch
+                            )
+
+                        if not branches then
+                            yield
+                                $"The indirect branches of %s{routine} are vouched for, and %s{path} defines no %s{routine} that makes one"
             ]
 
         if not problems.IsEmpty then
@@ -487,14 +600,23 @@ module TestNativeContractTable =
 
         let called =
             rows
-            |> List.collect (fun row -> citedRoutines row |> List.map snd)
-            |> List.collect (fun routine -> List.ofSeq routine.Calls)
+            |> List.collect citedRoutines
+            |> List.collect (fun (source, routine) ->
+                routine.Calls
+                |> Seq.map (fun called -> source.Path, routine.Name, called)
+                |> List.ofSeq
+            )
             |> List.distinct
 
         let unused =
             vouches.Force ()
-            |> List.filter (fun vouch -> not (called |> List.exists (CppSource.names vouch.Symbol)))
-            |> List.map (fun vouch -> vouch.Symbol)
+            |> List.filter (fun vouch ->
+                not (
+                    called
+                    |> List.exists (fun (path, routine, called) -> covers vouch path routine called)
+                )
+            )
+            |> List.map (fun vouch -> $"%A{vouch.Vouched}")
             |> String.concat ", "
 
         if unused <> "" then
@@ -580,19 +702,74 @@ module TestNativeContractTable =
         raises.Contains raised.Value |> shouldEqual true
         row.Contract.CanReturn |> shouldEqual false
 
+    /// Stores a reference through a reference to a location.
+    type private Store = delegate of byref<obj> * obj -> unit
+
+    [<Test>]
+    let ``what the cast helpers' write barrier raises on the real runtime is in its row`` () : unit =
+        let row =
+            (NativeContractTable.fcalls.Force ()).[("System.Runtime.CompilerServices.CastHelpers", "WriteBarrier")]
+
+        let raises =
+            row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
+
+        let writeBarrier =
+            typeof<obj>.Assembly
+                .GetType("System.Runtime.CompilerServices.CastHelpers", true)
+                .GetMethod ("WriteBarrier", BindingFlags.Static ||| BindingFlags.NonPublic)
+
+        // A private method of CoreLib, which only code that skips visibility checks can call.
+        let store =
+            let method =
+                Emit.DynamicMethod (
+                    "Store",
+                    typeof<Void>,
+                    [| typeof<obj>.MakeByRefType () ; typeof<obj> |],
+                    typeof<obj>.Module,
+                    true
+                )
+
+            let il = method.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldarg_1
+            il.Emit (Emit.OpCodes.Call, writeBarrier)
+            il.Emit Emit.OpCodes.Ret
+            method.CreateDelegate typeof<Store> :?> Store
+
+        // An array's element, as StelemRef stores into. The barrier is the GC's unchecked one,
+        // which marks the GC's tables for the location without checking that it is in the GC heap;
+        // after it has stored into a local, a fault in it ends the process on macOS arm64 rather
+        // than raising.
+        let locations : obj[] = Array.zeroCreate 1
+        let stored = obj ()
+        store.Invoke (&locations.[0], stored)
+        Object.ReferenceEquals (locations.[0], stored) |> shouldEqual true
+        row.Contract.CanReturn |> shouldEqual true
+
+        let raised =
+            try
+                store.Invoke (&Runtime.CompilerServices.Unsafe.NullRef<obj> (), stored)
+                None
+            with e ->
+                Some (e.GetType().FullName)
+
+        raised |> shouldEqual (Some "System.NullReferenceException")
+        raises.Contains raised.Value |> shouldEqual true
+
     /// The rows whose cited code calls a routine vouched for as loading types, by native.
     let private loadingRows () : Set<string> =
         let loading =
-            vouches.Force ()
-            |> List.filter (fun vouch -> vouch.Runs = VouchedRuns.Loads)
-            |> List.map (fun vouch -> vouch.Symbol)
+            vouches.Force () |> List.filter (fun vouch -> vouch.Runs = VouchedRuns.Loads)
 
         rows
         |> List.filter (fun row ->
             citedRoutines row
-            |> List.exists (fun (_, routine) ->
+            |> List.exists (fun (source, routine) ->
                 routine.Calls
-                |> Seq.exists (fun called -> loading |> List.exists (fun symbol -> CppSource.names symbol called))
+                |> Seq.exists (fun called ->
+                    loading
+                    |> List.exists (fun vouch -> covers vouch source.Path routine.Name called)
+                )
             )
         )
         |> List.map (fun row -> $"%A{row.Native}")

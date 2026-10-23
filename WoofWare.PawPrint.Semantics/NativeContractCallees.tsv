@@ -1,7 +1,7 @@
 # What the code NativeContractTable.tsv cites calls, where its row does not cite that too: each a function or macro vouched for, by reading it, as running no managed code.
-# TestNativeContractTable holds every call that a routine a row cites makes, as the text spells it, to a routine the row cites or one vouched for here, matching by name.
+# TestNativeContractTable holds every call that a routine a row cites makes, as the text spells it, to a routine the row cites or one vouched for here, matching by name, or, for a branch whose target the text does not name, by the routine that makes it.
 # Three tab-separated fields:
-#   callee   path:symbol under src/coreclr (a path may climb out of it, as ../native/minipal does), as the contract table cites one, with =spelling after it where a macro pastes the name together, giving the text that defines it; or -:symbol for a function of the C library or the operating system
+#   callee   path:symbol under src/coreclr (a path may climb out of it, as ../native/minipal does), as the contract table cites one, with =spelling after it where a macro pastes the name together, giving the text that defines it; or -:symbol for a function of the C library or the operating system; or path:routine::<indirect> for the branches through a register or memory that the assembly routine routine of path makes, whose targets its text does not name
 #   runs     nothing (it runs no managed code); exception (it runs no managed code but the constructor of the exception it throws); loads (it runs no managed code when every type it loads is found without the program's assembly resolution handlers, so every row whose code calls it holds under NamedTypesLoad); or unreached (it may run anything, and the cited code calls it only on a path the native never takes)
 #   reason   why, in a sentence
 inc/debugmacros.h:_ASSERT	nothing	A debug build's assertion, which ends the process if it fails; a release build compiles it to nothing.
@@ -307,3 +307,17 @@ classlibnative/bcltype/arraynative.inl:InlinedBackwardGCSafeCopyHelper	nothing	C
 vm/gchelpers.inl:InlinedSetCardsAfterBulkCopyHelper	nothing	Marks the GC's cards and card bundles over the copied range, and its software write watch where that is enabled.
 vm/methodtable.inl:MethodTable::IsEnum	nothing	Reads the method table's flags, in a debug build's assertion.
 vm/methodtable.inl:MethodTable::IsTruePrimitive	nothing	Reads the method table's flags, in a debug build's assertion.
+pal/inc/unixasmmacrosamd64.inc:ALTERNATE_ENTRY	nothing	Defines a global label, emitting no instruction.
+pal/inc/unixasmmacrosarm64.inc:ALTERNATE_ENTRY	nothing	Defines a global label, emitting no instruction.
+pal/inc/unixasmmacrosamd64.inc:PATCH_LABEL	nothing	Defines a global label, emitting no instruction.
+pal/inc/unixasmmacrosarm64.inc:FIXUP_LABEL	nothing	Spells a local label's name as the target's assembler needs it, emitting nothing.
+pal/inc/unixasmmacrosamd64.inc:NOP_2_BYTE	nothing	A two-byte no-op instruction.
+pal/inc/unixasmmacrosamd64.inc:NOP_3_BYTE	nothing	A three-byte no-op instruction.
+pal/inc/unixasmmacrosamd64.inc:NOP_6_BYTE	nothing	A six-byte no-op instruction.
+vm/amd64/jithelpers_fastwritebarriers.S:NOP	nothing	The no-op instruction, spelled in upper case.
+pal/inc/unixasmmacrosamd64.inc:REPRET	nothing	A rep ret instruction, which returns.
+pal/inc/unixasmmacrosamd64.inc:PREPARE_EXTERNAL_VAR	nothing	Loads a global variable's address from the global offset table.
+pal/inc/unixasmmacrosarm64.inc:PREPARE_EXTERNAL_VAR	nothing	Loads a global variable's address, from the global offset table on Apple targets.
+vm/arm64/AsmMacros_Shared.h:PREPARE_EXTERNAL_VAR_INDIRECT	nothing	Loads a global variable's value through its address.
+vm/amd64/jithelpers_fast.S:JIT_WriteBarrier_Callable::<indirect>	nothing	Jumps through JIT_WriteBarrier_Loc, which only InitThreadManager sets: to the executable copy of JIT_WriteBarrier, or, where the copy is disabled, to RhpAssignRef; every row whose routine makes this jump cites both, and the variants the runtime patches the copy with.
+vm/arm64/asmhelpers.S:JIT_WriteBarrier_Callable::<indirect>	nothing	Jumps through JIT_WriteBarrier_Loc, which only InitThreadManager sets: to the executable copy of JIT_WriteBarrier, or, where the copy is disabled, to RhpAssignRef; every row whose routine makes this jump cites both, and the variants the runtime patches the copy with.
