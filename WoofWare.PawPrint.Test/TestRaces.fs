@@ -220,10 +220,14 @@ module TestRaces =
         ()
         : unit
         =
-        // The CoreLib that runs is the host's, whatever kernel the guest is given.
+        // The CoreLib that runs is the host's, whatever kernel the guest is given, so a Linux
+        // host pairs this test's Darwin kernel with a Linux CoreLib, as no real machine does.
         if HostPlatform.flavour () = Some SimulatedUnixFlavour.Linux then
-            Net11Frontier.park
-                "On a Linux host the guest runs .NET 11's Linux CoreLib, whose thread-pool workers block through `futex(2)`, which the Darwin kernel this test gives it does not have, so the kernel refuses the call (measured at PCT seed 6). Un-park when this test runs a Darwin CoreLib under its Darwin kernel."
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> ()
+            | EmulatedRuntime.Net11 ->
+                Assert.Ignore
+                    "On a Linux host the guest runs .NET 11's Linux CoreLib, whose thread-pool workers block through `futex(2)`, which the Darwin kernel this test gives it has not got, so the kernel refuses the call (measured at PCT seed 6). This is not a gap in PawPrint: the test can run here only once the devshell provides a Darwin CoreLib on a Linux host."
 
         // Under Darwin the signal beats the connection: the accept is interrupted, the handler
         // runs, and the accept restarts and takes the connection.
