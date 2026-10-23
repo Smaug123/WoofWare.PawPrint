@@ -342,3 +342,199 @@ public static class Uses
             checkedParents |> shouldEqual (Set.ofList [ "Gone" ; "Kept" ])
         finally
             context.Unload ()
+
+    /// What `Module.ResolveMethod` does with a MemberRef.
+    [<RequireQualifiedAccess>]
+    type private Bound =
+        /// It binds the method with this token, in the module of this name.
+        | Method of moduleName : string * token : int
+        /// It throws an exception of this name.
+        | Throws of exceptionName : string
+
+    /// References into an assembly compiled against a provider that declared `Gone`, run against one
+    /// that does not, and without the assembly `Optional` at all. CoreCLR compares two type
+    /// references in a signature by their names before it resolves either (`CompareTypeTokens`), and
+    /// a reference into a bound assembly that lacks the type compares unequal to everything, so a
+    /// reference whose signature names `Gone` binds no method, and one naming a type of another name
+    /// passes over an overload that names `Gone` or `Optional.Thing` without resolving it. Each pair
+    /// of overloads comes in both orders, so that the search meets the one naming the missing type
+    /// first, whichever end of the method table it starts from.
+    [<Test>]
+    let ``a reference whose signature names a type the provider no longer declares binds no method`` () : unit =
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then " public class Gone { }" else "")
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let optional = compile "Optional" [] "namespace Optional; public class Thing { }"
+
+        let middleImage =
+            compile
+                "Middle"
+                [ completeProvider ; optional ]
+                """
+namespace Middle;
+public static class Api
+{
+    public static void TakesGone(Provider.Gone x) { }
+    public static Provider.Gone ReturnsGone() => null;
+    public static void TakesListOfGone(System.Collections.Generic.List<Provider.Gone> x) { }
+    public static void GoneFirst(Provider.Gone x) { }
+    public static void GoneFirst(Provider.Kept x) { }
+    public static void KeptFirst(Provider.Kept x) { }
+    public static void KeptFirst(Provider.Gone x) { }
+    public static void ThingFirst(Optional.Thing x) { }
+    public static void ThingFirst(Provider.Kept x) { }
+    public static void KeptBeforeThing(Provider.Kept x) { }
+    public static void KeptBeforeThing(Optional.Thing x) { }
+}
+"""
+
+        let clientImage =
+            compile
+                "Client"
+                [ completeProvider ; optional ; middleImage ]
+                """
+namespace Client;
+public static class Uses
+{
+    public static void TakesGone() { Middle.Api.TakesGone(null); }
+    public static void ReturnsGone() { Middle.Api.ReturnsGone(); }
+    public static void TakesListOfGone() { Middle.Api.TakesListOfGone(null); }
+    public static void GoneFirstGone() { Middle.Api.GoneFirst((Provider.Gone)null); }
+    public static void GoneFirstKept() { Middle.Api.GoneFirst((Provider.Kept)null); }
+    public static void KeptFirstGone() { Middle.Api.KeptFirst((Provider.Gone)null); }
+    public static void KeptFirstKept() { Middle.Api.KeptFirst((Provider.Kept)null); }
+    public static void ThingFirstKept() { Middle.Api.ThingFirst((Provider.Kept)null); }
+    public static void KeptBeforeThingKept() { Middle.Api.KeptBeforeThing((Provider.Kept)null); }
+}
+"""
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let corelib =
+            Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
+
+        let client = read "Client" clientImage
+        let middle = read "Middle" middleImage
+        let incomplete = read "Provider" incompleteProvider
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let loaded =
+            let loaded =
+                LoadedAssemblies.ofAssemblies [ corelib ; client ; middle ; incomplete ]
+
+            let loaded, _ = loaded.WithBoundReference (referenceTo client "Provider") incomplete
+            let loaded, _ = loaded.WithBoundReference (referenceTo client "Middle") middle
+            fst (loaded.WithBoundReference (referenceTo middle "Provider") incomplete)
+
+        let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseClassTypes
+            }
+
+        // Each caller, and whether the reference it makes binds a method.
+        let callers =
+            [
+                "TakesGone", false
+                "ReturnsGone", false
+                "TakesListOfGone", false
+                "GoneFirstGone", false
+                "GoneFirstKept", true
+                "KeptFirstGone", false
+                "KeptFirstKept", true
+                "ThingFirstKept", true
+                "KeptBeforeThingKept", true
+            ]
+
+        // The MemberRef each caller's body makes.
+        let referenceOf (caller : string) : MemberReferenceHandle =
+            let method =
+                client.Methods.Values |> Seq.filter (fun m -> m.Name = caller) |> Seq.exactlyOne
+
+            match method.Body with
+            | MethodBody.Il body ->
+                body.Instructions
+                |> List.pick (fun (op, _) ->
+                    match op with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call,
+                                               MetadataOperand.FromMetadata {
+                                                                                Token = MetadataToken.MemberReference handle
+                                                                            }) -> Some handle
+                    | _ -> None
+                )
+            | body -> failwith $"%s{caller}: no IL body: %A{body}"
+
+        let context =
+            new ImagesContext (
+                Map.ofList
+                    [
+                        "Provider", incompleteProvider
+                        "Middle", middleImage
+                        "Client", clientImage
+                    ]
+            )
+
+        try
+            let reflected = context.LoadFromAssemblyName (AssemblyName "Client")
+
+            let failures =
+                [
+                    for caller, binds in callers do
+                        let handle = referenceOf caller
+
+                        let token =
+                            MetadataTokens.GetToken (MemberReferenceHandle.op_Implicit handle : EntityHandle)
+
+                        let host =
+                            try
+                                let bound = reflected.ManifestModule.ResolveMethod token
+                                Bound.Method (bound.Module.Assembly.GetName().Name, bound.MetadataToken)
+                            with e ->
+                                Bound.Throws (e.GetType().FullName)
+
+                        let _, target =
+                            MethodReferenceResolution.resolve loggerFactory runtimeDirs ctx client handle
+
+                        let ours =
+                            match target with
+                            | MethodReferenceTarget.Defined (assembly, method, _) ->
+                                Bound.Method (
+                                    assembly.Name.Name,
+                                    MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit method : EntityHandle)
+                                )
+                            | MethodReferenceTarget.Missing -> Bound.Throws "System.MissingMethodException"
+                            | other -> Bound.Throws $"%A{other}"
+
+                        match host with
+                        | Bound.Method _ when not binds -> yield $"%s{caller}: the host binds %A{host}"
+                        | Bound.Throws _ when binds -> yield $"%s{caller}: the host throws %A{host}"
+                        | _ -> ()
+
+                        if ours <> host then
+                            yield $"%s{caller}: the host says %A{host}, the resolver %A{ours}"
+                ]
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
