@@ -41,7 +41,7 @@ type OpcodeFaults =
     /// Performing the operation raises exactly these and nothing else. The empty list is therefore
     /// a positive claim that the instruction cannot fault, not an absence of information.
     ///
-    /// **Two things this deliberately excludes**, because neither is a fact about the opcode:
+    /// **What this deliberately excludes**, because none of it is a fact about the opcode:
     ///
     /// * What a callee raises. `call`, `callvirt`, `newobj`, `calli` and `jmp` transfer control,
     ///   and whatever the target does reaches the caller; that belongs to the call graph. The
@@ -66,6 +66,18 @@ type OpcodeFaults =
     ///   already says which instructions bear a token: exactly `UnaryMetadataToken` and
     ///   `UnaryStringToken`. A consumer analysing a well-formed, fully-resolvable closure may
     ///   ignore them; one analysing an arbitrary package may not.
+    ///
+    ///   Resolving a virtual method against a type fails in the same way, with the type as the
+    ///   context. Where a type's most specific implementation of an interface method is a
+    ///   reabstraction or is ambiguous, CoreCLR raises `EntryPointNotFoundException` or
+    ///   `System.Runtime.AmbiguousImplementationException`, class-load failures
+    ///   (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`, `IDS_CLASSLOAD_AMBIGUOUS_OVERRIDE`), at the
+    ///   instruction that resolves it: `callvirt` on its receiver's class, `ldvirtftn` on its
+    ///   object's, and `call` or `ldftn` under a `constrained.` prefix on the type the prefix names.
+    ///   In code CoreCLR shares between instantiations, a `constrained. ldftn` may instead hand out
+    ///   a pointer that raises when called. Neither failure arises within one C# compilation: it
+    ///   takes an interface changed after its implementer was compiled. A consumer that resolves
+    ///   the dispatch has the type to ask about.
     /// * Whatever a real runtime does with an *invalid but non-null* address, which the raw-memory
     ///   instructions (`cpblk`, `initblk`, the `ldind`/`stind` family, `ldobj`/`stobj`) can be
     ///   handed by unverifiable IL. ECMA-335's answer is that
@@ -518,7 +530,9 @@ module OpcodeFaults =
         // can trigger is itself a frame — which is the rule stated against `OpcodeFault`.
         | UnaryMetadataTokenIlOp.Jmp ->
             OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
-        // These fault on nothing themselves and invoke nothing.
+        // These fault on nothing themselves and invoke nothing. A `constrained. ldftn` resolves
+        // its method against a type, and may raise what the `Raises` docstring excludes as a
+        // failure to resolve.
         | UnaryMetadataTokenIlOp.Mkrefany
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Constrained
