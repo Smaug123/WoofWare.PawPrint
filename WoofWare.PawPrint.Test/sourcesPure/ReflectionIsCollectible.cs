@@ -18,11 +18,13 @@ public class CollectibleProbe<T>
 
 public static class Program
 {
-    // `IsCollectible` on a type, a method and an assembly. Each reads a QCall of its own --
-    // `RuntimeTypeHandle_IsCollectible`, `RuntimeMethodHandle_GetIsCollectible` and
-    // `AssemblyNative_GetIsCollectible` -- and each answers from the loader allocator behind the
-    // thing asked about. PawPrint models only CoreCLR's `GlobalLoaderAllocator`, which is
-    // non-collectible, so every answer here is false.
+    // `IsCollectible` on a type, a method and an assembly. Each asks the runtime separately -- on
+    // .NET 10 through the `RuntimeTypeHandle_IsCollectible`, `RuntimeMethodHandle_GetIsCollectible`
+    // and `AssemblyNative_GetIsCollectible` QCalls; on .NET 11 by reading a flag of the type's
+    // `MethodTable` or `TypeDesc`, and through the `RuntimeMethodHandle.IsCollectible` and
+    // `RuntimeAssembly.GetIsCollectible` FCalls -- and each answers from the loader allocator
+    // behind the thing asked about. PawPrint models only CoreCLR's `GlobalLoaderAllocator`, which
+    // is non-collectible, so every answer here is false.
     //
     // Every shape below was measured on real .NET rather than derived from "PawPrint loads nothing
     // collectible": these are the answers a normally-loaded program actually gets. The structural
@@ -34,7 +36,7 @@ public static class Program
     // is set true only by `AssemblyNative_InitializeAssemblyLoadContext`'s collectible branch, and
     // PawPrint refuses that branch, so no guest can construct one. The one
     // `true` a program can see -- `DynamicMethod.IsCollectible` -- comes from `MemberInfo`'s
-    // managed virtual default rather than from any QCall, and PawPrint reports dynamic code
+    // managed virtual default rather than from the runtime, and PawPrint reports dynamic code
     // unsupported, so it is absent here on both counts.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
@@ -50,7 +52,7 @@ public static class Program
         if (typeof(Program).Assembly.IsCollectible) return 4;
 
         // A closed instantiation, its definition, and the definition's own type variable. The
-        // variable is a TypeDesc in CoreCLR rather than a MethodTable, so it reaches the QCall by
+        // variable is a TypeDesc in CoreCLR rather than a MethodTable, so it reaches the runtime by
         // a different path from the two above.
         if (typeof(CollectibleProbe<int>).IsCollectible) return 5;
         if (typeof(CollectibleProbe<>).IsCollectible) return 6;
@@ -70,7 +72,7 @@ public static class Program
         // Methods: an ordinary instance method, a generic method definition, a generic method
         // instantiation, and a constructor. `RuntimeMethodInfo.IsCollectible` consults its
         // reflected type first and short-circuits on *true*, so with the type answering false it
-        // is the method QCall that decides each of these.
+        // is the method's own answer that decides each of these.
         Type probe = typeof(CollectibleProbe<int>);
         if (probe.GetMethod("Instance").IsCollectible) return 13;
 
@@ -82,10 +84,10 @@ public static class Program
         // A method on the open definition, which is the shape whose signature decoding needed the
         // definition's own formals as a type context (sourcesPure/
         // ReflectionOpenGenericDefinitionParameterTypes.cs). Its collectibility is a separate
-        // question from its signature, and the QCall must answer it without one.
+        // question from its signature, and the runtime must answer it without one.
         if (typeof(CollectibleProbe<>).GetMethod("Instance").IsCollectible) return 17;
 
-        // A method of corelib, so the method QCall is asked about both assemblies too.
+        // A method of corelib, so the method's answer is asked of both assemblies too.
         if (typeof(object).GetMethod("GetHashCode").IsCollectible) return 18;
 
         return 0;

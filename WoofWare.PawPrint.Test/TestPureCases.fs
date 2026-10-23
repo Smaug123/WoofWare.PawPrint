@@ -107,6 +107,9 @@ module TestPureCases =
                     "CustomAttributeNamedArgs.cs"
                     "DelegateDynamicInvoke.cs"
                     "DelegateMulticastInvoke.cs"
+                    "ExpressionInterpreterByRefCall.cs"
+                    "ExpressionLambdaCompile.cs"
+                    "ExpressionLambdaCompileWide.cs"
                     "ForeignRaiseFlagConsumedByRethrow.cs"
                     "ForeignRaiseFlagNotStolenByCleanup.cs"
                     "ForeignRaiseFlagPendingBeforeCleanup.cs"
@@ -145,15 +148,6 @@ module TestPureCases =
             """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             yield!
                 [
-                    "ExpressionInterpreterByRefCall.cs"
-                    "ExpressionLambdaCompile.cs"
-                    "ExpressionLambdaCompileWide.cs"
-                    "FieldHandleAcquiresContextFromThis.cs"
-                    "LdtokenMemberTokens.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.methodIsCollectible)
-            yield!
-                [
                     "AdvancedStructLayout.cs"
                     "MarshalEnumField.cs"
                     "MarshalPtrToStructure.cs"
@@ -176,8 +170,6 @@ module TestPureCases =
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",
             """On .NET 11, an unchecked conversion from floating point to an integer narrower than 32 bits saturates to that integer's own range, where .NET 10 takes the low bits of the saturated `int32` conversion. Measured on RC1 against .NET 10: `(byte)300.0` is 255 (44), `(sbyte)-1e20` is -128 (0), `(short)70000.7` is 32767 (4464), `(char)70000.7` is 65535 (4464), and `(byte)-1.5` is 0 (255). The guest asserts .NET 10's rule, so real RC1 exits 40 at its first narrow check, and PawPrint converts by .NET 10's rule on every runtime. Un-park when the conversion opcodes take the runtime's rule and this case states .NET 11's results."""
-            "ReflectionIsCollectible.cs",
-            """On .NET 11, `Assembly.IsCollectible` calls the `RuntimeAssembly.GetIsCollectible` InternalCall, which PawPrint does not implement: "Unimplemented native method (InternalCall): System.Private.CoreLib System.Reflection.RuntimeAssembly::GetIsCollectible". Un-park when it is answered. Verified to exit 0 on real .NET 11."""
             "StringContentRoundTrip.cs",
             """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
             "ReflectionStripMethodInstantiationOpenDefinition.cs",

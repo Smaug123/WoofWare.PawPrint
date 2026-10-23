@@ -21,10 +21,6 @@ module Net11Frontier =
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
 
-    /// The `RuntimeMethodHandle::IsCollectible` FCall, which .NET 11's `MethodInfo.IsCollectible` asks.
-    let methodIsCollectible : string =
-        "On .NET 11, `RuntimeMethodInfo.IsCollectible` asks the `RuntimeMethodHandle::IsCollectible` FCall (RuntimeMethodInfo.CoreCLR.cs:328) where .NET 10 asks the `RuntimeMethodHandle_GetIsCollectible` QCall, and PawPrint implements only the QCall: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsCollectible\". Expression trees and ldtoken of member tokens reach it. Measured on RC1 on 2026-10-21. Un-park when it is answered."
-
     /// The `MarshalNative_HasLayout` QCall, which .NET 11's `Marshal` asks before laying out a type.
     let marshalHasLayout : string =
         "On .NET 11, `Marshal.StructureToPtr`, `PtrToStructure` and `SizeOf` ask the `MarshalNative_HasLayout` QCall, which PawPrint does not implement: \"Unimplemented native method (PInvokeImpl QCall!MarshalNative_HasLayout)\". Un-park when it is answered."

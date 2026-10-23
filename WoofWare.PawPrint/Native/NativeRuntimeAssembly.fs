@@ -332,6 +332,34 @@ module NativeRuntimeAssembly =
         | "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
+          "GetIsCollectible",
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
+            // .NET 11's FCall in place of .NET 10's `AssemblyNative_GetIsCollectible` QCall, and
+            // the same question: CoreCLR is `FC_RETURN_BOOL(pAssembly->IsCollectible())`
+            // (assemblynative.cpp:760). The assembly is resolved for the QCall's reason.
+            let operation = "RuntimeAssembly.GetIsCollectible"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let assemblyHandle, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let assemblyFullName =
+                match assemblyHandle with
+                | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName) -> assemblyFullName
+                | other -> failwith $"%s{operation}: expected an assembly handle, got %O{other}"
+
+            if (state.LoadedAssembly assemblyFullName).IsNone then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded"
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.ofBool (LoaderAllocator.isCollectible LoaderAllocator.Global))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
           "GetIsDynamic",
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
