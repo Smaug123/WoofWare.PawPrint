@@ -90,6 +90,8 @@ module TestPureCases =
     /// and how it was verified to behave on real .NET 10.
     let parkedOnNet10 : Map<string, string> =
         [
+            "MarshalDestroyStructurePointerOrEmpty.cs",
+            """On .NET 10, `Marshal.DestroyStructure` asks `MarshalNative_TryGetStructMarshalStub`, which hands back no stub for a blittable struct. PawPrint's arm of it calls blittable only a struct it can copy as bytes, so for a struct holding a pointer, or one without fields, it builds a stub, and its plan refuses both, the pointer field first: "TODO MarshalNative_TryGetStructMarshalStub: type 95 has layout but is not blittable, and PawPrint has not implemented its marshalling: field P is neither blittable nor a marshalling case PawPrint implements (contents RuntimePointer (Managed Null))", and a struct without fields because "the type has raw-byte storage rather than declared fields". Un-park when that arm answers blittable as `Blittability.ofValue` does. Verified to exit 0 on real .NET 10."""
             "FileSystemSupportsLockingDirect.cs",
             """The guest calls `SystemNative_FileSystemSupportsLocking`, which .NET 10's libSystem.Native does not export, so real .NET 10 raises `EntryPointNotFoundException` at the first call and the guest exits 100. PawPrint raises no `EntryPointNotFoundException` for a missing export: "SystemNative_FileSystemSupportsLocking: .NET 10's libSystem.Native exports no such function". Un-park when PawPrint knows which exports each runtime's native libraries carry and raises it. Verified to exit 100 on real .NET 10."""
             "DelegateBindOpenGenericDefinitionStaticVirtual.cs",
@@ -148,9 +150,7 @@ module TestPureCases =
             """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             yield!
                 [
-                    "AdvancedStructLayout.cs"
                     "MarshalEnumField.cs"
-                    "MarshalPtrToStructure.cs"
                     "MarshalPtrToStructureCopiedFields.cs"
                     "MarshalPtrToStructureDateTimeField.cs"
                     "MarshalStructureToPtrBoolField.cs"
@@ -161,11 +161,9 @@ module TestPureCases =
                     "MarshalStructureToPtrDateTimeWithPointer.cs"
                     "MarshalStructureToPtrDecimalField.cs"
                     "MarshalStructureToPtrDecimalFieldBytes.cs"
-                    "MarshalStructureToPtrIntPtrField.cs"
-                    "MarshalStructureToPtrNoLayoutThrows.cs"
                     "MarshalStructureToPtrStaticCtorDormant.cs"
                 ]
-                |> List.map (fun case -> case, Net11Frontier.marshalHasLayout)
+                |> List.map (fun case -> case, Net11Frontier.structureMarshalerStub)
             "LockOnArray.cs",
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",
@@ -194,6 +192,7 @@ module TestPureCases =
             "ThreadStateOfEntryThreadAfterMain.cs", GuestEnding.ExitCode 11
             "DelegateOpenStaticVirtualInvoke.cs", GuestEnding.ExitCode 10
             "FileSystemSupportsLockingDirect.cs", GuestEnding.ExitCode 100
+            "MarshalStructureToPtrEnum.cs", GuestEnding.ExitCode 10
         ]
         |> Map.ofList
 

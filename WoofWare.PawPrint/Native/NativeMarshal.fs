@@ -497,4 +497,117 @@ module NativeMarshal =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "MarshalNative_HasLayout",
+          "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          // `[return: MarshalAs(UnmanagedType.Bool)] bool`, a four-byte Win32 BOOL, as the
+          // `isBlittable` out-parameter is.
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            qCallGenerics.IsEmpty
+            ->
+            let operation = "MarshalNative_HasLayout"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandle =
+                NativeCall.qCallTypeHandleToConcreteTypeHandle
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let describe (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+                AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
+
+            // An enum has no layout of its own, and CoreCLR answers for its underlying integer
+            // (marshalnative.cpp:110).
+            let state, isEnum =
+                IlMachineState.isEnumValueType ctx.LoggerFactory ctx.BaseClassTypes state typeHandle
+
+            let state, typeHandle =
+                if isEnum then
+                    match IlMachineState.enumUnderlyingHandle ctx.LoggerFactory ctx.BaseClassTypes state typeHandle with
+                    | Some (state, underlying) -> state, underlying
+                    | None -> failwith $"%s{operation}: the enum %s{describe state typeHandle} has no underlying type"
+                else
+                    state, typeHandle
+
+            // The answer is whether the type has layout, then `IsBlittable` and `GetNativeSize`
+            // for a type that has, or FALSE and zero for one that has not.
+            let state, answer =
+                if
+                    CliValueType.IsAutoLayoutHandle
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        typeHandle
+                then
+                    state, None
+                else
+
+                let zero, state =
+                    IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
+
+                match zero with
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ ->
+                    failwith
+                        $"TODO %s{operation}: %s{describe state typeHandle} has layout but is not a value type, and PawPrint does not decide whether CoreCLR blits a class"
+                | CliType.ValueType _
+                | CliType.Numeric _
+                | CliType.Bool _
+                | CliType.Char _ ->
+
+                let blittability =
+                    Blittability.ofValue
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        ctx.BaseClassTypes
+                        zero
+
+                // `GetNativeSize` is what `Marshal.SizeOf` answers, as `MarshalNative_SizeOfHelper`
+                // does.
+                match
+                    CliType.TryComputeMarshalSize
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        ctx.BaseClassTypes
+                        zero
+                with
+                | Result.Ok size -> state, Some (blittability, size.Size)
+                | Result.Error (MarshalSizeError.NotMarshalable reason) ->
+                    failwith
+                        $"TODO %s{operation}: %s{describe state typeHandle} has layout, but CoreCLR cannot lay out its native image: %s{reason}. PawPrint does not compute what `GetNativeSize` answers for such a type"
+                | Result.Error (MarshalSizeError.NotImplemented reason) ->
+                    failwith
+                        $"TODO %s{operation}: %s{describe state typeHandle} has layout, and PawPrint has not implemented its native size: %s{reason}"
+
+            let hasLayout, isBlittable, nativeSize =
+                match answer with
+                | None -> 0, 0, 0
+                | Some (Blittability.Blittable, size)
+                | Some (Blittability.BlittableUncopyable, size) -> 1, 1, size
+                | Some (Blittability.NotBlittable, size) -> 1, 0, size
+
+            let writeOut (argIndex : int) (argName : string) (value : int) (state : IlMachineState) : IlMachineState =
+                let target =
+                    NativeCall.managedPointerOfPointerArgument operation argName instruction.Arguments.[argIndex]
+
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed target)
+                    (CliType.Numeric (CliNumericType.Int32 value))
+
+            state
+            |> writeOut 1 "isBlittable" isBlittable
+            |> writeOut 2 "nativeSize" nativeSize
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 hasLayout)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | _ -> None

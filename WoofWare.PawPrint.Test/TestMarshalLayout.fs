@@ -600,6 +600,45 @@ module TestMarshalLayout =
         |> Check.QuickThrowOnFailure
 
     [<Test>]
+    let ``A pointer cell is blittable as an unmanaged pointer, and never as a byref`` () : unit =
+        // PawPrint holds an unmanaged pointer and a managed byref alike as a pointer cell. CoreCLR's
+        // `IsFieldBlittable` blits the first under no `[MarshalAs]`, and never the second.
+        let cell =
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+
+        let int32 = handleOf bct.Int32
+
+        let ofField (descriptor : FieldMarshalDescriptor option) (fieldType : ConcreteTypeHandle) =
+            Blittability.ofField allCt loaded bct CharSet.Ansi descriptor fieldType cell
+
+        ofField None (ConcreteTypeHandle.Pointer int32)
+        |> shouldEqual Blittability.BlittableUncopyable
+
+        ofField (Some (FieldMarshalDescriptor.Other UnmanagedType.I4)) (ConcreteTypeHandle.Pointer int32)
+        |> shouldEqual Blittability.NotBlittable
+
+        ofField None (ConcreteTypeHandle.Byref int32)
+        |> shouldEqual Blittability.NotBlittable
+
+    [<Test>]
+    let ``Blittability visits each field of a deep nesting once`` () : unit =
+        // Forty nested single-field structs around an `int`: a classifier that visits a field's
+        // subtree more than once per level does about 2^40 visits here, and never finishes.
+        let nested =
+            (CliType.Numeric (CliNumericType.Int32 7), handleOf bct.Int32)
+            |> Seq.unfold (fun (inner, innerType) ->
+                let outer =
+                    ofFields Layout.Default [ cliField "Inner" inner innerType ]
+                    |> CliType.ValueType
+
+                Some (outer, (outer, declaredHandle))
+            )
+            |> Seq.item 39
+
+        Blittability.ofValue allCt loaded bct nested
+        |> shouldEqual Blittability.Blittable
+
+    [<Test>]
     let ``Holding a Decimal is not blittable, and nesting a struct that holds one is refused`` () : unit =
         // The verbatim copy is for a Decimal *field*. It must not make the enclosing struct
         // blittable (CoreCLR's `IsFieldBlittable` says no, fieldmarshaler.cpp:266), and a struct

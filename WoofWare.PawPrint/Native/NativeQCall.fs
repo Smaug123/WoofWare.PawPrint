@@ -36,6 +36,7 @@ module NativeQCall =
             "MarshalNative_OffsetOf", NativeMarshal.tryExecuteQCall "MarshalNative_OffsetOf"
             "MarshalNative_TryGetStructMarshalStub",
             NativeMarshal.tryExecuteQCall "MarshalNative_TryGetStructMarshalStub"
+            "MarshalNative_HasLayout", NativeMarshal.tryExecuteQCall "MarshalNative_HasLayout"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
             "ExceptionNative_GetMessageFromNativeResources",
             NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
