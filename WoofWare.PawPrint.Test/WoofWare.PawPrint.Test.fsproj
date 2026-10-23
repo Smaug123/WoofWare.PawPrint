@@ -135,6 +135,8 @@
     <Compile Include="TestOpcodeFaultsOnHost.fs" />
     <Compile Include="TestOpcodeFaultsOnHostMemory.fs" />
     <Compile Include="TestOpcodeFaultsOnHostTokens.fs" />
+    <Compile Include="TestResolutionFaultsOnHost.fs" />
+    <Compile Include="TestMetadataAccess.fs" />
     <Compile Include="TestOpcodeFaultsOnPawPrint.fs" />
     <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />

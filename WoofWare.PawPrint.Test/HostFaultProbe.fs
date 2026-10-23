@@ -39,7 +39,9 @@ module HostFaultProbe =
     let listed (entry : OpcodeFaults) : Set<string> =
         match entry with
         | OpcodeFaults.Unmodelled -> failwith "the entry is unmodelled, so the host cannot contradict it"
-        | OpcodeFaults.Raises faults -> faults |> List.map OpcodeFault.typeName |> Set.ofList
+        // Every probe's token binds, names what the probe may access, and dispatches nowhere, so a
+        // resolution fault the host raised is one this omits, and `mismatches` reports it.
+        | OpcodeFaults.Raises (faults, _resolution) -> faults |> List.map OpcodeFault.typeName |> Set.ofList
 
     /// Every list that takes one element from each of `lists`, in order.
     let rec cartesian (lists : 'a list list) : 'a list list =
@@ -71,7 +73,7 @@ module HostFaultProbe =
         let mayGoUnseen : Set<string> =
             match entry with
             | OpcodeFaults.Unmodelled -> Set.empty
-            | OpcodeFaults.Raises faults ->
+            | OpcodeFaults.Raises (faults, _) ->
                 faults
                 |> List.filter (fun fault ->
                     OpcodeFault.kind fault = FaultKind.ResourceExhaustion
