@@ -202,12 +202,13 @@ type NativeLocals =
     /// past the wrapper's screens, which a call made again does not run: `*count` is
     /// read again, by the syscall alone.
     | SocketEventWaitLoop
-    /// The `sigsuspend` or `pause` this native frame made was interrupted by a signal (an
-    /// `Interrupted` answer), and the thread has yet to return to user mode, where the kernel
-    /// ends the call (`UnixSignal.onReturnToUser`).
+    /// The `sigsuspend`, `pause` or futex wait this native frame made was interrupted by a
+    /// signal (an `Interrupted` answer), and the thread has yet to return to user mode, where
+    /// the kernel ends the call (`UnixSignal.onReturnToUser`).
     | AwaitingReturnToUser
-    /// The thread has returned to user mode from the `sigsuspend` or `pause` this native frame
-    /// made, which a signal interrupted, and the return ended the call as `ended` says.
+    /// The thread has returned to user mode from the `sigsuspend`, `pause` or futex wait this
+    /// native frame made, which a signal interrupted, and the return ended the call as `ended`
+    /// says.
     | ReturnedToUser of ended : WoofWare.PosixKernel.InterruptedCall
 
 type MethodReturnState =

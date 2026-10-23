@@ -123,7 +123,7 @@ module TestSchedulerYieldFairness =
     [<Test>]
     let ``yielding spinners do not starve the worker under Pct`` () : unit =
         Net11Frontier.park (
-            "On .NET 11's Linux CoreLib the twenty seeds take 317804 steps, over this test's 300000 budget (seed 3 alone takes 52994), where the Darwin CoreLib stays within it; measured on CI's Linux leg on 2026-10-17, and the cause is not yet established. Un-park once the futex wait runs (`Net11Frontier.linuxFutex`), and re-measure."
+            "On .NET 11's Linux CoreLib the twenty seeds take 317804 steps, over this test's 300000 budget (seed 3 alone takes 52994), where the Darwin CoreLib stays within it; measured on CI's Linux leg on 2026-10-17, and again on the Linux CoreLib with the futex wait answered on 2026-10-22, unchanged, so the futex is not the cause, which is not yet established. Un-park once it is, and re-measure."
         )
 
         let seeds = [ 1UL .. 20UL ]

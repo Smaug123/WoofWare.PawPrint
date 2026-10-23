@@ -13,10 +13,6 @@ module Net11Frontier =
     let isAsyncMethod : string =
         "On .NET 11, `RuntimeMethodInfo` asks whether its method is an async method before invoking it or reading much of its metadata (`IsDisallowedAsyncHelper`, RuntimeMethodInfo.CoreCLR.cs:80), through the `RuntimeMethodHandle::IsAsyncMethod` FCall, which PawPrint does not implement: \"Unimplemented native method (InternalCall): System.Private.CoreLib System.RuntimeMethodHandle::IsAsyncMethod\". `MethodBase.Invoke`, F#'s printf and much of reflection over methods reach it. Un-park when it is answered."
 
-    /// .NET 11's Linux CoreLib blocks on a futex.
-    let linuxFutex : string =
-        "On .NET 11's Linux CoreLib, `LowLevelLock` and `LowLevelLifoSemaphore` block through `LowLevelThreadBlocker`, which calls the `SystemNative_LowLevelFutex_WaitOnAddress` P/Invoke that PawPrint does not implement: \"Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_LowLevelFutex_WaitOnAddress)\". The Darwin CoreLib blocks on `LowLevelMonitor` there instead, so these pass on a macOS host; measured on CI's Linux leg on 2026-10-17. Un-park when the futex wait runs."
-
     /// `UnicodeEncoding.GetBytes` orders two byte views of one stackalloc block.
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."

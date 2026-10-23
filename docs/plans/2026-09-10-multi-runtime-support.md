@@ -842,6 +842,11 @@ mutation-testing skill applies to each table/classifier they introduce.
      the CoreLib declares (`GcMemoryInfoDataLayout`), .NET 10's separate fields or .NET 11's
      inline arrays, and refuses any other. The `Task` guests that stopped there run on the macOS
      CoreLib, and on the Linux one most go on to the futex (`linuxFutex`);
+   * **(landed)** the futex: `SystemNative_LowLevelFutex_WaitOnAddress`, `_WaitOnAddressTimeout`
+     and `_WakeByAddressSingle` make their one `futex(2)` call through WoofWare.PosixKernel's
+     `UnixFutex` (`NativeLowLevelFutex`), keyed by the word's address in the native heap's address
+     space (`NativeAddressSpace`, #1980). The `linuxFutex` park is gone, and every test it parked
+     runs on the Linux CoreLib;
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * **(landed)** the thread-static seed, `ManagedThreadId.t_currentManagedThreadId`, which
      RC1's `Environment.CurrentManagedThreadId` and `System.Threading.Lock` both read. PawPrint

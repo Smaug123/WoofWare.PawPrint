@@ -328,7 +328,7 @@ module SignalDispatch =
     /// return here ends the call, failing it with `EINTR` (which this writes to
     /// errno) or restarting it: either way the shim function that made it calls
     /// it again once the leader runs (see `NativeSystemNative`), except a
-    /// `sigsuspend` or `pause`, which answers as the return ended it
+    /// `sigsuspend`, `pause` or futex wait, which answers as the return ended it
     /// (`NativeLocals.ReturnedToUser`, which this records in its frame). A
     /// leader in one of PawPrint's own waits (a monitor, `Sleep`, a wait
     /// handle) is asked: CoreCLR's PAL carries those waits on across a signal
@@ -380,8 +380,8 @@ module SignalDispatch =
             state.MapKernel (EmulatedKernel.withUnix systemAfter)
 
         // How the call the leader returns from ended, where a signal interrupted
-        // it: errno holds EINTR once it fails with it, and a `sigsuspend` or
-        // `pause` waiting to answer is told.
+        // it: errno holds EINTR once it fails with it, and a `sigsuspend`,
+        // `pause` or futex wait waiting to answer is told.
         let interruptedCallEnded (interrupted : InterruptedCall option) (state : IlMachineState) : IlMachineState =
             match interrupted with
             | None -> state
