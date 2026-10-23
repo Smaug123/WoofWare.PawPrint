@@ -492,10 +492,6 @@ class Program
 
     [<Test>]
     let ``the module pseudo-type is not something GetType can name`` () : unit =
-        ParkedOn.check
-            [ WoofWare.PawPrint.EmulatedRuntime.Net11 ]
-            "On .NET 11, `GetTypes()` calls the `RuntimeModule_GetTypes` QCall with a third argument, and PawPrint's handler, which matches .NET 10's two-argument signature, does not recognise it: \"Unimplemented native method (PInvokeImpl QCall!RuntimeModule_GetTypes)\". Un-park when the handler takes .NET 11's signature."
-
         // ECMA-335 II.22.37's first `TypeDef` row parents an assembly's module-scope functions and
         // variables. `ClassLoader::PopulateAvailableClassHashTable` skips it, so it is in none of
         // the tables `Assembly.GetType` searches. Measured: real .NET answers null at either

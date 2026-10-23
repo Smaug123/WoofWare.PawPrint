@@ -795,8 +795,13 @@ mutation-testing skill applies to each table/classifier they introduce.
      test host's own. `ReflectionIsCollectible.cs` and two of the five cases parked on
      `methodIsCollectible` pass; the other three reach `isAsyncMethod`, and
      `DynamicAssemblyHosting.cs` reaches `RuntimeModule_GetTypes`;
-   * `MarshalNative_HasLayout`, `Delegate_GetMethodDesc`,
-     and `RuntimeModule_GetTypes`'s three-argument shape
+   * **(landed)** `RuntimeModule_GetTypes`'s three-argument shape. RC1 hands back the exceptions
+     of the rows that failed to load through a third `ObjectHandleOnStack`, for
+     `RuntimeModule.GetDefinedTypes` to throw as a `ReflectionTypeLoadException`, where .NET 10's
+     native throws it. PawPrint aborts the run on any row it cannot load, on both runtimes, so it
+     never writes that argument. `ModuleGetTypes.cs` and the cross-assembly test of the module
+     pseudo-type pass; `DynamicAssemblyHosting.cs` reaches `isAsyncMethod`;
+   * `MarshalNative_HasLayout` and `Delegate_GetMethodDesc`
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
      It blocks on `LowLevelMonitor`, which PawPrint already models, and brackets each wait with
