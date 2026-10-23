@@ -84,7 +84,7 @@ static unsafe class Futex
         )
         |> Map.count
 
-    let private journey (name : string) (dotnetRuntimes : ImmutableArray<string>) (image : byte[]) : Journey =
+    let private journey (name : string) (config : HostConfig) (image : byte[]) : Journey =
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", name ]
 
@@ -93,7 +93,7 @@ static unsafe class Futex
         use peImage = new MemoryStream (image)
 
         let prepared =
-            match Program.prepare loggerFactory (Some name) peImage (HostConfig.Default dotnetRuntimes) with
+            match Program.prepare loggerFactory (Some name) peImage config with
             | Program.ProgramStartResult.CompletedBeforeMain outcome ->
                 failwith $"guest completed before Main: %O{outcome}"
             | Program.ProgramStartResult.Ready prepared -> prepared
@@ -140,11 +140,11 @@ static unsafe class Futex
                 let real, journey =
                     DifferentialOracle.alongsideInterpreted
                         (fun () -> RealRuntime.executeWithRealRuntime [||] image)
-                        (fun () -> journey name (FrameworkUnderTest.runtimeDirs ()) image)
+                        (fun () -> journey name (HostConfig.Default (FrameworkUnderTest.runtimeDirs ())) image)
 
                 Some real, journey
             else
-                None, journey name (FrameworkUnderTest.runtimeDirs ()) image
+                None, journey name (HostConfig.Default (FrameworkUnderTest.runtimeDirs ())) image
 
         match realResult with
         | Some real -> DifferentialOracle.compareOutcomes name 0 false real (RunEnd.Ended journey.Outcome)
@@ -295,7 +295,7 @@ unsafe class Program
         let name = "LowLevelFutexOneWaiterPerWake.cs"
 
         let journey =
-            journey name (FrameworkUnderTest.runtimeDirs ()) (Roslyn.compile [ prelude + source ])
+            journey name (HostConfig.Default (FrameworkUnderTest.runtimeDirs ())) (Roslyn.compile [ prelude + source ])
 
         exitCode name journey |> shouldEqual 0
         journey.MostFutexParked |> shouldEqual 2
@@ -435,7 +435,7 @@ unsafe class Program
 
         let exn =
             Assert.Catch (fun () ->
-                journey "LowLevelFutexManagedWord.cs" (FrameworkUnderTest.runtimeDirs ()) image
+                journey "LowLevelFutexManagedWord.cs" (HostConfig.Default (FrameworkUnderTest.runtimeDirs ())) image
                 |> ignore
             )
 
@@ -443,6 +443,49 @@ unsafe class Program
         |> shouldContainText "SystemNative_LowLevelFutex_WakeByAddressSingle"
 
         exn.Message |> shouldContainText "native-heap memory"
+
+    /// A Darwin kernel has no `futex(2)`, so each entry point refuses there rather than answer as
+    /// some other call would. A Linux CoreLib run under a Darwin kernel makes these calls.
+    [<Test>]
+    let ``Under a Darwin kernel each call is refused, advising a Linux kernel`` () : unit =
+        let darwin (dotnetRuntimes : ImmutableArray<string>) : HostConfig =
+            let config = HostConfig.Default dotnetRuntimes
+
+            { config with
+                Guest.Kernel.UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            }
+
+        for entryPoint, call in
+            [
+                "SystemNative_LowLevelFutex_WaitOnAddress", "Futex.Wait(word, 1);"
+                "SystemNative_LowLevelFutex_WaitOnAddressTimeout", "Futex.WaitTimeout(word, 1, 20);"
+                "SystemNative_LowLevelFutex_WakeByAddressSingle", "Futex.Wake(word);"
+            ] do
+            let source =
+                $$"""
+unsafe class Program
+{
+    static int Main()
+    {
+        int* word = Futex.NewWord();
+        {{call}}
+        return 0;
+    }
+}
+"""
+
+            let image = Roslyn.compile [ prelude + source ]
+
+            let exn =
+                Assert.Catch (fun () ->
+                    journey $"LowLevelFutexDarwin.%s{entryPoint}.cs" (darwin (FrameworkUnderTest.runtimeDirs ())) image
+                    |> ignore
+                )
+
+            exn.Message |> shouldContainText entryPoint
+
+            exn.Message
+            |> shouldContainText "run it under a Linux KernelConfig.UnixPlatform"
 
     /// The path real guest code takes: on the Linux CoreLib, a thread-pool worker with nothing
     /// to do blocks in `LowLevelLifoSemaphore`, through `LowLevelThreadBlocker`, and the next
@@ -481,7 +524,10 @@ class Program
 """
 
         let journey =
-            journey "LowLevelFutexThreadPool.cs" (runtimeDirsPreferringLinux frameworkDir) (Roslyn.compile [ source ])
+            journey
+                "LowLevelFutexThreadPool.cs"
+                (HostConfig.Default (runtimeDirsPreferringLinux frameworkDir))
+                (Roslyn.compile [ source ])
 
         match journey.Outcome with
         | RunOutcome.NormalExit (state, _, _) ->
