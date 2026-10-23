@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
@@ -115,11 +116,10 @@ module SignatureComparison =
     ///
     /// A miss is a bound assembly that does not declare the name. CoreCLR's resolver returns FALSE
     /// for that and `CompareTypeTokens` answers FALSE, so the miss is handed back for the caller
-    /// to answer the same way. An assembly that cannot be bound at all fails loudly in the loader,
-    /// as CoreCLR throws from its own.
-    let private resolveNominal
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
+    /// to answer the same way. An assembly that `loadAssembly` cannot bind at all fails loudly, as
+    /// CoreCLR throws from its own.
+    let rec private resolveNominal
+        (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
         (nominal : Nominal)
         : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
@@ -127,15 +127,26 @@ module SignatureComparison =
         match nominal.Token with
         | NominalToken.Definition typeDef -> assemblies, Ok typeDef.Identity
         | NominalToken.Reference typeRef ->
-            TypeResolution.resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs nominal.Module typeRef assemblies
+            let referencing = assemblies.ByDefinitionName nominal.Module.DefinitionFullName
+
+            match LoadedTypeResolution.resolveTypeRef assemblies referencing ImmutableArray.Empty typeRef with
+            | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
+            | TypeResolutionResult.NotFound miss -> assemblies, Error miss
+            | TypeResolutionResult.FirstLoadAssy loadFirst ->
+                let handle, referencedIn = loadFirst.Handle
+                let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
+
+                let assemblies =
+                    LoadedAssemblies.assertReferenceBound $"type reference %s{typeRef.Name}" loadFirst assemblies
+
+                resolveNominal loadAssembly assemblies nominal
 
     /// `CompareTypeTokens` (siginfo.cpp), step for step: the same row of one module, then names,
     /// then the enclosing types by the same steps, then each side resolved in turn. The order is
     /// the point, not a saving: it decides which assemblies are loaded, or fail to bind, before an
     /// answer is reached, and PawPrint fails loudly where CoreCLR throws.
     let rec private compareNominal
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
+        (loadAssembly : IAssemblyLoad)
         (operation : string)
         (depth : int)
         (assemblies : LoadedAssemblies)
@@ -184,7 +195,7 @@ module SignatureComparison =
         let assemblies, enclosingMatch =
             match enclosingOf operation left, enclosingOf operation right with
             | Some lEnclosing, Some rEnclosing ->
-                compareNominal loggerFactory dotnetRuntimeDirs operation (depth + 1) assemblies lEnclosing rEnclosing
+                compareNominal loadAssembly operation (depth + 1) assemblies lEnclosing rEnclosing
             | None, None -> assemblies, true
             | Some _, None
             | None, Some _ -> assemblies, false
@@ -193,19 +204,41 @@ module SignatureComparison =
             assemblies, false
         else
 
-        let assemblies, lIdentity =
-            resolveNominal loggerFactory dotnetRuntimeDirs assemblies left
+        let assemblies, lIdentity = resolveNominal loadAssembly assemblies left
 
         match lIdentity with
         | Error _ -> assemblies, false
         | Ok lIdentity ->
 
-        let assemblies, rIdentity =
-            resolveNominal loggerFactory dotnetRuntimeDirs assemblies right
+        let assemblies, rIdentity = resolveNominal loadAssembly assemblies right
 
         match rIdentity with
         | Error _ -> assemblies, false
         | Ok rIdentity -> assemblies, lIdentity = rIdentity
+
+    /// `CompareTypeTokens` (siginfo.cpp) on two type references or definitions of signatures, `left`
+    /// spelled in `leftModule` and `right` in `rightModule`, binding assemblies with `loadAssembly`:
+    /// whether they name one type definition. It compares names before it resolves either, and a
+    /// reference into an assembly that binds but does not declare the type names no type, so it is
+    /// unequal to every other; one into an assembly `loadAssembly` cannot bind fails loudly, where
+    /// CoreCLR throws. The element types' kinds, class or value type, are not compared.
+    let compareTypeTokens
+        (loadAssembly : IAssemblyLoad)
+        (operation : string)
+        (assemblies : LoadedAssemblies)
+        (leftModule : DumpedAssembly)
+        (left : TypeDefn)
+        (rightModule : DumpedAssembly)
+        (right : TypeDefn)
+        : LoadedAssemblies * bool
+        =
+        compareNominal
+            loadAssembly
+            operation
+            0
+            assemblies
+            (nominalOfLeaf operation assemblies leftModule left)
+            (nominalOfLeaf operation assemblies rightModule right)
 
     /// Compare two decoded signature types the way `MetaSig::CompareElementType` compares two
     /// blobs with both `Substitution`s null.
@@ -343,8 +376,7 @@ module SignatureComparison =
                 assemblies, false
             else
                 compareNominal
-                    loggerFactory
-                    dotnetRuntimeDirs
+                    (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
                     operation
                     0
                     assemblies
