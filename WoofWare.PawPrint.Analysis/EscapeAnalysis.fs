@@ -3098,7 +3098,21 @@ module EscapeAnalysis =
                     match op with
                     | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque, calls
                     | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque, calls
-                | OpcodeFaults.Raises faults ->
+                | OpcodeFaults.Raises (faults, resolution) ->
+                    for fault in resolution do
+                        match fault with
+                        // Bound in 0 above: a token that fails to bind fails before the body runs.
+                        | ResolutionFault.TokenBinding -> ()
+                        // Decided where a call's target is dispatched (`dispatchOn`), whose failure
+                        // the call raises (`DispatchOutcome.Raises`), and for a `constrained. ldftn`
+                        // from `ConstrainedPointers`.
+                        | ResolutionFault.DispatchOnReceiver
+                        | ResolutionFault.DispatchOnConstrainedType -> ()
+                        // Not modelled: the analysis takes every access to succeed.
+                        | ResolutionFault.MethodAccess
+                        | ResolutionFault.FieldAccess
+                        | ResolutionFault.TypeAccess -> ()
+
                     ((state, raises, opaque, calls), List.filter operandsAllow faults)
                     ||> List.fold (fun (state, raises, opaque, calls) fault ->
                         match fault with

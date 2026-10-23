@@ -63,7 +63,7 @@ module TestOpcodeFaults =
     [<Test>]
     let ``ldstr can fail to allocate its literal`` () : unit =
         OpcodeFaults.ofUnaryStringToken UnaryStringTokenIlOp.Ldstr
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.OutOfMemory ], Set.empty))
 
     /// `refanyval` checks the requested type against the one the `TypedRef` carries and can fail
     /// that check; `mkrefany` only packages an address and a handle, and performs no check at all.
@@ -72,10 +72,10 @@ module TestOpcodeFaults =
     [<Test>]
     let ``refanyval checks its type and mkrefany does not`` () : unit =
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Refanyval
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.InvalidCast ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.InvalidCast ], set [ ResolutionFault.TokenBinding ]))
 
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Mkrefany
-        |> shouldEqual (OpcodeFaults.Raises [])
+        |> shouldEqual (OpcodeFaults.Raises ([], set [ ResolutionFault.TokenBinding ; ResolutionFault.TypeAccess ]))
 
     /// A duplicate entry would make `Raises` a bag where the type says it is a set, and would make
     /// two tables that mean the same thing compare unequal.
@@ -84,14 +84,14 @@ module TestOpcodeFaults =
         for op in allCasesOf<NullaryIlOp> () do
             match OpcodeFaults.ofNullary op with
             | OpcodeFaults.Unmodelled -> ()
-            | OpcodeFaults.Raises xs -> xs |> List.distinct |> shouldEqual xs
+            | OpcodeFaults.Raises (xs, _) -> xs |> List.distinct |> shouldEqual xs
 
     [<Test>]
     let ``no unary-metadata entry lists a fault twice`` () : unit =
         for op in allCasesOf<UnaryMetadataTokenIlOp> () do
             match OpcodeFaults.ofUnaryMetadata op with
             | OpcodeFaults.Unmodelled -> ()
-            | OpcodeFaults.Raises xs -> xs |> List.distinct |> shouldEqual xs
+            | OpcodeFaults.Raises (xs, _) -> xs |> List.distinct |> shouldEqual xs
 
     // ---------- `mayRaise` ----------
 
@@ -105,7 +105,8 @@ module TestOpcodeFaults =
     [<Test>]
     let ``an empty Raises may raise nothing`` () : unit =
         for fault in allCasesOf<OpcodeFault> () do
-            OpcodeFaults.mayRaise fault (OpcodeFaults.Raises []) |> shouldEqual false
+            OpcodeFaults.mayRaise fault (OpcodeFaults.Raises ([], Set.empty))
+            |> shouldEqual false
 
     [<Test>]
     let ``mayRaise finds a listed fault and not an unlisted one`` () : unit =
@@ -121,16 +122,16 @@ module TestOpcodeFaults =
     [<Test>]
     let ``signed division overflows where unsigned division does not`` () : unit =
         OpcodeFaults.ofNullary NullaryIlOp.Div
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ], Set.empty))
 
         OpcodeFaults.ofNullary NullaryIlOp.Div_un
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.DivideByZero ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.DivideByZero ], Set.empty))
 
         OpcodeFaults.ofNullary NullaryIlOp.Rem
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ], Set.empty))
 
         OpcodeFaults.ofNullary NullaryIlOp.Rem_un
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.DivideByZero ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.DivideByZero ], Set.empty))
 
     /// Every checked conversion can overflow, and no unchecked one can. The two families are named
     /// alike and are easy to move between by accident.
@@ -146,10 +147,10 @@ module TestOpcodeFaults =
 
         for op in overflows do
             OpcodeFaults.ofNullary op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.Overflow ])
+            |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.Overflow ], Set.empty))
 
         for op in rest do
-            OpcodeFaults.ofNullary op |> shouldEqual (OpcodeFaults.Raises [])
+            OpcodeFaults.ofNullary op |> shouldEqual (OpcodeFaults.Raises ([], Set.empty))
 
     /// A store into an array takes the covariance check that a load does not, and `ldelema` takes
     /// it too: it hands out a writable address, so letting it through would defeat the check
@@ -195,7 +196,12 @@ module TestOpcodeFaults =
                 UnaryMetadataTokenIlOp.Stsfld
             ] do
             OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
+            |> shouldEqual (
+                OpcodeFaults.Raises (
+                    [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ],
+                    set [ ResolutionFault.TokenBinding ; ResolutionFault.FieldAccess ]
+                )
+            )
 
         for op in
             [
@@ -205,18 +211,20 @@ module TestOpcodeFaults =
             ] do
             OpcodeFaults.ofUnaryMetadata op
             |> shouldEqual (
-                OpcodeFaults.Raises
+                OpcodeFaults.Raises (
                     [
                         OpcodeFault.NullReference
                         OpcodeFault.StackOverflow
                         OpcodeFault.TypeInitialization
-                    ]
+                    ],
+                    set [ ResolutionFault.TokenBinding ; ResolutionFault.FieldAccess ]
+                )
             )
 
         // `ldtoken` can name a field without accessing it, so nothing is initialized. This is the
         // arm that stops the rule above being read as "anything naming a field".
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldtoken
-        |> shouldEqual (OpcodeFaults.Raises [])
+        |> shouldEqual (OpcodeFaults.Raises ([], set [ ResolutionFault.TokenBinding ]))
 
     /// What a *target* raises is the call graph's business, not this table's — but two things an
     /// invoking instruction does are its own, and neither travels by the call edge.
@@ -234,7 +242,17 @@ module TestOpcodeFaults =
     [<Test>]
     let ``invoking instructions carry the cctor, and a dereference where they have one`` () : unit =
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Call
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
+        |> shouldEqual (
+            OpcodeFaults.Raises (
+                [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ],
+                set
+                    [
+                        ResolutionFault.TokenBinding
+                        ResolutionFault.MethodAccess
+                        ResolutionFault.DispatchOnConstrainedType
+                    ]
+            )
+        )
 
         // `callvirt` and `calli` both dereference, but only `callvirt` allocates: under
         // `constrained.`, a value type that inherits the target from `Object`/`ValueType`/`Enum`
@@ -242,45 +260,72 @@ module TestOpcodeFaults =
         // read as "every indirect invocation allocates".
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Callvirt
         |> shouldEqual (
-            OpcodeFaults.Raises
+            OpcodeFaults.Raises (
                 [
                     OpcodeFault.NullReference
                     OpcodeFault.OutOfMemory
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
-                ]
+                ],
+                set
+                    [
+                        ResolutionFault.TokenBinding
+                        ResolutionFault.MethodAccess
+                        ResolutionFault.DispatchOnReceiver
+                        ResolutionFault.DispatchOnConstrainedType
+                    ]
+            )
         )
 
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Calli
         |> shouldEqual (
-            OpcodeFaults.Raises
+            OpcodeFaults.Raises (
                 [
                     OpcodeFault.NullReference
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
-                ]
+                ],
+                set [ ResolutionFault.TokenBinding ]
+            )
         )
 
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newobj
         |> shouldEqual (
-            OpcodeFaults.Raises
+            OpcodeFaults.Raises (
                 [
                     OpcodeFault.OutOfMemory
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
-                ]
+                ],
+                set [ ResolutionFault.TokenBinding ; ResolutionFault.MethodAccess ]
+            )
         )
 
         // `jmp` stacks no frame of its own — it replaces the current activation rather than
         // pushing one (ECMA-335 III.3.37) — but the `.cctor` it can trigger is a frame, which is
         // why it carries `StackOverflow` all the same.
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Jmp
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
+        |> shouldEqual (
+            OpcodeFaults.Raises (
+                [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ],
+                set [ ResolutionFault.TokenBinding ]
+            )
+        )
 
         // `ldftn` names a method without invoking it, so no `.cctor` runs. This is the arm that
         // stops the rule above being read as "anything naming a method".
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldftn
-        |> shouldEqual (OpcodeFaults.Raises [])
+        |> shouldEqual (
+            OpcodeFaults.Raises (
+                [],
+                set
+                    [
+                        ResolutionFault.TokenBinding
+                        ResolutionFault.MethodAccess
+                        ResolutionFault.DispatchOnConstrainedType
+                    ]
+            )
+        )
 
     /// Running an initializer means entering a frame, so anything that can raise
     /// `TypeInitialization` can also exhaust the stack. Checked over the whole table rather than
@@ -309,7 +354,7 @@ module TestOpcodeFaults =
             |> List.filter (fun (_, faults) ->
                 match faults with
                 | OpcodeFaults.Unmodelled -> false
-                | OpcodeFaults.Raises fs ->
+                | OpcodeFaults.Raises (fs, _) ->
                     List.contains OpcodeFault.TypeInitialization fs
                     && not (List.contains OpcodeFault.StackOverflow fs)
             )
@@ -329,6 +374,131 @@ module TestOpcodeFaults =
         for op in allCasesOf<UnaryMetadataTokenIlOp> () do
             OpcodeFaults.ofIlOp (IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata dummy))
             |> shouldEqual (OpcodeFaults.ofUnaryMetadata op)
+
+    // ---------- Resolution faults ----------
+
+    /// Every instruction of every shape, with a dummy operand where it takes one. `UnaryConstIlOp`
+    /// is represented by one case: `ofUnaryConst` has one arm for the whole union.
+    let private everyOp : IlOp list =
+        let dummy =
+            SourcedMetadataToken.ofInt (System.Reflection.AssemblyName "dummy-for-opcode-fault-tests") 0x02000001
+
+        [
+            for op in allCasesOf<NullaryIlOp> () -> IlOp.Nullary op
+            for op in allCasesOf<UnaryMetadataTokenIlOp> () ->
+                IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata dummy)
+            for op in allCasesOf<UnaryStringTokenIlOp> () ->
+                IlOp.UnaryStringToken (
+                    op,
+                    StringOperand.FromMetadata (
+                        SourcedStringToken.ofInt
+                            (System.Reflection.AssemblyName "dummy-for-opcode-fault-tests")
+                            0x70000001
+                    )
+                )
+            yield IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4 0)
+            yield IlOp.Switch (System.Collections.Immutable.ImmutableArray.Create<int32> 0)
+        ]
+
+    /// The instructions whose entry lists `fault`, by case name for a metadata-token instruction.
+    /// The unmodelled `rethrow` lists nothing, though it may fail in any way.
+    let private carrying (fault : ResolutionFault) : string list =
+        everyOp
+        |> List.choose (fun op ->
+            match OpcodeFaults.ofIlOp op with
+            | OpcodeFaults.Raises (_, resolution) when resolution.Contains fault ->
+                match op with
+                | IlOp.UnaryMetadataToken (op, _) -> Some (nameOf op)
+                | other -> Some $"%O{other}"
+            | OpcodeFaults.Raises _
+            | OpcodeFaults.Unmodelled -> None
+        )
+        |> List.sort
+
+    /// A token binds exactly where there is one that names something in metadata: `ldstr`'s indexes
+    /// the method's own string heap, and every other shape bears none. `rethrow`, the one
+    /// unmodelled entry, is left out, since an unmodelled entry may fail in any way at all.
+    [<Test>]
+    let ``exactly the metadata-token instructions can fail to bind their token`` () : unit =
+        for op in everyOp do
+            match op, OpcodeFaults.ofIlOp op with
+            | _, OpcodeFaults.Unmodelled -> ()
+            | IlOp.UnaryMetadataToken _, OpcodeFaults.Raises (_, resolution) ->
+                resolution.Contains ResolutionFault.TokenBinding |> shouldEqual true
+            | _, OpcodeFaults.Raises (_, resolution) -> resolution |> shouldEqual Set.empty
+
+    /// CoreCLR checks access at exactly these instructions, and raises the exception that names
+    /// what each token names. `TestResolutionFaultsOnHost` is the oracle; this pins the sets so that
+    /// moving an instruction between them fails here as well.
+    [<Test>]
+    let ``access is checked where the JIT checks it`` () : unit =
+        carrying ResolutionFault.MethodAccess
+        |> shouldEqual [ "Call" ; "Callvirt" ; "Ldftn" ; "Ldvirtftn" ; "Newobj" ]
+
+        carrying ResolutionFault.FieldAccess
+        |> shouldEqual [ "Ldfld" ; "Ldflda" ; "Ldsfld" ; "Ldsflda" ; "Stfld" ; "Stsfld" ]
+
+        carrying ResolutionFault.TypeAccess
+        |> shouldEqual
+            [
+                "Box"
+                "Castclass"
+                "Isinst"
+                "Mkrefany"
+                "Newarr"
+                "Unbox"
+                "Unbox_Any"
+            ]
+
+    /// A call dispatches on its receiver's class at `callvirt`, and at `ldvirtftn`, which resolves
+    /// the slot a delegate will call; and on the type a `constrained.` prefix names at each
+    /// instruction the prefix may precede: `callvirt`, and, for a static virtual method, `call`
+    /// and `ldftn`.
+    [<Test>]
+    let ``dispatch fails where a call dispatches`` () : unit =
+        carrying ResolutionFault.DispatchOnReceiver
+        |> shouldEqual [ "Callvirt" ; "Ldvirtftn" ]
+
+        carrying ResolutionFault.DispatchOnConstrainedType
+        |> shouldEqual [ "Call" ; "Callvirt" ; "Ldftn" ]
+
+    [<Test>]
+    let ``Unmodelled may fail resolving in every way`` () : unit =
+        for fault in allCasesOf<ResolutionFault> () do
+            OpcodeFaults.mayFailResolving fault OpcodeFaults.Unmodelled |> shouldEqual true
+
+    /// The resolution set and the instruction's own faults are separate claims: a fault in one is
+    /// not read from the other.
+    [<Test>]
+    let ``mayRaise and mayFailResolving read separate halves`` () : unit =
+        let entry =
+            OpcodeFaults.Raises ([ OpcodeFault.NullReference ], set [ ResolutionFault.TypeAccess ])
+
+        OpcodeFaults.mayRaise OpcodeFault.NullReference entry |> shouldEqual true
+
+        OpcodeFaults.mayFailResolving ResolutionFault.TypeAccess entry
+        |> shouldEqual true
+
+        OpcodeFaults.mayFailResolving ResolutionFault.TokenBinding entry
+        |> shouldEqual false
+
+        for fault in allCasesOf<ResolutionFault> () do
+            OpcodeFaults.mayFailResolving fault (OpcodeFaults.Raises ([ OpcodeFault.NullReference ], Set.empty))
+            |> shouldEqual false
+
+    /// Each name `ResolutionFault.typeNames` gives is a type in a real corelib, and an exception.
+    [<Test>]
+    let ``every resolution fault names corelib exception types`` () : unit =
+        let corelib = typeof<obj>.Assembly
+
+        for fault in allCasesOf<ResolutionFault> () do
+            let names = ResolutionFault.typeNames fault
+            names |> List.isEmpty |> shouldEqual false
+
+            for name in names do
+                match corelib.GetType name with
+                | null -> failwith $"%O{fault} names %s{name}, which corelib does not define"
+                | ty -> typeof<exn>.IsAssignableFrom ty |> shouldEqual true
 
     // ---------- Fault kinds, and the filtering they enable ----------
 
@@ -362,16 +532,18 @@ module TestOpcodeFaults =
     let ``excludingKind drops one kind and keeps the other`` () : unit =
         let newarr = OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newarr
 
+        let resolution = set [ ResolutionFault.TokenBinding ; ResolutionFault.TypeAccess ]
+
         newarr
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ], resolution))
 
         newarr
         |> OpcodeFaults.excludingKind FaultKind.ResourceExhaustion
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.Overflow ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.Overflow ], resolution))
 
         newarr
         |> OpcodeFaults.excludingKind FaultKind.Logic
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ])
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.OutOfMemory ], resolution))
 
     /// Filtering must never *add* a fault, whatever it is asked to drop. Checked over the whole
     /// table rather than at a chosen opcode, since the interesting failure would be at whichever
@@ -382,9 +554,11 @@ module TestOpcodeFaults =
             for kind in allCasesOf<FaultKind> () do
                 match before, OpcodeFaults.excludingKind kind before with
                 | OpcodeFaults.Unmodelled, after -> after |> shouldEqual OpcodeFaults.Unmodelled
-                | OpcodeFaults.Raises xs, OpcodeFaults.Raises ys ->
+                | OpcodeFaults.Raises (xs, before), OpcodeFaults.Raises (ys, after) ->
                     for y in ys do
                         List.contains y xs |> shouldEqual true
+
+                    after |> shouldEqual before
                 | OpcodeFaults.Raises _, OpcodeFaults.Unmodelled ->
                     failwith "excludingKind turned a classified entry into an unclassified one"
 
@@ -424,7 +598,7 @@ module TestOpcodeFaults =
     [<Test>]
     let ``switch does not fault on an out-of-range index`` () : unit =
         OpcodeFaults.ofIlOp (IlOp.Switch (System.Collections.Immutable.ImmutableArray.Create<int32> 0))
-        |> shouldEqual (OpcodeFaults.Raises [])
+        |> shouldEqual (OpcodeFaults.Raises ([], Set.empty))
 
     // ---------- What a fault needs of the operands ----------
 

@@ -198,7 +198,7 @@ module TestOpcodeFaultsOnHost =
             NumericOpcodeGrid.instructions
             |> List.filter (fun (op, _, _) ->
                 match OpcodeFaults.ofNullary op with
-                | OpcodeFaults.Raises faults ->
+                | OpcodeFaults.Raises (faults, _) ->
                     faults
                     |> List.exists (fun fault -> not (OpcodeFaults.requiredOperands (IlOp.Nullary op) fault).IsEmpty)
                 | OpcodeFaults.Unmodelled -> false
