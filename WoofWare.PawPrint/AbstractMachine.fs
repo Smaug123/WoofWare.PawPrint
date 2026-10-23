@@ -469,6 +469,7 @@ module AbstractMachine =
                     ConstructionState.NotConstructing
                     (if dispatchesOnReceiver then
                          IlMachineStateExecution.dispatchOnReceiver
+                             IlMachineStateExecution.DispatchOrigin.Callee
                              "delegate invocation"
                              methodPtr
                              (EvalStackValue.ofCliType instruction.Arguments.[1])

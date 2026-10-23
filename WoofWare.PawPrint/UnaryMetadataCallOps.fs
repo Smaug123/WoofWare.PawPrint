@@ -903,12 +903,12 @@ module internal UnaryMetadataCallOps =
             | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
                 enterCallee ctx implementation state
             | state, ConstrainedStaticImplementation.Fails failure ->
-                // With the parameterless constructor's message, as at a virtual call's dispatch in
-                // `callMethodWithCommitment`.
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseDispatchFailure
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
-                    (DispatchFailure.exceptionType ctx.BaseClassTypes failure)
+                    (IlMachineStateExecution.DispatchOrigin.Instruction
+                        IlMachineStateExecution.DispatchSite.ConstrainedType)
+                    failure
                     ctx.Thread
                     state
         | None -> enterNamedCallee ctx concretizedMethod state
@@ -996,7 +996,13 @@ module internal UnaryMetadataCallOps =
         let dispatch =
             match receiver with
             | Some receiver when dispatchesOnReceiver ->
-                IlMachineStateExecution.dispatchOnReceiver "callvirt" concretizedMethod receiver
+                IlMachineStateExecution.dispatchOnReceiver
+                    // A `constrained.` prefix dispatches on the type it names, but on a value type
+                    // the call dispatches on the box; `callvirt`'s entry lists both.
+                    (IlMachineStateExecution.DispatchOrigin.Instruction IlMachineStateExecution.DispatchSite.Receiver)
+                    "callvirt"
+                    concretizedMethod
+                    receiver
             | _ -> IlMachineStateExecution.CallDispatch.Direct
 
         let state =

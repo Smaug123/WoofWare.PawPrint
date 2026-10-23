@@ -1547,6 +1547,7 @@ module internal UnsafeAccessorDispatch =
             else
                 let dispatch =
                     IlMachineStateExecution.dispatchOnReceiver
+                        IlMachineStateExecution.DispatchOrigin.Callee
                         describe
                         target
                         (EvalStackValue.ofCliType instruction.Arguments.[0])

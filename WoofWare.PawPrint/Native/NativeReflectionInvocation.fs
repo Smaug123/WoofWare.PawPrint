@@ -721,6 +721,7 @@ module internal NativeReflectionInvocation =
                          | None -> IlMachineStateExecution.CallDispatch.Direct
                          | Some this ->
                              IlMachineStateExecution.dispatchOnReceiver
+                                 IlMachineStateExecution.DispatchOrigin.Callee
                                  "MethodBase.Invoke"
                                  target.Method
                                  (EvalStackValue.ofCliType this))
