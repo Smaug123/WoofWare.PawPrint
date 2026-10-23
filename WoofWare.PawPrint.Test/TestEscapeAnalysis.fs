@@ -1305,6 +1305,31 @@ public static class SR
         )
         |> Set.ofSeq
 
+    /// Whether `key`'s answer, over a CoreLib of `runtime`, is unknown only where it reaches the
+    /// QCalls that .NET 11's `SpanHelpers` copies and clears memory through, which the contract
+    /// table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`). Never on .NET 10.
+    let private unknownOnlyThroughNet11MemoryQCalls
+        (runtime : EmulatedRuntime)
+        (analysis : EscapeAnalysisState)
+        (key : MethodKey)
+        : EscapeAnalysisState * bool
+        =
+        match runtime with
+        | EmulatedRuntime.Net10 -> analysis, false
+        | EmulatedRuntime.Net11 ->
+            let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+            let memoryQCalls =
+                Set.ofList [ "System.SpanHelpers::memmove" ; "System.SpanHelpers::memset" ]
+
+            analysis,
+            not sources.IsEmpty
+            && sources
+               |> Seq.forall (fun site ->
+                   site.Reason = Opacity.NativeBody
+                   && memoryQCalls.Contains (EscapeAnalysis.methodName analysis site.Method)
+               )
+
     /// A place the analysis cannot see through, as the expectations spell it: the method it is in,
     /// `IL` at an instruction of the method's IL or `entry` at none, why, and the method the
     /// instruction names.
@@ -4627,7 +4652,15 @@ public static class Cases
                 | Some _, _ ->
                     substituted <- substituted + 1
 
-                    if escapes.Unknown then
+                    let next, net11Frontier =
+                        unknownOnlyThroughNet11MemoryQCalls
+                            (EmulatedRuntime.ofCoreLib corelib)
+                            analysis
+                            (MethodKey.make corelib handle)
+
+                    analysis <- next
+
+                    if escapes.Unknown && not net11Frontier then
                         failures.Add $"%s{describe ()}: the VM's IL for it is all there is to see"
                 | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
                     primitives <- primitives + 1
@@ -7815,6 +7848,8 @@ public static class Holder<T> where T : IProbe
         : EscapeAnalysisState * string list
         =
         let arithmetic = Set.ofList [ dividesByZero ; overflows ]
+        // `analysisOver` reads the host's CoreLib.
+        let coreLibRuntime = EmulatedRuntime.ofCoreLib (hostCoreLib ())
         let mutable analysis = analysis
 
         let failures =
@@ -7847,9 +7882,17 @@ public static class Holder<T> where T : IProbe
                             if not (shown.Contains ("=" + thrown)) then
                                 yield $"%s{describe ()} lacks %s{thrown}"
 
+                    let next, net11Frontier =
+                        unknownOnlyThroughNet11MemoryQCalls
+                            coreLibRuntime
+                            analysis
+                            (methodNamed fixture (ns + ".Runners") name)
+
+                    analysis <- next
+
                     match claim with
                     | DispatchClaim.Precise ->
-                        if escapes.Unknown || shownArithmetic <> reported then
+                        if (escapes.Unknown && not net11Frontier) || shownArithmetic <> reported then
                             yield
                                 $"%s{describe ()}; expected exactly %A{Set.toList reported} of the arithmetic exceptions, and nothing unknown"
                     | DispatchClaim.Unknown ->
