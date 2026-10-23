@@ -72,17 +72,24 @@ module internal ArrayElementOperands =
         =
         match arr with
         | EvalStackValue.NullObjectRef ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
             |> ArrayElementOperands.Faulted
         | EvalStackValue.ObjectRef arrAddr ->
             let index = arrayIndex index
             let shape = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
 
             if index < 0L || index >= int64<int32> shape.Length then
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    OpcodeFault.IndexOutOfRange
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.IndexOutOfRange)
+                    []
                     thread
                     state
                 |> ArrayElementOperands.Faulted

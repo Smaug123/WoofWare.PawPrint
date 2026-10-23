@@ -63,7 +63,7 @@ module TestOpcodeFaults =
     [<Test>]
     let ``ldstr can fail to allocate its literal`` () : unit =
         OpcodeFaults.ofUnaryStringToken UnaryStringTokenIlOp.Ldstr
-        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.OutOfMemory ], Set.empty))
+        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.OutOfMemory ], set [ ResolutionFault.ScopeEntry ]))
 
     /// `refanyval` checks the requested type against the one the `TypedRef` carries and can fail
     /// that check; `mkrefany` only packages an address and a handle, and performs no check at all.
@@ -72,10 +72,25 @@ module TestOpcodeFaults =
     [<Test>]
     let ``refanyval checks its type and mkrefany does not`` () : unit =
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Refanyval
-        |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.InvalidCast ], set [ ResolutionFault.TokenBinding ]))
+        |> shouldEqual (
+            OpcodeFaults.Raises (
+                [ OpcodeFault.InvalidCast ],
+                set [ ResolutionFault.TokenBinding ; ResolutionFault.ScopeEntry ]
+            )
+        )
 
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Mkrefany
-        |> shouldEqual (OpcodeFaults.Raises ([], set [ ResolutionFault.TokenBinding ; ResolutionFault.TypeAccess ]))
+        |> shouldEqual (
+            OpcodeFaults.Raises (
+                [],
+                set
+                    [
+                        ResolutionFault.TokenBinding
+                        ResolutionFault.ScopeEntry
+                        ResolutionFault.TypeAccess
+                    ]
+            )
+        )
 
     /// A duplicate entry would make `Raises` a bag where the type says it is a set, and would make
     /// two tables that mean the same thing compare unequal.
@@ -199,7 +214,12 @@ module TestOpcodeFaults =
             |> shouldEqual (
                 OpcodeFaults.Raises (
                     [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ],
-                    set [ ResolutionFault.TokenBinding ; ResolutionFault.FieldAccess ]
+                    set
+                        [
+                            ResolutionFault.TokenBinding
+                            ResolutionFault.ScopeEntry
+                            ResolutionFault.FieldAccess
+                        ]
                 )
             )
 
@@ -217,14 +237,19 @@ module TestOpcodeFaults =
                         OpcodeFault.StackOverflow
                         OpcodeFault.TypeInitialization
                     ],
-                    set [ ResolutionFault.TokenBinding ; ResolutionFault.FieldAccess ]
+                    set
+                        [
+                            ResolutionFault.TokenBinding
+                            ResolutionFault.ScopeEntry
+                            ResolutionFault.FieldAccess
+                        ]
                 )
             )
 
         // `ldtoken` can name a field without accessing it, so nothing is initialized. This is the
         // arm that stops the rule above being read as "anything naming a field".
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldtoken
-        |> shouldEqual (OpcodeFaults.Raises ([], set [ ResolutionFault.TokenBinding ]))
+        |> shouldEqual (OpcodeFaults.Raises ([], set [ ResolutionFault.TokenBinding ; ResolutionFault.ScopeEntry ]))
 
     /// What a *target* raises is the call graph's business, not this table's — but two things an
     /// invoking instruction does are its own, and neither travels by the call edge.
@@ -248,6 +273,7 @@ module TestOpcodeFaults =
                 set
                     [
                         ResolutionFault.TokenBinding
+                        ResolutionFault.ScopeEntry
                         ResolutionFault.MethodAccess
                         ResolutionFault.DispatchOnConstrainedType
                     ]
@@ -270,6 +296,7 @@ module TestOpcodeFaults =
                 set
                     [
                         ResolutionFault.TokenBinding
+                        ResolutionFault.ScopeEntry
                         ResolutionFault.MethodAccess
                         ResolutionFault.DispatchOnReceiver
                         ResolutionFault.DispatchOnConstrainedType
@@ -285,7 +312,7 @@ module TestOpcodeFaults =
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ],
-                set [ ResolutionFault.TokenBinding ]
+                set [ ResolutionFault.TokenBinding ; ResolutionFault.ScopeEntry ]
             )
         )
 
@@ -297,7 +324,12 @@ module TestOpcodeFaults =
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ],
-                set [ ResolutionFault.TokenBinding ; ResolutionFault.MethodAccess ]
+                set
+                    [
+                        ResolutionFault.TokenBinding
+                        ResolutionFault.ScopeEntry
+                        ResolutionFault.MethodAccess
+                    ]
             )
         )
 
@@ -308,7 +340,7 @@ module TestOpcodeFaults =
         |> shouldEqual (
             OpcodeFaults.Raises (
                 [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ],
-                set [ ResolutionFault.TokenBinding ]
+                set [ ResolutionFault.TokenBinding ; ResolutionFault.ScopeEntry ]
             )
         )
 
@@ -321,6 +353,7 @@ module TestOpcodeFaults =
                 set
                     [
                         ResolutionFault.TokenBinding
+                        ResolutionFault.ScopeEntry
                         ResolutionFault.MethodAccess
                         ResolutionFault.DispatchOnConstrainedType
                     ]
@@ -425,6 +458,20 @@ module TestOpcodeFaults =
             | _, OpcodeFaults.Unmodelled -> ()
             | IlOp.UnaryMetadataToken _, OpcodeFaults.Raises (_, resolution) ->
                 resolution.Contains ResolutionFault.TokenBinding |> shouldEqual true
+            | _, OpcodeFaults.Raises (_, resolution) ->
+                resolution.Contains ResolutionFault.TokenBinding |> shouldEqual false
+
+    /// In a `DynamicMethod`, every token an instruction bears is an index into the method's scope,
+    /// `ldstr`'s included, and the entry there may be one the instruction cannot use. Every other
+    /// shape bears no token.
+    [<Test>]
+    let ``exactly the token-bearing instructions can name an unusable scope entry`` () : unit =
+        for op in everyOp do
+            match op, OpcodeFaults.ofIlOp op with
+            | _, OpcodeFaults.Unmodelled -> ()
+            | IlOp.UnaryMetadataToken _, OpcodeFaults.Raises (_, resolution)
+            | IlOp.UnaryStringToken _, OpcodeFaults.Raises (_, resolution) ->
+                resolution.Contains ResolutionFault.ScopeEntry |> shouldEqual true
             | _, OpcodeFaults.Raises (_, resolution) -> resolution |> shouldEqual Set.empty
 
     /// CoreCLR checks access at exactly these instructions, and raises the exception that names
@@ -532,7 +579,13 @@ module TestOpcodeFaults =
     let ``excludingKind drops one kind and keeps the other`` () : unit =
         let newarr = OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newarr
 
-        let resolution = set [ ResolutionFault.TokenBinding ; ResolutionFault.TypeAccess ]
+        let resolution =
+            set
+                [
+                    ResolutionFault.TokenBinding
+                    ResolutionFault.ScopeEntry
+                    ResolutionFault.TypeAccess
+                ]
 
         newarr
         |> shouldEqual (OpcodeFaults.Raises ([ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ], resolution))

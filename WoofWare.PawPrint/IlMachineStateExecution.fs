@@ -65,6 +65,24 @@ module IlMachineStateExecution =
         /// failure reaches the instruction as anything else that method raises does.
         | Callee
 
+    /// Where an exception the runtime raises at the thread's current position comes from, which
+    /// decides what `raiseRuntimeException` checks it against.
+    [<RequireQualifiedAccess>]
+    type RaiseOrigin =
+        /// Performing the instruction the thread is positioned at faults, which `OpcodeFaults` must
+        /// list for that instruction. `OpcodeFault.resolve` names the exception.
+        | InstructionFault of OpcodeFault
+        /// Resolving the token of the instruction the thread is positioned at fails in this
+        /// category, which `OpcodeFaults` must list for that instruction, raising `exceptionType`,
+        /// which must be one of those `ResolutionFault.typeNames` names for the category.
+        | InstructionResolution of ResolutionFault * exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Something the instruction handed control to raises it, in place of running IL of its
+        /// own or before it can run any: a native method, an intrinsic, a delegate's constructor or
+        /// invocation, an array's accessor or constructor, an `UnsafeAccessor`, or a method that
+        /// cannot be entered. `OpcodeFaults` says nothing of what a callee raises, so nothing
+        /// checks it.
+        | Callee of exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+
     /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system,
     /// with the method it finds instantiated. Refuses where the type system does not model the
     /// dispatch.
@@ -726,7 +744,13 @@ module IlMachineStateExecution =
                 // advanced the PC, so dispatch sees the faulting instruction's offset.
                 // `WhatWeDid` is always `Executed` here — the ctor frame is now the active
                 // frame, exactly as for an opcode-manufactured exception.
-                raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
+                raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    (RaiseOrigin.Callee exnType)
+                    (message |> Option.toList |> List.map RuntimeExceptionField.Message)
+                    thread
+                    state
                 |> fst
                 |> fun state -> Some (IntrinsicOutcome.Handled (state, CallCommitment.Raised))
             | IntrinsicResult.Unrecognised -> None
@@ -1411,35 +1435,8 @@ module IlMachineStateExecution =
         | StateLoadResult.UnhandledTypeInitializationException (state, exn) -> state, WhatWeDid.UnhandledException exn
         | StateLoadResult.Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
 
-    /// Synthesise an exception from inside the runtime itself (the host emulating the CLR),
-    /// as opposed to a `throw` opcode executed by guest IL. Allocates the exception without
-    /// running the exception type's .cctor, pushes its default instance constructor frame,
-    /// and returns to the dispatch loop. When the ctor completes (Ret), returnStackFrame
-    /// will signal DispatchException so the Ret handler can dispatch the exception.
-    ///
-    /// Use this for opcode-manufactured exceptions like `NullReferenceException` from a null
-    /// dereference or `InvalidCastException` from a failed `castclass`. Do NOT use it for
-    /// dispatching exceptions that the guest itself constructs and throws via `newobj` + `throw`
-    /// — those go through `ExceptionDispatching.throwExceptionObject` and the cctor will already
-    /// have run during the guest's `newobj`.
-    ///
-    /// All current call sites pass a non-generic BCL exception type from `BaseClassTypes`. The
-    /// cctor-skip is safe for those (their cctors are trivial or empty); it would not be safe
-    /// for an arbitrary guest-defined exception type, which is why this entry point is
-    /// reserved for runtime use.
-    ///
-    /// This is a runtime boundary, not guest `newobj` semantics. It mirrors the CLR's
-    /// EEException::CreateThrowable path: allocate the object directly, call the default
-    /// instance ctor, then overwrite HResult.
-    /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
-    ///
-    /// `fields` are written once the ctor has run, for the cases where the CLR would have used
-    /// a constructor overload taking them: a message, or a `TypeLoadException`'s type and
-    /// assembly names. Most callers want none — the CLR throws the great majority of these
-    /// with no argument — and should use `raiseRuntimeException` below, which is this
-    /// function with an empty list supplied; `raiseRuntimeExceptionWithMessage` is the
-    /// message-only spelling.
-    and raiseRuntimeExceptionWithFields
+    /// `raiseRuntimeException` once it has checked `origin`: raise `exceptionTypeInfo`, unchecked.
+    and private raiseUncheckedRuntimeException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -1823,95 +1820,86 @@ module IlMachineStateExecution =
 
                 state |> free [ preserved ] |> preserve caught raised (reraises + 1)
 
-    /// `raiseRuntimeExceptionWithFields` writing only `_message`, or nothing when `message` is
-    /// `None`.
-    and raiseRuntimeExceptionWithMessage
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (message : string option)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState * WhatWeDid
-        =
-        raiseRuntimeExceptionWithFields
-            loggerFactory
-            baseClassTypes
-            exceptionTypeInfo
-            (message |> Option.toList |> List.map RuntimeExceptionField.Message)
-            currentThread
-            state
-
-    /// `raiseRuntimeExceptionWithMessage` with no message override, i.e. the exception is
-    /// constructed exactly as `new SomeException()` would construct it. This is the right
-    /// entry point wherever the CLR throws the exception with no argument, which is almost
-    /// everywhere the runtime manufactures one.
-    and raiseRuntimeException
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState * WhatWeDid
-        =
-        raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exceptionTypeInfo None currentThread state
-
-    /// Raise the fault an *instruction* faulted with, naming the fault rather than the corelib
-    /// type. `OpcodeFault.resolve` supplies the type, so no call site here decides that
-    /// correspondence for itself.
+    /// Synthesise an exception from inside the runtime itself (the host emulating the CLR),
+    /// as opposed to a `throw` opcode executed by guest IL. Allocates the exception without
+    /// running the exception type's .cctor, pushes its default instance constructor frame,
+    /// and returns to the dispatch loop. When the ctor completes (Ret), returnStackFrame
+    /// will signal DispatchException so the Ret handler can dispatch the exception.
     ///
-    /// Prefer this to `raiseRuntimeException` at every opcode site. Besides removing the type
-    /// choice from the call site, it checks the raise against `OpcodeFaults`: an instruction that
-    /// faults with something its table entry does not list means one of the two is wrong, and
-    /// which one is not something this can decide, so it says so and stops. That check is what
-    /// makes the table something an analyser may believe rather than a second, unpoliced
-    /// description of the same behaviour.
+    /// Use this for opcode-manufactured exceptions like `NullReferenceException` from a null
+    /// dereference or `InvalidCastException` from a failed `castclass`. Do NOT use it for
+    /// dispatching exceptions that the guest itself constructs and throws via `newobj` + `throw`
+    /// — those go through `ExceptionDispatching.throwExceptionObject` and the cctor will already
+    /// have run during the guest's `newobj`.
+    ///
+    /// All current call sites pass a non-generic BCL exception type from `BaseClassTypes`. The
+    /// cctor-skip is safe for those (their cctors are trivial or empty); it would not be safe
+    /// for an arbitrary guest-defined exception type, which is why this entry point is
+    /// reserved for runtime use.
+    ///
+    /// This is a runtime boundary, not guest `newobj` semantics. It mirrors the CLR's
+    /// EEException::CreateThrowable path: allocate the object directly, call the default
+    /// instance ctor, then overwrite HResult.
+    /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
+    ///
+    /// `fields` are written once the ctor has run, for the cases where the CLR would have used
+    /// a constructor overload taking them: a message, or a `TypeLoadException`'s type and
+    /// assembly names. Most callers want none: the CLR throws the great majority of these
+    /// with no argument.
+    ///
+    /// `origin` says where the exception comes from, and this checks the raise against it. For an
+    /// instruction's own fault or a failure resolving its token, the thread must be positioned at
+    /// that instruction, and `OpcodeFaults` must list the fault or the resolution category for it;
+    /// a resolution failure's exception must also be one the category names. An instruction that
+    /// raises something its table entry does not list means one of the two is wrong, and which one
+    /// is not something this can decide, so it says so and stops. That check is what makes the
+    /// table something an analyser may believe rather than a second, unpoliced description of the
+    /// same behaviour.
     ///
     /// The instruction is read from the thread's own frame rather than passed in, so a site cannot
     /// name one opcode while executing another. The program counter is not advanced at a raise
     /// site — exception dispatch keys the handler search and the stack trace on the faulting
     /// instruction's offset — so what it reads is the instruction that faulted.
-    ///
-    /// Not for the runtime's non-instruction raises: a native handler, an intrinsic, or a frame
-    /// prologue is not executing an opcode, and `OpcodeFaults` has nothing to say about it. Those
-    /// keep `raiseRuntimeException`.
-    and raiseOpcodeFault
+    and raiseRuntimeException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (fault : OpcodeFault)
+        (origin : RaiseOrigin)
+        (fields : RuntimeExceptionField list)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
-        raiseOpcodeFaultWithMessage loggerFactory baseClassTypes fault None currentThread state
-
-    /// `raiseOpcodeFault` with the message the CLR would have passed to a message-taking ctor
-    /// overload. Most instruction faults want `None` — the CLR raises them with no argument — so
-    /// `raiseOpcodeFault` is the usual entry point.
-    and raiseOpcodeFaultWithMessage
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (fault : OpcodeFault)
-        (message : string option)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState * WhatWeDid
-        =
-        let permitted = faultsOfCurrentInstruction currentThread state
-
-        if not (OpcodeFaults.mayRaise fault permitted) then
+        let where () : string =
             let methodState = state.ThreadState.[currentThread].MethodState
 
-            failwith
-                $"logic error: %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name} at IL_%04X{methodState.IlOpIndex} raised %O{fault}, but OpcodeFaults says that instruction raises %O{permitted}. Either the interpreter is raising the wrong exception here, or the table is missing an entry; both are bugs and only a human can say which."
+            $"%s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name} at IL_%04X{methodState.IlOpIndex}"
 
-        raiseRuntimeExceptionWithMessage
-            loggerFactory
-            baseClassTypes
-            (OpcodeFault.resolve baseClassTypes fault)
-            message
-            currentThread
-            state
+        let exceptionType =
+            match origin with
+            | RaiseOrigin.InstructionFault fault ->
+                let permitted = faultsOfCurrentInstruction currentThread state
+
+                if not (OpcodeFaults.mayRaise fault permitted) then
+                    failwith
+                        $"logic error: %s{where ()} raised %O{fault}, but OpcodeFaults says that instruction raises %O{permitted}. Either the interpreter is raising the wrong exception here, or the table is missing an entry; both are bugs and only a human can say which."
+
+                OpcodeFault.resolve baseClassTypes fault
+            | RaiseOrigin.InstructionResolution (category, exceptionType) ->
+                let permitted = faultsOfCurrentInstruction currentThread state
+                let name = $"%s{exceptionType.Namespace}.%s{exceptionType.Name}"
+
+                if not (OpcodeFaults.mayFailResolving category permitted) then
+                    failwith
+                        $"logic error: %s{where ()} failed resolving its token as %O{category}, raising %s{name}, but OpcodeFaults says that instruction's resolution fails only as %O{permitted}. Either the interpreter is raising a callee's failure as the instruction's, or the table is missing an entry; both are bugs and only a human can say which."
+
+                if not (List.contains name (ResolutionFault.typeNames category)) then
+                    failwith
+                        $"logic error: %s{where ()} failed resolving its token as %O{category}, raising %s{name}, which is not one of the exceptions that category names (%A{ResolutionFault.typeNames category}). Either the interpreter has the category or the exception wrong, or the category's list is missing it; both are bugs and only a human can say which."
+
+                exceptionType
+            | RaiseOrigin.Callee exceptionType -> exceptionType
+
+        raiseUncheckedRuntimeException loggerFactory baseClassTypes exceptionType fields currentThread state
 
     /// Raise what CoreCLR raises where a dispatch made at `origin` found `failure` in place of a
     /// method to run, with the parameterless constructor's message, where CoreCLR's
@@ -1920,7 +1908,7 @@ module IlMachineStateExecution =
     ///
     /// For an instruction, the thread must be positioned at it, and this refuses unless
     /// `OpcodeFaults` says resolving it can fail by dispatching on that site, as
-    /// `raiseOpcodeFault` refuses a fault the table does not list.
+    /// `raiseRuntimeException` refuses any instruction raise the table does not list.
     and raiseDispatchFailure
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1930,33 +1918,19 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
-        let methodState = state.ThreadState.[currentThread].MethodState
+        let exceptionType = DispatchFailure.exceptionType baseClassTypes failure
 
-        let where =
-            $"%s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name}"
+        let origin =
+            match origin with
+            | DispatchOrigin.Instruction DispatchSite.Receiver ->
+                RaiseOrigin.InstructionResolution (ResolutionFault.DispatchOnReceiver, exceptionType)
+            | DispatchOrigin.Instruction DispatchSite.ConstrainedType ->
+                RaiseOrigin.InstructionResolution (ResolutionFault.DispatchOnConstrainedType, exceptionType)
+            // What the frame making the call is says nothing here: a delegate's invocation pops the
+            // delegate's own frame before it dispatches, leaving whichever called `Invoke`.
+            | DispatchOrigin.Callee -> RaiseOrigin.Callee exceptionType
 
-        match origin with
-        | DispatchOrigin.Instruction site ->
-            let category =
-                match site with
-                | DispatchSite.Receiver -> ResolutionFault.DispatchOnReceiver
-                | DispatchSite.ConstrainedType -> ResolutionFault.DispatchOnConstrainedType
-
-            let permitted = faultsOfCurrentInstruction currentThread state
-
-            if not (OpcodeFaults.mayFailResolving category permitted) then
-                failwith
-                    $"logic error: %s{where} at IL_%04X{methodState.IlOpIndex} failed to dispatch on %O{site}, finding %s{DispatchFailure.describe failure}, but OpcodeFaults says that instruction's resolution fails only as %O{permitted}. Either the interpreter is raising a callee's failure as the instruction's, or the table is missing an entry; both are bugs and only a human can say which."
-        // What the frame making the call is says nothing here: a delegate's invocation pops the
-        // delegate's own frame before it dispatches, leaving whichever called `Invoke`.
-        | DispatchOrigin.Callee -> ()
-
-        raiseRuntimeException
-            loggerFactory
-            baseClassTypes
-            (DispatchFailure.exceptionType baseClassTypes failure)
-            currentThread
-            state
+        raiseRuntimeException loggerFactory baseClassTypes origin [] currentThread state
 
     /// Result of the ECMA-335 III.4.x runtime array-store variance gate.
     [<RequireQualifiedAccess>]
@@ -1970,8 +1944,8 @@ module IlMachineStateExecution =
         /// the faulting instruction's offset.
         ///
         /// The raise is the *caller's* to make, not this check's, because the callers are not
-        /// alike. `stelem` and `stelem.ref` are instructions, so their fault goes through
-        /// `raiseOpcodeFault` and is checked against `OpcodeFaults`; the runtime-synthesized
+        /// alike. `stelem` and `stelem.ref` are instructions, so their fault is raised as
+        /// `RaiseOrigin.InstructionFault` and checked against `OpcodeFaults`; the runtime-synthesized
         /// `T[<rank>]::Set` is a callee reached from a plain `call`, about which the table says
         /// nothing, so its fault must not be. A helper raising on both their behalves would have to
         /// choose one route for both.

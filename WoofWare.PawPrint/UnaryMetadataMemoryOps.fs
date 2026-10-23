@@ -41,7 +41,13 @@ module internal UnaryMetadataMemoryOps =
 
         match popped with
         | popped when EvalStackValue.isNullAddress popped ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed) ->
             IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed zeroOfType
             |> IlMachineState.advanceProgramCounter thread
@@ -104,7 +110,13 @@ module internal UnaryMetadataMemoryOps =
 
         match addr with
         | addr when EvalStackValue.isNullAddress addr ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | EvalStackValue.ManagedPointer src ->
             writeAt src
             |> IlMachineState.advanceProgramCounter thread
@@ -157,7 +169,13 @@ module internal UnaryMetadataMemoryOps =
             // No `advanceProgramCounter`: dispatch reads the faulting
             // instruction's PC to decide which handler regions are active and to build the
             // stack trace.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | _ ->
 
         // The type token need not denote a nominal type: `ldobj !!T` with `T = int[]` — which

@@ -149,11 +149,13 @@ module internal UnaryMetadataIlOp =
             // default or a fixed string (see `clrMessageFor`).
             logger.LogWarning ("{Op} refused a DynamicScope operand: {Reason}", op, why)
 
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                exceptionType
-                (DynamicScopeOperand.clrMessageFor baseClassTypes kind exceptionType)
+                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (ResolutionFault.ScopeEntry, exceptionType))
+                ((DynamicScopeOperand.clrMessageFor baseClassTypes kind exceptionType)
+                 |> Option.toList
+                 |> List.map RuntimeExceptionField.Message)
                 thread
                 state
         | OperandResolution.Ready operand ->

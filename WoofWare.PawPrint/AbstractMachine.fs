@@ -164,10 +164,10 @@ module AbstractMachine =
                 // SuspendedForManagedCall because, from the Scheduler's point of view, a
                 // managed callee (the ctor) has been pushed on top of the native frame.
                 let state, _whatWeDid =
-                    IlMachineStateExecution.raiseRuntimeExceptionWithFields
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
-                        exnType
+                        (IlMachineStateExecution.RaiseOrigin.Callee exnType)
                         fields
                         thread
                         state
@@ -222,11 +222,11 @@ module AbstractMachine =
                 // is raised from inside it too: the frame is left up for dispatch to unwind through,
                 // as a native method's is.
                 let state, _whatWeDid =
-                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
-                        exceptionType
-                        message
+                        (IlMachineStateExecution.RaiseOrigin.Callee exceptionType)
+                        (message |> Option.toList |> List.map RuntimeExceptionField.Message)
                         thread
                         state
 
@@ -340,11 +340,11 @@ module AbstractMachine =
                             (MethodState.setProgramCounter pc)
 
                 let state, _whatWeDid =
-                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    IlMachineStateExecution.raiseRuntimeException
                         loggerFactory
                         baseClassTypes
-                        exceptionType
-                        message
+                        (IlMachineStateExecution.RaiseOrigin.Callee exceptionType)
+                        (message |> Option.toList |> List.map RuntimeExceptionField.Message)
                         thread
                         state
 

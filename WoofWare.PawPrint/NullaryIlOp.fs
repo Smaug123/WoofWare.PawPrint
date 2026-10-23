@@ -529,7 +529,7 @@ module NullaryIlOp =
     /// The fault arrives as data (from `BinaryArithmetic.executeFaulting` or `divUnValues`), not
     /// as a host exception: nothing is caught here, so a host `DivideByZeroException` or
     /// `OverflowException` from interpreter code is an interpreter failure and crashes the run
-    /// instead of being handed to the guest as a plausible-looking fault. `raiseOpcodeFault`
+    /// instead of being handed to the guest as a plausible-looking fault. `raiseRuntimeException`
     /// checks the fault against the instruction's `OpcodeFaults` entry, so a fault the table does
     /// not list for this instruction also stops the run rather than reaching the guest.
     ///
@@ -553,7 +553,13 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
         | Error fault ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib fault currentThread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                corelib
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault fault)
+                []
+                currentThread
+                state
             |> ExecutionResult.stepped
 
     let private negInt32Unchecked (value : int32) : int32 =
@@ -1139,7 +1145,13 @@ module NullaryIlOp =
 
         match popped with
         | popped when EvalStackValue.isNullAddress popped ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                corelib
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                currentThread
+                state
             |> ExecutionResult.stepped
         | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr handle) ->
             // First deref of the `MethodTable*** PerInstInfo` chain: step
@@ -1295,7 +1307,13 @@ module NullaryIlOp =
 
         match addr with
         | addr when EvalStackValue.isNullAddress addr ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                corelib
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                currentThread
+                state
             |> ExecutionResult.stepped
         | _ ->
 
@@ -1413,10 +1431,11 @@ module NullaryIlOp =
                 state
         with
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.ArrayTypeMismatch
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.ArrayTypeMismatch)
+                []
                 currentThread
                 state
             |> ExecutionResult.stepped
@@ -1487,7 +1506,13 @@ module NullaryIlOp =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
         | Error () ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                corelib
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.Overflow)
+                []
+                currentThread
+                state
             |> ExecutionResult.stepped
 
     let internal execute
@@ -2358,10 +2383,11 @@ module NullaryIlOp =
             | None ->
                 // ECMA-335 III.4.12. Don't advance the PC: exception dispatch needs the faulting
                 // instruction's offset.
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -2597,10 +2623,11 @@ module NullaryIlOp =
             match exceptionObject with
             | EvalStackValue.NullObjectRef ->
                 // Per ECMA-335 III.4.31: if the object is null, throw NullReferenceException instead.
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -2782,7 +2809,13 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.Overflow)
+                    []
+                    currentThread
+                    state
                 |> ExecutionResult.stepped
         | Conv_ovf_u_un ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -2894,7 +2927,13 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.Overflow)
+                    []
+                    currentThread
+                    state
                 |> ExecutionResult.stepped
         | Conv_ovf_u ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -2925,7 +2964,13 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.Overflow)
+                    []
+                    currentThread
+                    state
                 |> ExecutionResult.stepped
         | Neg ->
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -2982,10 +3027,11 @@ module NullaryIlOp =
 
             match addr with
             | addr when EvalStackValue.isNullAddress addr ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3054,10 +3100,11 @@ module NullaryIlOp =
 
             match addr with
             | addr when EvalStackValue.isNullAddress addr ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3234,10 +3281,11 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | CopyBlockOutcome.NullEndpoint state ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3250,10 +3298,11 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | InitBlockOutcome.NullDestination state ->
-                IlMachineStateExecution.raiseOpcodeFault
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
-                    OpcodeFault.NullReference
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                    []
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3353,7 +3402,13 @@ module NullaryIlOp =
             else
                 // III.3.19 names ArithmeticException; CoreCLR raises its subclass OverflowException.
                 // Exception dispatch uses the faulting instruction's PC, so do not advance it.
-                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.Overflow)
+                    []
+                    currentThread
+                    state
                 |> ExecutionResult.stepped
         | Readonly ->
             // ECMA-335 III.2.2: `readonly.` precedes `ldelema`. The resulting controlled-

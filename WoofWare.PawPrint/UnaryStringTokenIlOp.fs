@@ -130,13 +130,18 @@ module internal UnaryStringTokenIlOp =
                 // guest's exception carries CoreCLR's own message.
                 loggerFactory.CreateLogger("Ldstr").LogWarning ("ldstr refused a DynamicScope operand: {Reason}", why)
 
-                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    exceptionType
+                    (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                        ResolutionFault.ScopeEntry,
+                        exceptionType
+                    ))
                     // The JIT reads a string literal through `GetStringLiteral`, not as a class,
                     // method or field token.
-                    (DynamicScopeOperand.clrMessageFor baseClassTypes BadTokenKind.Unnamed exceptionType)
+                    (DynamicScopeOperand.clrMessageFor baseClassTypes BadTokenKind.Unnamed exceptionType
+                     |> Option.toList
+                     |> List.map RuntimeExceptionField.Message)
                     thread
                     state
             | Ok (value, candidate) ->

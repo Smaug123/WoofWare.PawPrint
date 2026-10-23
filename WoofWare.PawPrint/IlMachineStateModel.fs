@@ -524,7 +524,7 @@ type IntrinsicResult =
     /// search and the stack trace on the faulting instruction's offset. `exnType` must be a
     /// non-generic BCL exception type with a parameterless constructor — see
     /// `IlMachineStateExecution.raiseRuntimeException`, which the caller invokes on the
-    /// intrinsic's behalf.
+    /// intrinsic's behalf as `RaiseOrigin.Callee`.
     ///
     /// `message` names the string the CLR would have passed to a message-taking ctor
     /// overload; `None` accepts the parameterless ctor's default resource string, which is
@@ -588,8 +588,8 @@ type NativeHandlerResult =
     /// `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
     | PushedManagedCallee of IlMachineState * StepEffect
     /// Native handler is raising a runtime exception. The dispatcher invokes
-    /// `IlMachineStateExecution.raiseRuntimeExceptionWithMessage` for the supplied exception
-    /// type (which must be a non-generic BCL exception with a parameterless ctor), allocating
+    /// `IlMachineStateExecution.raiseRuntimeException` for the supplied exception
+    /// type, as `RaiseOrigin.Callee` (which must be a non-generic BCL exception with a parameterless ctor), allocating
     /// the object, calling its ctor, and arming dispatch-on-return. The native frame stays
     /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
     /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
@@ -898,10 +898,8 @@ module NativeHandlerResult =
     /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
     /// carrying an `mscorrc` resource string, e.g. `IDS_EE_CANNOTCAST`); everywhere else the
     /// parameterless ctor's own default is the faithful answer, and `raiseException` is the
-    /// shorter spelling of `None`. The `string option` shape mirrors
-    /// `IlMachineStateExecution.raiseRuntimeException` and its `WithMessage` sibling, so a
-    /// caller holding a message it did not choose itself (`SzArrayAllocation.faultFor`,
-    /// say) can pass it straight through.
+    /// shorter spelling of `None`. A caller holding a message it did not choose itself
+    /// (`SzArrayAllocation.faultFor`, say) can pass it straight through.
     let raiseExceptionWithMessage
         (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (message : string option)

@@ -1301,11 +1301,11 @@ module internal UnsafeAccessorDispatch =
         : ExecutionResult
         =
         let state, _whatWeDid =
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                exceptionType
-                message
+                (IlMachineStateExecution.RaiseOrigin.Callee exceptionType)
+                (message |> Option.toList |> List.map RuntimeExceptionField.Message)
                 thread
                 state
 

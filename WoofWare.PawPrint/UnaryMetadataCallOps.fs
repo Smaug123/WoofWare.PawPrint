@@ -67,8 +67,8 @@ module internal UnaryMetadataCallOps =
     /// bounds violations raise `IndexOutOfRangeException`; on success the coerced value
     /// is written into the row-major backing store at the computed flat offset.
     ///
-    /// This and its `Get`/`Address` siblings raise through `raiseRuntimeException` rather than
-    /// `raiseOpcodeFault`, though they are reached from an opcode. What faults here is the
+    /// This and its `Get`/`Address` siblings raise as `RaiseOrigin.Callee` rather than
+    /// `RaiseOrigin.InstructionFault`, though they are reached from an opcode. What faults here is the
     /// synthesized *callee* — real .NET dispatches to a JIT-generated method — and the executing
     /// instruction is a plain `call`, whose `OpcodeFaults` entry is empty precisely because callee
     /// faults are excluded from it. Routing these through the opcode checker asks it a question
@@ -118,7 +118,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.NullReferenceException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.NullReferenceException)
+                []
                 thread
                 state
         | Some arrAddr ->
@@ -136,7 +137,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.IndexOutOfRangeException)
+                []
                 thread
                 state
         else
@@ -170,7 +172,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.ArrayTypeMismatchException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.ArrayTypeMismatchException)
+                []
                 thread
                 state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
@@ -222,7 +225,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.NullReferenceException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.NullReferenceException)
+                []
                 thread
                 state
         | Some arrAddr ->
@@ -240,7 +244,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.IndexOutOfRangeException)
+                []
                 thread
                 state
         else
@@ -326,7 +331,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.NullReferenceException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.NullReferenceException)
+                []
                 thread
                 state
         | Some arrAddr ->
@@ -344,7 +350,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.IndexOutOfRangeException)
+                []
                 thread
                 state
         else
@@ -395,7 +402,8 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.ArrayTypeMismatchException
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.ArrayTypeMismatchException)
+                []
                 thread
                 state
         else
@@ -653,13 +661,15 @@ module internal UnaryMetadataCallOps =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
-        // Not an `OpcodeFault`: `OpcodeFaults` excludes failures to bind an instruction's token,
-        // and this is the JIT rejecting the token's target.
-        IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+        // The JIT rejecting the token's target, which `ResolutionFault.TokenBinding` covers.
+        IlMachineStateExecution.raiseRuntimeException
             ctx.LoggerFactory
             ctx.BaseClassTypes
-            ctx.BaseClassTypes.BadImageFormatException
-            (Some BadImageFormatMessages.badIl)
+            (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                ResolutionFault.TokenBinding,
+                ctx.BaseClassTypes.BadImageFormatException
+            ))
+            [ RuntimeExceptionField.Message BadImageFormatMessages.badIl ]
             ctx.Thread
             state
 
@@ -732,11 +742,13 @@ module internal UnaryMetadataCallOps =
                 // class token.
                 ctx.Logger.LogWarning ("call refused a DynamicMethod callee: {Reason}", why)
 
-                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                IlMachineStateExecution.raiseRuntimeException
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
-                    exceptionType
-                    (DynamicScopeOperand.clrMessageFor ctx.BaseClassTypes BadTokenKind.Class exceptionType)
+                    (IlMachineStateExecution.RaiseOrigin.Callee exceptionType)
+                    ((DynamicScopeOperand.clrMessageFor ctx.BaseClassTypes BadTokenKind.Class exceptionType)
+                     |> Option.toList
+                     |> List.map RuntimeExceptionField.Message)
                     ctx.Thread
                     state
         | ResolvedMetadataOperand.FromMetadata _
@@ -985,10 +997,11 @@ module internal UnaryMetadataCallOps =
         // Callvirt always performs a null check on the receiver, even for non-virtual methods.
         match receiver with
         | Some EvalStackValue.NullObjectRef ->
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
-                OpcodeFault.NullReference
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
                 ctx.Thread
                 state
         | _ ->
@@ -1059,11 +1072,14 @@ module internal UnaryMetadataCallOps =
         : IlMachineState * WhatWeDid
         =
         let raiseStaticCallee (state : IlMachineState) : IlMachineState * WhatWeDid =
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
-                ctx.BaseClassTypes.MissingMethodException
-                (Some "Method not found: '?'.")
+                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                    ResolutionFault.ScopeEntry,
+                    ctx.BaseClassTypes.MissingMethodException
+                ))
+                [ RuntimeExceptionField.Message "Method not found: '?'." ]
                 ctx.Thread
                 state
 
@@ -1170,18 +1186,26 @@ module internal UnaryMetadataCallOps =
 
         match typicalInstantiationTarget with
         | Some (_, EvalStackValue.NullObjectRef) ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | Some (method, _) when
             not method.DispatchesVirtually
             || activeAssy.TypeDefs.[method.RequiredDeclaringType.Definition.Get].TypeAttributes.HasFlag
                 TypeAttributes.Sealed
             ->
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.InvalidOperationException
-                (Some
+                (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.InvalidOperationException)
+                ((Some
                     "Could not execute the method because either the method itself or the containing type is not fully instantiated.")
+                 |> Option.toList
+                 |> List.map RuntimeExceptionField.Message)
                 thread
                 state
         | _ ->
@@ -1549,7 +1573,13 @@ module internal UnaryMetadataCallOps =
 
         match constrainedReceiver with
         | ConstrainedReceiver.NullDereference state ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
 
         enterVirtualCallee ctx concretizedMethod dispatchesOnReceiver state
@@ -2170,7 +2200,13 @@ module internal UnaryMetadataCallOps =
             // catchable exception over emulating CoreCLR's segfault; docs/divergences.md has the
             // argument. Don't advance the PC; exception dispatch needs the faulting instruction's
             // offset.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionFault OpcodeFault.NullReference)
+                []
+                thread
+                state
         | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
         | Some (FunctionPointerTarget.Dynamic handle) ->
             // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate
@@ -2206,11 +2242,11 @@ module internal UnaryMetadataCallOps =
                 // `sourcesPure/CallThroughAbstractMethodPointer.cs` pins the rest.
                 //
                 // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
-                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.BadImageFormatException
-                    (Some BadImageFormatMessages.ofHResult)
+                    (IlMachineStateExecution.RaiseOrigin.Callee baseClassTypes.BadImageFormatException)
+                    [ RuntimeExceptionField.Message BadImageFormatMessages.ofHResult ]
                     thread
                     state
             | MethodBody.Il _
