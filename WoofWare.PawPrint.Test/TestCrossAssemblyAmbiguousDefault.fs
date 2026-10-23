@@ -15,9 +15,9 @@ open NUnit.Framework
 [<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyAmbiguousDefault =
 
-    let private libraryName = "Ambiguous.Lib"
+    let libraryName = "Ambiguous.Lib"
 
-    let private entryName = "Ambiguous.Entry"
+    let entryName = "Ambiguous.Entry"
 
     let private unchanged : string =
         """
@@ -33,7 +33,7 @@ public interface ISLeft : ISFoo { static int ISFoo.SFrob() => 2; }
 """
 
     /// The build the entry assembly is compiled against: only `ILeft` and `ISLeft` override.
-    let private libraryBefore : CrossAssemblySpec =
+    let libraryBefore : CrossAssemblySpec =
         CrossAssemblySpec.library
             libraryName
             []
@@ -49,7 +49,7 @@ public interface ISRight : ISFoo { }
             ]
 
     /// The build the entry assembly runs against: `IRight` and `ISRight` override too.
-    let private libraryAfter : CrossAssemblySpec =
+    let libraryAfter : CrossAssemblySpec =
         CrossAssemblySpec.library
             libraryName
             []
@@ -127,6 +127,11 @@ public static class Cases
         reached++;
         return T.SFrob;
     }
+
+    // Uncaught, for the escape analysis to be asked about.
+    public static Func<int> StaticPointerOnValueType() => StaticPointer<SS>();
+
+    public static Func<int> StaticPointerOnClass() => StaticPointer<SC>();
 
     public static int CaseInterfaceCall() => ExpectAmbiguous(() => ThroughInterface(new C()));
 
@@ -243,6 +248,10 @@ public static class Program
 }}
 """
             ]
+
+    /// The entry assembly, compiled against `libraryBefore`, for a test that reads the images rather
+    /// than running them. Every build of it declares every case.
+    let entryAssembly : CrossAssemblySpec = entry "CaseInterfaceCall"
 
     let private agrees (case : string) : unit =
         {
