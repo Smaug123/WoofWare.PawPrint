@@ -2746,6 +2746,59 @@ public static class Cases
         |> snd
         |> shouldEqual (Set.singleton "Unbox_Nullable")
 
+    /// C# stores into an array of arrays or of pointers by `stelem.ref` or `stelem.i`, but `stelem`
+    /// of an array type or a pointer type is IL too. The JIT calls `StelemRef` for an array, a
+    /// reference type, and not for a pointer, which it stores as an integer (`CEE_STELEM`).
+    [<Test>]
+    let ``a stelem of an array type calls StelemRef, and one of a pointer type does not`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Stores", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Stores"
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let store (name : string) (element : Type) =
+                let il =
+                    emitted
+                        .DefineMethod(
+                            name,
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [| element.MakeArrayType () ; element |]
+                        )
+                        .GetILGenerator ()
+
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Ldarg_1
+                il.Emit (Emit.OpCodes.Stelem, element)
+                il.Emit Emit.OpCodes.Ret
+
+            store "StoreArray" typeof<int[]>
+            store "StorePointer" (typeof<int>.MakePointerType ())
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Stores.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+        let analysis, array = helpersReached analysis fixture "Emitted" "StoreArray"
+        array |> shouldEqual (Set.singleton "StelemRef")
+        let _, pointer = helpersReached analysis fixture "Emitted" "StorePointer"
+        pointer |> shouldEqual Set.empty
+
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
     /// through the QCall `ThrowInvalidCastException`.
