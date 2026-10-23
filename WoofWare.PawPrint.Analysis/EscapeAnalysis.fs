@@ -51,6 +51,11 @@ type Opacity =
     | Rethrow
     /// An instruction <c>OpcodeFaults</c> declines to classify.
     | UnmodelledOpcode
+    /// An instruction whose token names a method, field or type that the visibility of each does
+    /// not show the method may access (<c>MetadataAccess</c>), where the analysis may not assume it
+    /// can (<c>Assumption.MembersAccessible</c>). Where it cannot, CoreCLR raises the access
+    /// exception there through a QCall the analysis does not follow.
+    | UndecidedAccess
 
 /// A place the analysis cannot see through, from which something it cannot name may escape: one of
 /// those that make an answer's <c>Escapes.Unknown</c> true (<c>EscapeAnalysis.unknownSources</c>).
@@ -2045,6 +2050,112 @@ module EscapeAnalysis =
             state, None, raisesOf failure
         | _ -> state, None, []
 
+    /// What CoreCLR's JIT checks a method of `assembly` may access where an instruction's token is
+    /// `token`, given what `bindToken` bound a method token to; `None` where the analysis does not
+    /// describe what the token names.
+    let private accessTarget
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        (bound : CallTarget option)
+        : EscapeAnalysisState * AccessTarget option
+        =
+        let typeSpelling (token : MetadataToken) : TypeDefn option =
+            match token with
+            | MetadataToken.TypeDefinition handle ->
+                Some (TypeDefn.FromDefinition (assembly.TypeDefs.[handle].Identity, SignatureTypeKind.Unknown))
+            | MetadataToken.TypeReference handle ->
+                Some (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
+            | MetadataToken.TypeSpecification handle -> Some assembly.TypeSpecs.[handle].Signature
+            | _ -> None
+
+        let declaringOf (method : MethodDefinitionHandle) : TypeDefn option =
+            Some (
+                TypeDefn.FromDefinition (
+                    assembly.Methods.[method].RequiredDeclaringType.Identity,
+                    SignatureTypeKind.Unknown
+                )
+            )
+
+        let ofMethod (parent : TypeDefn option) (instantiation : TypeDefn list) : AccessTarget option =
+            match bound, parent with
+            | Some (CallTarget.Method callee), Some parent ->
+                let key = callee.Callee
+                let definition = (assemblyOf state key.AssemblyFullName).Methods.[key.Method.Get]
+
+                definition.TryMetadata
+                |> Option.map (fun facts ->
+                    AccessTarget.Member (
+                        parent,
+                        definition.RequiredDeclaringType.Identity,
+                        MemberVisibility.ofMethodAttributes facts.MethodAttributes,
+                        instantiation
+                    )
+                )
+            // The runtime's accessors of an array type are public, so checking one is checking the
+            // array type.
+            | Some (CallTarget.ArrayAccessor (arrayType, _)), _ -> Some (AccessTarget.Type arrayType)
+            | _ -> None
+
+        match token with
+        | MetadataToken.TypeDefinition _
+        | MetadataToken.TypeReference _
+        | MetadataToken.TypeSpecification _ -> state, typeSpelling token |> Option.map AccessTarget.Type
+        | MetadataToken.MethodDef handle -> state, ofMethod (declaringOf handle) []
+        | MetadataToken.MethodSpecification handle ->
+            let spec = assembly.MethodSpecs.[handle]
+            let instantiation = List.ofSeq spec.Signature
+
+            match spec.Method with
+            | MetadataToken.MethodDef method -> state, ofMethod (declaringOf method) instantiation
+            | MetadataToken.MemberReference reference ->
+                state, ofMethod (typeSpelling assembly.Members.[reference].Parent) instantiation
+            | _ -> state, None
+        | MetadataToken.MemberReference handle ->
+            let parent = typeSpelling assembly.Members.[handle].Parent
+
+            match assembly.Members.[handle].Signature with
+            | MemberSignature.Method _ -> state, ofMethod parent []
+            | MemberSignature.Field _ ->
+                let assemblies, target =
+                    FieldReferenceResolution.resolve
+                        state.LoggerFactory
+                        state.RuntimeDirs
+                        state.BaseTypes
+                        state.TypeSystem._LoadedAssemblies
+                        assembly
+                        handle
+
+                let state = withAssemblies state assemblies
+
+                match target, parent with
+                | FieldReferenceTarget.Defined (declaringAssembly, field), Some parent ->
+                    let field = declaringAssembly.Fields.[field]
+
+                    state,
+                    Some (
+                        AccessTarget.Member (
+                            parent,
+                            field.DeclaringType.Identity,
+                            MemberVisibility.ofFieldAttributes field.Attributes,
+                            []
+                        )
+                    )
+                | _ -> state, None
+        | MetadataToken.FieldDefinition handle ->
+            let field = assembly.Fields.[handle]
+
+            state,
+            Some (
+                AccessTarget.Member (
+                    TypeDefn.FromDefinition (field.DeclaringType.Identity, SignatureTypeKind.Unknown),
+                    field.DeclaringType.Identity,
+                    MemberVisibility.ofFieldAttributes field.Attributes,
+                    []
+                )
+            )
+        | _ -> state, None
+
     /// The static type of the value a call returns, as the call site's own signature spells it.
     let rec private returnTypeOfCall
         (state : EscapeAnalysisState)
@@ -3098,21 +3209,8 @@ module EscapeAnalysis =
                     match op with
                     | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque, calls
                     | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque, calls
-                | OpcodeFaults.Raises (faults, resolution) ->
-                    for fault in resolution do
-                        match fault with
-                        // Bound in 0 above: a token that fails to bind fails before the body runs.
-                        | ResolutionFault.TokenBinding -> ()
-                        // Decided where a call's target is dispatched (`dispatchOn`), whose failure
-                        // the call raises (`DispatchOutcome.Raises`), and for a `constrained. ldftn`
-                        // from `ConstrainedPointers`.
-                        | ResolutionFault.DispatchOnReceiver
-                        | ResolutionFault.DispatchOnConstrainedType -> ()
-                        // Not modelled: the analysis takes every access to succeed.
-                        | ResolutionFault.MethodAccess
-                        | ResolutionFault.FieldAccess
-                        | ResolutionFault.TypeAccess -> ()
-
+                // What resolving the token raises is `accessChecks`' to account for, below.
+                | OpcodeFaults.Raises (faults, _resolution) ->
                     ((state, raises, opaque, calls), List.filter operandsAllow faults)
                     ||> List.fold (fun (state, raises, opaque, calls) fault ->
                         match fault with
@@ -3910,6 +4008,69 @@ module EscapeAnalysis =
                     acc
             )
 
+        // What resolving each instruction's token can raise (`OpcodeFaults`' resolution faults).
+        // Where the JIT checks what the token names may be accessed, and the visibility of each
+        // does not settle the check (`MetadataAccess`), the analysis assumes the access is allowed
+        // where it may, and otherwise cannot see what the instruction raises.
+        let state, accessAssumed, opaque =
+            ((state, [], opaque), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun (state, assumed, opaque) index ->
+                let op, offset = ops.[index]
+
+                // A token that fails to bind fails before the body runs (`bind`, above).
+                if
+                    not (executed.Contains offset)
+                    || folded.Contains index
+                    || unbound.Contains index
+                then
+                    state, assumed, opaque
+                else
+
+                match OpcodeFaults.ofIlOp op with
+                // Opaque already, at step 1.
+                | OpcodeFaults.Unmodelled -> state, assumed, opaque
+                | OpcodeFaults.Raises (_, resolution) ->
+                    let checksAccess =
+                        resolution
+                        |> Set.exists (fun fault ->
+                            match fault with
+                            | ResolutionFault.MethodAccess
+                            | ResolutionFault.FieldAccess
+                            | ResolutionFault.TypeAccess -> true
+                            // Bound at `bind`, above.
+                            | ResolutionFault.TokenBinding -> false
+                            // Decided where a call's target is dispatched (`dispatchOn`), whose
+                            // failure the call raises (`DispatchOutcome.Raises`), and for a
+                            // `constrained. ldftn` from `ConstrainedPointers`.
+                            | ResolutionFault.DispatchOnReceiver
+                            | ResolutionFault.DispatchOnConstrainedType -> false
+                        )
+
+                    if not checksAccess then
+                        state, assumed, opaque
+                    else
+
+                    let state, decision =
+                        match op with
+                        | IlOp.UnaryMetadataToken (_, MetadataOperand.FromMetadata token) ->
+                            match accessTarget state assembly token.Token (Map.tryFind index targets) with
+                            | state, Some target ->
+                                state,
+                                MetadataAccess.decide
+                                    state.TypeSystem._LoadedAssemblies
+                                    assembly
+                                    method.RequiredDeclaringType.Identity
+                                    target
+                            | state, None -> state, AccessDecision.Undecided
+                        | _ -> state, AccessDecision.Undecided
+
+                    match decision with
+                    | AccessDecision.Accessible -> state, assumed, opaque
+                    | AccessDecision.Undecided when state.Assumptions.Contains Assumption.MembersAccessible ->
+                        state, (offset, Assumption.MembersAccessible) :: assumed, opaque
+                    | AccessDecision.Undecided -> state, assumed, (offset, Opacity.UndecidedAccess, None) :: opaque
+            )
+
         // Where the JIT makes the `RuntimeType` of a type at run time: an `ldtoken` of a type that
         // mentions a type variable, which shared code looks up in its generic dictionary, so that
         // the JIT cannot embed the `RuntimeType` as it does an exact type's (`fgMorphCall`,
@@ -4145,6 +4306,7 @@ module EscapeAnalysis =
                 Seq.append (typeQueries |> Map.keys) (createdSpans |> Seq.map (fun index -> snd ops.[index + 1]))
                 |> Seq.filter executed.Contains
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
+                |> Seq.append (List.rev accessAssumed)
                 |> List.ofSeq
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
