@@ -1705,20 +1705,27 @@ module TypeConcretization =
 
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
             // Identity, not spelling: a TypeDef in the assembly that declares the type and a
-            // TypeRef everywhere else name the same type. Unlike CoreCLR, which reaches
+            // TypeRef everywhere else name the same type, by `CompareTypeTokens`' own steps. Unlike CoreCLR, which reaches
             // `CompareTypeTokens` only once the ELEMENT_TYPE_CLASS/VALUETYPE bytes already agree,
             // this does not also compare `SignatureTypeKind`. For well-formed metadata the kind is
             // a fact about the resolved type rather than about the spelling, so it cannot
             // distinguish two references that resolve to one TypeDef; and PawPrint synthesises
             // nominal `TypeDefn`s in places (`SignatureTypeKind.Unknown` among them) where the
             // kind is not recovered from a blob at all.
-            let leftIdentity, ctx =
-                nominalIdentity ctx loadAssembly leftCtx.AssemblyFullName leftTy
+            let assemblies, same =
+                SignatureComparison.compareTypeTokens
+                    loadAssembly
+                    $"comparing a signature of %s{leftCtx.AssemblyFullName} with one of %s{rightCtx.AssemblyFullName}"
+                    ctx.LoadedAssemblies
+                    (ctx.LoadedAssemblies.ByDefinitionName leftCtx.AssemblyFullName)
+                    leftTy
+                    (ctx.LoadedAssemblies.ByDefinitionName rightCtx.AssemblyFullName)
+                    rightTy
 
-            let rightIdentity, ctx =
-                nominalIdentity ctx loadAssembly rightCtx.AssemblyFullName rightTy
-
-            leftIdentity = rightIdentity, ctx
+            same,
+            { ctx with
+                LoadedAssemblies = assemblies
+            }
 
         // Unreachable rather than merely unequal: the enclosing match on `Element` resolves a
         // generic type parameter on either side through its instantiation before this one is
