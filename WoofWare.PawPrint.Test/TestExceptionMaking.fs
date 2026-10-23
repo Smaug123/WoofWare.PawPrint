@@ -228,7 +228,7 @@ static class Program
             body.Instructions
             |> List.choose (fun (op, _) ->
                 match OpcodeFaults.ofIlOp op with
-                | OpcodeFaults.Raises faults when List.contains fault faults ->
+                | OpcodeFaults.Raises (faults, _) when List.contains fault faults ->
                     Some (ExceptionMaking.ofOpcodeFault op fault)
                 | OpcodeFaults.Raises _
                 | OpcodeFaults.Unmodelled -> None

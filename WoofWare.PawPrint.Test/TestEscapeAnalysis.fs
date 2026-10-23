@@ -665,6 +665,31 @@ public class Shadowed
     public int Field;
 }
 
+public class AccessBase
+{
+    protected static void Inherited() { }
+    public static void Shown() { }
+    private static void Hidden() { }
+
+    // A private member of its own type, which CoreCLR always lets the type access.
+    public static void CallsOwnPrivate() => Hidden();
+
+    public class Nested
+    {
+        // ... and lets a type nested in it access.
+        public static void CallsEnclosingPrivate() => Hidden();
+    }
+}
+
+public class AccessDerived : AccessBase
+{
+    // A protected member of a base class, which CoreCLR lets a derived class access, but which
+    // its visibility alone does not show that.
+    public static void CallsProtected() => Inherited();
+
+    public static void CallsPublic() => Shown();
+}
+
 public static class ShadowCases
 {
     // A catch for a locally declared System.NullReferenceException must not absorb the one the
@@ -1005,6 +1030,25 @@ public static class SR
                 Unknown = Some true
             }
             { expect "Fixture.Natives" "ThreadId" with
+                Assumes = Some []
+            }
+            // Visibility alone settles each of these accesses but the protected one, which the
+            // analysis assumes CoreCLR allows.
+            { expect "Fixture.AccessDerived" "CallsProtected" with
+                Unknown = Some false
+                Assumes = Some [ Assumption.MembersAccessible ]
+                Sources = Some []
+            }
+            { expect "Fixture.AccessDerived" "CallsPublic" with
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.AccessBase" "CallsOwnPrivate" with
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.AccessBase+Nested" "CallsEnclosingPrivate" with
+                Unknown = Some false
                 Assumes = Some []
             }
             // The resource lookup's contract, which only an interrupted wait for its lock reaches
@@ -1788,6 +1832,37 @@ public static class SR
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    /// Not allowed to assume an access CoreCLR may refuse, the analysis cannot see past it.
+    [<Test>]
+    let ``an access visibility does not settle is unknown where it may not be assumed`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                (Set.remove Assumption.MembersAccessible Assumption.all)
+                [ fixture ]
+                id
+
+        let method = methodNamed fixture "Fixture.AccessDerived" "CallsProtected"
+        let analysis, escapes = EscapeAnalysis.escapes analysis method
+        escapes.Unknown |> shouldEqual true
+        let analysis, sources = EscapeAnalysis.unknownSources analysis method
+
+        sources
+        |> Seq.map (renderSite analysis)
+        |> List.ofSeq
+        |> shouldEqual [ "Fixture.AccessDerived::CallsProtected IL UndecidedAccess" ]
+
     [<Test>]
     let ``each method an assumption summarises raises exactly its contract when assumed, and some is unknown otherwise``
         ()
@@ -1806,11 +1881,11 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises` stands in for no method.
+        // `JitOptimises` and `MembersAccessible` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
-        |> shouldEqual (Set.remove Assumption.JitOptimises Assumption.all)
+        |> shouldEqual (Assumption.all - set [ Assumption.JitOptimises ; Assumption.MembersAccessible ])
 
         // Each stands in for one method, but the one about CoreLib's type initializers, which
         // stands in for each of them.
@@ -1820,7 +1895,8 @@ public static class SR
             | Assumption.NamedTypesLoad
             | Assumption.StackTracePreserved
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
-            | Assumption.JitOptimises -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.JitOptimises
+            | Assumption.MembersAccessible -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf

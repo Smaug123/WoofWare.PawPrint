@@ -35,49 +35,57 @@ type OpcodeFault =
     /// table rather than leaving it to each entry.
     | TypeInitialization
 
+/// A fault the execution engine raises at an instruction while resolving its metadata token against
+/// the method the instruction is in, as opposed to one from performing the operation: a category of
+/// faults rather than one, because which of them happens depends on that referencing context as
+/// much as on the token, which a table keyed on the opcode cannot see. An entry carrying one says
+/// that CoreCLR resolves the instruction's token that way, so it can fail there; a consumer that
+/// can see the context decides whether it does.
+[<RequireQualifiedAccess>]
+type ResolutionFault =
+    /// The token fails to bind to a definition. The assembly it refers into may be missing or
+    /// unloadable (`FileNotFoundException`, `FileLoadException`, `BadImageFormatException`), and the
+    /// token may fail to resolve against one that loaded (`TypeLoadException`,
+    /// `MissingFieldException`, `MissingMethodException`, `InvalidProgramException`). CoreCLR's
+    /// JIT resolves every token of a method as it compiles it, so it raises most of these where the
+    /// method is called, before any of its instructions runs.
+    | TokenBinding
+    /// The method may not access the method the token names, the type declaring it, or a type
+    /// argument of either, by CoreCLR's visibility rules, which `InternalsVisibleTo` and `IgnoresAccessChecksTo` relax:
+    /// `MethodAccessException`. The JIT compiles a failed check to a call that raises it at the
+    /// instruction. Code that a compiler checked against the assemblies it runs with passes every
+    /// check; code that runs against a later version of an assembly that hides a member, or IL no
+    /// compiler checked, need not.
+    | MethodAccess
+    /// The same as `MethodAccess`, for a field the token names: `FieldAccessException`.
+    | FieldAccess
+    /// The same as `MethodAccess`, for a type the token names, or one of its type arguments:
+    /// `TypeAccessException`.
+    | TypeAccess
+    /// Dispatching on the receiver's class finds no single method to run: the most specific
+    /// implementation is a reabstraction (`EntryPointNotFoundException`), or no default interface
+    /// body is most specific (`System.Runtime.AmbiguousImplementationException`). Neither arises
+    /// within one C# compilation: it takes an interface changed after its implementer was compiled.
+    | DispatchOnReceiver
+    /// The same as `DispatchOnReceiver`, dispatching on the type a `constrained.` prefix names. A
+    /// table keyed on the opcode cannot see the prefix, so every instruction that can take one
+    /// carries this. In code CoreCLR shares between instantiations, a `constrained. ldftn` may
+    /// instead hand out a pointer that raises when called.
+    | DispatchOnConstrainedType
+
 /// What performing one instruction can raise by itself.
 [<RequireQualifiedAccess>]
 type OpcodeFaults =
-    /// Performing the operation raises exactly these and nothing else. The empty list is therefore
-    /// a positive claim that the instruction cannot fault, not an absence of information.
+    /// Performing the operation raises exactly `own` and nothing else, and resolving the
+    /// instruction's metadata token can raise exactly the faults of the categories in
+    /// `resolution`. Empty is therefore a positive claim that the instruction cannot fault, not an
+    /// absence of information.
     ///
-    /// **What this deliberately excludes**, because none of it is a fact about the opcode:
+    /// **Three things this deliberately excludes**, because none is a fact about the opcode:
     ///
     /// * What a callee raises. `call`, `callvirt`, `newobj`, `calli` and `jmp` transfer control,
     ///   and whatever the target does reaches the caller; that belongs to the call graph. The
     ///   entries here are only what the transfer itself can fault on — a null receiver, say.
-    /// * Faults from *binding* the instruction's metadata token, in both of its halves. Finding
-    ///   the target: the assembly the token refers into may be missing or unloadable
-    ///   (`FileNotFoundException`, `FileLoadException`, `BadImageFormatException`), and the token
-    ///   may fail to resolve against one that loaded (`TypeLoadException`,
-    ///   `MissingFieldException`, `MissingMethodException`, `InvalidProgramException`). And being
-    ///   allowed to touch it once
-    ///   found: `MethodAccessException`, `FieldAccessException`, `TypeAccessException`, which
-    ///   ECMA-335 does list per-instruction (III.4.10's `ldfld`, for one, throws
-    ///   `System.FieldAccessException` "if field is not accessible"). Access is worth naming
-    ///   separately because it is easy to mistake for the security-policy exclusion below and is
-    ///   not that: it is live on .NET Core, and an assembly compiled against an
-    ///   `InternalsVisibleTo` that a later version withdraws hits it at runtime.
-    ///
-    ///   Both halves attach uniformly to every token-bearing instruction rather than
-    ///   distinguishing between them, so listing them per-opcode would add the same ten entries
-    ///   to most of the table while telling a reader nothing; and both depend on the *referencing
-    ///   context* as much as on the token, which an opcode-keyed table has no way to see. `IlOp`
-    ///   already says which instructions bear a token: exactly `UnaryMetadataToken` and
-    ///   `UnaryStringToken`. A consumer analysing a well-formed, fully-resolvable closure may
-    ///   ignore them; one analysing an arbitrary package may not.
-    ///
-    ///   Resolving a virtual method against a type fails in the same way, with the type as the
-    ///   context. Where a type's most specific implementation of an interface method is a
-    ///   reabstraction or is ambiguous, CoreCLR raises `EntryPointNotFoundException` or
-    ///   `System.Runtime.AmbiguousImplementationException`, class-load failures
-    ///   (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`, `IDS_CLASSLOAD_AMBIGUOUS_OVERRIDE`), at the
-    ///   instruction that resolves it: `callvirt` on its receiver's class, `ldvirtftn` on its
-    ///   object's, and `call` or `ldftn` under a `constrained.` prefix on the type the prefix names.
-    ///   In code CoreCLR shares between instantiations, a `constrained. ldftn` may instead hand out
-    ///   a pointer that raises when called. Neither failure arises within one C# compilation: it
-    ///   takes an interface changed after its implementer was compiled. A consumer that resolves
-    ///   the dispatch has the type to ask about.
     /// * Whatever a real runtime does with an *invalid but non-null* address, which the raw-memory
     ///   instructions (`cpblk`, `initblk`, the `ldind`/`stind` family, `ldobj`/`stobj`) can be
     ///   handed by unverifiable IL. ECMA-335's answer is that
@@ -95,7 +103,7 @@ type OpcodeFaults =
     ///   and no such exception to raise. This one is excluded because it cannot happen rather than
     ///   because it is uninteresting — if a consumer ever targets a CLI that does implement policy,
     ///   the entries for those instructions are wrong and not merely imprecise.
-    | Raises of OpcodeFault list
+    | Raises of own : OpcodeFault list * resolution : Set<ResolutionFault>
     /// Not classified, and not classifiable from the opcode alone. A consumer must treat this as
     /// "may raise anything" and must never read it as "cannot raise".
     | Unmodelled
@@ -183,6 +191,34 @@ module OpcodeFault =
         | OpcodeFault.StackOverflow -> baseClassTypes.StackOverflowException
         | OpcodeFault.TypeInitialization -> baseClassTypes.TypeInitializationException
 
+/// The bridge from a category of resolution faults to the corelib types that stand for it.
+[<RequireQualifiedAccess>]
+module ResolutionFault =
+
+    /// The fully-qualified names of the corelib types CoreCLR raises for this category.
+    /// `TestOpcodeFaults` checks each names a type in a real corelib.
+    let typeNames (fault : ResolutionFault) : string list =
+        match fault with
+        | ResolutionFault.TokenBinding ->
+            [
+                "System.IO.FileNotFoundException"
+                "System.IO.FileLoadException"
+                "System.BadImageFormatException"
+                "System.TypeLoadException"
+                "System.MissingFieldException"
+                "System.MissingMethodException"
+                "System.InvalidProgramException"
+            ]
+        | ResolutionFault.MethodAccess -> [ "System.MethodAccessException" ]
+        | ResolutionFault.FieldAccess -> [ "System.FieldAccessException" ]
+        | ResolutionFault.TypeAccess -> [ "System.TypeAccessException" ]
+        | ResolutionFault.DispatchOnReceiver
+        | ResolutionFault.DispatchOnConstrainedType ->
+            [
+                "System.EntryPointNotFoundException"
+                "System.Runtime.AmbiguousImplementationException"
+            ]
+
 /// Which faults each IL instruction can raise by itself.
 ///
 /// This is a table rather than an interpreter, which is the point: the same fact serves the
@@ -233,36 +269,36 @@ type OperandRequirement =
 [<RequireQualifiedAccess>]
 module OpcodeFaults =
 
-    let private none = OpcodeFaults.Raises []
+    /// The entry of an instruction that bears no metadata token, so resolves nothing.
+    let private performs (own : OpcodeFault list) : OpcodeFaults = OpcodeFaults.Raises (own, Set.empty)
 
-    let private nullDeref = OpcodeFaults.Raises [ OpcodeFault.NullReference ]
+    let private none = performs []
 
-    let private overflow = OpcodeFaults.Raises [ OpcodeFault.Overflow ]
+    let private nullDeref : OpcodeFault list = [ OpcodeFault.NullReference ]
 
     /// An access to an array element that takes no covariance check: a load, or a store of a
     /// primitive.
-    let private uncheckedElementAccess =
-        OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
+    let private uncheckedElementAccess : OpcodeFault list =
+        [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
 
     /// An access to an array element that can also fail the covariance check: a store that may be
     /// of a reference, or the writable address of an element that may be one.
-    let private covariantElementAccess =
-        OpcodeFaults.Raises
-            [
-                OpcodeFault.NullReference
-                OpcodeFault.IndexOutOfRange
-                OpcodeFault.ArrayTypeMismatch
-            ]
+    let private covariantElementAccess : OpcodeFault list =
+        [
+            OpcodeFault.NullReference
+            OpcodeFault.IndexOutOfRange
+            OpcodeFault.ArrayTypeMismatch
+        ]
 
     let ofNullary (op : NullaryIlOp) : OpcodeFaults =
         match op with
         // Signed division and remainder fault twice over: on a zero divisor, and on
         // MinValue / -1, whose quotient is not representable.
         | NullaryIlOp.Div
-        | NullaryIlOp.Rem -> OpcodeFaults.Raises [ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ]
+        | NullaryIlOp.Rem -> performs [ OpcodeFault.DivideByZero ; OpcodeFault.Overflow ]
         // The unsigned forms have no unrepresentable quotient, so a zero divisor is the whole of it.
         | NullaryIlOp.Div_un
-        | NullaryIlOp.Rem_un -> OpcodeFaults.Raises [ OpcodeFault.DivideByZero ]
+        | NullaryIlOp.Rem_un -> performs [ OpcodeFault.DivideByZero ]
         | NullaryIlOp.Add_ovf
         | NullaryIlOp.Add_ovf_un
         | NullaryIlOp.Sub_ovf
@@ -289,9 +325,9 @@ module OpcodeFaults =
         | NullaryIlOp.Conv_ovf_u4_un
         | NullaryIlOp.Conv_ovf_i8_un
         | NullaryIlOp.Conv_ovf_u8_un
-        | NullaryIlOp.Ckfinite -> overflow
-        | NullaryIlOp.Localloc -> OpcodeFaults.Raises [ OpcodeFault.StackOverflow ]
-        | NullaryIlOp.LdLen -> nullDeref
+        | NullaryIlOp.Ckfinite -> performs [ OpcodeFault.Overflow ]
+        | NullaryIlOp.Localloc -> performs [ OpcodeFault.StackOverflow ]
+        | NullaryIlOp.LdLen -> performs nullDeref
         | NullaryIlOp.Ldind_ref
         | NullaryIlOp.Ldind_i
         | NullaryIlOp.Ldind_i1
@@ -312,7 +348,7 @@ module OpcodeFaults =
         | NullaryIlOp.Stind_R4
         | NullaryIlOp.Stind_R8
         | NullaryIlOp.Cpblk
-        | NullaryIlOp.Initblk -> nullDeref
+        | NullaryIlOp.Initblk -> performs nullDeref
         | NullaryIlOp.Ldelem_i
         | NullaryIlOp.Ldelem_i1
         | NullaryIlOp.Ldelem_u1
@@ -334,12 +370,12 @@ module OpcodeFaults =
         | NullaryIlOp.Stelem_i4
         | NullaryIlOp.Stelem_i8
         | NullaryIlOp.Stelem_r4
-        | NullaryIlOp.Stelem_r8 -> uncheckedElementAccess
-        | NullaryIlOp.Stelem_ref -> covariantElementAccess
+        | NullaryIlOp.Stelem_r8 -> performs uncheckedElementAccess
+        | NullaryIlOp.Stelem_ref -> performs covariantElementAccess
         // A null operand makes `throw` raise instead of throwing what it was handed. What it
         // throws when the operand is *not* null is a fact about the operand, which a consumer
         // reads off the evaluation stack; it is not a fact about the opcode.
-        | NullaryIlOp.Throw -> nullDeref
+        | NullaryIlOp.Throw -> performs nullDeref
         // `rethrow` re-raises whatever the enclosing handler caught. That is a fact about the
         // handler, not about the instruction, so there is nothing this table can say.
         | NullaryIlOp.Rethrow -> OpcodeFaults.Unmodelled
@@ -409,34 +445,49 @@ module OpcodeFaults =
         | NullaryIlOp.Refanytype -> none
 
     let ofUnaryMetadata (op : UnaryMetadataTokenIlOp) : OpcodeFaults =
+        // Every one of these bears a token, which the JIT resolves as it compiles the method, so
+        // each can fail to bind it.
+        let resolves (own : OpcodeFault list) (resolution : ResolutionFault list) : OpcodeFaults =
+            OpcodeFaults.Raises (own, Set.ofList (ResolutionFault.TokenBinding :: resolution))
+
+        // CoreCLR's JIT asks the VM whether the method may access what an instruction's token
+        // names, and compiles a refusal to a call of the `ThrowHelpers` method `jithelpers.h` binds
+        // to the matching helper, at the instruction (`impHandleAccessAllowed`, importer.cpp). It
+        // asks at `call`, `callvirt`, `newobj`, `ldftn` and `ldvirtftn` (`getCallInfo`), at the six
+        // field instructions (`getFieldInfo`), and at `newarr`, `box`, `isinst`, `castclass`,
+        // `unbox`, `unbox.any` and `mkrefany` (`canAccessClass`); nowhere else.
         match op with
         // "System.InvalidCastException is thrown if obj cannot be cast to typeTok" (ECMA-335
         // III.4.3), as PawPrint's interpreter throws it. CoreCLR's JIT compiles `castclass`, and
         // `unbox.any` of a reference type, to a call of one of CoreLib's `CastHelpers` methods
         // (`impCastClassOrIsInstToTree`, importer.cpp), which raises it there, and whatever else
         // that callee raises reaches the instruction too.
-        | UnaryMetadataTokenIlOp.Castclass -> OpcodeFaults.Raises [ OpcodeFault.InvalidCast ]
+        | UnaryMetadataTokenIlOp.Castclass -> resolves [ OpcodeFault.InvalidCast ] [ ResolutionFault.TypeAccess ]
         | UnaryMetadataTokenIlOp.Unbox
         | UnaryMetadataTokenIlOp.Unbox_Any ->
-            OpcodeFaults.Raises [ OpcodeFault.InvalidCast ; OpcodeFault.NullReference ]
+            resolves [ OpcodeFault.InvalidCast ; OpcodeFault.NullReference ] [ ResolutionFault.TypeAccess ]
         // `refanyval` compares the requested type against the one the `TypedRef` was built with:
         // "System.InvalidCastException is thrown if type is not identical to the type stored in the
         // TypedRef" (ECMA-335 III.4.28). `mkrefany` is *not* its mirror — it packages an address
         // and a type handle and performs no runtime check, so III.4.16 lists only
-        // `TypeLoadException`, which is the resolution dimension this table excludes.
-        | UnaryMetadataTokenIlOp.Refanyval -> OpcodeFaults.Raises [ OpcodeFault.InvalidCast ]
+        // `TypeLoadException`, which is `ResolutionFault.TokenBinding`. The JIT checks that the
+        // method may access the type `mkrefany` names, and not the one `refanyval` names.
+        | UnaryMetadataTokenIlOp.Refanyval -> resolves [ OpcodeFault.InvalidCast ] []
+        | UnaryMetadataTokenIlOp.Mkrefany -> resolves [] [ ResolutionFault.TypeAccess ]
         // A negative length is the overflow; the allocation itself is the OOM.
-        | UnaryMetadataTokenIlOp.Newarr -> OpcodeFaults.Raises [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
-        | UnaryMetadataTokenIlOp.Box -> OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ]
+        | UnaryMetadataTokenIlOp.Newarr ->
+            resolves [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ] [ ResolutionFault.TypeAccess ]
+        | UnaryMetadataTokenIlOp.Box -> resolves [ OpcodeFault.OutOfMemory ] [ ResolutionFault.TypeAccess ]
         // What the constructor itself raises travels by the call edge, not by this entry; running
         // the declaring type's `.cctor` first does not, for the reason given against `call` below.
         | UnaryMetadataTokenIlOp.Newobj ->
-            OpcodeFaults.Raises
+            resolves
                 [
                     OpcodeFault.OutOfMemory
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ]
+                [ ResolutionFault.MethodAccess ]
         // The three field instructions that take a receiver may name a *static* field, and then
         // they are a static-field access like `ldsfld`, with a `.cctor` to trigger. ECMA-335
         // III.4.10, III.4.11 and III.4.28 each say the field "can be either an instance field ...
@@ -451,17 +502,21 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldflda
         | UnaryMetadataTokenIlOp.Stfld ->
-            OpcodeFaults.Raises
+            resolves
                 [
                     OpcodeFault.NullReference
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ]
-        | UnaryMetadataTokenIlOp.Ldvirtftn
+                [ ResolutionFault.FieldAccess ]
+        // `ldvirtftn` dispatches on its receiver's class, as `callvirt` does, and raises what that
+        // dispatch fails with as it resolves the slot, so no delegate is made.
+        | UnaryMetadataTokenIlOp.Ldvirtftn ->
+            resolves nullDeref [ ResolutionFault.MethodAccess ; ResolutionFault.DispatchOnReceiver ]
         | UnaryMetadataTokenIlOp.Initobj
         | UnaryMetadataTokenIlOp.Stobj
         | UnaryMetadataTokenIlOp.Cpobj
-        | UnaryMetadataTokenIlOp.Ldobj -> nullDeref
+        | UnaryMetadataTokenIlOp.Ldobj -> resolves nullDeref []
         // The two invoking instructions that also dereference: a receiver for `callvirt`, a
         // function pointer for `calli`. Both can trigger a `.cctor` as well, for the reason given
         // against `call` below.
@@ -482,33 +537,43 @@ module OpcodeFaults =
         // `t.ToString()` being the everyday case. `executeCallvirt` performs exactly that box, so
         // the allocation is the `callvirt`'s own: were it ever to fail, the instruction in the
         // frame at that moment is this one, and the entry has to say so.
+        //
+        // `callvirt` dispatches on its receiver's class, or under `constrained.` on the type the
+        // prefix names. `calli`'s token is a signature, which names no method to access or
+        // dispatch.
         | UnaryMetadataTokenIlOp.Callvirt ->
-            OpcodeFaults.Raises
+            resolves
                 [
                     OpcodeFault.NullReference
                     OpcodeFault.OutOfMemory
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ]
+                [
+                    ResolutionFault.MethodAccess
+                    ResolutionFault.DispatchOnReceiver
+                    ResolutionFault.DispatchOnConstrainedType
+                ]
         | UnaryMetadataTokenIlOp.Calli ->
-            OpcodeFaults.Raises
+            resolves
                 [
                     OpcodeFault.NullReference
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ]
-        | UnaryMetadataTokenIlOp.Ldelem -> uncheckedElementAccess
+                []
+        | UnaryMetadataTokenIlOp.Ldelem -> resolves uncheckedElementAccess []
         // `ldelema` takes the covariance check too: handing out a writable address to an element
         // of an array whose element type is not the one named would defeat the check `stelem`
         // makes.
         | UnaryMetadataTokenIlOp.Stelem
-        | UnaryMetadataTokenIlOp.Ldelema -> covariantElementAccess
+        | UnaryMetadataTokenIlOp.Ldelema -> resolves covariantElementAccess []
         // A static-field access runs the declaring type's `.cctor`, and a `.cctor` that threw
         // surfaces here on this and every later access.
         | UnaryMetadataTokenIlOp.Ldsfld
         | UnaryMetadataTokenIlOp.Ldsflda
         | UnaryMetadataTokenIlOp.Stsfld ->
-            OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
+            resolves [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ] [ ResolutionFault.FieldAccess ]
         // A `.cctor` is triggered by "first invocation of any static method of that type", "any
         // instance or virtual method of that type if it is a value type", and "any constructor for
         // that type" (ECMA-335 I.8.9.5), so every instruction that invokes can surface one that
@@ -521,35 +586,41 @@ module OpcodeFaults =
         // matters most where the call edge carries nothing: an unbounded recursion has an empty
         // fixpoint over its callees, so without this entry a consumer would call it provably
         // harmless. `FaultKind.ResourceExhaustion` is what keeps this from swamping a report.
+        //
+        // `call` dispatches only under `constrained.`, on the type the prefix names, which calls
+        // a static virtual method.
         | UnaryMetadataTokenIlOp.Call ->
-            OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
+            resolves
+                [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
+                [ ResolutionFault.MethodAccess ; ResolutionFault.DispatchOnConstrainedType ]
         // `jmp` alone among the invoking instructions does not stack a frame of its own: it
         // "exit[s] current method and jump[s] to the specified method" (ECMA-335 III.3.37),
         // transferring the current arguments rather than pushing a new activation, and its
         // "Exceptions" clause is "None". It still carries `StackOverflow`, because the `.cctor` it
-        // can trigger is itself a frame — which is the rule stated against `OpcodeFault`.
-        | UnaryMetadataTokenIlOp.Jmp ->
-            OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
-        // These fault on nothing themselves and invoke nothing. A `constrained. ldftn` resolves
-        // its method against a type, and may raise what the `Raises` docstring excludes as a
-        // failure to resolve.
-        | UnaryMetadataTokenIlOp.Mkrefany
-        | UnaryMetadataTokenIlOp.Ldftn
+        // can trigger is itself a frame — which is the rule stated against `OpcodeFault`. The JIT
+        // checks no access at it.
+        | UnaryMetadataTokenIlOp.Jmp -> resolves [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ] []
+        // `ldftn` faults on nothing itself and invokes nothing, but under `constrained.` it
+        // dispatches a static virtual method on the type the prefix names.
+        | UnaryMetadataTokenIlOp.Ldftn ->
+            resolves [] [ ResolutionFault.MethodAccess ; ResolutionFault.DispatchOnConstrainedType ]
+        // These fault on nothing themselves and invoke nothing. `constrained.` only names the type
+        // the instruction it prefixes dispatches on, which that instruction's entry carries.
         | UnaryMetadataTokenIlOp.Constrained
-        | UnaryMetadataTokenIlOp.Sizeof -> none
+        | UnaryMetadataTokenIlOp.Sizeof -> resolves [] []
         // `isinst` faults on nothing itself either, but CoreCLR's JIT compiles it to a call of
         // CoreLib (`impCastClassOrIsInstToTree`, importer.cpp): one of the `IsInstanceOf` methods
         // of `CastHelpers` that `jithelpers.h` binds, whose fallback asks the runtime, which can
         // allocate and call the object's `IDynamicInterfaceCastable.IsInterfaceImplemented`. What
         // those raise reaches it from that callee, so it is not this table's.
-        | UnaryMetadataTokenIlOp.Isinst -> none
+        | UnaryMetadataTokenIlOp.Isinst -> resolves [] [ ResolutionFault.TypeAccess ]
         // `ldtoken` faults on nothing itself either, but CoreCLR's JIT compiles it to a call of
         // CoreLib (`CEE_LDTOKEN`, importer.cpp): for a method or a field, the `FromPtr` of
         // `RuntimeMethodInfoStub` or `RuntimeFieldInfoStub`, which makes the stub its handle holds,
         // and for a type whose `RuntimeType` the code cannot embed,
         // `RuntimeTypeHandle.GetRuntimeTypeFromHandle`. What those raise reaches it from that
         // callee, so it is not this table's.
-        | UnaryMetadataTokenIlOp.Ldtoken -> none
+        | UnaryMetadataTokenIlOp.Ldtoken -> resolves [] []
 
     let ofUnaryConst (op : UnaryConstIlOp) : OpcodeFaults =
         match op with
@@ -607,7 +678,8 @@ module OpcodeFaults =
         // (`UnaryStringTokenIlOp.execute` -> `IlMachineState.allocateManagedString`, mirroring
         // CoreCLR's `AddStringLiteral`). ECMA-335 III.4.15 says "Exceptions: None", which is true
         // of the steady state and not of first materialisation.
-        | UnaryStringTokenIlOp.Ldstr -> OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ]
+        // Its token indexes the method's own module's string heap, so nothing binds.
+        | UnaryStringTokenIlOp.Ldstr -> performs [ OpcodeFault.OutOfMemory ]
 
     let ofIlOp (op : IlOp) : OpcodeFaults =
         match op with
@@ -650,9 +722,17 @@ module OpcodeFaults =
     let mayRaise (fault : OpcodeFault) (faults : OpcodeFaults) : bool =
         match faults with
         | OpcodeFaults.Unmodelled -> true
-        | OpcodeFaults.Raises xs -> List.contains fault xs
+        | OpcodeFaults.Raises (own, _) -> List.contains fault own
+
+    /// Can resolving the token of an instruction with these faults raise one of `fault`'s? Like
+    /// `mayRaise`, `Unmodelled` answers yes to everything.
+    let mayFailResolving (fault : ResolutionFault) (faults : OpcodeFaults) : bool =
+        match faults with
+        | OpcodeFaults.Unmodelled -> true
+        | OpcodeFaults.Raises (_, resolution) -> resolution.Contains fault
 
     /// Drop the faults of one kind, for a consumer that has decided it does not want to see them.
+    /// Resolution faults are kept.
     ///
     /// **Deliberately unsound: a reporting policy, not an analysis.** What comes back is no longer
     /// an over-approximation of what the instruction can do, so a result derived through it may not
@@ -666,4 +746,5 @@ module OpcodeFaults =
     let excludingKind (kind : FaultKind) (faults : OpcodeFaults) : OpcodeFaults =
         match faults with
         | OpcodeFaults.Unmodelled -> OpcodeFaults.Unmodelled
-        | OpcodeFaults.Raises xs -> xs |> List.filter (fun f -> OpcodeFault.kind f <> kind) |> OpcodeFaults.Raises
+        | OpcodeFaults.Raises (own, resolution) ->
+            OpcodeFaults.Raises (own |> List.filter (fun f -> OpcodeFault.kind f <> kind), resolution)

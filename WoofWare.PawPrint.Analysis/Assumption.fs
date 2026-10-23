@@ -60,6 +60,17 @@ type Assumption =
     /// raises only what `Assumption.raises` lists when this holds. Whether it does turns on code
     /// the program supplies, and on reflection over the two types the analysis does not see into.
     | DynamicCastsAsDocumented
+    /// Every method, field and type an instruction's token names is one the method whose
+    /// instruction it is may access, by CoreCLR's visibility rules (`ClassLoader::CanAccess`,
+    /// clsload.cpp), so the JIT compiles no call raising `MethodAccessException`,
+    /// `FieldAccessException` or `TypeAccessException` at the instruction. This holds of code that
+    /// a compiler checking access, as C#'s and F#'s do, compiled against the assemblies it runs
+    /// with. It can fail for code that runs against a later version of an assembly that hides what
+    /// the code names, or withdraws an `InternalsVisibleTo` the code relies on, and for IL no
+    /// compiler checked. The analysis relies on it only where the visibility of what the token
+    /// names does not settle the check (`MetadataAccess`). This assumption stands in for no
+    /// method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
+    | MembersAccessible
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -73,6 +84,7 @@ module Assumption =
                 Assumption.CoreLibTypeInitializers
                 Assumption.JitOptimises
                 Assumption.DynamicCastsAsDocumented
+                Assumption.MembersAccessible
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -120,7 +132,8 @@ module Assumption =
                 // It makes calls, any of which can run out of stack.
                 exceptionName "System.StackOverflowException"
             ]
-        | Assumption.JitOptimises -> []
+        | Assumption.JitOptimises
+        | Assumption.MembersAccessible -> []
         | Assumption.DynamicCastsAsDocumented ->
             [
                 // What the documentation asks for, and what CoreLib throws in its place.
@@ -149,7 +162,8 @@ module Assumption =
         | Assumption.StackTracePreserved
         | Assumption.CoreLibTypeInitializers
         | Assumption.JitOptimises
-        | Assumption.DynamicCastsAsDocumented -> []
+        | Assumption.DynamicCastsAsDocumented
+        | Assumption.MembersAccessible -> []
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by

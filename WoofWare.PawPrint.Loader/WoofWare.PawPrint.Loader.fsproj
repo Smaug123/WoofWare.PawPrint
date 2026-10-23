@@ -24,6 +24,7 @@
         <Compile Include="LoadedAssemblies.fs" />
         <Compile Include="LoadedTypeResolution.fs" />
         <Compile Include="LoadedTypeInfo.fs" />
+        <Compile Include="MetadataAccess.fs" />
         <Compile Include="AssemblyLoad.fs" />
         <Compile Include="BaseChainLoading.fs" />
         <Compile Include="AssemblyProbe.fs" />
