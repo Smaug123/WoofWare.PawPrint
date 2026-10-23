@@ -6193,6 +6193,99 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// Calls passing a pointer to a type that is gone, of unmanaged code (a P/Invoke, and `calli`
+    /// by an unmanaged calling convention) and of managed code. What the JIT loads of an unmanaged
+    /// call's signature depends on the marshalling CoreCLR decides the call needs, which
+    /// `JitTypeLoads` does not describe, so the analysis takes the caller's compilation to load
+    /// every type of that signature in full, and to fail past the caller's handlers; a managed call
+    /// loads nothing a pointer parameter points to. This is the analysis's upper bound, which the
+    /// host's outcome does not decide.
+    [<Test>]
+    let ``a call of unmanaged code is taken to load every type of its signature`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public struct Kept { }"
+            + (if complete then " public struct GoneStruct { }" else "")
+
+        let client =
+            """
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Calls
+{
+    [DllImport("nowhere")]
+    static extern void Native(Provider.GoneStruct* x);
+
+    static void Managed(Provider.GoneStruct* x) { }
+
+    public static void CallsNative()
+    {
+        try { Native(null); } catch (System.Exception) { }
+    }
+    public static void CallsManaged()
+    {
+        try { Managed(null); } catch (System.Exception) { }
+    }
+    public static void CallsUnmanagedPointer()
+    {
+        try { delegate* unmanaged<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+    }
+    public static void CallsManagedPointer()
+    {
+        try { delegate*<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly =
+            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
+
+        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        let raisesTypeLoad (name : string) : bool =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
+
+            analysis <- next
+            (render analysis escapes).Contains "=System.TypeLoadException"
+
+        [
+            "CallsNative", raisesTypeLoad "CallsNative"
+            "CallsManaged", raisesTypeLoad "CallsManaged"
+            "CallsUnmanagedPointer", raisesTypeLoad "CallsUnmanagedPointer"
+            "CallsManagedPointer", raisesTypeLoad "CallsManagedPointer"
+        ]
+        |> shouldEqual
+            [
+                "CallsNative", true
+                "CallsManaged", false
+                "CallsUnmanagedPointer", true
+                "CallsManagedPointer", false
+            ]
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
