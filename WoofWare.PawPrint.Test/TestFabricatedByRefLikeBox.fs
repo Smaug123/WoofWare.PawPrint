@@ -329,6 +329,18 @@ module TestFabricatedByRefLikeBox =
         let boxTCastObject = castingTo "BoxTCastObject" typeof<obj>
         let boxTCastEquatable = castingTo "BoxTCastEquatable" typeof<IEquatable<int>>
 
+        // A box of `Held` itself, tested against a type variable, which shared code sees as
+        // `__Canon`: the JIT decides no cast to a canonical form.
+        let boxHeldCastT =
+            let method = boxes.DefineMethod ("BoxHeldCastT", staticAttributes)
+            let parameter = method.DefineGenericParameters([| "T" |]).[0]
+            method.SetReturnType typeof<int>
+            let il = method.GetILGenerator ()
+            boxesHeld il
+            il.Emit (OpCodes.Isinst, parameter)
+            branches OpCodes.Brtrue il
+            method
+
         let boxTUnbox =
             generic
                 "BoxTUnbox"
@@ -375,6 +387,8 @@ module TestFabricatedByRefLikeBox =
         calls "CallsBoxTCastObjectShared" boxTCastObject sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxTCastEquatableShared" boxTCastEquatable sharedHolder (pushesDefault sharedHolder)
         calls "CallsBoxTUnboxShared" boxTUnbox sharedHolder (pushesDefault sharedHolder)
+        calls "CallsBoxHeldCastTUnshared" boxHeldCastT typeof<int> ignore
+        calls "CallsBoxHeldCastTShared" boxHeldCastT typeof<string> ignore
 
         boxes.CreateType () |> ignore<Type>
 
@@ -449,6 +463,7 @@ public static class Driver
         if ((r = Expect(Boxes.CallsBoxTUnboxHeld, 4, 47)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTUnboxUnshared, 4, 49)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTCastShared, 1, 51)) != 0) return r;
+        if ((r = Expect(Boxes.CallsBoxHeldCastTUnshared, 1, 55)) != 0) return r;
 
         return 0;
     }
@@ -487,6 +502,7 @@ public static class Driver
 
     [<TestCase("CallsBoxTCastObjectShared", 2, "inlines")>]
     [<TestCase("CallsBoxTUnboxShared", 4, "inlines")>]
+    [<TestCase("CallsBoxHeldCastTShared", 1, "inlines")>]
     [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form")>]
     let ``PawPrint refuses to guess whether the JIT folds a box in shared code``
         (callee : string)
