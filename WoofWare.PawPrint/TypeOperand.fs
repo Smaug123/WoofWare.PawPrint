@@ -17,6 +17,28 @@ type TypeOperandRefusal =
 module TypeOperand =
 
     /// <summary>
+    /// Why CoreCLR refuses a token naming the type <paramref name="identity"/> defines, as
+    /// <see cref="refusal"/> describes, or <c>None</c>: <c>System.Void</c> is refused, and is
+    /// recognised by identity rather than by name, since only CoreLib's own has
+    /// <c>ELEMENT_TYPE_VOID</c>.
+    /// </summary>
+    /// <remarks>
+    /// For a member's token, the type is the parent its reference names, which need not declare the
+    /// member: a method reference through <c>System.Void</c> finds the virtual methods it inherits
+    /// from <c>ValueType</c> and <c>Object</c>, and is then refused (measured, for <c>call</c>,
+    /// <c>callvirt</c>, <c>ldftn</c> and <c>ldvirtftn</c>; <c>ldtoken</c> runs).
+    /// </remarks>
+    let ofDefinition
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (identity : ResolvedTypeIdentity)
+        : TypeOperandRefusal option
+        =
+        if identity = baseClassTypes.Void.Identity then
+            Some TypeOperandRefusal.Void
+        else
+            None
+
+    /// <summary>
     /// Why CoreCLR refuses <paramref name="handle"/> as the type operand of an instruction that
     /// consumes it, or <c>None</c> where it accepts it there. Its refusal is an
     /// <c>InvalidProgramException</c> with that type's default message.
@@ -36,8 +58,7 @@ module TypeOperand =
     /// </para>
     /// <para>
     /// A pointer, an array or a function pointer is accepted here: <c>sizeof int*</c> answers 8
-    /// (measured). Only CoreLib's own <c>System.Void</c> has <c>ELEMENT_TYPE_VOID</c>, so a type of
-    /// that name in another assembly is accepted as well.
+    /// (measured). A nominal type is refused as <see cref="ofDefinition"/> says.
     /// </para>
     /// <para>
     /// This answers only what <c>resolveToken</c> refuses of every type operand. What an opcode
@@ -54,10 +75,8 @@ module TypeOperand =
         match handle with
         | ConcreteTypeHandle.Byref _ -> Some (TypeOperandRefusal.Byref handle)
         | ConcreteTypeHandle.Concrete _ ->
-            // By identity rather than by name, for the reason given above.
             match AllConcreteTypes.lookup handle concreteTypes with
-            | Some ty when ty.Identity = baseClassTypes.Void.Identity -> Some TypeOperandRefusal.Void
-            | Some _ -> None
+            | Some ty -> ofDefinition baseClassTypes ty.Identity
             | None -> failwith $"BUG: type operand %O{handle} has no row in AllConcreteTypes"
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.OneDimArrayZero _

@@ -33,7 +33,7 @@ type MemberReferenceParent =
 module MemberReferenceParent =
 
     /// The definition a type spelling in `spellingAssembly` names, looking through custom modifiers
-    /// and instantiations, and reading a primitive as its CoreLib type.
+    /// and instantiations, and reading a primitive or `void` as its CoreLib type.
     let private identityOfSpelling
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -75,6 +75,10 @@ module MemberReferenceParent =
         | TypeDefn.FromReference (typeRef, _) -> ofReference typeRef
         | TypeDefn.PrimitiveType primitive ->
             assemblies, Ok (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
+        // `ELEMENT_TYPE_VOID` names CoreLib's `System.Void` as the primitive element types name
+        // theirs. Looking a method up through it finds what `System.Void` inherits, and the
+        // instruction is then refused (measured).
+        | TypeDefn.Void -> assemblies, Ok baseClassTypes.Void.Identity
         | other ->
             unmodelled $"Expected a type with members in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
 

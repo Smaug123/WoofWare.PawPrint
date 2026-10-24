@@ -76,7 +76,7 @@ module internal TypeofIntrinsicFold =
             | MetadataToken.MemberReference h ->
                 match activeAssy.Members.TryGetValue h with
                 | true, row when row.PrettyName = name ->
-                    let state, _, resolved, _ =
+                    let state, resolved =
                         IlMachineState.resolveMember
                             (MemberReferenceUse.Other "call")
                             loggerFactory
@@ -87,8 +87,11 @@ module internal TypeofIntrinsicFold =
                             state
 
                     match resolved with
-                    | Choice1Of2 method -> state, isDeclaredOnCorelibSystemType baseClassTypes method
-                    | Choice2Of2 _field -> state, false
+                    | MemberReferenceResolution.Resolved (_, Choice1Of2 method, _) ->
+                        state, isDeclaredOnCorelibSystemType baseClassTypes method
+                    | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> state, false
+                    // Not a call of a `System.Type` method, so not folded: the call refuses it.
+                    | MemberReferenceResolution.RefusedParent _ -> state, false
                 | _ -> state, false
             | _ -> state, false
         | _ -> state, false

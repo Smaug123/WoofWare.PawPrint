@@ -19,6 +19,9 @@ type internal ResolvedMemberToken =
     | Field of declaringType : ConcreteTypeHandle * field : FieldDefinitionHandle
     /// A field reference that binds nothing, and why: binding it throws into the guest.
     | BindingFails of FieldReferenceFailure
+    /// A reference whose member CoreCLR finds, but through a parent it refuses the instruction over
+    /// (`MemberReferenceResolution.RefusedParent`). Never for `ldtoken`.
+    | RefusedParent of TypeOperandRefusal
 
 /// What an `ldtoken` operand names: the three things a `Runtime*Handle` can stand for.
 ///
@@ -99,7 +102,7 @@ module internal UnaryMetadataTokenOps =
         let baseClassTypes = ctx.BaseClassTypes
         let thread = ctx.Thread
 
-        let state, _, resolved, extractedTypeArgs =
+        let state, resolution =
             IlMachineState.resolveMember
                 (memberReferenceUse ctx)
                 loggerFactory
@@ -108,6 +111,10 @@ module internal UnaryMetadataTokenOps =
                 ctx.ActiveAssembly
                 handle
                 state
+
+        match resolution with
+        | MemberReferenceResolution.RefusedParent refusal -> state, ResolvedMemberToken.RefusedParent refusal
+        | MemberReferenceResolution.Resolved (_, resolved, extractedTypeArgs) ->
 
         match resolved with
         | Choice1Of2 method when not method.Generics.IsEmpty ->
@@ -174,8 +181,11 @@ module internal UnaryMetadataTokenOps =
         (handle : MethodSpecificationHandle)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
+              TypeOperandRefusal
+           >
         =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -219,7 +229,7 @@ module internal UnaryMetadataTokenOps =
                     None
                     state
 
-            state, concretized, method
+            state, Ok (concretized, method)
         | MetadataToken.MemberReference ref ->
             // Concretize the spec's generic method args against the current frame's
             // generic context so `resolveMember` can pick the right overload — the
@@ -242,7 +252,7 @@ module internal UnaryMetadataTokenOps =
 
             let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
 
-            let state, _, method, extractedTypeArgs =
+            let state, resolution =
                 IlMachineState.resolveMember
                     (memberReferenceUse ctx)
                     loggerFactory
@@ -251,6 +261,10 @@ module internal UnaryMetadataTokenOps =
                     activeAssy
                     ref
                     state
+
+            match resolution with
+            | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
+            | MemberReferenceResolution.Resolved (_, method, extractedTypeArgs) ->
 
             match method with
             | Choice2Of2 _field ->
@@ -275,7 +289,7 @@ module internal UnaryMetadataTokenOps =
                         (Some extractedTypeArgs)
                         state
 
-                state, concretized, method
+                state, Ok (concretized, method)
         | k -> failwith $"Unrecognised MethodSpecification kind for %s{opName}: %O{k}"
 
     /// Resolve the method token of an `ldftn`/`ldvirtftn` to the concrete method its function
@@ -289,8 +303,11 @@ module internal UnaryMetadataTokenOps =
         (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
+              TypeOperandRefusal
+           >
         =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -309,33 +326,31 @@ module internal UnaryMetadataTokenOps =
         // args are caller-relative and have already been resolved against the current frame, so
         // we hand the concrete handles directly to the concretization step rather than letting it
         // re-substitute them against the (target type's) generics.
-        let state, concretizedMethod, method =
-            match metadataToken with
-            | MetadataToken.MethodDef handle ->
-                let method =
-                    activeAssy.Methods.[handle]
-                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+        match metadataToken with
+        | MetadataToken.MethodDef handle ->
+            let method =
+                activeAssy.Methods.[handle]
+                |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                let state, concretized, _ =
-                    ExecutionConcretization.concretizeMethodForExecution
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        method
-                        None
-                        None
-                        state
+            let state, concretized, _ =
+                ExecutionConcretization.concretizeMethodForExecution
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    method
+                    None
+                    None
+                    state
 
-                state, concretized, method
-            | MetadataToken.MemberReference h ->
-                match resolveMemberReferenceToken ctx h state with
-                | state, ResolvedMemberToken.Method (concretized, method) -> state, concretized, method
-                | _, ResolvedMemberToken.Field _
-                | _, ResolvedMemberToken.BindingFails _ -> failwith $"tried to %s{opName} a field"
-            | MetadataToken.MethodSpecification h -> resolveMethodSpecificationToken opName ctx h state
-            | t -> failwith $"Unexpectedly asked to %s{opName} a non-method: {t}"
-
-        state, concretizedMethod, method
+            state, Ok (concretized, method)
+        | MetadataToken.MemberReference h ->
+            match resolveMemberReferenceToken ctx h state with
+            | state, ResolvedMemberToken.Method (concretized, method) -> state, Ok (concretized, method)
+            | state, ResolvedMemberToken.RefusedParent refusal -> state, Error refusal
+            | _, ResolvedMemberToken.Field _
+            | _, ResolvedMemberToken.BindingFails _ -> failwith $"tried to %s{opName} a field"
+        | MetadataToken.MethodSpecification h -> resolveMethodSpecificationToken opName ctx h state
+        | t -> failwith $"Unexpectedly asked to %s{opName} a non-method: {t}"
 
     /// Push a function pointer to `concretizedMethod` and advance past the instruction.
     let private pushFunctionPointer
@@ -357,7 +372,9 @@ module internal UnaryMetadataTokenOps =
         let logger = ctx.Logger
         let thread = ctx.Thread
 
-        let state, concretizedMethod, method = resolveMethodPointerTarget "Ldftn" ctx state
+        match resolveMethodPointerTarget "Ldftn" ctx state with
+        | state, Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | state, Ok (concretizedMethod, method) ->
 
         // `ldftn` is one of the three opcodes ECMA and the JIT importer allow `constrained.` to
         // precede, so it must consume the prefix. Consuming means both halves: *clearing* it, or a
@@ -465,7 +482,9 @@ module internal UnaryMetadataTokenOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, callSiteMethod, method = resolveMethodPointerTarget "Ldvirtftn" ctx state
+        match resolveMethodPointerTarget "Ldvirtftn" ctx state with
+        | state, Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | state, Ok (callSiteMethod, method) ->
 
         // CoreCLR's importer falls through to its `ldftn` handling when the named method is
         // `static`, `final`, or not `virtual` (`case CEE_LDVIRTFTN`, importer.cpp): the receiver is
@@ -800,9 +819,15 @@ module internal UnaryMetadataTokenOps =
                 | state, ResolvedMemberToken.Field (declaringType, fieldHandle) ->
                     state, Ok (LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed declaringType, fieldHandle))
                 | state, ResolvedMemberToken.BindingFails failure -> state, Error failure
+                | _, ResolvedMemberToken.RefusedParent refusal ->
+                    failwith
+                        $"BUG: ldtoken's MemberReference was refused for naming %O{refusal}, but resolveMember refuses no reference for ldtoken"
             | MetadataToken.MethodSpecification h ->
-                let state, concretized, _ = resolveMethodSpecificationToken "Ldtoken" ctx h state
-                state, Ok (LdtokenTarget.Method concretized)
+                match resolveMethodSpecificationToken "Ldtoken" ctx h state with
+                | state, Ok (concretized, _) -> state, Ok (LdtokenTarget.Method concretized)
+                | _, Error refusal ->
+                    failwith
+                        $"BUG: ldtoken's MethodSpecification was refused for naming %O{refusal}, but resolveMember refuses no reference for ldtoken"
             | MetadataToken.TypeSpecification h ->
                 // Use the raw TypeSpec signature directly, bypassing the lossy
                 // resolveTypeFromDefn → TypeInfo → typeInfoToTypeDefn round-trip.
