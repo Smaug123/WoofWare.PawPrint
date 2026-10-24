@@ -1533,7 +1533,8 @@ module internal UnaryMetadataCallOps =
                     // case 2). Otherwise box and let ordinary virtual dispatch handle the boxed
                     // receiver (case 3): the method is then one T inherits from
                     // Object/ValueType/Enum, or a default interface body, and either runs on the
-                    // box, a copy of `*ptr`.
+                    // box, a copy of `*ptr`; or T does not implement the method's interface, and
+                    // the box's dispatch raises.
                     let state, directImplementation =
                         IlMachineStateExecution.tryResolveVirtualImplementation
                             loggerFactory

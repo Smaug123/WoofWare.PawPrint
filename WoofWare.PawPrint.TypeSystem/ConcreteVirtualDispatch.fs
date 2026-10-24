@@ -26,7 +26,16 @@ type VirtualImplementation =
     /// the method, so choosing it does not.
     | Found of DispatchedMethod
     /// Nothing overrides the method the call names, which for a `callvirt` means that method runs.
+    /// Never the answer for an interface method on a type that does not implement it: that is
+    /// `NotImplemented`.
     | NotOverridden
+    /// Nothing implements the interface method on the type: no type on its chain maps it, no
+    /// default body for it is found among the interfaces the type implements, and, for a static
+    /// virtual, the method has no body of its own. This is the answer where the type does not
+    /// implement the interface at all, which no verifiable IL reaches. An instance call throws
+    /// `EntryPointNotFoundException`, as `DispatchFailure.NotImplemented` says, and a static one
+    /// `AmbiguousImplementationException`, as `DispatchFailure.StaticNotImplemented` says.
+    | NotImplemented
     /// More than one default interface body is most specific for the method, so the call throws
     /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
     /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
@@ -51,6 +60,19 @@ type DispatchFailure =
     /// These default bodies are equally specific, as for `VirtualImplementation.Ambiguous`: the call
     /// throws `AmbiguousImplementationException`.
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+    /// Nothing implements this instance interface method on the receiver's type, as for
+    /// `VirtualImplementation.NotImplemented`: virtual stub dispatch throws
+    /// `EntryPointNotFoundException` (`VirtualCallStubManager::Resolver`, virtualcallstub.cpp),
+    /// even where the method has a body of its own, an interface the receiver does not implement
+    /// being none that `MethodTable::FindDispatchImpl` searches for one.
+    | NotImplemented of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// Nothing implements this static abstract interface method on the type a `constrained.`
+    /// prefix names, as for `VirtualImplementation.NotImplemented`: `CEEInfo::getCallInfo`
+    /// (jitinterface.cpp) compiles the call, or the `ldftn`, to throw
+    /// `AmbiguousImplementationException`, as it does for every static virtual it cannot resolve
+    /// to a body but a reabstraction, and in shared code the stub the generic dictionary holds
+    /// throws the same when called.
+    | StaticNotImplemented of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
 [<RequireQualifiedAccess>]
 module DispatchFailure =
@@ -61,8 +83,10 @@ module DispatchFailure =
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         match failure with
-        | DispatchFailure.Reabstracted _ -> baseClassTypes.EntryPointNotFoundException
-        | DispatchFailure.Ambiguous _ -> baseClassTypes.AmbiguousImplementationException
+        | DispatchFailure.Reabstracted _
+        | DispatchFailure.NotImplemented _ -> baseClassTypes.EntryPointNotFoundException
+        | DispatchFailure.Ambiguous _
+        | DispatchFailure.StaticNotImplemented _ -> baseClassTypes.AmbiguousImplementationException
 
     /// The failure in words, for a refusal that names it.
     let describe (failure : DispatchFailure) : string =
@@ -74,6 +98,8 @@ module DispatchFailure =
         | DispatchFailure.Ambiguous candidates ->
             let described = candidates |> List.map name |> String.concat ", "
             $"the ambiguous default bodies %s{described}"
+        | DispatchFailure.NotImplemented method -> $"no implementation of %s{name method}"
+        | DispatchFailure.StaticNotImplemented method -> $"no implementation of the static %s{name method}"
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
@@ -932,6 +958,60 @@ module ConcreteVirtualDispatch =
             methodDeclaringType.Generics
             |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
+        // `FindDispatchImpl` found nothing. For an interface method, virtual stub dispatch asks a
+        // class implementing `IDynamicInterfaceCastable` for an implementation, and throws for any
+        // other receiver; for a class's method the receiver is not derived from the class, and the
+        // method itself runs.
+        let nothingFound (state : TypeSystemState) : TypeSystemState * VirtualImplementation =
+            if not methodDeclaringType.IsInterface then
+                state, VirtualImplementation.NotOverridden
+            else
+
+            match dispatchTypeHandle with
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.OneDimArrayZero _ when not (Seq.isEmpty methodDeclaringType.Generics) ->
+                // `FindDispatchImpl` assumes any generic interface an array is dispatched on is one
+                // SZ arrays implement implicitly, and runs SZArrayHelper's body for it, a
+                // multi-dimensional array's included: measured, `ICollection<int>.Count` on an
+                // `int[2,3]` is 6.
+                state,
+                VirtualImplementation.Unmodelled
+                    $"%s{methodToCall.Name} of a generic interface is not implemented by the array %O{dispatchTypeHandle}, which CoreCLR dispatches to System.SZArrayHelper as though it were an SZ array implementing one of the five; PawPrint does not model that"
+            | _ ->
+
+            // The runtime marks only a class, never a value type, as `IDynamicInterfaceCastable`
+            // (`MethodTableBuilder`, methodtablebuilder.cpp). An array has no TypeDef row and
+            // implements no such interface.
+            let state, dynamicallyCastable =
+                match TypeSystemState.tryGetConcreteTypeInfo state dispatchTypeHandle with
+                | None -> state, false
+                | Some (_, receiverInfo) when
+                    LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies receiverInfo
+                    ->
+                    state, false
+                | Some _ ->
+                    let state, map =
+                        ConcreteInterfaceDispatch.interfaceMapOf
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            "callvirt"
+                            state
+                            dispatchTypeHandle
+
+                    state,
+                    map
+                    |> List.exists (fun entry ->
+                        entry.Type.Identity = baseClassTypes.IDynamicInterfaceCastable.Identity
+                    )
+
+            if dynamicallyCastable then
+                state,
+                VirtualImplementation.Unmodelled
+                    $"%s{methodToCall.Name} is not implemented by %O{dispatchTypeHandle}, which implements IDynamicInterfaceCastable, so CoreCLR asks the receiver's GetInterfaceImplementation for the interface that implements it; PawPrint does not call back into the guest for that"
+            else
+                state, VirtualImplementation.NotImplemented
+
         // `FindDispatchImpl` searches at the call's exact instantiation, and only if that finds
         // nothing, and the interface is variant, allowing variance.
         match search false state with
@@ -956,14 +1036,14 @@ module ConcreteVirtualDispatch =
                     $"more than one most-specific default body of %s{methodToCall.Name} at a variant interface's exact instantiation, where CoreCLR throws or runs the first depending on how the JIT compiled the call: %s{described}"
             else
                 state, VirtualImplementation.Ambiguous candidates
-        | state, [] when not throughVariantInterface -> state, VirtualImplementation.NotOverridden
+        | state, [] when not throughVariantInterface -> nothingFound state
         | state, [] ->
 
         // The variant search "[doesn't] look for a conflict for instance methods": it runs the first
         // survivor. `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs` and
         // `VariantInterfaceMapOrder.cs` pin its order against the real runtime.
         match search true state with
-        | state, [] -> state, VirtualImplementation.NotOverridden
+        | state, [] -> nothingFound state
         | state, first :: _ -> foundDefault state first
 
     /// One entry of a receiver's interface map, as `collectInterfaceMap` visits it.
@@ -1154,6 +1234,10 @@ module ConcreteVirtualDispatch =
     ///
     /// `Reabstracted`, and never `NotOverridden`, where the most specific default body is a
     /// reabstraction, so a caller must not fall back to the method the call names.
+    ///
+    /// `NotImplemented` where `walkBaseTypes` is true and nothing implements an interface method on
+    /// the receiver's type; `Unmodelled` where such a receiver implements
+    /// `IDynamicInterfaceCastable`, or is an array and the interface is generic.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation

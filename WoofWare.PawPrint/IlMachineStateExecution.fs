@@ -122,6 +122,8 @@ module IlMachineStateExecution =
 
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Runs implementation
         | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, ResolvedVirtualCall.NotOverridden
+        | VirtualImplementation.NotImplemented ->
+            state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.NotImplemented methodToCall)
         | VirtualImplementation.Reabstracted reabstraction ->
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.Reabstracted reabstraction)
         | VirtualImplementation.Ambiguous candidates ->

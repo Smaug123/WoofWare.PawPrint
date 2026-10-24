@@ -315,14 +315,22 @@ module TestSzArrayInterfaceDispatch =
 
                 assignable |> shouldEqual false
 
-                let _, resolved = resolve state concretizedMethod mdArrayHandle
+                // CoreCLR runs SZArrayHelper's body on the multi-dimensional array regardless,
+                // which PawPrint refuses to model rather than reading the array as an SZ one.
+                let _, resolved =
+                    ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                        loggerFactory
+                        state.DotnetRuntimeDirs
+                        bct
+                        concretizedMethod.Generics
+                        concretizedMethod
+                        mdArrayHandle
+                        true
+                        state.TypeSystem
 
                 match resolved with
-                | None -> ()
-                | Some resolved ->
-
-                resolved.RequiredDeclaringType.Identity
-                |> shouldNotEqual bct.SZArrayHelper.Identity
+                | VirtualImplementation.Unmodelled reason -> reason |> shouldContainText "SZArrayHelper"
+                | other -> failwith $"expected a refusal, got %O{other}"
             with e ->
                 raise (Exception ($"%O{case}: %s{e.Message}", e))
 

@@ -76,13 +76,17 @@ type ResolutionFault =
     | TypeAccess
     /// Dispatching on the receiver's class finds no single method to run: the most specific
     /// implementation is a reabstraction (`EntryPointNotFoundException`), or no default interface
-    /// body is most specific (`System.Runtime.AmbiguousImplementationException`). Neither arises
-    /// within one C# compilation: it takes an interface changed after its implementer was compiled.
+    /// body is most specific (`System.Runtime.AmbiguousImplementationException`), or nothing
+    /// implements the interface method on the class at all (`EntryPointNotFoundException`). None
+    /// arises within one C# compilation: the first two take an interface changed after its
+    /// implementer was compiled, and the third unverifiable IL.
     | DispatchOnReceiver
-    /// The same as `DispatchOnReceiver`, dispatching on the type a `constrained.` prefix names. A
-    /// table keyed on the opcode cannot see the prefix, so every instruction that can take one
-    /// carries this. In code CoreCLR shares between instantiations, a `constrained. ldftn` may
-    /// instead hand out a pointer that raises when called.
+    /// The same as `DispatchOnReceiver`, dispatching on the type a `constrained.` prefix names,
+    /// except that where nothing implements a static abstract method on that type, the call raises
+    /// `System.Runtime.AmbiguousImplementationException`. A table keyed on the opcode cannot see the
+    /// prefix, so every instruction that can take one carries this. In code CoreCLR shares between
+    /// instantiations, a `constrained. ldftn` may instead hand out a pointer that raises when
+    /// called.
     | DispatchOnConstrainedType
 
 /// What performing one instruction can raise by itself.

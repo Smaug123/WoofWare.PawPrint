@@ -259,15 +259,6 @@ public static class Driver
     let private run (call : string) (expected : int) : unit =
         FabricatedGuest.run "Retarget" (fabricate ()) "RetargetDriver" (driver call) expected
 
-    /// PawPrint does not raise where the type a `constrained.` call resolves against does not
-    /// implement the interface at all: a static virtual is refused ("could not find static
-    /// implementation"), and an instance method runs the interface's abstract declaration on the
-    /// box. Un-park these once both raise as CoreCLR does.
-    let private parkedUntilUnimplementedInterfaceRaises () : unit =
-        ParkedOn.check
-            EmulatedRuntime.supported
-            "PawPrint does not raise where a constrained. call's type does not implement the interface at all"
-
     [<Test>]
     let ``an interface instance method in GetHashCode's slot runs the underlying primitive's, on the enum's own storage``
         ()
@@ -285,7 +276,6 @@ public static class Driver
         ()
         : unit
         =
-        parkedUntilUnimplementedInterfaceRaises ()
         run "Retarget.WriteBig(DayOfWeek.Friday)" 201
 
     [<Test>]
@@ -294,7 +284,6 @@ public static class Driver
 
     [<Test>]
     let ``a static virtual numbered another slot is resolved on the enum, which does not implement it`` () : unit =
-        parkedUntilUnimplementedInterfaceRaises ()
         run "Retarget.One()" 202
 
     [<Test>]
@@ -303,7 +292,6 @@ public static class Driver
 
     [<Test>]
     let ``a pointer loaded to a static virtual numbered another slot is resolved on the enum`` () : unit =
-        parkedUntilUnimplementedInterfaceRaises ()
         run "Retarget.OnePointer()" 202
 
     [<Test>]
