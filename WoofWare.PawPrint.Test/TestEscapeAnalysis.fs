@@ -17520,3 +17520,27 @@ public static class Cases
             then
                 failwith
                     $"%s{name}: unknown %b{escapes.Unknown}, assuming %A{Set.toList escapes.Assumes}, which must hold FieldsWrittenVisibly"
+
+    /// A field CoreLib's type initializer writes, where the analysis takes `CoreLibTypeInitializers`'s
+    /// contract in place of the initializer: the contract says what the initializer raises, and its
+    /// IL still says what it stores. `Random()` dispatches on what its type's initializer stores.
+    [<Test>]
+    let ``what a type initializer under a contract stores in a field is what its IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let constructor =
+            corelib.Methods
+            |> Seq.find (fun (KeyValue (_, method)) ->
+                let declaring = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+
+                declaring.Namespace = "System"
+                && declaring.Name = "Random"
+                && not declaring.IsNested
+                && method.Name = ".ctor"
+                && method.Signature.ParameterTypes.IsEmpty
+            )
+            |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+        let _, escapes = EscapeAnalysis.escapes (analysisOver [] id) constructor
+        escapes.Unknown |> shouldEqual false
+        escapes.Assumes |> shouldContain Assumption.FieldsWrittenVisibly
