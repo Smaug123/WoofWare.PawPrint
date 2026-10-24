@@ -3182,10 +3182,11 @@ module EscapeAnalysis =
 
     /// Whether `Assumption.FieldsWrittenVisibly`, where the analysis may take it, says what `field`
     /// holds: what its own assembly's `stfld`s and `stsfld`s store in it, or null. So it is when
-    /// the field is a reference type's, of a class no type variable instantiates; no other
-    /// assembly can name it, being private, or internal to an assembly that makes no other its
-    /// friend (`InternalsVisibleTo`); its own assembly's IL never takes its address; and no member
-    /// reference of that assembly may name it.
+    /// the field is of a reference type; no other assembly can name it, being private, or
+    /// internal to an assembly that makes no other its friend (`InternalsVisibleTo`); its own
+    /// assembly's IL never takes its address; no member reference of that assembly may name it;
+    /// its type's layout is not explicit, which may lay another field over it; and, in CoreLib,
+    /// CoreCLR's native code does not bind it by name (`VmBoundField`), which it may write.
     let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
         if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
             state, false
@@ -3193,9 +3194,7 @@ module EscapeAnalysis =
 
         let assembly = assemblyOf state field.AssemblyFullName
         let definition = assembly.Fields.[field.Handle]
-
-        let declaring =
-            assembly.TypeDefs.[definition.DeclaringType.Identity.TypeDefinition.Get]
+        let declaring = assembly.TypeDefs.[definition.DeclaringType.Identity.TypeDefinition.Get]
 
         let closedToOthers =
             match definition.Attributes &&& FieldAttributes.FieldAccessMask with
@@ -3207,21 +3206,18 @@ module EscapeAnalysis =
                 | Error _ -> false
             | _ -> false
 
+        let boundByTheVm =
+            assembly.DefinitionFullName = state.BaseTypes.Corelib.DefinitionFullName
+            && VmBoundField.isBound
+                (TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) declaring)
+                definition.Name
+
         if
             not closedToOthers
+            || boundByTheVm
             || definition.Attributes.HasFlag FieldAttributes.Literal
-            || not declaring.Generics.IsEmpty
-            || declaring.IsInterface
+            || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes = TypeLayoutKind.Explicit
         then
-            state, false
-        else
-
-        let valueType = state.BaseTypes.ValueType.Identity
-
-        let state, ofValueType =
-            derivesFrom state definition.DeclaringType.Identity valueType
-
-        if ofValueType then
             state, false
         else
 
