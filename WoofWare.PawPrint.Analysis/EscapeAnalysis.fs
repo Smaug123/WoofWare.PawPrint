@@ -215,6 +215,8 @@ type internal HelpedInstruction =
     | Box
     /// An `ldelema` with no `readonly.` prefix.
     | Ldelema
+    /// A `stelem` of a type. A `stelem.ref`, which names none, always calls `StelemRef`.
+    | Stelem
 
 /// One of CoreLib's `CastHelpers` methods, which `jithelpers.h` binds a JIT helper to, and which
 /// the JIT calls for an instruction at tier 0, under MinOpts and in debuggable code. Where it
@@ -238,6 +240,9 @@ type internal JitHelper =
     | BoxNullable
     /// `LdelemaRef`, for an `ldelema` of a reference type (`CEE_LDELEMA`, importer.cpp).
     | LdelemaRef
+    /// `StelemRef`, for a `stelem.ref`, or a `stelem` of a reference type (`CEE_STELEM_REF`,
+    /// importer.cpp), even of null.
+    | StelemRef
 
 /// An instruction whose `CastHelpers` method only an instance of the body decides: one of a type
 /// variable, or a cast to a `Nullable<T>` over one.
@@ -2885,6 +2890,7 @@ module EscapeAnalysis =
             | JitHelper.Box -> "Box", 2
             | JitHelper.BoxNullable -> "Box_Nullable", 2
             | JitHelper.LdelemaRef -> "LdelemaRef", 3
+            | JitHelper.StelemRef -> "StelemRef", 3
 
         let found =
             corelib.TryGetTopLevelTypeDef "System.Runtime.CompilerServices" "CastHelpers"
@@ -2912,6 +2918,7 @@ module EscapeAnalysis =
         | HelpedInstruction.Unbox -> [ JitHelper.Unbox ; JitHelper.UnboxNullable ]
         | HelpedInstruction.Box -> [ JitHelper.Box ; JitHelper.BoxNullable ]
         | HelpedInstruction.Ldelema -> [ JitHelper.LdelemaRef ]
+        | HelpedInstruction.Stelem -> [ JitHelper.StelemRef ]
 
     /// Whether the JIT boxes a value type of this definition without calling `CastHelpers.Box`
     /// (`impImportAndPushBox`, importer.cpp): a primitive type or an enum, which it boxes inline, or
@@ -3001,6 +3008,11 @@ module EscapeAnalysis =
                     state, Set.empty, false
                 else
                     state, Set.singleton JitHelper.LdelemaRef, false
+            | HelpedInstruction.Stelem ->
+                if valueType then
+                    state, Set.empty, false
+                else
+                    state, Set.singleton JitHelper.StelemRef, false
             | HelpedInstruction.Isinst
             | HelpedInstruction.Castclass
             | HelpedInstruction.UnboxAny ->
@@ -3051,6 +3063,7 @@ module EscapeAnalysis =
                 | HelpedInstruction.Unbox -> [ JitHelper.Unbox ; JitHelper.UnboxNullable ]
                 | HelpedInstruction.Box -> [ JitHelper.Box ; JitHelper.BoxNullable ]
                 | HelpedInstruction.Ldelema -> [ JitHelper.LdelemaRef ]
+                | HelpedInstruction.Stelem -> [ JitHelper.StelemRef ]
 
             state, Set.ofList helpers, true
         | TypeDefn.Modified modified -> helpersAt state assembly instruction modified.Unmodified
@@ -3064,6 +3077,7 @@ module EscapeAnalysis =
             | HelpedInstruction.Unbox -> state, Set.singleton JitHelper.Unbox, false
             | HelpedInstruction.Box -> state, Set.empty, false
             | HelpedInstruction.Ldelema -> state, Set.singleton JitHelper.LdelemaRef, false
+            | HelpedInstruction.Stelem -> state, Set.singleton JitHelper.StelemRef, false
         // A type that is no class, which the JIT takes an element of to be an integer.
         | TypeDefn.Pointer _
         | TypeDefn.Byref _
@@ -3076,7 +3090,8 @@ module EscapeAnalysis =
             | HelpedInstruction.UnboxAny -> state, Set.singleton (cast CastTarget.Any), false
             | HelpedInstruction.Unbox -> state, Set.singleton JitHelper.Unbox, false
             | HelpedInstruction.Box
-            | HelpedInstruction.Ldelema -> state, Set.empty, false
+            | HelpedInstruction.Ldelema
+            | HelpedInstruction.Stelem -> state, Set.empty, false
 
     /// What CoreCLR runs when `key` is called, or the contract of one of `assumptions` that stands
     /// in for it. The VM's substitute for an intrinsic runs whatever IL CoreLib ships in its place,
@@ -4607,11 +4622,13 @@ module EscapeAnalysis =
         // `castclass`, and every `unbox.any` of a reference type, which it imports as a call of the
         // helper `getCastingHelperStatic` picks (`impCastClassOrIsInstToTree`, importer.cpp); at
         // every `unbox`, and `unbox.any` of a value type, the one `getUnBoxHelper` picks; at a `box`
-        // of a struct (`impImportAndPushBox`); and at an `ldelema` of a reference type with no
-        // `readonly.` prefix. It decides a cast or an unbox without one only where it optimises
+        // of a struct (`impImportAndPushBox`); at an `ldelema` of a reference type with no
+        // `readonly.` prefix; and at every `stelem.ref`, and `stelem` of a reference type, whatever
+        // it stores. It decides a cast or an unbox without one only where it optimises
         // (`impOptimizeCastClassOrIsInst`), which a method it compiles first does not, or where it
-        // folds a `box` that the cast tests (`impBoxPatternMatch`), which the analysis does not
-        // follow: there it follows the calls.
+        // folds a `box` that the cast tests (`impBoxPatternMatch`), and it skips a store's call only
+        // where it optimises too (`gtCanSkipCovariantStoreCheck`); the analysis follows neither:
+        // there it follows the calls.
         let state, helperCalls, helperSites =
             ((state, [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun (state, helperCalls, helperSites) index ->
@@ -4639,6 +4656,8 @@ module EscapeAnalysis =
                         not readonlyPrefixed
                         ->
                         Some (token, HelpedInstruction.Ldelema)
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, MetadataOperand.FromMetadata token) ->
+                        Some (token, HelpedInstruction.Stelem)
                     | _ -> None
 
                 match helped with
@@ -4674,7 +4693,16 @@ module EscapeAnalysis =
                     // A token that does not bind, which fails before the instruction calls
                     // anything, or of a generic type's definition, which the JIT refuses.
                     | state, None -> state, helperCalls, helperSites
-                | _ -> state, helperCalls, helperSites
+                | _ ->
+                    match fst ops.[index] with
+                    | IlOp.Nullary NullaryIlOp.Stelem_ref when
+                        executed.Contains (snd ops.[index]) && not (elided.Contains index)
+                        ->
+                        let called =
+                            snd ops.[index], runtimeRuns (jitHelperMethod state JitHelper.StelemRef), []
+
+                        state, called :: helperCalls, helperSites
+                    | _ -> state, helperCalls, helperSites
             )
 
         let calls =
@@ -5620,6 +5648,7 @@ module EscapeAnalysis =
                         failwith
                             $"BUG: a box of %O{site.Type} names type variable %d{index}, whose argument %O{argument} is no registered type"
             | HelpedInstruction.Ldelema -> state, (if reference then Some JitHelper.LdelemaRef else None)
+            | HelpedInstruction.Stelem -> state, (if reference then Some JitHelper.StelemRef else None)
 
         match spelling with
         | TypeDefn.GenericTypeParameter index -> ofArgument typeArguments index
