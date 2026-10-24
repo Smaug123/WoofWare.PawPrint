@@ -59,7 +59,8 @@ What lives here:
   `Object.GetHashCode` holds in `Object`'s table: `getCallInfo` then resolves the call on the
   enum's underlying primitive, unboxed. The comparison is of slot numbers alone, so an interface
   method in that slot (`IConvertible.ToSByte`, or a static virtual numbered past an interface's
-  vtable) is retargeted too.
+  vtable) is retargeted too. A class's method in that slot is dispatched on the primitive as
+  `Object.GetHashCode`, since CoreCLR resolves a class's method on a value type by its slot.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.
