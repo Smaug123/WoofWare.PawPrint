@@ -6,9 +6,13 @@ type OptimisedBody =
         /// Each `call` whose callee the JIT expands to a constant Boolean on the CPU it compiles
         /// for (a capability query), by its offset, with that constant.
         Capabilities : Map<int, bool>
-        /// The `call`s and `callvirt`s, by offset, whose callee the JIT never expands as an
-        /// intrinsic, so that what they return is never a constant while it imports the body.
-        OrdinaryCalls : Set<int>
+        /// The `call`s, `callvirt`s and `newobj`s, by offset, that push a value the JIT never
+        /// reduces to a constant while it imports the body: a call of a method that returns a value
+        /// and that it does not expand as an intrinsic (it inlines calls only after importing), or
+        /// the construction of a class's instance, which it allocates into a temp. Not a call that
+        /// returns nothing, which pushes nothing, nor the construction of an array, whose helper's
+        /// result it may know is not null.
+        OpaqueResults : Set<int>
     }
 
 /// Which of a body's conditional branches CoreCLR's JIT may fold when it compiles the body.
@@ -93,15 +97,18 @@ module JitImport =
         match folding with
         | JitFolding.Nothing -> Map.empty
         | JitFolding.Optimises optimised ->
-            for offset in optimised.OrdinaryCalls do
+            for offset in optimised.OpaqueResults do
                 match body.Locations.TryFind offset with
-                | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt), _)) ->
+                | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj),
+                                                 _)) ->
                     if optimised.Capabilities.ContainsKey offset then
                         invalidArg
                             (nameof folding)
-                            $"The call at offset %d{offset} is both an ordinary call and a capability query"
+                            $"The call at offset %d{offset} is both an opaque result and a capability query"
                 | Some other ->
-                    invalidArg (nameof folding) $"The instruction at offset %d{offset}, %O{other}, is not a call"
+                    invalidArg
+                        (nameof folding)
+                        $"The instruction at offset %d{offset}, %O{other}, is not a call or a construction"
                 | None -> invalidArg (nameof folding) $"No instruction starts at offset %d{offset}"
 
             ControlFlow.decidedBranches body optimised.Capabilities
@@ -133,15 +140,10 @@ module JitImport =
             )
             |> Map.ofList
 
-        // Whether the importer's node for the value `instruction` pushes is never a constant: a
-        // local (an argument, a local, or the temp `newobj` allocates into) or a call it does not
-        // expand, which it inlines, if at all, only after importing.
+        // Whether `instruction` pushes a value whose node in the importer is never a constant: an
+        // argument or local, or what PawPrint says is an opaque result.
         let neverConstant (offset : int) (instruction : IlOp) : bool =
-            match instruction with
-            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, _) -> true
-            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt), _) ->
-                optimised.OrdinaryCalls.Contains offset
-            | _ -> (slotLoaded instruction).IsSome
+            optimised.OpaqueResults.Contains offset || (slotLoaded instruction).IsSome
 
         let cannotFold (offset : int) (instruction : IlOp) : bool =
             match conditionOf instruction with

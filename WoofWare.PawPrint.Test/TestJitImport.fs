@@ -31,13 +31,18 @@ module TestJitImport =
         | Const of bool
         /// `add`, of whatever is on the stack: a constant only if both operands are.
         | Add
-        /// A `call` of a method the JIT never expands.
+        /// A `call` of a method the JIT never expands, returning a value.
         | CallOrdinary
+        /// A `call` of a method returning nothing.
+        | CallVoid
         /// A `call` of a capability query, answering this.
         | CallCapability of bool
         /// A `call` of a method the JIT may expand to anything.
         | CallOther
+        /// A `newobj` of a class.
         | Newobj
+        /// A `newobj` of an array.
+        | NewArray
         | Br of int
         | Brtrue of int
         | Brfalse of int
@@ -92,6 +97,8 @@ module TestJitImport =
             | Step.CallCapability _ -> callTo UnaryMetadataTokenIlOp.Call 2
             | Step.CallOther -> callTo UnaryMetadataTokenIlOp.Call 3
             | Step.Newobj -> callTo UnaryMetadataTokenIlOp.Newobj 4
+            | Step.CallVoid -> callTo UnaryMetadataTokenIlOp.Call 5
+            | Step.NewArray -> callTo UnaryMetadataTokenIlOp.Newobj 6
             | Step.Br t -> IlOp.UnaryConst (UnaryConstIlOp.Br (delta t))
             | Step.Brtrue t -> IlOp.UnaryConst (UnaryConstIlOp.Brtrue (delta t))
             | Step.Brfalse t -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse (delta t))
@@ -150,12 +157,13 @@ module TestJitImport =
                     | _ -> None
                 )
                 |> Map.ofList
-            OrdinaryCalls =
+            OpaqueResults =
                 steps
                 |> List.indexed
                 |> List.choose (fun (index, step) ->
                     match step with
-                    | Step.CallOrdinary -> Some at.[index]
+                    | Step.CallOrdinary
+                    | Step.Newobj -> Some at.[index]
                     | _ -> None
                 )
                 |> Set.ofList
@@ -371,6 +379,8 @@ module TestJitImport =
                         2, Gen.elements [ Step.CallCapability false ; Step.CallCapability true ]
                         1, Gen.constant Step.CallOther
                         1, Gen.constant Step.Newobj
+                        1, Gen.constant Step.CallVoid
+                        1, Gen.constant Step.NewArray
                         2, Gen.map Step.Br target
                         5, Gen.map Step.Brtrue target
                         4, Gen.map Step.Brfalse target
@@ -637,6 +647,10 @@ module TestJitImport =
         | Arithmetic
         | ArgumentAddress
         | OrdinaryCall
+        /// A literal, then a `call` of a method that returns nothing, so the branch pops the literal.
+        | VoidCallAfter of bool
+        /// `ldc.i4.1; ldc.i4.1; newobj int32[,]::.ctor(int32, int32)`.
+        | ArrayConstruction
         /// `X86Base.IsSupported`.
         | X86
         /// `Vector128.IsHardwareAccelerated`.
@@ -683,6 +697,8 @@ module TestJitImport =
                         1, Gen.constant Condition.Arithmetic
                         1, Gen.constant Condition.ArgumentAddress
                         2, Gen.constant Condition.OrdinaryCall
+                        2, Gen.elements [ Condition.VoidCallAfter false ; Condition.VoidCallAfter true ]
+                        2, Gen.constant Condition.ArrayConstruction
                         2, Gen.elements [ Condition.X86 ; Condition.Vector128 ]
                         1, Gen.constant Condition.NewObject
                         1, Gen.constant Condition.SameArguments
@@ -720,9 +736,9 @@ module TestJitImport =
             (genChunks 0 false)
             (Gen.frequency
                 [
-                    6, Gen.constant Optimisation.Default
+                    5, Gen.constant Optimisation.Default
                     2, Gen.constant Optimisation.NoOptimization
-                    1, Gen.constant Optimisation.AggressiveOptimization
+                    3, Gen.constant Optimisation.AggressiveOptimization
                 ])
 
     /// An assembly whose `Generated.Runners` holds `static int M<i>(bool, bool)` for each method.
@@ -773,6 +789,21 @@ module TestJitImport =
             il.Emit Emit.OpCodes.Ret
             m
 
+        let ordinaryVoid =
+            let m =
+                runners.DefineMethod (
+                    "OrdinaryVoid",
+                    MethodAttributes.Assembly ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [||]
+                )
+
+            m.SetImplementationFlags MethodImplAttributes.NoInlining
+            m.GetILGenerator().Emit Emit.OpCodes.Ret
+            m
+
+        let arrayCtor = typeof<int[,]>.GetConstructor [| typeof<int> ; typeof<int> |]
+
         let x86 =
             typeof<Runtime.Intrinsics.X86.X86Base>.GetProperty("IsSupported").GetMethod
 
@@ -812,6 +843,19 @@ module TestJitImport =
                     il.Emit Emit.OpCodes.Sub
                 | Condition.ArgumentAddress -> il.Emit (Emit.OpCodes.Ldarga_S, 0uy)
                 | Condition.OrdinaryCall -> il.Emit (Emit.OpCodes.Call, ordinary)
+                | Condition.VoidCallAfter value ->
+                    il.Emit (
+                        if value then
+                            Emit.OpCodes.Ldc_I4_1
+                        else
+                            Emit.OpCodes.Ldc_I4_0
+                    )
+
+                    il.Emit (Emit.OpCodes.Call, ordinaryVoid)
+                | Condition.ArrayConstruction ->
+                    il.Emit Emit.OpCodes.Ldc_I4_1
+                    il.Emit Emit.OpCodes.Ldc_I4_1
+                    il.Emit (Emit.OpCodes.Newobj, arrayCtor)
                 | Condition.X86 -> il.Emit (Emit.OpCodes.Call, x86)
                 | Condition.Vector128 -> il.Emit (Emit.OpCodes.Call, vector128)
                 | Condition.NewObject -> il.Emit (Emit.OpCodes.Newobj, objectCtor)
@@ -970,9 +1014,25 @@ public static class Driver
                                 | _ -> None
                             )
                             |> Map.ofList
-                        OrdinaryCalls =
-                            calls
-                            |> List.choose (fun (offset, name) -> if name = "Ordinary" then Some offset else None)
+                        OpaqueResults =
+                            [
+                                for offset, name in calls do
+                                    if name = "Ordinary" then
+                                        yield offset
+                                for op, offset in body.Instructions do
+                                    match op with
+                                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj,
+                                                               MetadataOperand.FromMetadata sourced) ->
+                                        // `object`'s constructor, not the array's, whose parent is a
+                                        // TypeSpec.
+                                        match sourced.Token with
+                                        | MetadataToken.MemberReference h ->
+                                            match fixture.Members.[h].Parent with
+                                            | MetadataToken.TypeReference _ -> yield offset
+                                            | _ -> ()
+                                        | other -> failwith $"unexpected newobj operand %O{other}"
+                                    | _ -> ()
+                            ]
                             |> Set.ofList
                     }
 
@@ -1026,7 +1086,7 @@ public static class Driver
 
     [<Test>]
     let ``the real runtime compiles what JitImport says, in the order it says`` () : unit =
-        let methods = Gen.sampleWithSeed (Rnd 20261024UL) 20 600 genMethod |> List.ofArray
+        let methods = Gen.sampleWithSeed (Rnd 20261024UL) 20 1000 genMethod |> List.ofArray
 
         let image = fabricate methods
         let _, loggerFactory = LoggerFactory.makeTest ()

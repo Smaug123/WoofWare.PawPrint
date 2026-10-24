@@ -73,10 +73,12 @@ importer's folding of literal branches and replaced it with a refusal. Instead, 
   JIT cannot fold. In a method it does not optimise, every branch: measured, even `box !!T; brtrue`
   for a value-type `T`, whose box the importer still replaces by a constant, compiles both
   successors there. In one it does optimise, a `brtrue`, `brfalse` or `switch` whose operand the
-  instruction straight before it pushes, where that instruction is `ldarg`, `ldloc`, `newobj`, or a
-  `call` or `callvirt` of a method the JIT does not expand as an intrinsic (the importer gives each a
-  local or a call node, which `gtFoldExpr` never reduces to a constant; calls are inlined only after
-  import); and a two-operand branch straight after two `ldarg`s or `ldloc`s that are not the same
+  instruction straight before it pushes, where that instruction is `ldarg`, `ldloc`, a `newobj` of a
+  class, or a `call` or `callvirt` of a method that returns a value and that the JIT does not expand
+  as an intrinsic (the importer gives each a local or a call node, which `gtFoldExpr` never reduces to
+  a constant; calls are inlined only after import). Not a call returning nothing, after which the
+  branch pops whatever was beneath it, nor a `newobj` of an array, whose helper's result the JIT may
+  know is not null (both measured to fold, under `AggressiveOptimization` for the array); and a two-operand branch straight after two `ldarg`s or `ldloc`s that are not the same
   argument or local (`ldarg.0; ldarg.0; bne.un` folds, measured). No branch may land on the branch
   or between it and its operands. Every other conditional branch may fold, and contributes neither
   successor. The list is short on purpose: `ldarga; brfalse` is measured not to fold, but nothing
