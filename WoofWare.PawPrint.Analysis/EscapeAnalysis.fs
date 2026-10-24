@@ -3533,15 +3533,12 @@ module EscapeAnalysis =
 
                                 let state, addressUse = addressUse state index
 
-                                // Making a delegate over a static method may load what its
-                                // signature names (`COMDelegate::GetDelegateCtor`), which
-                                // `JitTypeLoads` does not describe: every type of it is taken to
-                                // load in full.
-                                let overStatic =
-                                    match addressUse, target with
-                                    | MethodAddressUse.DelegateTarget, Some (CallTarget.Method callee) ->
-                                        (snd (methodOf state callee.Callee)).IsStatic
-                                    | _ -> false
+                                // Making a delegate over a static method, or an open one over an
+                                // instance method, may load what its target's signature names
+                                // (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does not
+                                // describe: for any delegate, every type of it is taken to load in
+                                // full.
+                                let makesDelegate = addressUse = MethodAddressUse.DelegateTarget
 
                                 state,
                                 Some (
@@ -3549,7 +3546,7 @@ module EscapeAnalysis =
                                     MemberOperand.Address (
                                         JitTypeLoads.preparation tokenOp token.Token prefix addressUse
                                     ),
-                                    overStatic
+                                    makesDelegate
                                 )
                             | _, Some signature ->
                                 state,
@@ -3558,11 +3555,11 @@ module EscapeAnalysis =
 
                         match operand with
                         | None -> state, failures, [], []
-                        | Some (signature, operand, overStatic) ->
+                        | Some (signature, operand, makesDelegate) ->
                             let state, loads = calleeSignatureLoads state assembly operand signature
 
                             let state, delegateFailures =
-                                if overStatic then
+                                if makesDelegate then
                                     ((state, []), signatureTypes signature)
                                     ||> List.fold (fun (state, delegateFailures) spelling ->
                                         let state, failure = spellingLoadFailure state assembly spelling
