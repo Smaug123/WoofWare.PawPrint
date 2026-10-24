@@ -760,6 +760,22 @@ module TestStackShape =
         shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ])
 
     [<Test>]
+    let ``a float32 local loads as a float32, whatever width was stored in it`` () : unit =
+        let ops =
+            [
+                ldcR8 // 0
+                IlOp.Nullary NullaryIlOp.Stloc_0 // 1
+                ldloc0 // 2
+                pop // 3
+                ret // 4
+            ]
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [] [ single ] false) body
+
+        shape.Entry.[at.[3]] |> shouldEqual [ single ]
+
+    [<Test>]
     let ``the arm order does not matter`` () : unit =
         let ops =
             [
