@@ -751,9 +751,14 @@ public static class SR
         }
 
     /// The assumptions that constructing a CoreLib exception relies on: asking for its message runs
-    /// `SR`'s type initializer, and the lookup may throw a type initializer's own exception again.
+    /// `SR`'s type initializer, the lookup may throw a type initializer's own exception again, and
+    /// it dispatches on what fields of CoreLib's hold.
     let private constructing : Assumption list =
-        [ Assumption.CoreLibTypeInitializers ; Assumption.StackTracePreserved ]
+        [
+            Assumption.CoreLibTypeInitializers
+            Assumption.StackTracePreserved
+            Assumption.FieldsWrittenVisibly
+        ]
 
     let private expectations : Expectation list =
         let ioe = "=System.InvalidOperationException"
@@ -1065,10 +1070,12 @@ public static class SR
                 Sources = Some []
             }
             // Whatever the lookup raises is caught.
+            // The handler absorbs what an assumption's contract leaves out, but not what the call
+            // relies on of what fields hold, which the analysis takes to reach every caller.
             { expect "Fixture.Messages" "Swallowed" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some [ Assumption.FieldsWrittenVisibly ]
             }
             { expect "Fixture.Messages" "Rethrown" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
@@ -1083,7 +1090,7 @@ public static class SR
             }
             { expect "Fixture.Messages" "RethrownThenAbsorbed" with
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some [ Assumption.FieldsWrittenVisibly ]
             }
             { expect "Fixture.Messages" "OutOfMemoryCaught" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
@@ -17397,3 +17404,119 @@ public static class Cases
 
         // `Write` may have stored any object, whose `ToString` may raise anything.
         escapes.Unknown |> shouldEqual true
+
+    /// A field one of whose writers the analysis takes a contract for, in place of its body: the
+    /// contract says nothing of what the writer stores. CoreLib's type initializers, under
+    /// `CoreLibTypeInitializers`, are such writers; `Encoding`'s stores its default encoding.
+    [<Test>]
+    let ``a field a writer under a contract stores to holds anything of its type`` () : unit =
+        let source =
+            """
+namespace ContractWriters;
+
+public static class Cases
+{
+    public static int Count() => System.Text.Encoding.Default.GetByteCount((string)null);
+}
+"""
+
+        let image =
+            Roslyn.compileOptimizedAssembly "ContractWriters" OutputKind.DynamicallyLinkedLibrary [ source ]
+
+        let raised =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("ContractWriters", isCollectible = true)
+
+            try
+                let count =
+                    context
+                        .LoadFromStream(new MemoryStream (image))
+                        .GetType("ContractWriters.Cases")
+                        .GetMethod ("Count")
+
+                try
+                    count.Invoke ((null : obj), [||]) |> ignore<obj>
+                    "nothing"
+                with :? TargetInvocationException as e ->
+                    "=" + e.InnerException.GetType().FullName
+            finally
+                context.Unload ()
+
+        raised |> shouldEqual "=System.ArgumentNullException"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "ContractWriters.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "ContractWriters.Cases" "Count")
+
+        if not escapes.Unknown && not ((render analysis escapes).Contains raised) then
+            failwith
+                $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList (render analysis escapes)}"
+
+    /// A method that dispatches on what a field holds relies on `FieldsWrittenVisibly` wherever it
+    /// came by the value: inside a handler that catches every exception, or from a callee that
+    /// loaded the field. Were the assumption to fail, the call would dispatch elsewhere, outside
+    /// every handler.
+    [<Test>]
+    let ``what a field holds is relied on wherever the value goes`` () : unit =
+        let source =
+            """
+namespace Relying;
+
+public abstract class Base { public abstract void Hit(); }
+
+// Its `Hit` runs nothing, so that nothing else the call reaches relies on the assumption.
+public sealed class Made : Base { public override void Hit() { } }
+
+public static class Cases
+{
+    private static Base held;
+
+    public static void Write() { held = new Made(); }
+
+    public static Base Get() => held;
+
+    public static void CaughtLoad()
+    {
+        Base local;
+        try { local = held; }
+        catch (System.Exception) { return; }
+        local.Hit();
+    }
+
+    public static void CaughtCall()
+    {
+        Base local;
+        try { local = Get(); }
+        catch (System.Exception) { return; }
+        local.Hit();
+    }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Relying" OutputKind.DynamicallyLinkedLibrary [ source ]
+            |> fun image -> Assembly.read loggerFactory (Some "Relying.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        for name in [ "CaughtLoad" ; "CaughtCall" ] do
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture "Relying.Cases" name)
+
+            analysis <- next
+
+            // The call dispatches on `Made`, which only the assumption says, or on null.
+            if
+                escapes.Unknown
+                || not (escapes.Assumes.Contains Assumption.FieldsWrittenVisibly)
+            then
+                failwith
+                    $"%s{name}: unknown %b{escapes.Unknown}, assuming %A{Set.toList escapes.Assumes}, which must hold FieldsWrittenVisibly"
