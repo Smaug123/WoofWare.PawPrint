@@ -297,8 +297,9 @@ type internal TokenResolution<'resolved> =
     | Resolves of 'resolved
     /// Resolving it raises what binding the token does (`bind`), before the JIT can refuse the box.
     | Raises
-    /// The analysis cannot tell what the token names: it binds to an open generic definition, or,
-    /// in a definition analysed for every instantiation at once, names a type variable.
+    /// The analysis cannot tell what the token names: it binds to an open generic definition, or
+    /// to a type the analysis does not instantiate, such as a type variable in a definition
+    /// analysed for every instantiation at once.
     | Undecided
 
 /// An instruction the JIT refuses to compile a method over for the type its token names
@@ -5818,8 +5819,8 @@ module EscapeAnalysis =
 
             let boxed = view handle boxed
 
-            // What the JIT resolves a type the follower names to, in this instance. One that does
-            // not load fails the instruction's binding (`bind`), as for the boxed type.
+            // What the JIT resolves a type the follower names to, in this instance. Where the
+            // analysis does not instantiate it, it cannot tell whether the type loads.
             let resolve
                 (state : EscapeAnalysisState)
                 (operand : TokenResolution<SpelledType>)
@@ -5831,9 +5832,7 @@ module EscapeAnalysis =
                 | TokenResolution.Resolves spelled ->
                     match concretizeIn state caller spelled.Type spelled.SpelledIn with
                     | state, Some handle -> state, TokenResolution.Resolves (view handle spelled)
-                    | state, None when caller = Instantiation.Open && mentionsTypeVariable spelled.Type ->
-                        state, TokenResolution.Undecided
-                    | state, None -> state, TokenResolution.Raises
+                    | state, None -> state, TokenResolution.Undecided
 
             let resolveInto
                 (state : EscapeAnalysisState)
