@@ -609,7 +609,9 @@ module internal UnaryMetadataObjectOps =
         match follower with
         | Error refusal ->
             // The JIT raises InvalidProgramException resolving the operand, which is what refusing
-            // the box raises too.
+            // the box raises too. No guest can tell this from folding the box and letting that next
+            // instruction refuse its own operand, which raises the same exception within the same
+            // block; refusing here keeps an operand the JIT never compares out of the comparisons.
             loggerFactory
                 .CreateLogger("Box")
                 .LogWarning (
