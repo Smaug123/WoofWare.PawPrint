@@ -33,11 +33,10 @@ type ConstrainedStaticImplementation =
 ///    interface, then each type's interface map from the constrained type up its base chain), and
 ///    a more specific body takes the place of the first one it displaces. An abstract MethodImpl,
 ///    a reabstraction, competes like any other body, and if it is the one that runs, the call
-///    throws `EntryPointNotFoundException`.
-///
-/// CoreCLR falls back to the method's own body after that, which no type admitting the interface
-/// reaches: the search in 2 finds that body wherever the interface or a compatible instantiation of
-/// it is in the type's interface map.
+///    throws `EntryPointNotFoundException`;
+/// 3. the method's own body, if it has one. Only a type that does not implement the interface gets
+///    this far with a method that has a body, since the search in 2 finds that body wherever the
+///    interface or a compatible instantiation of it is in the type's interface map.
 ///
 /// Whatever loads an assembly or registers a concrete type on the way returns the state it leaves
 /// behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
@@ -101,9 +100,9 @@ module StaticVirtualDispatch =
     /// for exactly the call's instantiation are equally specific, which the call throws
     /// `AmbiguousImplementationException` for; `Reabstracted` where the default body the call would
     /// run is a reabstraction, which it throws `EntryPointNotFoundException` for (measured: on a
-    /// class and on a value type alike); `NotOverridden` where nothing implements it, which
-    /// for a type CoreCLR loads and a call it compiles cannot happen. `constrained` must be a type
-    /// with a TypeDef row.
+    /// class and on a value type alike); `NotImplemented` where nothing implements an abstract
+    /// method, as where `constrained` does not implement the interface at all. Never
+    /// `NotOverridden`. `constrained` must be a type with a TypeDef row.
     let resolve
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -252,7 +251,17 @@ module StaticVirtualDispatch =
 
         match fromDefault state true with
         | state, Some implementation -> state, implementation
-        | state, None -> state, VirtualImplementation.NotOverridden
+        | state, None ->
+
+        // 3. The method's own body.
+        let definition = DefaultInterfaceImplementation.definitionOf state method
+
+        match definition.Body with
+        | MethodBody.Abstract -> state, VirtualImplementation.NotImplemented
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> state, found state target definition
 
     /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
     /// the implementation the constrained type supplies, or to why there is none to run.
@@ -313,10 +322,9 @@ module StaticVirtualDispatch =
 
         match implementation with
         | VirtualImplementation.NotOverridden ->
-            let constrained =
-                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
-
-            failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
+            failwith $"BUG: %s{opName}: static virtual dispatch of %s{methodToCall.Name} answered NotOverridden"
+        | VirtualImplementation.NotImplemented ->
+            state, ConstrainedStaticImplementation.Fails (DispatchFailure.StaticNotImplemented concretizedMethod)
         | VirtualImplementation.Ambiguous candidates ->
             state, ConstrainedStaticImplementation.Fails (DispatchFailure.Ambiguous candidates)
         | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
