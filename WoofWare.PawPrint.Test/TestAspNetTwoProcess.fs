@@ -66,8 +66,9 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 // Runs guests under the interpreter; see AGENTS.md for why that makes it `Explicit`, and CI
-// selects it by category.
-[<Category("Guest")>]
+// selects it by category. `GuestSolo` rather than `Guest`: each test runs for about as long as
+// all of `Guest` does on one CI runner, so CI gives this fixture a runner of its own.
+[<Category("GuestSolo")>]
 [<Explicit>]
 module TestAspNetTwoProcess =
 
