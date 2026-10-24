@@ -3451,7 +3451,10 @@ public static class Cases
         let analysis, definition =
             EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "DefaultOf")
 
+        // Some instance boxes a struct, which .NET 11's `CastHelpers.Box` copies through a QCall
+        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
         definition
+        |> Seq.filter (isNet11MemoryQCall (FrameworkUnderTest.runtime ()) analysis >> not)
         |> Seq.map (renderSite analysis)
         |> Set.ofSeq
         |> shouldEqual (
@@ -11662,7 +11665,21 @@ public static class Runners
                     analysis <- next
                     let shown = render analysis summary
 
-                    if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
+                    // A `constrained.` call on a value type that lands in a default body boxes
+                    // its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall the
+                    // table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
+                    let next, net11Frontier =
+                        unknownOnlyThroughNet11MemoryQCalls
+                            (FrameworkUnderTest.runtime ())
+                            analysis
+                            (methodNamed clientAssembly "Client.Runners" methodName)
+
+                    analysis <- next
+
+                    if
+                        (summary.Unknown && not net11Frontier)
+                        || shown.Contains ("=" + initialization) <> escapes
+                    then
                         yield
                             $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
 
@@ -11961,10 +11978,20 @@ public static class Runners
             EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
 
         let shown = render analysis escapes
-        let _, made = making analysis "System.Runtime.AmbiguousImplementationException"
+
+        let analysis, made =
+            making analysis "System.Runtime.AmbiguousImplementationException"
+
+        // The call boxes its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall
+        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
+        let _, net11Frontier =
+            unknownOnlyThroughNet11MemoryQCalls
+                (FrameworkUnderTest.runtime ())
+                analysis
+                (methodNamed assembly "Run" "Call")
 
         if
-            escapes.Unknown
+            (escapes.Unknown && not net11Frontier)
             || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
             || not (Set.isSubset made shown)
         then
@@ -12031,8 +12058,17 @@ public static class Runners
                 let shown = render analysis escapes
                 let analysis, made = making analysis "System.EntryPointNotFoundException"
 
+                // A `constrained.` call on a value type whose dispatch fails boxes its receiver,
+                // which .NET 11's `CastHelpers.Box` copies through a QCall the table has no row for
+                // (`Net11Frontier.spanHelpersMemoryQCalls`).
+                let analysis, net11Frontier =
+                    unknownOnlyThroughNet11MemoryQCalls
+                        (FrameworkUnderTest.runtime ())
+                        analysis
+                        (methodNamed entry "ReabstractionEntry.Cases" methodName)
+
                 if
-                    escapes.Unknown
+                    (escapes.Unknown && not net11Frontier)
                     || not (shown.Contains "=System.EntryPointNotFoundException")
                     || not (Set.isSubset made shown)
                 then
