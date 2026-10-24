@@ -714,9 +714,10 @@ public class ThingException : System.Exception { }
                 (delegateTarget UnaryMetadataTokenIlOp.Ldftn methodSpecification)
         ]
 
-    /// The client with each `Discarded` probe's call of `Use` replaced by a `pop` and `nop`s, so
-    /// that the address the probe takes is popped unused, which C# has no way to say.
-    let private discardAddresses (image : byte[]) : byte[] =
+    /// The image with the call of `Use` in each method of the type named `typeName` whose name
+    /// starts `Discarded` replaced by a `pop` and `nop`s, `Use` being a method of that type, so that
+    /// the address the method takes is popped unused, which C# has no way to say.
+    let internal discardAddresses (typeName : string) (image : byte[]) : byte[] =
         let patched = Array.copy image
         use pe = new PortableExecutable.PEReader (ImmutableArray.CreateRange image)
         let metadata = pe.GetMetadataReader ()
@@ -724,7 +725,7 @@ public class ThingException : System.Exception { }
         let methods =
             metadata.TypeDefinitions
             |> Seq.map metadata.GetTypeDefinition
-            |> Seq.filter (fun ty -> metadata.GetString ty.Name = "Probes")
+            |> Seq.filter (fun ty -> metadata.GetString ty.Name = typeName)
             |> Seq.exactlyOne
             |> fun ty -> ty.GetMethods ()
             |> Seq.map (fun handle -> handle, metadata.GetMethodDefinition handle)
@@ -878,7 +879,7 @@ public class ThingException : System.Exception { }
                 OutputKind.DynamicallyLinkedLibrary
                 references
                 [ clientSource ]
-            |> discardAddresses
+            |> discardAddresses "Probes"
 
         let names =
             allProbes

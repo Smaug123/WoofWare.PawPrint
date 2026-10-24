@@ -359,6 +359,11 @@ type internal LocalFacts =
         /// synchronized method's monitor throws.
         /// A method with no IL the analysis follows is opaque here, as a whole.
         OutsideBody : Set<OutsideBodyFact>
+        /// What compiling the body raises wherever the JIT compiles its code: in the method itself,
+        /// which `OutsideBody` has too, and in any method the JIT inlines the body into, past every
+        /// handler of that method, and of each method that one is inlined into in turn. These are what
+        /// the loads fail with that the JIT may make asking for an `ldftn`'s address.
+        RaisedWhereInlined : Set<OutsideBodyFact>
         /// The types the body spells for the objects on its evaluation stack, which a
         /// `SpelledObject` names by index.
         Spellings : SpelledType[]
@@ -535,6 +540,9 @@ type internal InstanceCalls =
         Undecided : (int * Opacity * MethodKey option) list
         /// What the runtime runs outside the body (`OutsideBodyFact.Runs`), past all its handlers.
         Outside : MethodInstance list
+        /// Of `Outside`, what the runtime runs for what compiling the body raises wherever the JIT
+        /// compiles its code (`LocalFacts.RaisedWhereInlined`).
+        RaisedWhereInlined : MethodInstance list
     }
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
@@ -573,6 +581,11 @@ type EscapeAnalysisState =
             /// load from them passes over.
             LoadedDefinitions : TypeLoad.LoadedDefinitions
             Summaries : Map<MethodInstance, Escapes>
+            /// What may escape every method each instance summarised so far is inlined into, past
+            /// every handler: what compiling the instance, or a method it calls, raises wherever the
+            /// JIT compiles that code (`LocalFacts.RaisedWhereInlined`). Its summary has it too.
+            /// An instance absent here lets nothing escape so.
+            InlinedSummaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
             /// The objects each instance returns, as far as it has been asked (`returnsOf`);
@@ -743,6 +756,7 @@ module EscapeAnalysis =
             TypeLoads = Map.empty
             LoadedDefinitions = TypeLoad.nothingLoaded
             Summaries = Map.empty
+            InlinedSummaries = Map.empty
             Bases = Map.empty
             Returns = Map.empty
             InstanceFacts = Map.empty
@@ -755,6 +769,7 @@ module EscapeAnalysis =
             ArgumentContexts = false
             InstanceCalls = Map.empty
             Summaries = Map.empty
+            InlinedSummaries = Map.empty
             Returns = Map.empty
             InstanceFacts = Map.empty
         }
@@ -2194,44 +2209,110 @@ module EscapeAnalysis =
         | UnaryMetadataTokenIlOp.Ldtoken -> Some MemberOperand.Token
         | _ -> None
 
-    /// The first type of `signature`, which `assembly` spells, whose load fails where the JIT
-    /// compiling an instruction with operand `operand` loads it (`JitTypeLoads.memberPositions`),
-    /// and why. Where `JitTypeLoads` does not describe where, every type of the signature is taken
-    /// to load in full.
-    let private calleeSignatureLoadFailure
+    /// As `spellingLoadFailure`, except that where the type reference at the head of `spelling`
+    /// (an instantiation's generic type) names a type that the assembly it is looked for in lacks,
+    /// nothing is loaded and nothing fails (`JitTypeLoad.InFullIfDefined`). A reference into an
+    /// assembly that is not there still fails.
+    let private spellingLoadFailureIfDefined
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * BindFailure option
+        =
+        let rec head (spelling : TypeDefn) : TypeDefn =
+            match TypeDefn.stripCustomModifiers spelling with
+            | TypeDefn.GenericInstantiation (generic, _) -> head generic
+            | spelling -> spelling
+
+        match head spelling with
+        | TypeDefn.FromReference (typeRef, _) ->
+            match bindTypeRef state assembly typeRef with
+            | state, TypeReferenceIdentity.TypeAbsent _ -> state, None
+            | state, TypeReferenceIdentity.Resolved _
+            | state, TypeReferenceIdentity.AssemblyUnavailable _ -> spellingLoadFailure state assembly spelling
+        | _ -> spellingLoadFailure state assembly spelling
+
+    /// What the loads of the types of a method's signature fail with, where the JIT compiling an
+    /// instruction naming the method makes them (`calleeSignatureLoads`).
+    type private SignatureLoadFailures =
+        {
+            /// The first load that fails which the JIT makes however it compiles the method. It
+            /// makes no load after that one.
+            Definite : BindFailure option
+            /// Each load before `Definite` that the JIT may make or not, and that fails.
+            Possible : BindFailure list
+        }
+
+    /// What the JIT's loads of the types of `signature`, which `assembly` spells, fail with where
+    /// it compiles an instruction with operand `operand` (`JitTypeLoads.memberPositions`). Where
+    /// `JitTypeLoads` does not describe them, every type of the signature is taken to load in full.
+    let private calleeSignatureLoads
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (operand : MemberOperand)
         (signature : TypeMethodSignature<TypeDefn>)
-        : EscapeAnalysisState * BindFailure option
+        : EscapeAnalysisState * SignatureLoadFailures
         =
-        match JitTypeLoads.memberPositions operand with
-        | MemberPositions.Undescribed -> firstLoadFailure state assembly (signatureTypes signature)
-        | MemberPositions.Described positions ->
-            positions
-            |> List.collect (fun position ->
-                let spellings =
-                    match position with
-                    | JitTypePosition.CalleeReturn ->
-                        match signature.ReturnType with
-                        | MethodReturnType.Void -> []
-                        | MethodReturnType.Returns returned -> [ returned ]
-                    | JitTypePosition.CalleeParameter -> signature.ParameterTypes
-                    | JitTypePosition.FunctionPointerSignature
-                    | JitTypePosition.PossibleFunctionPointerSignature -> signatureTypes signature
-                    | other -> failwith $"BUG: JitTypeLoads.memberPositions answers %O{other} for %O{operand}"
+        let loads =
+            match JitTypeLoads.memberPositions operand with
+            | MemberPositions.Undescribed -> signatureTypes signature |> List.map JitTypeLoad.InFull
+            | MemberPositions.Described positions ->
+                positions
+                |> List.collect (fun position ->
+                    let spellings =
+                        match position with
+                        | JitTypePosition.CalleeReturn ->
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> []
+                            | MethodReturnType.Returns returned -> [ returned ]
+                        | JitTypePosition.CalleeParameter -> signature.ParameterTypes
+                        | JitTypePosition.FunctionPointerSignature
+                        | JitTypePosition.PossibleFunctionPointerSignature -> signatureTypes signature
+                        | other -> failwith $"BUG: JitTypeLoads.memberPositions answers %O{other} for %O{operand}"
 
-                spellings
-                |> List.choose (JitTypeLoads.load position)
-                |> List.map (fun load ->
-                    match load with
-                    | JitTypeLoad.InFull loaded -> loaded
-                    | load ->
-                        failwith
-                            $"BUG: JitTypeLoads.load answers %O{load} at %O{position} for %O{operand}, which this does not load"
+                    spellings |> List.choose (JitTypeLoads.load position)
                 )
+
+        let rec failureOf
+            (state : EscapeAnalysisState)
+            (load : JitTypeLoad)
+            : EscapeAnalysisState * BindFailure option
+            =
+            match load with
+            | JitTypeLoad.InFull loaded -> spellingLoadFailure state assembly loaded
+            | JitTypeLoad.InFullIfDefined loaded -> spellingLoadFailureIfDefined state assembly loaded
+            | JitTypeLoad.Possibly load -> failureOf state load
+
+        let state, failures =
+            ((state,
+              {
+                  Definite = None
+                  Possible = []
+              }),
+             loads)
+            ||> List.fold (fun (state, failures) load ->
+                match failures.Definite, load with
+                | Some _, _ -> state, failures
+                | None, JitTypeLoad.Possibly _ ->
+                    let state, failure = failureOf state load
+
+                    state,
+                    { failures with
+                        Possible = Option.toList failure @ failures.Possible
+                    }
+                | None, load ->
+                    let state, failure = failureOf state load
+
+                    state,
+                    { failures with
+                        Definite = failure
+                    }
             )
-            |> firstLoadFailure state assembly
+
+        state,
+        { failures with
+            Possible = List.rev failures.Possible
+        }
 
     /// What CoreCLR's JIT checks a method of `assembly` may access where an instruction's token is
     /// `token`, given what `bindToken` bound a method token to; `None` where the analysis does not
@@ -2862,6 +2943,7 @@ module EscapeAnalysis =
             Rethrows = []
             Regions = []
             OutsideBody = Set.singleton (OutsideBodyFact.Opaque reason)
+            RaisedWhereInlined = Set.empty
             Spellings = [||]
             Returns = StackValue.Unknown
             Consults = Set.empty
@@ -3207,6 +3289,7 @@ module EscapeAnalysis =
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
+                RaisedWhereInlined = Set.empty
                 Spellings = [||]
                 Returns = StackValue.Unknown
                 Consults = Set.empty
@@ -3397,6 +3480,46 @@ module EscapeAnalysis =
                 []
             | other -> failwith $"BUG: OpcodeFaults says %A{other} runs a type initializer, and nothing here says whose"
 
+        // The `constrained.` prefix on the instruction at `index`: its own index, and the type it
+        // names. An instruction's prefixes immediately precede it, and none of them can be a
+        // branch target.
+        let constrainedPrefix (index : int) : (int * MetadataToken) option =
+            let rec back (at : int) : (int * MetadataToken) option =
+                if at < 0 then
+                    None
+                else
+                    match fst ops.[at] with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, MetadataOperand.FromMetadata token) ->
+                        Some (at, token.Token)
+                    | IlOp.Nullary (NullaryIlOp.Tail | NullaryIlOp.Volatile | NullaryIlOp.Readonly)
+                    | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _) -> back (at - 1)
+                    | _ -> None
+
+            back (index - 1)
+
+        // What becomes of the address the `ldftn` at `index` pushes, by the instruction right after
+        // it: a `newobj` of a delegate's constructor, a `pop`, or anything else.
+        let addressUse (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * MethodAddressUse =
+            if index + 1 >= ops.Length then
+                state, MethodAddressUse.FunctionPointer
+            else
+
+            match fst ops.[index + 1] with
+            | IlOp.Nullary NullaryIlOp.Pop -> state, MethodAddressUse.Discarded
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, MetadataOperand.FromMetadata constructor) ->
+                match callTarget state assembly constructor.Token with
+                | state, CallTarget.Method constructor ->
+                    match
+                        derivesFrom
+                            state
+                            (declaringTypeOf state constructor.Callee)
+                            state.BaseTypes.DelegateType.Identity
+                    with
+                    | state, true -> state, MethodAddressUse.DelegateTarget
+                    | state, false -> state, MethodAddressUse.FunctionPointer
+                | state, _ -> state, MethodAddressUse.FunctionPointer
+            | _ -> state, MethodAddressUse.FunctionPointer
+
         // 0. Bind the token the instruction names, which the JIT does before the body runs. This
         // binds every instruction's, as the JIT does for code no run reaches unless a branch it
         // folds cuts that code off; it folds a branch a capability query decides, so for code
@@ -3406,21 +3529,27 @@ module EscapeAnalysis =
                 state : EscapeAnalysisState,
                 targets : Map<int, CallTarget>,
                 unbound : Set<int>,
-                bindingFailures : Set<OutsideBodyFact>
+                bindingFailures : Set<OutsideBodyFact>,
+                raisedWhereInlined : Set<OutsideBodyFact>
             )
             (index : int)
             =
             let op, _ = ops.[index]
 
-            let state, methodTarget, unbound, bindingFailures =
+            let state, methodTarget, unbound, bindingFailures, raisedWhereInlined =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, target, failures = bindToken state assembly token.Token
 
+                    let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
+                        failure |> Option.map (bindFailureFacts state) |> Option.defaultValue []
+
                     // Once the token binds, the JIT loads the types of the signature of the method
-                    // it names where `JitTypeLoads.memberPositions` says. Every type reference an
-                    // `ldftn`'s or `ldvirtftn`'s signature spells is taken to bind.
-                    let state, failures =
+                    // it names where `JitTypeLoads.memberPositions` says. A load it may make or not
+                    // that fails may fail the compilation, which leaves the token bound; one it
+                    // makes asking for an `ldftn`'s address it may make compiling whatever method
+                    // the `ldftn` is inlined into, past every handler of that method too.
+                    let state, failures, possible, inlined =
                         let bound =
                             failures
                             |> List.forall (fun fact ->
@@ -3430,25 +3559,62 @@ module EscapeAnalysis =
                                 | OutsideBodyFact.Opaque _ -> true
                             )
 
-                        let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
-                            failure |> Option.map (bindFailureFacts state) |> Option.defaultValue []
+                        let state, operand =
+                            match tokenOp, spelledSignature assembly token.Token with
+                            | _, None -> state, None
+                            | _, Some _ when not bound -> state, None
+                            | (UnaryMetadataTokenIlOp.Ldftn | UnaryMetadataTokenIlOp.Ldvirtftn), Some signature ->
+                                let prefix =
+                                    match constrainedPrefix index with
+                                    | Some _ -> AddressConstraint.Constrained
+                                    | None -> AddressConstraint.Unconstrained
 
-                        match spelledSignature assembly token.Token with
-                        | Some signature when bound ->
-                            match tokenOp with
-                            | UnaryMetadataTokenIlOp.Ldftn
-                            | UnaryMetadataTokenIlOp.Ldvirtftn ->
-                                let state, failure = firstBindFailure state assembly (signatureTypes signature)
+                                let state, addressUse = addressUse state index
 
-                                state, failures @ raisesOf failure
-                            | _ ->
-                                match memberOperand state tokenOp signature target with
-                                | None -> state, failures
-                                | Some operand ->
-                                    let state, failure = calleeSignatureLoadFailure state assembly operand signature
+                                // Making a delegate over a static method, or an open one over an
+                                // instance method, may load what its target's signature names
+                                // (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does not
+                                // describe: for any delegate, every type of it is taken to load in
+                                // full.
+                                let makesDelegate = addressUse = MethodAddressUse.DelegateTarget
 
-                                    state, failures @ raisesOf failure
-                        | _ -> state, failures
+                                state,
+                                Some (
+                                    signature,
+                                    MemberOperand.Address (
+                                        JitTypeLoads.preparation tokenOp token.Token prefix addressUse
+                                    ),
+                                    makesDelegate
+                                )
+                            | _, Some signature ->
+                                state,
+                                memberOperand state tokenOp signature target
+                                |> Option.map (fun operand -> signature, operand, false)
+
+                        match operand with
+                        | None -> state, failures, [], []
+                        | Some (signature, operand, makesDelegate) ->
+                            let state, loads = calleeSignatureLoads state assembly operand signature
+
+                            let state, delegateFailures =
+                                if makesDelegate then
+                                    ((state, []), signatureTypes signature)
+                                    ||> List.fold (fun (state, delegateFailures) spelling ->
+                                        let state, failure = spellingLoadFailure state assembly spelling
+                                        state, Option.toList failure @ delegateFailures
+                                    )
+                                else
+                                    state, []
+
+                            let possible =
+                                loads.Possible @ List.rev delegateFailures |> List.collect (Some >> raisesOf)
+
+                            let inlined =
+                                match operand with
+                                | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested -> possible
+                                | _ -> []
+
+                            state, failures @ raisesOf loads.Definite, possible, inlined
 
                     // A token that fails to bind names nothing to instantiate: the JIT throws
                     // before the body runs.
@@ -3497,32 +3663,19 @@ module EscapeAnalysis =
                                 |> List.map (fun initializer -> OutsideBodyFact.Runs (initializer, [])))
                             @ failures
 
-                    state, target, unbound, Set.union bindingFailures (Set.ofList failures)
-                | _ -> state, None, unbound, bindingFailures
+                    state,
+                    target,
+                    unbound,
+                    Set.unionMany [ bindingFailures ; Set.ofList failures ; Set.ofList possible ],
+                    Set.union raisedWhereInlined (Set.ofList inlined)
+                | _ -> state, None, unbound, bindingFailures, raisedWhereInlined
 
             let targets =
                 match methodTarget with
                 | Some target -> Map.add index target targets
                 | None -> targets
 
-            state, targets, unbound, bindingFailures
-
-        // The `constrained.` prefix on the instruction at `index`: its own index, and the type it
-        // names. An instruction's prefixes immediately precede it, and none of them can be a
-        // branch target.
-        let constrainedPrefix (index : int) : (int * MetadataToken) option =
-            let rec back (at : int) : (int * MetadataToken) option =
-                if at < 0 then
-                    None
-                else
-                    match fst ops.[at] with
-                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, MetadataOperand.FromMetadata token) ->
-                        Some (at, token.Token)
-                    | IlOp.Nullary (NullaryIlOp.Tail | NullaryIlOp.Volatile | NullaryIlOp.Readonly)
-                    | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _) -> back (at - 1)
-                    | _ -> None
-
-            back (index - 1)
+            state, targets, unbound, bindingFailures, raisedWhereInlined
 
         let folder
             (targets : Map<int, CallTarget>)
@@ -3862,8 +4015,8 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
-        let state, targets, unbound, bindingFailures =
-            ((state, Map.empty, Set.empty, localFailures), [ 0 .. ops.Length - 1 ])
+        let state, targets, unbound, bindingFailures, raisedWhereInlined =
+            ((state, Map.empty, Set.empty, localFailures, Set.empty), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
 
         // Which objects each slot of the stack may hold, by the types the body spells.
@@ -4911,6 +5064,7 @@ module EscapeAnalysis =
             Rethrows = List.rev rethrows
             Regions = regions
             OutsideBody = outsideBody
+            RaisedWhereInlined = raisedWhereInlined
             Spellings = spellings
             Returns = returns
             Consults = consults
@@ -5997,6 +6151,7 @@ module EscapeAnalysis =
                             Rethrows = facts.Rethrows |> List.filter (fst >> at)
                             Regions = facts.Regions
                             OutsideBody = facts.OutsideBody
+                            RaisedWhereInlined = facts.RaisedWhereInlined
                             Spellings = facts.Spellings
                             Returns = returnedOver branching.Returns executed
                             Consults = facts.Consults
@@ -6645,8 +6800,8 @@ module EscapeAnalysis =
                     state, callees, raises, (offset, Opacity.ConstrainedMethodPointer, Some callee.Callee) :: undecided
             )
 
-        let state, outside =
-            ((state, []), facts.OutsideBody)
+        let runs (state : EscapeAnalysisState) (outsideBody : Set<OutsideBodyFact>) =
+            ((state, []), outsideBody)
             ||> Seq.fold (fun (state, outside) fact ->
                 match fact with
                 | OutsideBodyFact.Runs (method, passes) ->
@@ -6658,12 +6813,16 @@ module EscapeAnalysis =
                 | OutsideBodyFact.Opaque _ -> state, outside
             )
 
+        let state, outside = runs state facts.OutsideBody
+        let state, raisedWhereInlined = runs state facts.RaisedWhereInlined
+
         state,
         {
             Callees = List.rev callees
             Raises = List.rev raises
             Undecided = List.rev undecided
             Outside = List.rev outside
+            RaisedWhereInlined = List.rev raisedWhereInlined
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
@@ -6904,13 +7063,82 @@ module EscapeAnalysis =
                 state, Map.add key seed seeds
             )
 
+        // What compiling each method raises wherever the JIT compiles its code, which escapes
+        // every method it is inlined into past all handlers.
+        // An instance absent from these maps, as from `InlinedSummaries`, lets nothing escape so.
+        let inlinedSeeds =
+            reachable
+            |> List.filter (fun key -> not state.InstanceFacts.[key].RaisedWhereInlined.IsEmpty)
+            |> List.map (fun key ->
+                let facts = state.InstanceFacts.[key]
+
+                key,
+                {
+                    Types =
+                        facts.RaisedWhereInlined
+                        |> Seq.choose (fun fact ->
+                            match fact with
+                            | OutsideBodyFact.Raises thrown -> Some thrown
+                            | OutsideBodyFact.Runs _
+                            | OutsideBodyFact.Opaque _ -> None
+                        )
+                        |> Set.ofSeq
+                    Unknown =
+                        facts.RaisedWhereInlined
+                        |> Set.exists (fun fact ->
+                            match fact with
+                            | OutsideBodyFact.Opaque _ -> true
+                            | OutsideBodyFact.Raises _
+                            | OutsideBodyFact.Runs _ -> false
+                        )
+                    Assumes = Set.empty
+                }
+            )
+            |> Map.ofList
+
         // Iterate to the least fixed point: each method lets escape its own seed and whatever its
-        // callees let escape past its handlers.
-        let rec iterate (state : EscapeAnalysisState) (current : Map<MethodInstance, Escapes>) =
+        // callees let escape past its handlers. Besides, what may escape every method it is
+        // inlined into is what compiling it raises wherever the JIT compiles its code, and what
+        // may escape every method each of its callees is inlined into, as the JIT may inline that
+        // callee into it and it into another; that escapes it too, past all its handlers.
+        let rec iterate
+            (state : EscapeAnalysisState)
+            (current : Map<MethodInstance, Escapes>)
+            (currentInlined : Map<MethodInstance, Escapes>)
+            =
             let summaryOf (key : MethodInstance) : Escapes =
                 match state.Summaries.TryFind key with
                 | Some known -> known
                 | None -> current.[key]
+
+            let inlinedOf (key : MethodInstance) : Escapes option =
+                match state.InlinedSummaries.TryFind key with
+                | Some known -> Some known
+                | None -> currentInlined.TryFind key
+
+            let join (acc : Escapes option) (escapes : Escapes option) : Escapes option =
+                match acc, escapes with
+                | acc, None -> acc
+                | None, escapes -> escapes
+                | Some acc, Some escapes -> Some (Escapes.union acc escapes)
+
+            let nextInlined =
+                (Map.empty, reachable)
+                ||> List.fold (fun nextInlined key ->
+                    let calls = state.InstanceCalls.[key]
+
+                    let inlined =
+                        (inlinedSeeds.TryFind key, calls.RaisedWhereInlined)
+                        ||> List.fold (fun acc made -> join acc (Some (summaryOf made)))
+
+                    let inlined =
+                        (inlined, calls.Callees)
+                        ||> List.fold (fun acc (_, callee) -> join acc (inlinedOf callee))
+
+                    match inlined with
+                    | Some inlined -> Map.add key inlined nextInlined
+                    | None -> nextInlined
+                )
 
             let state, next =
                 ((state, current), reachable)
@@ -6997,20 +7225,28 @@ module EscapeAnalysis =
                             | Raised.Assumed _ -> state, acc
                         )
 
+                    let escaping =
+                        match nextInlined.TryFind key with
+                        | Some inlined -> Escapes.union escaping inlined
+                        | None -> escaping
+
                     state, Map.add key escaping next
                 )
 
-            if next = current then
-                state, current
+            if next = current && nextInlined = currentInlined then
+                state, current, currentInlined
             else
-                iterate state next
+                iterate state next nextInlined
 
-        let state, solved = iterate state seeds
+        let state, solved, solvedInlined = iterate state seeds inlinedSeeds
 
         let state =
             { state with
                 Summaries =
                     (state.Summaries, solved)
+                    ||> Map.fold (fun acc key value -> Map.add key value acc)
+                InlinedSummaries =
+                    (state.InlinedSummaries, solvedInlined)
                     ||> Map.fold (fun acc key value -> Map.add key value acc)
             }
 
@@ -7023,6 +7259,8 @@ module EscapeAnalysis =
         | Escaping of MethodInstance
         /// Re-raised by the `rethrow` at this offset of this instance.
         | Rethrown of MethodInstance * offset : int
+        /// Escaping every method this instance is inlined into, past all handlers.
+        | Inlined of MethodInstance
 
     /// <summary>
     /// The places that make the answer of <c>escapes state method</c> unknown, and the state to ask
@@ -7126,7 +7364,26 @@ module EscapeAnalysis =
 
                     let ranOutside = (instanceCalls key).Outside |> List.map UnnamedAt.Escaping
                     let state, sites, onward = reaching state key facts.Regions (fun _ -> true)
-                    state, outside @ sites, ranOutside @ onward
+                    state, outside @ sites, UnnamedAt.Inlined key :: ranOutside @ onward
+                | UnnamedAt.Inlined key ->
+                    let facts = state.InstanceFacts.[key]
+                    let calls = instanceCalls key
+
+                    let sites =
+                        facts.RaisedWhereInlined
+                        |> Seq.choose (fun fact ->
+                            match fact with
+                            | OutsideBodyFact.Opaque reason -> Some (site key None reason None)
+                            | OutsideBodyFact.Raises _
+                            | OutsideBodyFact.Runs _ -> None
+                        )
+                        |> List.ofSeq
+
+                    let onward =
+                        (calls.RaisedWhereInlined |> List.map UnnamedAt.Escaping)
+                        @ (calls.Callees |> List.map (snd >> UnnamedAt.Inlined))
+
+                    state, sites, onward
                 | UnnamedAt.Rethrown (key, offset) ->
                     let facts = state.InstanceFacts.[key]
                     let assembly = assemblyOf state key.Definition.AssemblyFullName
