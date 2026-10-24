@@ -49,9 +49,11 @@ module TestVmBoundField =
         let classRow =
             Regex @"^(?://\s*)?DEFINE_CLASS\(\s*(\w+)\s*,\s*(\w+)\s*,\s*([^\s,)]+)\s*\)"
 
-        let classURow = Regex @"^DEFINE_CLASS_U\(\s*(\w+)\s*,\s*([^\s,)]+)\s*,\s*(\w+)\s*\)"
+        let classURow =
+            Regex @"^DEFINE_CLASS_U\(\s*(\w+)\s*,\s*([^\s,)]+)\s*,\s*([\w:]+)\s*\)"
+
         let fieldRow = Regex @"^DEFINE_FIELD\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)"
-        let fieldURow = Regex @"^DEFINE_FIELD_U\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)"
+        let fieldURow = Regex @"^DEFINE_FIELD_U\(\s*(\w+)\s*,\s*([\w:]+)\s*,\s*(\w+)\s*\)"
 
         let _, _, fields =
             ((Map.empty, None, Set.empty), File.ReadAllLines (Path.Combine (vm, "corelib.h")))

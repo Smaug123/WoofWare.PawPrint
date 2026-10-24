@@ -149,6 +149,9 @@ System.Runtime.CompilerServices.ConditionalWeakTable`2	_lock
 System.Runtime.CompilerServices.ConditionalWeakTable`2+Container	_buckets
 System.Runtime.CompilerServices.ConditionalWeakTable`2+Container	_entries
 System.Runtime.CompilerServices.ConditionalWeakTable`2+Container	_parent
+System.Runtime.CompilerServices.ConditionalWeakTable`2+Entry	HashCode
+System.Runtime.CompilerServices.ConditionalWeakTable`2+Entry	Next
+System.Runtime.CompilerServices.ConditionalWeakTable`2+Entry	depHnd
 System.Runtime.CompilerServices.Continuation	Data
 System.Runtime.CompilerServices.Continuation	Flags
 System.Runtime.CompilerServices.Continuation	GCData
