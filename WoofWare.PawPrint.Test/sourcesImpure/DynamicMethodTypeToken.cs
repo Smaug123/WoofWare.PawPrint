@@ -436,6 +436,81 @@ public class Program
         {
         }
 
+        // 24. `System.Void` is refused by every opcode that consumes a type, not only by the
+        // `sizeof` of 16 (measured, for each of these, against the `int` control 25 that runs).
+        // The same is true of a metadata operand; `TestFabricatedTypeOperandRefusal` checks that
+        // universe, and a byref operand, which no guest can construct here yet.
+        var consumers = new List<Action<ILGenerator, Type>>
+        {
+            (il, t) => { il.Emit(OpCodes.Ldnull); il.Emit(OpCodes.Isinst, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldnull); il.Emit(OpCodes.Castclass, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Box, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_7); il.Emit(OpCodes.Box, typeof(int)); il.Emit(OpCodes.Unbox, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_7); il.Emit(OpCodes.Box, typeof(int)); il.Emit(OpCodes.Unbox_Any, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Newarr, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Sizeof, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Initobj, t); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Ldobj, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Stobj, t); },
+            (il, t) =>
+            {
+                il.Emit(OpCodes.Ldc_I4_1);
+                il.Emit(OpCodes.Newarr, typeof(int));
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ldelema, t);
+                il.Emit(OpCodes.Pop);
+            },
+        };
+
+        foreach (var consume in consumers)
+        {
+            Func<int> Consuming(Type t) => IntMethod(il =>
+            {
+                consume(il, t);
+                il.Emit(OpCodes.Ldc_I4_1);
+                il.Emit(OpCodes.Ret);
+            });
+
+            try
+            {
+                Consuming(typeof(void))();
+                return 24;
+            }
+            catch (InvalidProgramException)
+            {
+            }
+
+            if (Consuming(typeof(int))() != 1)
+            {
+                return 25;
+            }
+        }
+
+        // 26. Nor does an `isinst` after a box take it, which the JIT refuses as it resolves the
+        // entry while matching the pattern (measured).
+        Func<int> byrefLikeBoxCastVoid = IntMethod(il =>
+        {
+            Label taken = il.DefineLabel();
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Isinst, typeof(void));
+            il.Emit(OpCodes.Brtrue, taken);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+            il.MarkLabel(taken);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeBoxCastVoid();
+            return 26;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

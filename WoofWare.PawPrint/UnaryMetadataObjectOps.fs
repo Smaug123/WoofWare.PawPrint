@@ -111,6 +111,10 @@ module internal UnaryMetadataObjectOps =
                     currentMethod.Generics
                     targetType
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteType state with
+        | Some raised -> raised
+        | None ->
+
         castToReferenceType loggerFactory baseClassTypes "Castclass" thread targetConcreteType actualObj state
 
     /// Implements `newobj` of one of an array type's runtime-synthesised constructors (ECMA-335
@@ -453,6 +457,10 @@ module internal UnaryMetadataObjectOps =
     /// method spells the type, where its operand is a metadata token. Fails where the answer turns
     /// on whether the JIT inlines the method into its caller, which PawPrint does not model, unless
     /// the method forbids it (`MethodImplOptions.NoInlining`).
+    ///
+    /// False, too, where the JIT refuses the type operand of an instruction it resolves while
+    /// matching the pattern (`TypeOperand.refusal`): it raises the same InvalidProgramException
+    /// there as it does for a box it does not fold.
     let private byRefLikeBoxFolds
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -471,50 +479,53 @@ module internal UnaryMetadataObjectOps =
             | other -> failwith $"BUG: a box is executing in %s{method.Name}, which has no IL body (%A{other})"
 
         // The type an instruction after the box names, as `isinst` and `unbox.any` resolve it, with
-        // its spelling where it is a metadata token. The JIT resolves it as it matches the pattern.
-        let resolve (state : IlMachineState) (operand : MetadataOperand) =
-            match operand with
-            | MetadataOperand.FromMetadata sourced ->
-                let activeAssy =
-                    state.LoadedAssembly sourced.SourceAssembly.FullName
-                    |> Option.defaultWith (fun () ->
-                        failwith $"BUG: metadata token source assembly %O{sourced.SourceAssembly} is not loaded"
-                    )
+        // its spelling where it is a metadata token, or what the JIT refuses of it. The JIT resolves
+        // it as it matches the pattern, and refuses it there as it would at the instruction itself.
+        let resolve
+            (state : IlMachineState)
+            (operand : MetadataOperand)
+            : IlMachineState * Result<ConcreteTypeHandle * TypeDefn option, TypeOperandRefusal>
+            =
+            let state, handle, spelling =
+                match operand with
+                | MetadataOperand.FromMetadata sourced ->
+                    let activeAssy =
+                        state.LoadedAssembly sourced.SourceAssembly.FullName
+                        |> Option.defaultWith (fun () ->
+                            failwith $"BUG: metadata token source assembly %O{sourced.SourceAssembly} is not loaded"
+                        )
 
-                let state, spelling, _ =
-                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy sourced.Token
+                    let state, spelling, _ =
+                        IlMachineState.resolveTypeMetadataToken
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy
+                            sourced.Token
 
-                let state, handle =
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy.DefinitionFullName
-                        method.DeclaringTypeGenerics
-                        method.Generics
-                        spelling
+                    let state, handle =
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy.DefinitionFullName
+                            method.DeclaringTypeGenerics
+                            method.Generics
+                            spelling
 
-                // The JIT refuses a byref or `System.Void` as the type operand of these, as
-                // `DynamicScopeOperand.closedType` does for a scope entry; PawPrint does not
-                // validate a metadata operand, at this instruction or by itself.
-                match handle with
-                | ConcreteTypeHandle.Byref _ ->
-                    failwith
-                        $"TODO: the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction naming the byref type %O{handle}, which the JIT refuses; PawPrint does not validate a metadata type operand"
-                | _ when DynamicScopeOperand.isCorelibType baseClassTypes.Void state handle ->
-                    failwith
-                        $"TODO: the box of byref-like %O{boxed} in %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction naming System.Void, which the JIT refuses; PawPrint does not validate a metadata type operand"
-                | _ -> ()
+                    state, handle, Some spelling
+                | MetadataOperand.FromDynamicScope scopeIndex ->
+                    let scope = DynamicScopeOperand.executingScope "Box" state thread
 
-                state, (handle, Some spelling)
-            | MetadataOperand.FromDynamicScope scopeIndex ->
-                let scope = DynamicScopeOperand.executingScope "Box" state thread
+                    match DynamicScopeOperand.closedType baseClassTypes "Box" scopeIndex state scope with
+                    | Ok handle -> state, handle, None
+                    | Error (_, why) ->
+                        failwith
+                            $"TODO: the box of byref-like %O{boxed} in dynamic method %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction whose DynamicScope entry %d{scopeIndex} the JIT refuses (%s{why}); it raises that refusal as it matches the pattern, which PawPrint does not model"
 
-                match DynamicScopeOperand.closedType baseClassTypes "Box" scopeIndex state scope with
-                | Ok handle -> state, (handle, None)
-                | Error (_, why) ->
-                    failwith
-                        $"TODO: the box of byref-like %O{boxed} in dynamic method %s{method.Name} at offset %d{frame.IlOpIndex} is followed by an instruction whose DynamicScope entry %d{scopeIndex} the JIT refuses (%s{why}); it raises that refusal as it matches the pattern, which PawPrint does not model"
+            match TypeOperand.refusal baseClassTypes state.TypeSystem.ConcreteTypes handle with
+            | Some refusal -> state, Error refusal
+            | None -> state, Ok (handle, spelling)
 
         let typeArguments = List.ofSeq method.DeclaringTypeGenerics
         let methodArguments = List.ofSeq method.Generics
@@ -566,18 +577,21 @@ module internal UnaryMetadataObjectOps =
                         $"TODO: %s{assembly.DefinitionFullName}'s DebuggableAttribute is malformed, over which CoreCLR refuses to load it at all"
             | MethodInfo.Synthesised _ -> true
 
+        // `Error` where the JIT refuses an operand it resolves while matching the pattern.
         let state, follower =
             match BoxPattern.follower body frame.IlOpIndex with
-            | BoxFollower.Branch -> state, BoxFollower.Branch
-            | BoxFollower.Other -> state, BoxFollower.Other
+            | BoxFollower.Branch -> state, Ok BoxFollower.Branch
+            | BoxFollower.Other -> state, Ok BoxFollower.Other
             | BoxFollower.TestedCast cast ->
                 let state, cast = resolve state cast
-                state, BoxFollower.TestedCast cast
+                state, cast |> Result.map BoxFollower.TestedCast
             | BoxFollower.Unboxed unboxed ->
                 let state, unboxed = resolve state unboxed
-                state, BoxFollower.Unboxed unboxed
+                state, unboxed |> Result.map BoxFollower.Unboxed
             | BoxFollower.CastUnboxed (cast, unboxed) ->
-                let state, cast = resolve state cast
+                match resolve state cast with
+                | state, Error refusal -> state, Error refusal
+                | state, Ok cast ->
 
                 // The JIT resolves the `unbox.any` operand only once it has proved the `isinst`
                 // operand is the boxed type, in a view in which it may compile the method.
@@ -588,9 +602,26 @@ module internal UnaryMetadataObjectOps =
 
                 if provedIn true || (inlinable && provedIn false) then
                     let state, unboxed = resolve state unboxed
-                    state, BoxFollower.CastUnboxed (cast, unboxed)
+                    state, unboxed |> Result.map (fun unboxed -> BoxFollower.CastUnboxed (cast, unboxed))
                 else
-                    state, BoxFollower.Other
+                    state, Ok BoxFollower.Other
+
+        match follower with
+        | Error refusal ->
+            // The JIT raises InvalidProgramException resolving the operand, which is what refusing
+            // the box raises too.
+            loggerFactory
+                .CreateLogger("Box")
+                .LogWarning (
+                    "The box of byref-like {Boxed} in {Method} at offset {Offset} is followed by an instruction whose type operand the JIT refuses: {Refusal}",
+                    boxed,
+                    method.Name,
+                    frame.IlOpIndex,
+                    refusal
+                )
+
+            state, false
+        | Ok follower ->
 
         let folds (compiled : bool) : bool option =
             BoxPattern.foldsByRefLike
@@ -642,11 +673,15 @@ module internal UnaryMetadataObjectOps =
 
                 state, handle, Some ty
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
+
         let toBox, state = state |> IlMachineState.popEvalStack thread
 
         // ECMA-335 III.4.1: structural reference-type tokens (szarrays and multi-dim arrays)
         // make `box` a no-op — the value already on the stack is a reference. A byref token is
-        // rejected outright by the runtime; a pointer or function-pointer token, despite being
+        // refused above; a pointer or function-pointer token, despite being
         // unverifiable, is *not* — measured on real .NET, `box int*` (and `unbox.any int*`) runs.
         // PawPrint does not implement a boxed pointer, which would be a heap object whose runtime
         // type is a structural handle; that is its own change, so refuse loudly and say so.
@@ -658,9 +693,7 @@ module internal UnaryMetadataObjectOps =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | ConcreteTypeHandle.Byref _ ->
-            failwithf
-                "Box: byref type %O cannot be boxed; real .NET rejects the method as an invalid program (measured)."
-                typeHandle
+            failwith $"unreachable: Box's byref type operand %O{typeHandle} is refused above"
         | ConcreteTypeHandle.Pointer _ ->
             failwithf
                 "TODO: Box of pointer type %O is not implemented. Real .NET boxes one (measured), producing an object whose runtime type is the pointer type; PawPrint has no heap object with a structural type. Reachable from a dynamic method, whose `ILGenerator.Emit(OpCode, Type)` takes any RuntimeType, and from `typeof(int*)`."
@@ -753,6 +786,10 @@ module internal UnaryMetadataObjectOps =
                     currentMethod.Generics
                     targetType
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteType state with
+        | Some raised -> raised
+        | None ->
+
         let isinstCheck
             (state : IlMachineState)
             (objConcreteType : ConcreteTypeHandle)
@@ -817,6 +854,10 @@ module internal UnaryMetadataObjectOps =
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
 
         // The type token need not denote a nominal type: `unbox.any !!T` with `T = int[]`
         // concretizes to a structural array handle, which by design has no row in
@@ -1032,6 +1073,10 @@ module internal UnaryMetadataObjectOps =
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let state, result =
             BoxedValue.unboxAddress loggerFactory baseClassTypes "Unbox" targetConcreteTypeHandle actualObj state

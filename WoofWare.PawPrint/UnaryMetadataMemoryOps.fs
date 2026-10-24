@@ -36,6 +36,10 @@ module internal UnaryMetadataMemoryOps =
                     currentMethod.Generics
                     targetType
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
+
         let zeroOfType, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
@@ -86,6 +90,10 @@ module internal UnaryMetadataMemoryOps =
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let targetZero, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
@@ -156,6 +164,10 @@ module internal UnaryMetadataMemoryOps =
                     currentMethod.Generics
                     ty
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
+
         let addr, state = state |> IlMachineState.popEvalStack thread
 
         match addr with
@@ -189,17 +201,17 @@ module internal UnaryMetadataMemoryOps =
             | ConcreteTypeHandle.Array _ ->
                 // Arrays are reference types, so III.4.13 reduces to `ldind.ref` below.
                 false
-            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Byref _ ->
+                failwith $"unreachable: Ldobj's byref type operand %O{typeHandle} is refused above"
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ ->
-                // Triggered by a `ldobj` whose type token is a byref, pointer or
-                // function-pointer typespec. No C#/F# compiler emits that (a pointer
-                // dereference is `ldind.i`), and the runtime's reflection stack rejects all
-                // three as type arguments, so `ldobj !!T` cannot produce one either; only
-                // hand-written IL naming such a typespec reaches here. Refusing loudly beats
-                // guessing at a coercion no test can exercise.
-                failwith
-                    $"TODO: Ldobj with a byref/pointer/function-pointer type token (%O{typeHandle}) is not implemented"
+                // Triggered by a `ldobj` whose type token is a pointer or function-pointer
+                // typespec. No C#/F# compiler emits that (a pointer dereference is `ldind.i`),
+                // and the runtime's reflection stack rejects both as type arguments, so
+                // `ldobj !!T` cannot produce one either; only hand-written IL naming such a
+                // typespec reaches here. Refusing loudly beats guessing at a coercion no test
+                // can exercise.
+                failwith $"TODO: Ldobj with a pointer/function-pointer type token (%O{typeHandle}) is not implemented"
             | ConcreteTypeHandle.Concrete _ ->
 
             match
@@ -276,6 +288,10 @@ module internal UnaryMetadataMemoryOps =
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 

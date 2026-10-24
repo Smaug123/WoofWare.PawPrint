@@ -28,7 +28,9 @@ type internal ResolvedMetadataOperand =
     | FromMetadata of assembly : DumpedAssembly * token : MetadataToken
     /// A closed type read from entry <c>scopeIndex</c> of the executing dynamic method's
     /// `DynamicScope`. Non-closed targets never get here: they are an invalid program, and
-    /// <c>UnaryMetadataIlOp.execute</c> raises before dispatching.
+    /// <c>UnaryMetadataIlOp.execute</c> raises before dispatching. A byref or <c>System.Void</c>
+    /// does, and the op refuses it as it refuses a metadata operand naming one
+    /// (<c>UnaryMetadataIlOpContext.refuseTypeOperand</c>).
     | ScopeType of ConcreteTypeHandle
     /// A method read from entry <c>scopeIndex</c> of the executing dynamic method's `DynamicScope`:
     /// another dynamic method, or a reflected method whose declaring type is closed and whose own
@@ -208,3 +210,37 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.ScopeTypeTarget _ ->
             failwith
                 $"TODO: %O{this.Op} read its operand as a metadata token, but this operand names a DynamicScope entry. IlDecoding.scopeOperandKind lists this opcode as scope-resolvable, so the op needs a matching ResolvedMetadataOperand arm; the two have gone out of step."
+
+[<RequireQualifiedAccess>]
+module internal UnaryMetadataIlOpContext =
+
+    /// <summary>
+    /// Raises into the guest CoreCLR's refusal of <paramref name="handle"/> as this instruction's
+    /// type operand, or <c>None</c> where the instruction may consume it (see
+    /// <c>TypeOperand.refusal</c>). An op calls this on the operand it resolved, from either
+    /// universe, before anything it does could fault.
+    /// </summary>
+    let refuseTypeOperand
+        (ctx : UnaryMetadataIlOpContext)
+        (handle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : (IlMachineState * WhatWeDid) option
+        =
+        match TypeOperand.refusal ctx.BaseClassTypes state.TypeSystem.ConcreteTypes handle with
+        | None -> None
+        | Some refusal ->
+            ctx.Logger.LogWarning ("{Op} refused its type operand, {Refusal}", ctx.Op, refusal)
+
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            // CoreCLR's message here is InvalidProgramException's default (measured).
+            IlMachineStateExecution.raiseRuntimeException
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                    ResolutionFault.TokenBinding,
+                    ctx.BaseClassTypes.InvalidProgramException
+                ))
+                []
+                ctx.Thread
+                state
+            |> Some
