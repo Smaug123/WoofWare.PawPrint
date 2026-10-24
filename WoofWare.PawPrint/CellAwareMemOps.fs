@@ -597,10 +597,17 @@ module internal CellAwareMemOps =
         | Some _
         | None -> None
 
-    /// Set `byteCount` bytes starting at `dest` to `value`, falling back to
-    /// byte-by-byte stepping wherever a whole-cell write is not available.
+    /// Set `byteCount` bytes starting at `dest` to `value`.
     ///
-    /// Always walks forwards. Unlike `copy` there is no source to alias
+    /// Into a `localloc` or native memory block, viewed as raw bytes, the
+    /// range is stored in one step (`StackMemoryPool.fill`): a cell lying
+    /// wholly inside it is replaced by the bytes whatever it held, a pointer
+    /// included, and a cell it only partly covers must have values for its
+    /// bytes outside the range, or the fill fails.
+    ///
+    /// Anywhere else it walks the range, falling back to byte-by-byte
+    /// stepping wherever a whole-cell write is not available, and always
+    /// forwards. Unlike `copy` there is no source to alias
     /// against, so no direction policy is required: every byte in the range
     /// ends up holding `value` regardless of the order in which it is written.
     ///
@@ -612,7 +619,7 @@ module internal CellAwareMemOps =
     /// the byte walk produces the identical bytes anyway, so nothing is lost
     /// there; for cells with no byte image (an object reference, a runtime
     /// pointer, a `NativeInt` carrying non-`Verbatim` provenance) a nonzero
-    /// fill therefore fails loudly in `writeByte`. Where the range really does
+    /// walk therefore fails loudly in `writeByte`. Where the range really does
     /// cover such a cell that refusal is the wanted answer, because the real
     /// runtime would leave a corrupt GC reference behind and there is no value
     /// PawPrint could write that models it.
@@ -636,6 +643,19 @@ module internal CellAwareMemOps =
         (byteCount : int)
         : IlMachineState
         =
+        // A block of `localloc` or native memory stores the whole range at once, which replaces
+        // any pointer the range wholly covers: one byte at a time, each write would land inside it.
+        let filledWhole =
+            match dest with
+            | ManagedPointerSource.Byref addressed ->
+                IlMachineState.tryFillMemoryBlock baseClassTypes state addressed value byteCount
+            | ManagedPointerSource.Null
+            | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
+
+        match filledWhole with
+        | ValueSome state -> state
+        | ValueNone ->
+
         let byteConcreteType = byteType operation baseClassTypes state
         let mutable state = state
         let mutable i = 0
@@ -659,9 +679,7 @@ module internal CellAwareMemOps =
 
         state
 
-    /// Zero `byteCount` bytes starting at `dest`, preferring whole-cell typed
-    /// writes through `tryWholeCellZeroAt` and falling back to byte-by-byte
-    /// stepping otherwise.
+    /// Zero `byteCount` bytes starting at `dest`: `fill` with `0uy`.
     let clear
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)

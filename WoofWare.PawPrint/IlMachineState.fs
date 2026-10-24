@@ -196,6 +196,8 @@ module IlMachineState =
     let writeManagedByrefBytesOrTypedCell =
         IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
 
+    let tryFillMemoryBlock = IlMachineManagedByref.tryFillMemoryBlock
+
     let writeManagedByref = IlMachineManagedByref.writeManagedByref
 
     let writeManagedByrefWithBase = IlMachineManagedByref.writeManagedByrefWithBase
