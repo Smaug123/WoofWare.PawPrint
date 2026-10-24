@@ -2410,8 +2410,10 @@ public static class SR
     /// reference type call the method `getCastingHelperStatic` (jitinterface.cpp) picks
     /// (`impCastClassOrIsInstToTree`); `unbox` and `unbox.any` of a value type, the one
     /// `getUnBoxHelper` picks; `box` of a struct, the one `getBoxHelper` picks
-    /// (`impImportAndPushBox`); `ldelema` of a reference type with no `readonly.` prefix,
-    /// `LdelemaRef`; and `stelem.ref`, and `stelem` of a reference type, `StelemRef` (importer.cpp).
+    /// (`impImportAndPushBox`), as does a `constrained.` call that boxes its receiver to call a
+    /// method the type does not declare (`CORINFO_BOX_THIS`); `ldelema` of a reference type with no
+    /// `readonly.` prefix, `LdelemaRef`; and `stelem.ref`, and `stelem` of a reference type,
+    /// `StelemRef` (importer.cpp).
     let private castSource =
         """
 using System;
@@ -2428,6 +2430,34 @@ public struct Comparable : IComparable
 }
 
 public enum Colour { Red }
+
+public struct Plain { public int X; }
+
+public struct Named
+{
+    public int X;
+    public override string ToString() => "named";
+    public override int GetHashCode() => 1;
+}
+
+public interface IDefaulted
+{
+    int Default() => 1;
+}
+
+public struct Defaulting : IDefaulted { public int X; }
+
+public struct Implementing : IDefaulted
+{
+    public int X;
+    public int Default() => 2;
+}
+
+public struct Explicit : IDefaulted
+{
+    public int X;
+    int IDefaulted.Default() => 3;
+}
 
 public static class Cases
 {
@@ -2481,6 +2511,26 @@ public static class Cases
     public static ref int ElementOfInt(int[] a) => ref ElementOf(a);
     // A `constrained.` call on an element takes its address with `readonly. ldelema`.
     public static int HashOfElement<T>(T[] a) => a[0].GetHashCode();
+
+    // A `constrained.` call boxes a value type's receiver where the method that runs is not one the
+    // type declares.
+    public static string NameOfNamed(Named n) => n.ToString();
+    public static Type TypeOf<T>(T t) => t.GetType();
+    public static Type TypeOfPlain(Plain p) => TypeOf(p);
+    public static Type TypeOfNamed(Named n) => TypeOf(n);
+    public static Type TypeOfNullable(int? i) => TypeOf(i);
+    public static Type TypeOfInt(int i) => TypeOf(i);
+    public static Type TypeOfColour(Colour c) => TypeOf(c);
+    public static Type TypeOfString(string s) => TypeOf(s);
+    public static int HashOf<T>(T t) => t.GetHashCode();
+    public static int HashOfNamed(Named n) => HashOf(n);
+    public static int HashOfNullable(int? i) => HashOf(i);
+    public static string NameOf<T>(T t) => t.ToString();
+    public static string NameOfNamedOf(Named n) => NameOf(n);
+    public static int DefaultOf<T>(T t) where T : IDefaulted => t.Default();
+    public static int DefaultOfDefaulting(Defaulting d) => DefaultOf(d);
+    public static int DefaultOfImplementing(Implementing i) => DefaultOf(i);
+    public static int DefaultOfExplicit(Explicit e) => DefaultOf(e);
 
     public static void Store(object[] a, object o) => a[0] = o;
     public static void StoreString(string[] a, string s) => a[0] = s;
@@ -2609,7 +2659,27 @@ public static class Cases
                 // Shared code takes the address of a `__Canon`, a reference type's.
                 "ElementOfString", [ "LdelemaRef" ]
                 "ElementOfInt", []
-                "HashOfElement", []
+                // The definition stands for every instantiation, as below.
+                "HashOfElement", [ "Box" ; "Box_Nullable" ]
+                // A struct's own override runs on the receiver's address.
+                "NameOfNamed", []
+                // `Object.GetType` is no method of the struct's, whatever it overrides.
+                "TypeOfPlain", [ "Box" ]
+                "TypeOfNamed", [ "Box" ]
+                "TypeOfNullable", [ "Box" ; "Box_Nullable" ]
+                // A primitive or an enum is boxed inline, and a reference type not at all.
+                "TypeOfInt", []
+                "TypeOfColour", []
+                "TypeOfString", []
+                "HashOfNamed", []
+                // `Nullable<T>` declares `GetHashCode`.
+                "HashOfNullable", []
+                "NameOfNamedOf", []
+                // A default interface body is no method of the struct's; one it implements, even
+                // explicitly, is.
+                "DefaultOfDefaulting", [ "Box" ]
+                "DefaultOfImplementing", []
+                "DefaultOfExplicit", []
                 // A store of null calls it too, which tests for null itself.
                 "Store", [ "StelemRef" ]
                 "StoreString", [ "StelemRef" ]
@@ -2644,6 +2714,10 @@ public static class Cases
                 "IsNull", [ "Box" ; "Box_Nullable" ]
                 "ElementOf", [ "LdelemaRef" ]
                 "StoreOf", [ "StelemRef" ]
+                "TypeOf", [ "Box" ; "Box_Nullable" ]
+                "HashOf", [ "Box" ; "Box_Nullable" ]
+                "NameOf", [ "Box" ; "Box_Nullable" ]
+                "DefaultOf", [ "Box" ; "Box_Nullable" ]
             ]
 
         let mutable analysis = analysisOver [ fixture ] id
@@ -2802,6 +2876,666 @@ public static class Cases
         array |> shouldEqual (Set.singleton "StelemRef")
         let _, pointer = helpersReached analysis fixture "Emitted" "StorePointer"
         pointer |> shouldEqual Set.empty
+
+    /// Whether `fixture`, read from `image`, reaches a `CastHelpers` box from each parameterless
+    /// method of `cases` exactly where the real runtime allocates calling it, where each such method
+    /// allocates nothing but by boxing. `boxing` is one the real runtime must allocate for and
+    /// `notBoxing` one it must not, so that the comparison is not vacuous.
+    let private boxesWhereTheRealRuntimeAllocates
+        (image : byte[])
+        (fixture : DumpedAssembly)
+        (cases : string)
+        (boxing : string)
+        (notBoxing : string)
+        : unit
+        =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Boxes", isCollectible = true)
+
+        try
+            let methods =
+                context
+                    .LoadFromStream(new MemoryStream (image))
+                    .GetType(cases)
+                    .GetMethods (BindingFlags.Public ||| BindingFlags.Static)
+                |> List.ofArray
+
+            // The first calls compile the case and what it calls, and make the `RuntimeType`
+            // `GetType` answers.
+            let allocates (case : MethodInfo) : bool =
+                let run = case.CreateDelegate<Action> ()
+                run.Invoke ()
+                run.Invoke ()
+                let before = GC.GetAllocatedBytesForCurrentThread ()
+
+                for _ in 1..64 do
+                    run.Invoke ()
+
+                GC.GetAllocatedBytesForCurrentThread () - before > 0L
+
+            let observed = methods |> List.map (fun case -> case.Name, allocates case)
+
+            observed |> List.filter snd |> List.map fst |> shouldContain boxing
+
+            observed |> List.filter (snd >> not) |> List.map fst |> shouldContain notBoxing
+
+            let failures =
+                ((analysisOver [ fixture ] id, []), observed)
+                ||> List.fold (fun (analysis, failures) (name, allocated) ->
+                    let analysis, reached = helpersReached analysis fixture cases name
+                    let boxes = reached.Contains "Box" || reached.Contains "Box_Nullable"
+
+                    if boxes = allocated then
+                        analysis, failures
+                    else
+                        analysis,
+                        $"%s{cases}::%s{name}: the real runtime allocates %b{allocated}, but the analysis reaches %A{Set.toList reached}"
+                        :: failures
+                )
+                |> snd
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
+
+    /// Calls the JIT compiles without optimising (`MethodImplOptions.NoOptimization`), as it compiles
+    /// a method at tier 0. Each case makes one `constrained.` call on a struct, a `Nullable<T>` or a
+    /// string, of a method that allocates nothing, so a case allocates only where the JIT boxes the
+    /// call's receiver.
+    let private boxThisSource =
+        """
+using System;
+using System.Runtime.CompilerServices;
+
+namespace BoxThis;
+
+public struct Plain { public int X; }
+
+public struct Named
+{
+    public int X;
+    public override string ToString() => "named";
+    public override int GetHashCode() => 1;
+}
+
+public interface IDefaulted { int Default() => 1; }
+
+public interface IGenericDefaulted<T> { int Default() => 2; }
+
+public struct Defaulting : IDefaulted, IGenericDefaulted<string> { public int X; }
+
+public struct Implementing : IDefaulted, IGenericDefaulted<string>
+{
+    public int X;
+    public int Default() => 3;
+}
+
+public struct Explicit : IDefaulted
+{
+    public int X;
+    int IDefaulted.Default() => 4;
+}
+
+public static class Calls
+{
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static Type TypeOf<T>(T t) => t.GetType();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int HashOf<T>(T t) => t.GetHashCode();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static string NameOf<T>(T t) => t.ToString();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int DefaultOf<T>(T t) where T : IDefaulted => t.Default();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int GenericDefaultOf<T>(T t) where T : IGenericDefaulted<string> => t.Default();
+}
+
+public static class Cases
+{
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfPlain() => Calls.TypeOf(new Plain());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfNamed() => Calls.TypeOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfNullable() => Calls.TypeOf((int?)1);
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfString() => Calls.TypeOf("s");
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void HashOfNamed() => Calls.HashOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void HashOfNullable() => Calls.HashOf((int?)1);
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void NameOfNamed() => Calls.NameOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void NameOfNamedDirectly()
+    {
+        var n = new Named();
+        n.ToString();
+    }
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfDefaulting() => Calls.DefaultOf(new Defaulting());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfImplementing() => Calls.DefaultOf(new Implementing());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfExplicit() => Calls.DefaultOf(new Explicit());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void GenericDefaultOfDefaulting() => Calls.GenericDefaultOf(new Defaulting());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void GenericDefaultOfImplementing() => Calls.GenericDefaultOf(new Implementing());
+}
+"""
+
+    [<Test>]
+    let ``a constrained call reaches a CastHelpers box exactly where the real runtime allocates for it`` () : unit =
+        let image =
+            Roslyn.compileOptimizedAssembly "BoxThis" OutputKind.DynamicallyLinkedLibrary [ boxThisSource ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "BoxThis.dll") (new MemoryStream (image))
+
+        boxesWhereTheRealRuntimeAllocates image fixture "BoxThis.Cases" "DefaultOfDefaulting" "DefaultOfImplementing"
+
+    /// C# calls a struct's own method with `call`, but `constrained.` may name one, and CoreCLR
+    /// takes a method that is not virtual to be none the type declares
+    /// (`TryResolveConstraintMethodApprox`, methodtable.cpp): it boxes the receiver and passes the
+    /// box where the method expects the struct's address. It boxes nothing for one that is virtual.
+    [<Test>]
+    let ``a constrained call of a struct's own method boxes its receiver where the method is not virtual`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "OwnMethods", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "OwnMethods"
+
+            let measured =
+                modul.DefineType (
+                    "IMeasured",
+                    TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
+                )
+
+            let measure =
+                measured.DefineMethod (
+                    "Measure",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let measured = measured.CreateType ()
+
+            let owner =
+                modul.DefineType (
+                    "Owner",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            owner.AddInterfaceImplementation measured
+
+            owner.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let constant (method : Emit.MethodBuilder) =
+                let il = method.GetILGenerator ()
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Ret
+                method
+
+            let plain =
+                owner.DefineMethod ("Plain", MethodAttributes.Public ||| MethodAttributes.HideBySig, typeof<int>, [||])
+                |> constant
+
+            let final =
+                owner.DefineMethod (
+                    "Measure",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Final
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+                |> constant
+
+            owner.DefineMethodOverride (final, measure)
+            let owner = owner.CreateType ()
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let case (name : string) (called : Emit.MethodBuilder) =
+                let method =
+                    emitted.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+                method.SetImplementationFlags MethodImplAttributes.NoOptimization
+                let il = method.GetILGenerator ()
+                il.DeclareLocal owner |> ignore<Emit.LocalBuilder>
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                il.Emit (Emit.OpCodes.Constrained, owner)
+                il.Emit (Emit.OpCodes.Callvirt, called)
+                il.Emit Emit.OpCodes.Pop
+                il.Emit Emit.OpCodes.Ret
+
+            case "OwnPlain" plain
+            case "OwnFinal" final
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "OwnMethods.dll") (new MemoryStream (image))
+
+        boxesWhereTheRealRuntimeAllocates image fixture "Emitted" "OwnPlain" "OwnFinal"
+
+    /// A struct that inherits two equally specific default bodies of one interface method has none
+    /// of its own, so a `constrained.` call of the method boxes the receiver, and the dispatch on
+    /// the box then raises `AmbiguousImplementationException`. Measured on .NET 10 under MinOpts:
+    /// the JIT calls `CORINFO_HELP_BOX` before the interface call.
+    [<Test>]
+    let ``a constrained call whose dispatch fails boxes its receiver before it raises`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Diamond", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Diamond"
+
+            let interfaceAttributes =
+                TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
+
+            let root = modul.DefineType ("IRoot", interfaceAttributes)
+
+            let rootMethod =
+                root.DefineMethod (
+                    "M",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let root = root.CreateType ()
+
+            let side (name : string) (value : int) : Type =
+                let side = modul.DefineType (name, interfaceAttributes)
+                side.AddInterfaceImplementation root
+
+                let body =
+                    side.DefineMethod (
+                        "IRoot.M",
+                        MethodAttributes.Private
+                        ||| MethodAttributes.Virtual
+                        ||| MethodAttributes.Final
+                        ||| MethodAttributes.HideBySig
+                        ||| MethodAttributes.NewSlot,
+                        typeof<int>,
+                        [||]
+                    )
+
+                let il = body.GetILGenerator ()
+                il.Emit (Emit.OpCodes.Ldc_I4, value)
+                il.Emit Emit.OpCodes.Ret
+                side.DefineMethodOverride (body, rootMethod)
+                side.CreateType ()
+
+            let left = side "ILeft" 1
+            let right = side "IRight" 2
+
+            let diamond =
+                modul.DefineType (
+                    "Diamond",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            diamond.AddInterfaceImplementation root
+            diamond.AddInterfaceImplementation left
+            diamond.AddInterfaceImplementation right
+
+            diamond.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let diamond = diamond.CreateType ()
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let il =
+                emitted
+                    .DefineMethod("Call", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+                    .GetILGenerator ()
+
+            il.DeclareLocal diamond |> ignore<Emit.LocalBuilder>
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, diamond)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, diamond)
+            il.Emit (Emit.OpCodes.Callvirt, rootMethod)
+            il.Emit Emit.OpCodes.Ret
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Diamond", isCollectible = true)
+
+        try
+            let raised =
+                try
+                    context
+                        .LoadFromStream(new MemoryStream (image))
+                        .GetType("Emitted")
+                        .GetMethod("Call")
+                        .Invoke ((null : obj), Array.empty<obj>)
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType ())
+
+            raised
+            |> shouldEqual (Some typeof<System.Runtime.AmbiguousImplementationException>)
+        finally
+            context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Diamond.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+        let analysis, reached = helpersReached analysis fixture "Emitted" "Call"
+        reached |> shouldContain "Box"
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Emitted" "Call")
+
+        render analysis escapes
+        |> shouldContain "=System.Runtime.AmbiguousImplementationException"
+
+    /// C# makes a ref struct implement every method of an interface itself, but IL may leave it to
+    /// inherit a default interface body. A `constrained.` call of that body on the ref struct boxes
+    /// the receiver, which CoreCLR's JIT refuses to compile (`getBoxHelper`, jitinterface.cpp,
+    /// raises `InvalidProgramException`), whether the type is named directly or through a type
+    /// variable that allows it. It refuses before the method runs, so no handler in the method catches
+    /// it, and no value a caller passes keeps it from compiling the call.
+    [<Test>]
+    let ``a constrained call that would box a ref struct is opaque, and the real runtime refuses it`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "RefBoxes", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "RefBoxes"
+
+            let defaulted =
+                modul.DefineType (
+                    "IDefaulted",
+                    TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
+                )
+
+            let defaultBody =
+                defaulted.DefineMethod (
+                    "Default",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let il = defaultBody.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldc_I4_1
+            il.Emit Emit.OpCodes.Ret
+            let defaulted = defaulted.CreateType ()
+
+            let refStruct =
+                modul.DefineType (
+                    "RefDefaulting",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            refStruct.AddInterfaceImplementation defaulted
+
+            refStruct.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<System.Runtime.CompilerServices.IsByRefLikeAttribute>.GetConstructor [||],
+                    [||]
+                )
+            )
+
+            refStruct.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let refStruct = refStruct.CreateType ()
+
+            let calls =
+                modul.DefineType ("Calls", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+            let defaultOf =
+                calls.DefineMethod ("DefaultOf", MethodAttributes.Public ||| MethodAttributes.Static)
+
+            let parameter = (defaultOf.DefineGenericParameters [| "T" |]).[0]
+            // `gpAllowByRefLike` (corhdr.h), which `allows ref struct` sets.
+            parameter.SetGenericParameterAttributes (enum<GenericParameterAttributes> 0x20)
+            parameter.SetInterfaceConstraints [| defaulted |]
+            defaultOf.SetReturnType typeof<int>
+            defaultOf.SetParameters [| parameter.AsType () |]
+            let il = defaultOf.GetILGenerator ()
+            il.Emit (Emit.OpCodes.Ldarga_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, parameter.AsType ())
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+
+            let caller (name : string) (call : Emit.ILGenerator -> unit) =
+                let il =
+                    calls
+                        .DefineMethod(name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+                        .GetILGenerator ()
+
+                il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                il.Emit (Emit.OpCodes.Initobj, refStruct)
+                call il
+                il.Emit Emit.OpCodes.Ret
+
+            caller
+                "Directly"
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                    il.Emit (Emit.OpCodes.Constrained, refStruct)
+                    il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+                )
+
+            caller
+                "ThroughVariable"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldloc_0
+                    il.Emit (Emit.OpCodes.Call, defaultOf.MakeGenericMethod [| refStruct |])
+                )
+
+            caller
+                "Caught"
+                (fun il ->
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                    il.Emit (Emit.OpCodes.Constrained, refStruct)
+                    il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+                    il.Emit Emit.OpCodes.Pop
+                    il.BeginCatchBlock typeof<obj>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                )
+
+            let gated =
+                calls.DefineMethod (
+                    "Gated",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<int>,
+                    [| typeof<bool> |]
+                )
+
+            let il = gated.GetILGenerator ()
+            il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, refStruct)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, refStruct)
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+            // At tier 0 the JIT compiles a block behind a branch on a constant too; optimising, it
+            // folds the branch and never sees the call.
+            let unreached =
+                calls.DefineMethod ("Unreached", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+
+            unreached.SetImplementationFlags MethodImplAttributes.NoOptimization
+            let il = unreached.GetILGenerator ()
+            il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, refStruct)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, refStruct)
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+            let gatedOff =
+                calls.DefineMethod ("GatedOff", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+
+            // Optimising, the JIT inlines `Gated`, folds the branch on the constant, and never sees
+            // the call; at tier 0 it inlines nothing.
+            gatedOff.SetImplementationFlags MethodImplAttributes.NoOptimization
+            let il = gatedOff.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Call, gated)
+            il.Emit Emit.OpCodes.Ret
+
+            calls.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "RefBoxes.dll") (new MemoryStream (image))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("RefBoxes", isCollectible = true)
+
+        try
+            let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
+
+            for name in [ "Directly" ; "ThroughVariable" ; "Caught" ; "Unreached" ; "GatedOff" ] do
+                let raised =
+                    try
+                        calls.GetMethod(name).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
+                        None
+                    with :? TargetInvocationException as e ->
+                        Some (e.InnerException.GetType ())
+
+                (name, raised) |> shouldEqual (name, Some typeof<InvalidProgramException>)
+        finally
+            context.Unload ()
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        for name, refused in
+            [
+                "Directly", "Directly"
+                "ThroughVariable", "DefaultOf"
+                "Caught", "Caught"
+                "Unreached", "Unreached"
+                "GatedOff", "Gated"
+            ] do
+            let next, sources =
+                EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" name)
+
+            analysis <- next
+
+            sources
+            |> Seq.map (renderSite analysis)
+            |> Set.ofSeq
+            |> shouldEqual (Set.singleton $"Calls::%s{refused} entry BoxedByRefLikeReceiver")
+
+        // Asked about by itself, the definition stands for every instantiation, a ref struct's
+        // among them.
+        let analysis, definition =
+            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "DefaultOf")
+
+        // Some instance boxes a struct, which .NET 11's `CastHelpers.Box` copies through a QCall
+        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
+        definition
+        |> Seq.filter (isNet11MemoryQCall (FrameworkUnderTest.runtime ()) analysis >> not)
+        |> Seq.map (renderSite analysis)
+        |> Set.ofSeq
+        |> shouldEqual (
+            Set.ofList
+                [
+                    "Calls::DefaultOf entry BoxedByRefLikeReceiver"
+                    "Calls::DefaultOf IL VirtualCall IDefaulted::Default"
+                ]
+        )
 
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
@@ -11003,7 +11737,21 @@ public static class Runners
                     analysis <- next
                     let shown = render analysis summary
 
-                    if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
+                    // A `constrained.` call on a value type that lands in a default body boxes
+                    // its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall the
+                    // table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
+                    let next, net11Frontier =
+                        unknownOnlyThroughNet11MemoryQCalls
+                            (FrameworkUnderTest.runtime ())
+                            analysis
+                            (methodNamed clientAssembly "Client.Runners" methodName)
+
+                    analysis <- next
+
+                    if
+                        (summary.Unknown && not net11Frontier)
+                        || shown.Contains ("=" + initialization) <> escapes
+                    then
                         yield
                             $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
 
@@ -11302,10 +12050,20 @@ public static class Runners
             EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
 
         let shown = render analysis escapes
-        let _, made = making analysis "System.Runtime.AmbiguousImplementationException"
+
+        let analysis, made =
+            making analysis "System.Runtime.AmbiguousImplementationException"
+
+        // The call boxes its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall
+        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
+        let _, net11Frontier =
+            unknownOnlyThroughNet11MemoryQCalls
+                (FrameworkUnderTest.runtime ())
+                analysis
+                (methodNamed assembly "Run" "Call")
 
         if
-            escapes.Unknown
+            (escapes.Unknown && not net11Frontier)
             || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
             || not (Set.isSubset made shown)
         then
@@ -11372,8 +12130,17 @@ public static class Runners
                 let shown = render analysis escapes
                 let analysis, made = making analysis "System.EntryPointNotFoundException"
 
+                // A `constrained.` call on a value type whose dispatch fails boxes its receiver,
+                // which .NET 11's `CastHelpers.Box` copies through a QCall the table has no row for
+                // (`Net11Frontier.spanHelpersMemoryQCalls`).
+                let analysis, net11Frontier =
+                    unknownOnlyThroughNet11MemoryQCalls
+                        (FrameworkUnderTest.runtime ())
+                        analysis
+                        (methodNamed entry "ReabstractionEntry.Cases" methodName)
+
                 if
-                    escapes.Unknown
+                    (escapes.Unknown && not net11Frontier)
                     || not (shown.Contains "=System.EntryPointNotFoundException")
                     || not (Set.isSubset made shown)
                 then
