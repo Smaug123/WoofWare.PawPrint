@@ -11149,6 +11149,280 @@ public static class Runners
         |> Set.contains ("=" + invalidProgram)
         |> shouldEqual true
 
+    /// The type tokens a runner of `modifiedOperands` names.
+    type private ModifiedOperands =
+        {
+            /// `Span<int>`
+            Span : EntityHandle
+            /// `Span<int modopt(IsConst)>`
+            ModifiedSpan : EntityHandle
+            /// `ValueTuple<int>`
+            Tuple : EntityHandle
+            /// `ValueTuple<int modopt(IsConst)>`
+            ModifiedTuple : EntityHandle
+        }
+
+    /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
+    /// `runners`, with locals `Span<int>` and `ValueTuple<int>`, whose body that writes. It emits
+    /// the image with System.Reflection.Metadata, because neither C# nor `Reflection.Emit` spells a
+    /// generic argument carrying a custom modifier.
+    let private modifiedOperands (runners : (string * (ModifiedOperands -> InstructionEncoder -> unit)) list) : byte[] =
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Probe.dll",
+            metadata.GetOrAddGuid (Guid "0f7b3c52-8e1d-4a96-b2c4-7d5e6a183f90"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Probe",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let coreName = typeof<obj>.Assembly.GetName ()
+
+        let core =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString coreName.Name,
+                coreName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (coreName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let typeRef (ns : string) (name : string) : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit core : EntityHandle),
+                metadata.GetOrAddString ns,
+                metadata.GetOrAddString name
+            )
+            |> TypeReferenceHandle.op_Implicit
+
+        let objectRef = typeRef "System" "Object"
+        let spanRef = typeRef "System" "Span`1"
+        let tupleRef = typeRef "System" "ValueTuple`1"
+        let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
+
+        let typeSpec (encode : SignatureTypeEncoder -> unit) : EntityHandle =
+            let blob = BlobBuilder ()
+            encode (BlobEncoder(blob).TypeSpecificationSignature ())
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+            |> TypeSpecificationHandle.op_Implicit
+
+        let instance (root : EntityHandle) (modified : bool) (encoder : SignatureTypeEncoder) : unit =
+            let argument = encoder.GenericInstantiation(root, 1, true).AddArgument ()
+
+            if modified then
+                argument.CustomModifiers().AddModifier (isConstRef, true)
+                |> ignore<CustomModifiersEncoder>
+
+            argument.Int32 ()
+
+        let operands =
+            {
+                Span = typeSpec (instance spanRef false)
+                ModifiedSpan = typeSpec (instance spanRef true)
+                Tuple = typeSpec (instance tupleRef false)
+                ModifiedTuple = typeSpec (instance tupleRef true)
+            }
+
+        let locals =
+            let blob = BlobBuilder ()
+            let variables = BlobEncoder(blob).LocalVariableSignature 2
+            instance spanRef false (variables.AddVariable().Type ())
+            instance tupleRef false (variables.AddVariable().Type ())
+            metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
+
+        let signature =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returns -> returns.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        for name, write in runners do
+            let code = InstructionEncoder (BlobBuilder (), ControlFlowBuilder ())
+            write operands code
+
+            let body =
+                bodies.AddMethodBody (
+                    code,
+                    maxStack = 2,
+                    localVariablesSignature = locals,
+                    attributes = MethodBodyAttributes.InitLocals
+                )
+
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                signature,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            Unchecked.defaultof<TypeAttributes>,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "Probe",
+            metadata.GetOrAddString "Runners",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let blob = BlobBuilder ()
+        peBuilder.Serialize blob |> ignore<BlobContentId>
+        blob.ToArray ()
+
+    /// Each runner of `modifiedOperands` this test emits: what it does with the local of the type
+    /// the token names (`Span` loads local 0, `Tuple` local 1), and what the JIT does compiling it.
+    let private modifiedRefusals : (string * (ModifiedOperands -> InstructionEncoder -> unit) * Refusal) list =
+        let boxed (pick : ModifiedOperands -> EntityHandle) (local : int) (code : InstructionEncoder) operands =
+            code.LoadLocalAddress local
+            code.OpCode ILOpCode.Initobj
+            code.Token (if local = 0 then operands.Span else operands.Tuple)
+            code.LoadLocal local
+            code.OpCode ILOpCode.Box
+            code.Token (pick operands)
+
+        let newarr (pick : ModifiedOperands -> EntityHandle) (code : InstructionEncoder) operands =
+            code.LoadConstantI4 1
+            code.OpCode ILOpCode.Newarr
+            code.Token (pick operands)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+
+        let popped pick local =
+            fun operands (code : InstructionEncoder) ->
+                boxed pick local code operands
+                code.OpCode ILOpCode.Pop
+                code.OpCode ILOpCode.Ret
+
+        let branched pick local =
+            fun operands (code : InstructionEncoder) ->
+                let label = code.DefineLabel ()
+                boxed pick local code operands
+                code.Branch (ILOpCode.Brtrue_s, label)
+                code.MarkLabel label
+                code.OpCode ILOpCode.Ret
+
+        [
+            "BoxModifiedSpanPop", popped _.ModifiedSpan 0, Refusal.Raises invalidProgram
+            // The JIT folds a box that a branch follows, of any type.
+            "BoxModifiedSpanBrtrue", branched _.ModifiedSpan 0, Refusal.Compiles
+            "NewarrModifiedSpan", (fun operands code -> newarr _.ModifiedSpan code operands), Refusal.Raises typeLoad
+            // `ValueTuple<int>` is no byref-like type, however its argument is modified.
+            "BoxModifiedTuplePop", popped _.ModifiedTuple 1, Refusal.Compiles
+            "NewarrModifiedTuple", (fun operands code -> newarr _.ModifiedTuple code operands), Refusal.Compiles
+        ]
+
+    /// PawPrint instantiates no generic type whose argument carries a custom modifier, so the
+    /// analysis cannot instantiate the type these runners box or allocate an array of. That is not a
+    /// type that fails to load, and the JIT still refuses where the type is byref-like.
+    [<Test>]
+    let ``the JIT's refusal of a box or newarr is reported where the analysis cannot instantiate the type it names``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            modifiedOperands (modifiedRefusals |> List.map (fun (name, write, _) -> name, write))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("ModifiedOperands", isCollectible = true)
+
+        let runtimeFailures =
+            try
+                let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Probe.Runners"
+
+                [
+                    for name, _, refused in modifiedRefusals do
+                        let raised =
+                            try
+                                ty.GetMethod(name).Invoke ((null : obj), [||]) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some (e.InnerException.GetType().FullName)
+
+                        let expected =
+                            match refused with
+                            | Refusal.Compiles -> None
+                            | Refusal.Raises refusal -> Some refusal
+                            | Refusal.UnlessInlined _
+                            | Refusal.RaisesBesideBinding _ -> failwith $"BUG: %s{name} expects %A{refused}"
+
+                        if raised <> expected then
+                            yield $"%s{name}: the real runtime raised %A{raised}, not %A{expected}"
+                ]
+            finally
+                context.Unload ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let analysisFailures =
+            [
+                for name, _, refused in modifiedRefusals do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Runners" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let reported =
+                        [ invalidProgram ; typeLoad ]
+                        |> List.filter (fun refusal -> shown.Contains ("=" + refusal))
+
+                    let expected =
+                        match refused with
+                        | Refusal.Raises refusal -> [ refusal ]
+                        | _ -> []
+
+                    if reported <> expected then
+                        yield $"%s{name}: reported %A{reported} of the refusals, not %A{expected}"
+            ]
+
+        match runtimeFailures @ analysisFailures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     [<Test>]
     let ``only an instance decides whether the JIT refuses a box or newarr of a type variable that allows a byref-like type``
         ()
