@@ -3192,9 +3192,10 @@ module EscapeAnalysis =
     /// holds: what its own assembly's `stfld`s and `stsfld`s store in it, or null. So it is when
     /// no other assembly can name the field, it being private, or internal to an assembly that
     /// makes no other its friend (`InternalsVisibleTo`); its own assembly's IL never takes its
-    /// address; no member reference of that assembly may name it; its type's layout is not
-    /// explicit, which may lay another field over it; and, in CoreLib, CoreCLR's native code does
-    /// not bind it by name (`VmBoundField`), which it may write.
+    /// address; no member reference of that assembly may name it; its type is a class whose layout
+    /// is not explicit, where no other field can lie over it (a struct's may lie under a field of a
+    /// container of explicit layout that embeds the struct); and, in CoreLib, CoreCLR's native code
+    /// does not bind it by name (`VmBoundField`), which it may write.
     let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
         if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
             state, false
@@ -3228,6 +3229,13 @@ module EscapeAnalysis =
             || definition.Attributes.HasFlag FieldAttributes.Literal
             || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes = TypeLayoutKind.Explicit
         then
+            state, false
+        else
+
+        let state, ofValueType =
+            derivesFrom state definition.DeclaringType.Identity state.BaseTypes.ValueType.Identity
+
+        if ofValueType then
             state, false
         else
 
