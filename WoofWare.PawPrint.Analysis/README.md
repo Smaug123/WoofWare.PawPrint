@@ -175,6 +175,20 @@ method) may add more:
   it loads with what it points to. What the JIT loads of a call of unmanaged code (a P/Invoke, or
   `calli` by an unmanaged calling convention) depends on the marshalling the call needs, and the
   analysis takes it to load every type of the signature in full;
+* the JIT refuses to compile a method over an instruction for what its token names, wherever in
+  the code it compiles the instruction is, whether a run would reach it or not: a `call` or
+  `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),
+  a `newarr` of a byref-like element type (`TypeLoadException`), and a `box` of a byref-like type
+  that it does not fold away (`InvalidProgramException`). It folds one followed in its block by a
+  `brtrue` or `brfalse`, by `isinst` and then one of those where it decides the cast, or by an
+  `unbox.any` (after an `isinst`, or not) of the boxed type. The code it compiles is what control
+  reaches once it folds the branches on capability queries, so the answer has the refusal of an
+  instruction behind any other branch. A call of an abstract method never runs, so it is not
+  followed. Where a type variable names the type, the instance decides: in the open definition,
+  where the parameter allows a byref-like type, it is "unknown". Shared code sees a byref-like
+  type in its canonical form, which the JIT's comparisons of types do not decide, so it refuses
+  the box there unless it inlines the method into a caller that sees the type as it is; the
+  answer has the refusal;
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
   assembly. A module initializer is a type initializer, and the answer has what it raises and
