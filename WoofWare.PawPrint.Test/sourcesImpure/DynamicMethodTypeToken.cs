@@ -376,6 +376,66 @@ public class Program
             return 20;
         }
 
+        // 21, 22. Unless the JIT folds the box away, which it does where the box's block tests the
+        // box (here through `isinst`) or unboxes it again at once (measured), resolving the scope
+        // entries of the instructions after it as it matches them.
+        Func<int> byrefLikeBoxTested = IntMethod(il =>
+        {
+            Label taken = il.DefineLabel();
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Isinst, typeof(object));
+            il.Emit(OpCodes.Brtrue, taken);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+            il.MarkLabel(taken);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Ret);
+        });
+
+        if (byrefLikeBoxTested() != 2)
+        {
+            return 21;
+        }
+
+        Func<int> byrefLikeBoxUnboxed = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Unbox_Any, typeof(Span<int>));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_3);
+            il.Emit(OpCodes.Ret);
+        });
+
+        if (byrefLikeBoxUnboxed() != 3)
+        {
+            return 22;
+        }
+
+        // 23. It resolves the `unbox.any` after an `isinst` only where the `isinst` names the
+        // boxed type, so here it refuses the box without looking at `void`, which is no type
+        // `unbox.any` takes (measured).
+        Func<int> byrefLikeBoxCastOther = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Isinst, typeof(object));
+            il.Emit(OpCodes.Unbox_Any, typeof(void));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeBoxCastOther();
+            return 23;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

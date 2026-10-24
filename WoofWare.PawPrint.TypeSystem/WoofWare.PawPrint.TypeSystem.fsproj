@@ -27,6 +27,7 @@
         <Compile Include="MethodReferenceResolution.fs" />
         <Compile Include="TypeSystemState.fs" />
         <Compile Include="CodeSharing.fs" />
+        <Compile Include="JitTypeComparison.fs" />
         <Compile Include="GcReferences.fs" />
         <Compile Include="MemberReferenceInstantiation.fs" />
         <Compile Include="MethodConcretisation.fs" />

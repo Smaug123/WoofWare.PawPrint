@@ -5536,42 +5536,6 @@ module EscapeAnalysis =
                 Some holds
             | state, None -> state, None
 
-    /// Whether a type that a body spells names a type variable whose argument in `typeArguments`,
-    /// the declaring type's, or `methodArguments`, the method's, makes CoreCLR share the body's code
-    /// (`CodeSharing.canonicalisesToCanon`): whether the shared code looks the type up at run time.
-    let rec private namesSharedArgument
-        (state : EscapeAnalysisState)
-        (typeArguments : ConcreteTypeHandle list)
-        (methodArguments : ConcreteTypeHandle list)
-        (spelling : TypeDefn)
-        : bool
-        =
-        let shared (arguments : ConcreteTypeHandle list) (index : int) : bool =
-            match List.tryItem index arguments with
-            | Some argument -> CodeSharing.canonicalisesToCanon state.BaseTypes state.TypeSystem argument
-            | None ->
-                failwith $"BUG: %O{spelling} names type variable %d{index}, which the instance has no argument for"
-
-        match spelling with
-        | TypeDefn.GenericTypeParameter index -> shared typeArguments index
-        | TypeDefn.GenericMethodParameter index -> shared methodArguments index
-        | TypeDefn.GenericInstantiation (root, arguments) ->
-            Seq.append [ root ] arguments
-            |> Seq.exists (namesSharedArgument state typeArguments methodArguments)
-        | TypeDefn.Array (element, _)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.Pinned element -> namesSharedArgument state typeArguments methodArguments element
-        | TypeDefn.Modified modified -> namesSharedArgument state typeArguments methodArguments modified.Unmodified
-        | TypeDefn.FunctionPointer signature ->
-            signatureTypes signature
-            |> List.exists (namesSharedArgument state typeArguments methodArguments)
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Void -> false
-
     /// The `CastHelpers` method, if any, that `site`, an instruction of `instance` naming a type
     /// variable, or a cast to a `Nullable<T>` over one, calls, given the declaring type's arguments,
     /// `typeArguments`, and the method's, `methodArguments`. Shared code names the canonical form
@@ -5660,7 +5624,9 @@ module EscapeAnalysis =
             || site.Instruction = HelpedInstruction.Castclass
             || site.Instruction = HelpedInstruction.UnboxAny
             ->
-            if namesSharedArgument state typeArguments methodArguments spelling then
+            if
+                CodeSharing.namesSharedArgument state.BaseTypes state.TypeSystem typeArguments methodArguments spelling
+            then
                 state, Some (JitHelper.Cast (throwing, CastTarget.Any))
             else
                 state, Some (JitHelper.Cast (throwing, CastTarget.Class))
@@ -5687,7 +5653,12 @@ module EscapeAnalysis =
         let shared (spelled : SpelledType) : bool =
             match caller with
             | Instantiation.Closed (typeArguments, methodArguments) ->
-                namesSharedArgument state typeArguments methodArguments spelled.Type
+                CodeSharing.namesSharedArgument
+                    state.BaseTypes
+                    state.TypeSystem
+                    typeArguments
+                    methodArguments
+                    spelled.Type
             | Instantiation.Open -> false
 
         match concretizeIn state caller named.Type named.SpelledIn with
@@ -5841,7 +5812,14 @@ module EscapeAnalysis =
                     let embedded =
                         refined.LookedUp
                         |> List.filter (fun (_, spelled) ->
-                            not (namesSharedArgument state typeArguments methodArguments spelled.Type)
+                            not (
+                                CodeSharing.namesSharedArgument
+                                    state.BaseTypes
+                                    state.TypeSystem
+                                    typeArguments
+                                    methodArguments
+                                    spelled.Type
+                            )
                         )
                         |> List.map fst
                         |> Set.ofList

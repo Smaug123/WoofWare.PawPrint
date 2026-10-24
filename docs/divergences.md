@@ -841,6 +841,50 @@ handler, can tell the difference. This is the same timing trade PawPrint makes f
 exception for each shape, with the instruction first in its method and no handler of its own, where
 the two runtimes agree.
 
+## A `box` or `newarr` of a byref-like type fails when it is reached
+
+**CoreCLR**: a byref-like type (a `ref struct`, such as `Span<T>`) cannot live on the heap. The JIT
+refuses a method holding a `newarr` of one, raising `TypeLoadException` for the array type, and a
+method holding a `box` of one, raising `InvalidProgramException`, unless the instructions after the
+box in its basic block test or unbox it at once, in which case it folds the box away
+(`impBoxPatternMatch`, importer.cpp): a `brtrue` or `brfalse`; `isinst` and then one of those,
+where it decides the cast; `unbox.any` of the boxed type; or `isinst` and `unbox.any`, both of the
+boxed type. Roslyn emits the first for a null test of a value whose type parameter
+`allows ref struct`. As for an abstract method's `call`, the refusal happens when the method is
+compiled, so it runs nothing, the exception arrives even where the instruction is on a path that
+would not execute, and no handler inside the method catches it.
+
+Shared generic code sees a type that a type argument names in its canonical form, which the JIT's
+comparisons of types decide less often: a box of `Holder<string>` in shared code followed by
+`unbox.any` of the same type, or by `isinst object` and a branch, is refused there, but folded where
+the JIT inlines the method into a caller that names the type exactly. Whether it inlines is its own
+choice, and may change as the method tiers up.
+
+**PawPrint**: raises each exception when the instruction *executes*, as for an abstract method's
+`call`, and runs a box it folds as an ordinary box, whose object nothing can reach once the
+instructions after it have consumed it. Where the fold turns on whether the JIT inlines the method,
+PawPrint stops with an error that says so rather than pick one, unless the JIT may not inline the
+method, which leaves only shared code's answer: it is marked `NoInlining` or `NoOptimization`, or its
+assembly's `DebuggableAttribute` disables optimisation, as a C# Debug build's does. It stops likewise where the fold turns on what
+`compareTypesForCast` answers for the canonical form of a type cast to a generic interface, which
+PawPrint does not build, and where an instruction after the box names a byref or `System.Void` in
+metadata, which the JIT refuses as an operand but PawPrint does not validate.
+
+**Spec status**: ECMA-335 does not mention byref-like types; their rules are CoreCLR's.
+
+**Why we chose this**: as for an abstract method's `call`. Raising at method entry needs a
+compilation step that decides which code the JIT compiles, folding the branches on capability
+queries, and resolves those instructions' tokens before the method runs, which loads types in a
+different order from the program's own execution. The exception a caller observes is the right one
+except where the IL hides the instruction behind control flow, or wraps it in a handler of its own
+method.
+
+**Where this lives in code**: `UnaryMetadataObjectOps.executeBox`, which asks `BoxPattern` what
+follows the box and `JitTypeComparison` what the JIT decides about it, and
+`UnaryMetadataArrayOps.executeNewarr`. `TestFabricatedByRefLikeBox` pins each pattern, folded and
+refused, with the box reached on every run and no handler of its own, where the two runtimes agree,
+and `RefStructNullTest.cs` the null tests Roslyn emits.
+
 ## A field reference that binds nothing throws when it is reached
 
 **CoreCLR**: a field instruction (`ldfld`, `ldflda`, `stfld`, `ldsfld`, `ldsflda`, `stsfld`) or an
