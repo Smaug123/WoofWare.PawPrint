@@ -5336,8 +5336,9 @@ module EscapeAnalysis =
 
     /// A type a body spells, as an instance of the body running as `caller` makes it; `spelledIn`
     /// names the assembly whose metadata spells it. `None` where the instance leaves a type
-    /// variable of it open, or the type fails to bind, which fails that body before it runs, as its
-    /// facts report.
+    /// variable of it open; where the type fails to bind, which fails that body before it runs, as
+    /// its facts report; and where TypeSystem does not instantiate it, although CoreCLR may load it
+    /// (`concretizable`).
     let private concretizeIn
         (state : EscapeAnalysisState)
         (caller : Instantiation)
@@ -5989,7 +5990,6 @@ module EscapeAnalysis =
             state, [ OutsideBodyFact.Opaque Opacity.DependsOnInstantiation ]
         | state, handle ->
 
-        // Whether the type loads, as a byref-like type.
         let state, byRefLike =
             match handle with
             | Some handle ->
@@ -5997,21 +5997,16 @@ module EscapeAnalysis =
                 | Some (_, ty) ->
                     state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
                 | None -> state, false
+            // The token binds, which loads the type it names in full (`bind`), but the analysis
+            // does not instantiate it (`concretizable`). It is byref-like where its definition is,
+            // whatever its type arguments.
             | None ->
-                let assembly = assemblyOf state named.SpelledIn
-
-                match spellingLoadFailure state assembly named.Type with
-                // A type that does not load fails the instruction's binding (`bind`).
-                | state, Some _ -> state, false
-                // One that loads, but that the analysis does not instantiate (`concretizable`), is
-                // byref-like where its definition is, whatever its type arguments.
-                | state, None ->
-                    match nominalIdentity state assembly named.Type with
-                    | state, Some identity ->
-                        let _, ty = definitionOf state identity
-                        state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
-                    // No array, pointer or function pointer is byref-like.
-                    | state, None -> state, false
+                match nominalIdentity state (assemblyOf state named.SpelledIn) named.Type with
+                | state, Some identity ->
+                    let _, ty = definitionOf state identity
+                    state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
+                // No array, pointer or function pointer is byref-like.
+                | state, None -> state, false
 
         if not byRefLike then
             state, []

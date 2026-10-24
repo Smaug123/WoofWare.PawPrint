@@ -11162,12 +11162,15 @@ public static class Runners
             ModifiedTuple : EntityHandle
             /// `Span<System.Gone modopt(IsConst)>`, which CoreLib declares no `System.Gone` for
             ModifiedGoneSpan : EntityHandle
+            /// `Probe.Marked<int modopt(IsConst)>`, of a class carrying `IsByRefLikeAttribute`, which
+            /// makes no class byref-like
+            ModifiedMarked : EntityHandle
         }
 
     /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
-    /// `runners`, with locals `Span<int>` and `ValueTuple<int>`, whose body that writes. It emits
-    /// the image with System.Reflection.Metadata, because neither C# nor `Reflection.Emit` spells a
-    /// generic argument carrying a custom modifier.
+    /// `runners`, each with locals `Span<int>` and `ValueTuple<int>` and the body `runners` writes
+    /// for it. It emits the image with System.Reflection.Metadata, because neither C# nor
+    /// `Reflection.Emit` spells a generic argument carrying a custom modifier.
     let private modifiedOperands (runners : (string * (ModifiedOperands -> InstructionEncoder -> unit)) list) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -11217,6 +11220,9 @@ public static class Runners
         let tupleRef = typeRef "System" "ValueTuple`1"
         let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
         let goneRef = typeRef "System" "Gone"
+        let byRefLikeRef = typeRef "System.Runtime.CompilerServices" "IsByRefLikeAttribute"
+        // `<Module>`, `Probe.Runners`, then this.
+        let marked = MetadataTokens.TypeDefinitionHandle 3
 
         let typeSpec (encode : SignatureTypeEncoder -> unit) : EntityHandle =
             let blob = BlobBuilder ()
@@ -11249,6 +11255,16 @@ public static class Runners
                 Tuple = typeSpec (instance tupleRef false int32)
                 ModifiedTuple = typeSpec (instance tupleRef true int32)
                 ModifiedGoneSpan = typeSpec (instance spanRef true (fun argument -> argument.Type (goneRef, false)))
+                ModifiedMarked =
+                    typeSpec (fun t ->
+                        let argument =
+                            t.GenericInstantiation(TypeDefinitionHandle.op_Implicit marked, 1, false).AddArgument ()
+
+                        argument.CustomModifiers().AddModifier (isConstRef, true)
+                        |> ignore<CustomModifiersEncoder>
+
+                        argument.Int32 ()
+                    )
             }
 
         let locals =
@@ -11309,6 +11325,43 @@ public static class Runners
         )
         |> ignore<TypeDefinitionHandle>
 
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public,
+            metadata.GetOrAddString "Probe",
+            metadata.GetOrAddString "Marked`1",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle (List.length runners + 1)
+        )
+        |> fun handle ->
+            if handle <> marked then
+                failwith $"BUG: Probe.Marked`1 is %O{handle}"
+
+        metadata.AddGenericParameter (
+            TypeDefinitionHandle.op_Implicit marked,
+            GenericParameterAttributes.None,
+            metadata.GetOrAddString "T",
+            0
+        )
+        |> ignore<GenericParameterHandle>
+
+        let byRefLikeConstructor =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (0, (fun returns -> returns.Void ()), ignore<ParametersEncoder>)
+
+            metadata.AddMemberReference (byRefLikeRef, metadata.GetOrAddString ".ctor", metadata.GetOrAddBlob blob)
+
+        metadata.AddCustomAttribute (
+            TypeDefinitionHandle.op_Implicit marked,
+            MemberReferenceHandle.op_Implicit byRefLikeConstructor,
+            // The prolog, and no named arguments.
+            metadata.GetOrAddBlob [| 1uy ; 0uy ; 0uy ; 0uy |]
+        )
+        |> ignore<CustomAttributeHandle>
+
         let peBuilder =
             ManagedPEBuilder (
                 PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
@@ -11362,6 +11415,7 @@ public static class Runners
             "NewarrModifiedTuple", (fun operands code -> newarr _.ModifiedTuple code operands), Refusal.Compiles
             // A type that does not load raises what binding the token does, before the JIT can
             // refuse the box.
+            "NewarrModifiedMarked", (fun operands code -> newarr _.ModifiedMarked code operands), Refusal.Compiles
             "BoxModifiedGoneSpanPop", popped _.ModifiedGoneSpan 0, Refusal.Raises typeLoad
             "NewarrModifiedGoneSpan",
             (fun operands code -> newarr _.ModifiedGoneSpan code operands),
