@@ -14,7 +14,9 @@ type Opacity =
     /// A <c>callvirt</c> to a method that may be overridden, on an object whose class the IL does not
     /// decide: the method named may not be the one that runs. That includes a <c>constrained.</c>
     /// call whose type does not decide it: an instance method's on a class that may be derived from,
-    /// or a type variable of a definition analysed for every instantiation at once.
+    /// a class's method holding a slot that means something else in the table of the value type the
+    /// prefix names (<c>ClassMethodOnValueType.Undecided</c>), or a type variable of a definition
+    /// analysed for every instantiation at once.
     | VirtualCall
     /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target. So too
     /// a field a dynamic method's scope names, whose type's initializer the access may run.
@@ -40,9 +42,8 @@ type Opacity =
     /// runs the method named on the box (<c>TryResolveConstraintMethodApprox</c>, methodtable.cpp;
     /// <c>CORINFO_BOX_THIS</c>, <c>getCallInfo</c>, jitinterface.cpp), whose body then reads it as an
     /// instance of a class it is not. So too where the method named is another value type's, which
-    /// CoreCLR runs on the receiver's address, or holds a slot beyond the value type's vtable, which
-    /// CoreCLR reads past the vtable for. The analysis does not follow what a method does with such
-    /// a receiver.
+    /// CoreCLR runs on the receiver's address. The analysis follows the method, but not what it does
+    /// with such a receiver.
     | MistypedReceiver
     /// The method is <c>InternalCall</c>, <c>PInvoke</c> or runtime-provided: its behaviour is not IL.
     | NativeBody
@@ -523,6 +524,10 @@ type internal MethodInstance =
 type internal DispatchOutcome =
     /// It calls this instance.
     | Reaches of MethodInstance
+    /// It calls this instance on a receiver that is no instance of the method's declaring type
+    /// (`Opacity.MistypedReceiver`), whose body the analysis follows without knowing what it does
+    /// with that receiver, or returns.
+    | ReachesMistyped of MethodInstance
     /// It throws this instead of calling anything, which the runtime makes by running this
     /// constructor, whose own raises escape in its place.
     | Raises of ThrownType * made : MethodKey
@@ -1639,6 +1644,21 @@ module EscapeAnalysis =
         else
             let _, declaring = definitionOf state (declaringTypeOf state key)
             not (declaring.TypeAttributes.HasFlag TypeAttributes.Sealed)
+
+    /// Does the type a `constrained.` prefix names decide what a `callvirt` of the instance method
+    /// `key` after it does, though the method cannot be overridden? It does for a class's method,
+    /// which CoreCLR resolves on a value type by its slot (`ConstrainedType.resolveClassMethodOnValueType`),
+    /// and runs, where it runs the method named, on a box of the value type that may be no instance
+    /// of the class; except for a method of `Object` that is not virtual, which runs on whatever the
+    /// prefix names, boxed if need be, every box being an `Object`.
+    let private constrainedTypeDecides (state : EscapeAnalysisState) (key : MethodKey) : bool =
+        let _, method = methodOf state key
+        let declaringType = declaringTypeOf state key
+        let _, declaring = definitionOf state declaringType
+
+        not method.IsStatic
+        && not (declaring.TypeAttributes.HasFlag TypeAttributes.Interface)
+        && (method.IsVirtual || declaringType <> state.BaseTypes.Object.Identity)
 
     /// The type initializer of a type definition, if it has one.
     let private typeInitializer (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) : MethodKey option =
@@ -3907,10 +3927,14 @@ module EscapeAnalysis =
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), _ ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
                         // which is how the only legal call to one is written; an overridable
-                        // method, on that type where the prefix is there.
+                        // method, on that type where the prefix is there; and a class's method that
+                        // cannot be overridden is resolved on that type (`constrainedTypeDecides`).
                         if
                             isStaticVirtual state callee.Callee
                             || (call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee.Callee)
+                            || (call = UnaryMetadataTokenIlOp.Callvirt
+                                && (constrainedPrefix index).IsSome
+                                && constrainedTypeDecides state callee.Callee)
                         then
                             match constrainedPrefix index with
                             | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
@@ -5613,8 +5637,92 @@ module EscapeAnalysis =
                 state, Some (receiver, dispatched)
             | ConstrainedType.Undecided _ -> state, None
 
+    /// What a `constrained.` call of `callee`, a class's method that cannot be overridden, does on
+    /// `receiver`, the type CoreCLR resolves it against, when the body of `assembly` making it runs as
+    /// `caller`. On a reference type, it calls the method named on the reference the receiver's
+    /// address holds. On a value type, it calls what `ConstrainedType.resolveClassMethodOnValueType`
+    /// resolves it to on the receiver's address, or else the method named on a box of it, which
+    /// that method's class may not be one of.
+    let private notOverridableOn
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (receiver : ConcreteTypeHandle)
+        (callee : Callee)
+        : EscapeAnalysisState * DispatchOutcome
+        =
+        let state, named = calleeInstance state assembly caller callee
+
+        match named.Arguments with
+        | Instantiation.Open -> state, DispatchOutcome.Undecided
+        | Instantiation.Closed (namedTypeArguments, namedMethodArguments) ->
+
+        if TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem receiver then
+            state, DispatchOutcome.Reaches named
+        else
+
+        match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem receiver with
+        | None -> state, DispatchOutcome.Undecided
+        | Some (concrete, _) ->
+
+        let receiverGenerics = List.ofSeq concrete.Generics
+
+        // Is the method named one of the receiver's own instantiation, or of a class it derives from?
+        // A value type's bases (`ValueType`, `Enum`, `Object`) are not generic, so their identities
+        // say so.
+        let rec derivesFrom (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
+            if identity = declaringTypeOf state callee.Callee then
+                state, (identity <> concrete.Identity || namedTypeArguments = receiverGenerics)
+            else
+                match baseOf state identity with
+                | state, Some parent -> derivesFrom state parent
+                | state, None -> state, false
+
+        let _, method = methodOf state callee.Callee
+
+        let typeSystem, resolved =
+            ConstrainedType.resolveClassMethodOnValueType
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                state.TypeSystem
+                receiver
+                method
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        match resolved with
+        | ClassMethodOnValueType.Undecided -> state, DispatchOutcome.Undecided
+        | ClassMethodOnValueType.Resolves runs ->
+            match runs.TryMetadata with
+            | None -> state, DispatchOutcome.Undecided
+            | Some facts ->
+                let key =
+                    MethodKey.make (assemblyOf state runs.DeclaringAssemblyFullName) facts.Handle
+
+                if key = callee.Callee then
+                    // The method named is a value type's, which is the receiver's only if the
+                    // receiver is of that type.
+                    match derivesFrom state concrete.Identity with
+                    | state, true -> state, DispatchOutcome.Reaches named
+                    | state, false -> state, DispatchOutcome.ReachesMistyped named
+                else
+                    // The receiver's own method, in the slot of the method named.
+                    state, DispatchOutcome.Reaches (instanceOf state key receiverGenerics namedMethodArguments)
+        | ClassMethodOnValueType.Boxes when concrete.Identity = state.BaseTypes.Nullable.Identity ->
+            // A boxed Nullable is its underlying value or null, not a Nullable.
+            state, DispatchOutcome.Undecided
+        | ClassMethodOnValueType.Boxes ->
+            match derivesFrom state concrete.Identity with
+            | state, true -> state, DispatchOutcome.Reaches named
+            | state, false -> state, DispatchOutcome.ReachesMistyped named
+
     /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
-    /// the type CoreCLR resolves it against decides it (`constrainedReceiver`, `dispatchOn`).
+    /// the type CoreCLR resolves it against decides it (`constrainedReceiver`, `dispatchOn`,
+    /// `notOverridableOn`).
     let private constrainedInstance
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -5624,7 +5732,11 @@ module EscapeAnalysis =
         : EscapeAnalysisState * DispatchOutcome
         =
         match constrainedReceiver state assembly caller constrainedType callee with
-        | state, Some (receiver, dispatched) -> dispatchOn state assembly caller receiver false dispatched
+        | state, Some (receiver, dispatched) when
+            isStaticVirtual state dispatched.Callee || isOverridable state dispatched.Callee
+            ->
+            dispatchOn state assembly caller receiver false dispatched
+        | state, Some (receiver, dispatched) -> notOverridableOn state assembly caller receiver dispatched
         | state, None -> state, DispatchOutcome.Undecided
 
     /// Whether the JIT boxes the receiver of `site`, a `constrained.` call the body of `assembly`
@@ -5659,13 +5771,38 @@ module EscapeAnalysis =
             if not method.IsVirtual then
                 state, Some false
             elif not (isOverridable state named) then
-                state, Some (declaringTypeOf state named = concrete.Identity)
+                let _, declaring = definitionOf state (declaringTypeOf state named)
+
+                if declaring.TypeAttributes.HasFlag TypeAttributes.Interface then
+                    state, Some (declaringTypeOf state named = concrete.Identity)
+                else
+                    let typeSystem, resolved =
+                        ConstrainedType.resolveClassMethodOnValueType
+                            state.LoggerFactory
+                            state.RuntimeDirs
+                            state.BaseTypes
+                            state.TypeSystem
+                            receiver
+                            method
+
+                    let state =
+                        { state with
+                            TypeSystem = typeSystem
+                        }
+
+                    match resolved with
+                    | ClassMethodOnValueType.Resolves _ -> state, Some true
+                    | ClassMethodOnValueType.Boxes -> state, Some false
+                    | ClassMethodOnValueType.Undecided -> state, None
             else
                 match dispatchOn state assembly caller receiver false dispatched with
                 | state, DispatchOutcome.Reaches reached ->
                     state, Some (declaringTypeOf state reached.Definition = concrete.Identity)
                 | state, DispatchOutcome.Raises _ -> state, Some false
                 | state, DispatchOutcome.Undecided -> state, None
+                | _, DispatchOutcome.ReachesMistyped reached ->
+                    failwith
+                        $"BUG: dispatching %O{named} on %O{receiver} reached %O{reached.Definition} on a mistyped receiver, which only a method that cannot be overridden does"
 
         match declared with
         | None -> state, ReceiverBox.Undecided
@@ -6517,6 +6654,11 @@ module EscapeAnalysis =
                 passedTo state inProgress instance facts passes receiver reached
 
             state, DispatchOutcome.Reaches reached
+        | DispatchOutcome.ReachesMistyped reached ->
+            let state, reached =
+                passedTo state inProgress instance facts passes receiver reached
+
+            state, DispatchOutcome.ReachesMistyped reached
         | DispatchOutcome.Raises _
         | DispatchOutcome.Undecided -> state, outcome
 
@@ -6545,6 +6687,8 @@ module EscapeAnalysis =
                 |> List.forall (fun outcome ->
                     match outcome with
                     | DispatchOutcome.Reaches _ -> true
+                    // What the method returns on that receiver is not known.
+                    | DispatchOutcome.ReachesMistyped _
                     | DispatchOutcome.Raises _
                     | DispatchOutcome.Undecided -> false
                 )
@@ -6553,6 +6697,7 @@ module EscapeAnalysis =
                 |> List.choose (fun outcome ->
                     match outcome with
                     | DispatchOutcome.Reaches reached -> Some reached
+                    | DispatchOutcome.ReachesMistyped _
                     | DispatchOutcome.Raises _
                     | DispatchOutcome.Undecided -> None
                 )
@@ -6758,6 +6903,16 @@ module EscapeAnalysis =
                     | DispatchOutcome.Reaches reached ->
                         let ran, raised = landing state offset reached
                         reaching offset reached (state, ran @ callees, raised @ raises, undecided)
+                    | DispatchOutcome.ReachesMistyped reached ->
+                        let ran, raised = landing state offset reached
+
+                        reaching
+                            offset
+                            reached
+                            (state,
+                             ran @ callees,
+                             raised @ raises,
+                             (offset, Opacity.MistypedReceiver, Some callee.Callee) :: undecided)
                     | DispatchOutcome.Raises (thrown, made) ->
                         state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
                     | DispatchOutcome.Undecided ->
@@ -6808,7 +6963,8 @@ module EscapeAnalysis =
             ((state, callees, raises, undecided), facts.ConstrainedPointers)
             ||> List.fold (fun (state, callees, raises, undecided) (offset, constrainedType, callee) ->
                 match constrainedInstance state assembly instance.Arguments constrainedType callee with
-                | state, DispatchOutcome.Reaches _ -> state, callees, raises, undecided
+                | state, DispatchOutcome.Reaches _
+                | state, DispatchOutcome.ReachesMistyped _ -> state, callees, raises, undecided
                 | state, DispatchOutcome.Raises (thrown, made) ->
                     state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
                 | state, DispatchOutcome.Undecided ->

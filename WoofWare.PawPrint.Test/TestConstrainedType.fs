@@ -237,6 +237,141 @@ module TestConstrainedType =
         retargeted |> shouldBeGreaterThan 100
         kept |> shouldBeGreaterThan 1000
 
+    [<Test>]
+    let ``a class's method on a value type resolves to the method the host's tables give that slot`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let corelib = Assembly.readFile loggerFactory HostImage.coreLibPath
+        let hostCoreLib = typeof<obj>.Assembly
+        let bct = BaseClassTypes.ofCorelib corelib
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ]
+
+        let mutable state =
+            { TypeSystemState.Empty with
+                _LoadedAssemblies = loaded
+                ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+            }
+
+        let concretize (host : Type) : ConcreteTypeHandle =
+            let next, handle =
+                TypeSystemState.concretizeType
+                    loggerFactory
+                    HostImage.runtimeDirs
+                    bct
+                    state
+                    corelib.DefinitionFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (
+                        corelib.TypeDefs.[MetadataTokens.TypeDefinitionHandle host.MetadataToken].Identity,
+                        SignatureTypeKind.ValueType
+                    ))
+
+            state <- next
+            handle
+
+        let pawPrintMethod (host : MethodInfo) =
+            corelib.Methods.[MetadataTokens.MethodDefinitionHandle host.MetadataToken]
+
+        let instanceFlags =
+            BindingFlags.DeclaredOnly
+            ||| BindingFlags.Public
+            ||| BindingFlags.NonPublic
+            ||| BindingFlags.Instance
+
+        // Every non-generic value type CoreLib defines.
+        let valueTypes =
+            hostCoreLib.GetTypes ()
+            |> Array.filter (fun ty -> ty.IsValueType && not ty.ContainsGenericParameters)
+            |> Array.sortBy (fun ty -> ty.FullName)
+            |> List.ofArray
+
+        // The instance methods of the classes every value type derives from, and of `String`, a sealed
+        // class with virtuals of its own; and some of value types', which a call may name on another.
+        let methods =
+            [
+                typeof<obj>
+                typeof<ValueType>
+                typeof<Enum>
+                typeof<string>
+                typeof<int>
+                typeof<Guid>
+            ]
+            |> List.collect (fun ty -> List.ofArray (ty.GetMethods instanceFlags))
+
+        // What the host's tables give: a method that is not virtual is no slot's, and a value type's
+        // own virtual is taken itself. Otherwise the slot means the same in both tables where its
+        // root declaration is of a class the value type derives from, and then holds the value type's
+        // override of that declaration, if it has one.
+        let expected (valueType : Type) (called : MethodInfo) : ClassMethodOnValueType =
+            if not called.IsVirtual then
+                ClassMethodOnValueType.Boxes
+            elif called.DeclaringType.IsValueType then
+                ClassMethodOnValueType.Resolves (pawPrintMethod called)
+            else
+                let root = called.GetBaseDefinition ()
+
+                let ancestors =
+                    valueType
+                    |> List.unfold (fun ty -> Option.ofObj ty |> Option.map (fun ty -> ty, ty.BaseType))
+
+                if not (List.contains root.DeclaringType ancestors) then
+                    ClassMethodOnValueType.Undecided
+                else
+                    match
+                        valueType.GetMethods instanceFlags
+                        |> Array.tryFind (fun m -> m.IsVirtual && m.GetBaseDefinition () = root)
+                    with
+                    | Some own -> ClassMethodOnValueType.Resolves (pawPrintMethod own)
+                    | None -> ClassMethodOnValueType.Boxes
+
+        let summary (resolved : ClassMethodOnValueType) : string =
+            match resolved with
+            | ClassMethodOnValueType.Resolves m -> $"Resolves %s{m.Name} %A{m.IdentityKey}"
+            | ClassMethodOnValueType.Boxes -> "Boxes"
+            | ClassMethodOnValueType.Undecided -> "Undecided"
+
+        let failures = ResizeArray<string> ()
+        let counts = Dictionary<string, int> ()
+
+        for valueType in valueTypes do
+            let handle = concretize valueType
+
+            for called in methods do
+                let expected = expected valueType called
+
+                let next, actual =
+                    ConstrainedType.resolveClassMethodOnValueType
+                        loggerFactory
+                        HostImage.runtimeDirs
+                        bct
+                        state
+                        handle
+                        (pawPrintMethod called)
+
+                state <- next
+
+                let kind = (summary expected).Split(' ').[0]
+
+                counts.[kind] <-
+                    (match counts.TryGetValue kind with
+                     | true, n -> n
+                     | false, _ -> 0)
+                    + 1
+
+                if summary actual <> summary expected then
+                    failures.Add
+                        $"%s{valueType.FullName} with %s{called.DeclaringType.Name}::%s{called.Name}: expected %s{summary expected}, got %s{summary actual}"
+
+        if failures.Count > 0 then
+            failures |> Seq.truncate 50 |> String.concat Environment.NewLine |> failwith
+
+        // Every way the rule decides was exercised, enough for the comparison to say something.
+        for kind in [ "Resolves" ; "Boxes" ; "Undecided" ] do
+            (match counts.TryGetValue kind with
+             | true, n -> n
+             | false, _ -> 0)
+            |> shouldBeGreaterThan 100
+
     /// What running a probe on the real runtime did.
     [<RequireQualifiedAccess>]
     type private Ran =
