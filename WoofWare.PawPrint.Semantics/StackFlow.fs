@@ -2,15 +2,24 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-/// What a dataflow over the evaluation stack tracks about each slot, and how: the values its
-/// slots hold, which every instruction's `Pushed` values become, and how two paths' values meet
-/// at a join.
+/// What a dataflow over the evaluation stack and the locals tracks about each slot and each
+/// local, and how: the values they hold, which every instruction's `Pushed` values become, and
+/// how two paths' values meet at a join.
 type SlotLattice<'slot> =
     {
         /// How the instruction at an offset computes one value it pushes, `Pushed` saying what
         /// that value is, from the values it popped, top first; or why this lattice cannot say,
-        /// which makes the instruction invalid.
+        /// which makes the instruction invalid. The flow never asks it of `Pushed.Local`, which is
+        /// what the local holds.
         Push : int -> IlOp -> Pushed -> Result<'slot list -> 'slot, StackShapeError>
+        /// What the local of this index may hold where the flow does not follow what is stored in
+        /// it: on entry to the body, on entry to a handler, past a `leave` for a local a `finally`
+        /// or `fault` handler stores to, and everywhere for a local whose address the body takes.
+        Local : int -> 'slot
+        /// What the local of this index holds once a `stloc` stores this value in it.
+        Store : int -> 'slot -> 'slot
+        /// What the local of this index holds where two paths' values for it meet.
+        JoinLocal : int -> 'slot -> 'slot -> 'slot
         /// The value a slot holds where two paths' values meet: at the offset given, in the slot
         /// given counted from the top. An error makes the join unknown, and what follows only
         /// from it.
@@ -55,25 +64,26 @@ type StackFlow<'slot> =
 module StackFlow =
 
     /// What the instruction at `offset` pops, and how it computes each value it pushes, top
-    /// first, from what it popped.
+    /// first, from what it popped and what the locals hold.
     let private stepOf
         (lattice : SlotLattice<'slot>)
         (inputs : StackEffectInputs)
         (locations : Map<int, IlOp>)
         (offset : int)
         (instruction : IlOp)
-        : Result<int * ('slot list -> 'slot) list, StackShapeError>
+        : Result<int * ('slot list -> 'slot array -> 'slot) list, StackShapeError>
         =
         match StackEffect.ofInstruction inputs locations offset instruction with
         | Error e -> Error e
         | Ok effect ->
-            let rec computes (pushed : Pushed list) (acc : ('slot list -> 'slot) list) =
+            let rec computes (pushed : Pushed list) (acc : ('slot list -> 'slot array -> 'slot) list) =
                 match pushed with
                 | [] -> Ok (List.rev acc)
+                | Pushed.Local index :: rest -> computes rest ((fun _ locals -> locals.[index]) :: acc)
                 | p :: rest ->
                     match lattice.Push offset instruction p with
                     | Error e -> Error e
-                    | Ok compute -> computes rest (compute :: acc)
+                    | Ok compute -> computes rest ((fun popped _ -> compute popped) :: acc)
 
             computes effect.Pushes [] |> Result.map (fun pushes -> effect.Pops, pushes)
 
@@ -453,6 +463,53 @@ module StackFlow =
 
         parent.Keys |> Seq.map (fun offset -> offset, find offset) |> Map.ofSeq
 
+    /// The local an instruction stores to, if it is a `stloc`.
+    let private storedLocal (instruction : IlOp) : int option =
+        match instruction with
+        | IlOp.Nullary NullaryIlOp.Stloc_0 -> Some 0
+        | IlOp.Nullary NullaryIlOp.Stloc_1 -> Some 1
+        | IlOp.Nullary NullaryIlOp.Stloc_2 -> Some 2
+        | IlOp.Nullary NullaryIlOp.Stloc_3 -> Some 3
+        | IlOp.UnaryConst (UnaryConstIlOp.Stloc_s index) -> Some (int index)
+        | IlOp.UnaryConst (UnaryConstIlOp.Stloc index) -> Some (int index)
+        | _ -> None
+
+    /// The locals whose address the body takes anywhere, through which anything it runs may store
+    /// to them at any time after.
+    let private addressedLocals (body : MethodInstructions<'methodVars>) : Set<int> =
+        body.Instructions
+        |> List.choose (fun (instruction, _) ->
+            match instruction with
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldloca_s index) -> Some (int index)
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldloca index) -> Some (int index)
+            | _ -> None
+        )
+        |> Set.ofList
+
+    /// The locals some `finally` or `fault` handler of the body stores to, which may run between a
+    /// `leave` and its target.
+    let private cleanupStores (body : MethodInstructions<'methodVars>) : Set<int> =
+        let handlers =
+            body.ExceptionRegions
+            |> Seq.choose (fun region ->
+                match region with
+                | ExceptionRegion.Finally offsets
+                | ExceptionRegion.Fault offsets ->
+                    Some (offsets.HandlerOffset, offsets.HandlerOffset + offsets.HandlerLength)
+                | ExceptionRegion.Catch _
+                | ExceptionRegion.Filter _ -> None
+            )
+            |> List.ofSeq
+
+        body.Instructions
+        |> List.choose (fun (instruction, offset) ->
+            if handlers |> List.exists (fun (start, stop) -> start <= offset && offset < stop) then
+                storedLocal instruction
+            else
+                None
+        )
+        |> Set.ofList
+
     /// The offsets control can reach from the method's entry or a handler entry, following
     /// branches, fall-through and `leave` but not exceptions. A token on an instruction outside
     /// this set need never be read: CoreCLR's importer does not import such code either.
@@ -504,8 +561,8 @@ module StackFlow =
     /// What an instruction delivers to one successor.
     [<RequireQualifiedAccess>]
     type private Delivery<'slot> =
-        /// The stack, top first.
-        | Known of 'slot list
+        /// The stack, top first, and what each local holds, by index.
+        | Known of stack : 'slot list * locals : 'slot array
         | Unknown
 
     /// The offsets whose shape can depend on which way the JIT takes the branch whose
@@ -559,6 +616,15 @@ module StackFlow =
 
         let invalid = System.Collections.Generic.Dictionary<int, StackShapeError> ()
         let cliques = Cliques<'slot> lattice
+
+        let addressed = addressedLocals body
+        let cleanedUp = cleanupStores body
+
+        // What each local holds on entry to each offset with a known stack, joined over every path
+        // seen so far.
+        let localsAt = System.Collections.Generic.Dictionary<int, 'slot array> ()
+
+        let unfollowed () : 'slot array = Array.init inputs.Locals lattice.Local
 
         let componentOf (offset : int) : int =
             Map.tryFind offset components |> Option.defaultValue offset
@@ -619,11 +685,25 @@ module StackFlow =
                         failwith $"BUG: stack flow: slot %d{k} at offset %d{offset} has a depth but no clique value"
                 )
 
-        /// Where `offset` sends control, each successor arriving with `delivery` (a `leave`
-        /// empties the stack).
+        /// Where `offset` sends control, each successor arriving with `delivery`. A `leave` empties
+        /// the stack, and the `finally` and `fault` handlers it may run on the way may store to
+        /// locals.
         let successors (offset : int) (delivery : Delivery<'slot>) : (int * Delivery<'slot>) list =
             match ControlFlow.successorsOf offset locations.[offset] with
-            | Successors.Leave target -> [ target, Delivery.Known [] ]
+            | Successors.Leave target ->
+                let locals =
+                    match delivery with
+                    | Delivery.Known (_, locals) ->
+                        locals
+                        |> Array.mapi (fun index value ->
+                            if cleanedUp.Contains index then
+                                lattice.Local index
+                            else
+                                value
+                        )
+                    | Delivery.Unknown -> unfollowed ()
+
+                [ target, Delivery.Known ([], locals) ]
             | _ -> graph.[offset] |> List.map (fun target -> target, delivery)
 
         /// Where `offset` sends control, and what it delivers there: the stack its instruction
@@ -636,6 +716,7 @@ module StackFlow =
             | Entry.Known depth ->
 
             let stack = entryShapes offset depth
+            let locals = localsAt.[offset]
 
             match stepOf lattice inputs locations offset instruction with
             | Error e -> Error e
@@ -646,8 +727,17 @@ module StackFlow =
             else
 
             let popped, rest = List.splitAt pops stack
-            let pushed = pushes |> List.map (fun compute -> compute popped)
-            let targets = successors offset (Delivery.Known (pushed @ rest))
+            let pushed = pushes |> List.map (fun compute -> compute popped locals)
+
+            let locals =
+                match storedLocal instruction, popped with
+                | Some index, value :: _ when not (addressed.Contains index) ->
+                    let stored = Array.copy locals
+                    stored.[index] <- lattice.Store index value
+                    stored
+                | _ -> locals
+
+            let targets = successors offset (Delivery.Known (pushed @ rest, locals))
 
             match targets |> List.tryFind (fun (target, _) -> not (locations.ContainsKey target)) with
             | Some (target, _) -> Error (StackShapeError.BranchOutsideBody (offset, target))
@@ -673,7 +763,7 @@ module StackFlow =
                         | Delivery.Unknown ->
                             markUnknown target None
                             None
-                        | Delivery.Known stack ->
+                        | Delivery.Known (stack, locals) ->
                             match entry.TryGetValue target with
                             | true, Entry.Unknown -> None
                             | true, Entry.Known existing when existing <> stack.Length ->
@@ -682,9 +772,20 @@ module StackFlow =
                                     (Some (StackShapeError.DepthMismatch (target, existing, stack.Length)))
 
                                 None
-                            | true, Entry.Known _ -> Some (target, stack)
+                            | true, Entry.Known _ ->
+                                let held = localsAt.[target]
+
+                                for index in 0 .. held.Length - 1 do
+                                    let joined = lattice.JoinLocal index held.[index] locals.[index]
+
+                                    if joined <> held.[index] then
+                                        held.[index] <- joined
+                                        changed.Add target |> ignore
+
+                                Some (target, stack)
                             | false, _ ->
                                 entry.[target] <- Entry.Known stack.Length
+                                localsAt.[target] <- Array.copy locals
                                 enqueue target
 
                                 // Every slot shares its component's temp for that slot; an offset
@@ -758,7 +859,7 @@ module StackFlow =
                     targets
                     |> List.collect (fun (target, delivery) ->
                         match delivery, Map.tryFind target typed with
-                        | Delivery.Known delivered, Some settled ->
+                        | Delivery.Known (delivered, _), Some settled ->
                             List.zip delivered settled
                             |> List.indexed
                             |> List.choose (fun (i, (d, s)) -> if d <> s then Some (target, i) else None)
@@ -771,7 +872,7 @@ module StackFlow =
             |> Map.ofList
 
         for offset, stack in (0, []) :: handlerEntries lattice body.ExceptionRegions do
-            deliverAll [ offset, Delivery.Known stack ]
+            deliverAll [ offset, Delivery.Known (stack, unfollowed ()) ]
 
         drain ()
 
