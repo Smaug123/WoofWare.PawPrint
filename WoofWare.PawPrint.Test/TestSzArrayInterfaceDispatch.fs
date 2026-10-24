@@ -315,23 +315,22 @@ module TestSzArrayInterfaceDispatch =
 
                 assignable |> shouldEqual false
 
-                // Nothing on `System.Array`'s chain implements the interface, so dispatch finds no
-                // method at all, rather than an SZArrayHelper body.
+                // CoreCLR runs SZArrayHelper's body on the multi-dimensional array regardless,
+                // which PawPrint refuses to model rather than reading the array as an SZ one.
                 let _, resolved =
-                    IlMachineStateExecution.tryResolveVirtualImplementation
+                    ConcreteVirtualDispatch.tryResolveVirtualImplementation
                         loggerFactory
+                        state.DotnetRuntimeDirs
                         bct
-                        unusedThread
                         concretizedMethod.Generics
                         concretizedMethod
                         mdArrayHandle
                         true
-                        state
+                        state.TypeSystem
 
                 match resolved with
-                | IlMachineStateExecution.ResolvedVirtualCall.Fails (DispatchFailure.NotImplemented method) ->
-                    method.IdentityKey |> shouldEqual concretizedMethod.IdentityKey
-                | other -> failwith $"expected no implementation, got %O{other}"
+                | VirtualImplementation.Unmodelled reason -> reason |> shouldContainText "SZArrayHelper"
+                | other -> failwith $"expected a refusal, got %O{other}"
             with e ->
                 raise (Exception ($"%O{case}: %s{e.Message}", e))
 

@@ -967,6 +967,18 @@ module ConcreteVirtualDispatch =
                 state, VirtualImplementation.NotOverridden
             else
 
+            match dispatchTypeHandle with
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.OneDimArrayZero _ when not (Seq.isEmpty methodDeclaringType.Generics) ->
+                // `FindDispatchImpl` assumes any generic interface an array is dispatched on is one
+                // SZ arrays implement implicitly, and runs SZArrayHelper's body for it, a
+                // multi-dimensional array's included: measured, `ICollection<int>.Count` on an
+                // `int[2,3]` is 6.
+                state,
+                VirtualImplementation.Unmodelled
+                    $"%s{methodToCall.Name} of a generic interface is not implemented by the array %O{dispatchTypeHandle}, which CoreCLR dispatches to System.SZArrayHelper as though it were an SZ array implementing one of the five; PawPrint does not model that"
+            | _ ->
+
             // The runtime marks only a class, never a value type, as `IDynamicInterfaceCastable`
             // (`MethodTableBuilder`, methodtablebuilder.cpp). An array has no TypeDef row and
             // implements no such interface.
@@ -1225,7 +1237,7 @@ module ConcreteVirtualDispatch =
     ///
     /// `NotImplemented` where `walkBaseTypes` is true and nothing implements an interface method on
     /// the receiver's type; `Unmodelled` where such a receiver implements
-    /// `IDynamicInterfaceCastable`.
+    /// `IDynamicInterfaceCastable`, or is an array and the interface is generic.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation

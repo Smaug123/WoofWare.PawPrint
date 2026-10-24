@@ -48,7 +48,9 @@ module TestFabricatedUnimplementedInterface =
     ///   `DefaultBody*` call `IDef.ID`, each through `constrained.`; `Plain(object)` and
     ///   `PlainDefaultBody(object)` call them with a plain `callvirt` on the argument,
     ///   `PlainVariant(object)` calls `IVar<object>.M` so, and
-    ///   `VirtualPointer(object)` loads a pointer to `IAbs.IA` with `ldvirtftn` and returns 100.
+    ///   `VirtualPointer(object)` loads a pointer to `IAbs.IA` with `ldvirtftn` and returns 100;
+    ///   `MultiDimensionalArray()` and `MultiDimensionalArrayCount()` call `IAbs.IA` and
+    ///   `ICollection<int>.Count` on an `int[2,3]`.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Unimplemented", typeof<obj>.Assembly)
@@ -264,6 +266,27 @@ module TestFabricatedUnimplementedInterface =
                     il.Emit (OpCodes.Callvirt, called)
                 )
 
+        // An `int[2,3]`, with `IAbs.IA` and `ICollection<int>.Count` called on it.
+        let multiDimensional (il : ILGenerator) : unit =
+            il.Emit OpCodes.Ldc_I4_2
+            il.Emit OpCodes.Ldc_I4_3
+
+            il.Emit (OpCodes.Newobj, typeof<int[,]>.GetConstructor [| typeof<int> ; typeof<int> |])
+
+        for name, called in
+            [
+                "MultiDimensionalArray", (ia :> MethodInfo)
+                "MultiDimensionalArrayCount",
+                typeof<System.Collections.Generic.ICollection<int>>.GetProperty("Count").GetMethod
+            ] do
+            define
+                name
+                Type.EmptyTypes
+                (fun il ->
+                    multiDimensional il
+                    il.Emit (OpCodes.Callvirt, called)
+                )
+
         define
             "VirtualPointer"
             [| typeof<obj> |]
@@ -418,6 +441,31 @@ public static class Driver
     [<Test>]
     let ``a plain callvirt of a variant interface's method on an object that does not implement it raises`` () : unit =
         run "Calls.PlainVariant(new Cls())" 201
+
+    [<Test>]
+    let ``a non-generic interface method on a multi-dimensional array raises`` () : unit =
+        run "Calls.MultiDimensionalArray()" 201
+
+    [<Test>]
+    let ``a generic interface method on a multi-dimensional array runs SZArrayHelper's, which PawPrint refuses``
+        ()
+        : unit
+        =
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth
+                "Unimplemented"
+                (fabricate ())
+                "UnimplementedDriver"
+                (driver "Calls.MultiDimensionalArrayCount()")
+
+        match onHost with
+        | RealRuntimeResult.NormalExit 6 -> ()
+        | other -> failwith $"expected the real runtime to count the array's six elements; got %O{other}"
+
+        match onPawPrint with
+        | FabricatedOutcome.Failed e when e.ToString().Contains "SZArrayHelper" -> ()
+        | other ->
+            failwith $"expected PawPrint to refuse SZArrayHelper's body on a multi-dimensional array; got %O{other}"
 
     [<Test>]
     let ``ldvirtftn of an interface method on an object that does not implement it raises`` () : unit =
