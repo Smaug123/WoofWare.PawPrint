@@ -95,8 +95,8 @@ method) may add more:
   the type exactly. In generic code that CoreCLR shares between instantiations
   (`CodeSharing`), a type that names a type variable whose argument makes it share the code is
   one the code looks up at run time, and there the JIT calls
-  `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the analysis follows, so it reaches native
-  code the analysis does not see into. Where the JIT compares two types' handles, above, it makes
+  `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which raises only `OutOfMemoryException` and
+  `StackOverflowException` there (see below). Where the JIT compares two types' handles, above, it makes
   neither `RuntimeType`; where it compares `t` with `typeof(X)` by reference, it makes X's. One
   case is not modelled: the runtime makes the `RuntimeType` at run time for a type of an assembly
   loaded into a collectible context, too;
@@ -216,7 +216,8 @@ method) may add more:
   because a wait may call the thread's `SynchronizationContext.Wait`, which may be any override.
   The lock is the receiver, of
   the classes and nullness the caller passes, or for a static method its type's `RuntimeType`,
-  which the JIT may look up with `RuntimeTypeHandle.GetRuntimeTypeFromHandle`.
+  which the JIT may make by calling `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, as for
+  `ldtoken` above.
 
   All these happen outside the body, so the body's own handlers do not catch them.
 
@@ -288,6 +289,15 @@ fully loaded, though: CoreCLR allocates an object only of a type it has fully lo
 does for the type an instruction names, or of a type whose `RuntimeType` exists, and making that
 loads the type fully or throws. `TestObjectGetType` holds the method's IL and the QCall's C++ to
 that shape.
+
+The same QCall is the slow path of `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the JIT
+calls to make a type's `RuntimeType` where it cannot embed it. Every type the JIT passes it is
+fully loaded: one a generic dictionary holds, which CoreCLR loads fully to fill the slot; a type
+argument of the exact class or method the code runs for, which loading that fully loads too; or
+that class itself, which CoreCLR loads fully before the code runs. So where the JIT makes the call,
+the analysis takes it to raise only `OutOfMemoryException` and `StackOverflowException`, and runs
+none of the method's IL. CoreLib's own calls of the method pass handles nothing promises are fully
+loaded, so they run its IL, and reach the QCall.
 
 It assumes that CoreLib's lookup of its own resource strings, `SR.InternalGetResourceString`, which
 gives every CoreLib exception its message, raises only `OutOfMemoryException`,
