@@ -47,7 +47,7 @@ jobs:
     # tested Debug and the only one whose runner ever died of resource starvation.
     # The guest-running fixtures are `[<Explicit>]`, which keeps them out of a bare
     # `dotnet test` so that local iteration costs seconds rather than minutes. CI wants all
-    # of them, so `test-guest` below selects them by category, on a runner of its own so
+    # of them, so `test-guest` below selects them by category, on runners of their own so
     # that they run beside this step rather than after it. Two invocations rather than one
     # filter that matches everything is deliberate: "run the default set, then run the set
     # we excluded from it" cannot silently stop covering something the way a clever filter
@@ -67,12 +67,21 @@ jobs:
   # The guest-running fixtures, which take longer than the rest of the suite put
   # together. They build for themselves rather than downloading `build`'s binaries: the
   # build is under two minutes, and this way neither job waits for the other.
+  # They are split between two runners by category. `GuestSolo` holds fixtures whose
+  # single tests each run for about as long as all of `Guest` does on one runner, so
+  # together they would set the job's length. Each runner selects its own category
+  # rather than one excluding the other's: a negated clause such as
+  # `TestCategory!=GuestSolo` is never an explicit match in NUnit's sense, so every
+  # case of an `[<Explicit>]` fixture is skipped under it and the run still passes.
+  # `TestCiSelectsEveryExplicitFixture` reads `category` below and fails unless every
+  # `[<Explicit>]` fixture carries exactly one of its values.
   test-guest:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         runtime: [ Net10, Net11 ]
+        category: [ Guest, GuestSolo ]
     env:
       PAWPRINT_TEST_RUNTIME: ${{ matrix.runtime }}
 
@@ -90,12 +99,12 @@ jobs:
     - name: Build
       run: nix develop --command dotnet build --no-restore --configuration Release
     - name: Test (guest-running fixtures)
-      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=Guest" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
+      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=${{ matrix.category }}" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
     - name: Upload test results
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: test-results-guest-${{ matrix.runtime }}
+        name: test-results-${{ matrix.category }}-${{ matrix.runtime }}
         path: TestResults/*.trx
 
   build-nix:
