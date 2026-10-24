@@ -7240,7 +7240,8 @@ public static unsafe class Uco
     /// pointer to a type missing at run time, the escape analysis agrees with the host's JIT: a
     /// `TypeLoadException` exactly where CoreCLR reads Swift's convention from the blob, an unknown
     /// answer from the method's entry exactly where CoreCLR cannot read the blob (and raises
-    /// `COMException`), and nothing otherwise.
+    /// the exception of the failure's `HRESULT`: `COMException` for most, `OverflowException` where a
+    /// string runs past the blob's end, `ArgumentException` for a bad length), and nothing otherwise.
     [<Test>]
     let ``the escape analysis reads an UnmanagedCallersOnly blob's conventions as the host's JIT does`` () : unit =
         let complete = ucoProvider true
@@ -7252,6 +7253,15 @@ public static unsafe class Uco
         try
             let goneStruct =
                 (context.LoadFromStream (new MemoryStream (complete))).GetType "Provider.GoneStruct"
+
+            // What compiling a method raises where CoreCLR cannot parse its attribute's blob.
+            let unreadable =
+                Set.ofList
+                    [
+                        "System.Runtime.InteropServices.COMException"
+                        "System.OverflowException"
+                        "System.ArgumentException"
+                    ]
 
             let property (blobs : byte[] list) : unit =
                 let image = ucoMethods goneStruct blobs
@@ -7275,8 +7285,9 @@ public static unsafe class Uco
                                 | UcoCompilation.Raises "System.TypeLoadException",
                                   UcoCompilation.Raises "System.TypeLoadException" ->
                                     not (sources |> Set.exists (fun site -> site.StartsWith entry))
-                                | UcoCompilation.Raises "System.Runtime.InteropServices.COMException",
-                                  UcoCompilation.Raises "Unknown" ->
+                                | UcoCompilation.Raises raised, UcoCompilation.Raises "Unknown" when
+                                    unreadable.Contains raised
+                                    ->
                                     sources = Set.singleton (entry + "UnreadableCallingConvention")
                                 | _ -> false
 

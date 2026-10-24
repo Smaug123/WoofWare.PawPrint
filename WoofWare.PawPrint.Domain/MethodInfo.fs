@@ -501,16 +501,18 @@ type MetadataMethodFacts =
         NativeImport : NativeMethodImport option
 
         /// <summary>
-        /// Does this method carry <c>[System.Runtime.InteropServices.UnmanagedCallersOnly]</c>?
+        /// What the method's <c>[System.Runtime.InteropServices.UnmanagedCallersOnly]</c> names as its
+        /// calling conventions, if it carries the attribute; <c>None</c> if it does not.
         /// </summary>
         /// <remarks>
         /// Such a method may be entered only from native code: CoreCLR compiles it with
         /// <c>CORJIT_FLAG_REVERSE_PINVOKE</c>, whose prologue asserts preemptive GC mode, so any
-        /// managed entry is a fatal error rather than a catchable one. Derived from
-        /// <see cref="CustomAttributes"/>, and computed here so that the call path can ask without
-        /// re-walking metadata; the two are built together and so cannot drift apart.
+        /// managed entry is a fatal error rather than a catchable one. CoreCLR reads the first
+        /// application of the attribute, as this does. Derived from <see cref="CustomAttributes"/>,
+        /// and computed here so that the call path can ask without re-walking metadata; the two are
+        /// built together and so cannot drift apart.
         /// </remarks>
-        IsUnmanagedCallersOnly : bool
+        UnmanagedCallersOnly : UnmanagedCallersOnlyCallConvs option
     }
 
 /// <summary>
@@ -970,7 +972,15 @@ module MethodInfo =
     let isUnmanagedCallersOnly (this : MethodInfo<'a, 'b, 'c>) : bool =
         match this with
         | MethodInfo.Synthesised _ -> false
-        | MethodInfo.Metadata (_, facts) -> facts.IsUnmanagedCallersOnly
+        | MethodInfo.Metadata (_, facts) -> facts.UnmanagedCallersOnly.IsSome
+
+    /// What this method's `[System.Runtime.InteropServices.UnmanagedCallersOnly]` names as its
+    /// calling conventions, as CoreCLR reads them; `None` if it does not carry the attribute, as a
+    /// synthesised method does not (`isUnmanagedCallersOnly`).
+    let unmanagedCallersOnly (this : MethodInfo<'a, 'b, 'c>) : UnmanagedCallersOnlyCallConvs option =
+        match this with
+        | MethodInfo.Synthesised _ -> None
+        | MethodInfo.Metadata (_, facts) -> facts.UnmanagedCallersOnly
 
     let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
         (f : 'a -> 'b)
@@ -1264,27 +1274,32 @@ module MethodInfo =
             kind, targetName, hasUnsafeAccessorTypeAttribute metadataReader methodDef
         )
 
-    /// Does this method carry `[System.Runtime.InteropServices.UnmanagedCallersOnly]`?
+    /// What this method's first `[System.Runtime.InteropServices.UnmanagedCallersOnly]` names as its
+    /// calling conventions, or `None` if it carries no such attribute.
     ///
     /// Accepted risk, inherited from `CustomAttribute.constructorParentName` and consistent with
     /// `FieldInfo`'s `[ThreadStatic]` check: the match is on namespace+name strings and does not
     /// verify that the type resolves to corelib's `UnmanagedCallersOnlyAttribute`, so a guest
     /// declaring its own attribute of that full name would be classified as carrying this one.
-    let private hasUnmanagedCallersOnlyAttribute
+    let private readUnmanagedCallersOnly
         (metadataReader : MetadataReader)
         (describeMethod : unit -> string)
         (methodDef : MethodDefinition)
-        : bool
+        : UnmanagedCallersOnlyCallConvs option
         =
         let describeTarget () = $"method %s{describeMethod ()}"
 
         methodDef.GetCustomAttributes ()
-        |> Seq.exists (fun handle ->
-            let attr = metadataReader.GetCustomAttribute handle
-
+        |> Seq.map metadataReader.GetCustomAttribute
+        |> Seq.tryFind (fun attr ->
             match CustomAttribute.constructorParentName metadataReader describeTarget attr.Constructor with
             | Some (ns, name) -> ns = "System.Runtime.InteropServices" && name = "UnmanagedCallersOnlyAttribute"
             | None -> false
+        )
+        |> Option.map (fun attr ->
+            // A nil blob is the empty one, whose missing prolog CoreCLR refuses.
+            metadataReader.GetBlobContent attr.Value
+            |> CustomAttribute.parseUnmanagedCallersOnly
         )
 
     let read
@@ -1405,8 +1420,8 @@ module MethodInfo =
             else
                 None
 
-        let isUnmanagedCallersOnly =
-            hasUnmanagedCallersOnlyAttribute
+        let unmanagedCallersOnly =
+            readUnmanagedCallersOnly
                 metadataReader
                 (fun () -> $"%s{assemblyName.Name}!%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}")
                 methodDef
@@ -1448,7 +1463,7 @@ module MethodInfo =
                 CustomAttributes = attrs
                 ImplAttributes = implAttrs
                 NativeImport = nativeImport
-                IsUnmanagedCallersOnly = isUnmanagedCallersOnly
+                UnmanagedCallersOnly = unmanagedCallersOnly
             }
         )
 
