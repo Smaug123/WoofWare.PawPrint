@@ -289,31 +289,26 @@ type internal ReceiverBox =
     /// Only an instance decides.
     | Undecided
 
-/// What follows a `box` in its block (`impBoxPatternMatch`, importer.cpp), which decides whether
-/// the JIT folds a box of a byref-like type away. It refuses one it does not fold.
+/// What the JIT's resolving the token of an instruction after a `box` yields, as it matches those
+/// instructions against a pattern to fold the box into (`BoxPattern`).
 [<RequireQualifiedAccess>]
-type internal BoxFollower =
-    /// A `brtrue` or `brfalse`, which tests a box that is never null.
-    | Branch
-    /// `isinst` of this type, then a `brtrue` or `brfalse`, which the JIT folds where it decides
-    /// the cast (`compareTypesForCast`).
-    | TestedCast of SpelledType
-    /// `unbox.any` of this type, which it folds where this is the boxed type
-    /// (`compareTypesForEquality`).
-    | Unboxed of SpelledType
-    /// `isinst` of the first type, then `unbox.any` of the second, which it folds where both are
-    /// the boxed type.
-    | CastUnboxed of SpelledType * SpelledType
-    /// Anything else.
-    | Other
+type internal TokenResolution<'resolved> =
+    /// The token names this.
+    | Resolves of 'resolved
+    /// Resolving it raises what binding the token does (`bind`), before the JIT can refuse the box.
+    | Raises
+    /// The analysis cannot tell what the token names: it binds to an open generic definition, or
+    /// to a type the analysis does not instantiate, such as a type variable in a definition
+    /// analysed for every instantiation at once.
+    | Undecided
 
 /// An instruction the JIT refuses to compile a method over for the type its token names
 /// (`ResolutionFault.TokenBinding`), raising before the method runs at all.
 [<RequireQualifiedAccess>]
 type internal RefusalSite =
-    /// A `box` of a byref-like type that the JIT does not fold away: `InvalidProgramException`
-    /// (`CEE_BOX`, importer.cpp).
-    | Box of boxed : SpelledType * BoxFollower
+    /// A `box` of a byref-like type that the JIT does not fold away (`BoxPattern`):
+    /// `InvalidProgramException` (`CEE_BOX`, importer.cpp).
+    | Box of boxed : SpelledType * BoxFollower<TokenResolution<SpelledType>>
     /// A `newarr` of a byref-like element type, whose array type does not load:
     /// `TypeLoadException` (`ClassLoader::CreateTypeHandleForTypeKey`, clsload.cpp).
     | Newarr of element : SpelledType
@@ -4401,39 +4396,8 @@ module EscapeAnalysis =
                 |> Set.add (OutsideBodyFact.Raises thrown)
                 |> Set.add (OutsideBodyFact.Runs (made, []))
 
-        // Where a block starts that a pattern of instructions after a `box` may run into, so that
-        // the JIT matches none across it (`fgFindJumpTargets`, fgbasic.cpp): where a branch or a
-        // handler lands. A protected block also starts or ends a block, but the stack is empty
-        // there, so nothing a `box` pushes is still on it.
-        let blockStarts = ControlFlow.landedOn body
-
-        // The index of the instruction after the one at `index`, where it is in the same block.
-        let nextInBlock (index : int) : int option =
-            if index + 1 < ops.Length && not (blockStarts.Contains (snd ops.[index + 1])) then
-                Some (index + 1)
-            else
-                None
-
-        // The index of the first instruction after the one at `index`, in its block, that is no
-        // prefix (`impGetNonPrefixOpcode`, importer.cpp).
-        let rec nonPrefixInBlock (index : int) : int option =
-            match nextInBlock index with
-            | Some next ->
-                match fst ops.[next] with
-                | IlOp.Nullary (NullaryIlOp.Tail | NullaryIlOp.Volatile | NullaryIlOp.Readonly)
-                | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _)
-                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, _) -> nonPrefixInBlock next
-                | _ -> Some next
-            | None -> None
-
-        let isBranchOnValue (index : int) : bool =
-            match fst ops.[index] with
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _ | UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _) ->
-                true
-            | _ -> false
-
         // The type the token of the instruction at `index` names, as the body spells it; `None`
-        // for one that does not bind.
+        // for one that does not bind, or binds to an open generic definition.
         let typeOperand (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * SpelledType option =
             match fst ops.[index] with
             | IlOp.UnaryMetadataToken (_, MetadataOperand.FromMetadata token) when not (unbound.Contains index) ->
@@ -4449,35 +4413,40 @@ module EscapeAnalysis =
                 | state, None -> state, None
             | _ -> state, None
 
-        // What follows the `box` at `index` in its block, as `impBoxPatternMatch` reads it: the
-        // instruction straight after it, and after an `isinst` there, the next that is no prefix.
-        let boxFollower (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * BoxFollower =
-            match nextInBlock index with
-            | None -> state, BoxFollower.Other
-            | Some next when isBranchOnValue next -> state, BoxFollower.Branch
-            | Some next ->
+        // What follows the `box` at `index` in its block (`BoxPattern.follower`), with what each
+        // instruction there names. Those instructions are the ones straight after the box.
+        let boxFollower
+            (state : EscapeAnalysisState)
+            (index : int)
+            : EscapeAnalysisState * BoxFollower<TokenResolution<SpelledType>>
+            =
+            // What the instruction at `at` names, which must be the `expected` one the follower read.
+            let named (state : EscapeAnalysisState) (at : int) (expected : UnaryMetadataTokenIlOp) =
+                match fst ops.[at] with
+                | IlOp.UnaryMetadataToken (actual, _) when actual = expected ->
+                    if unbound.Contains at then
+                        state, TokenResolution.Raises
+                    else
+                        match typeOperand state at with
+                        | state, Some spelled -> state, TokenResolution.Resolves spelled
+                        | state, None -> state, TokenResolution.Undecided
+                | other ->
+                    failwith
+                        $"BUG: BoxPattern.follower read %O{expected} straight after the box at index %d{index}, but instruction %d{at} is %O{other}"
 
-            match fst ops.[next] with
-            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, _) ->
-                match typeOperand state next with
-                | state, Some unboxed -> state, BoxFollower.Unboxed unboxed
-                | state, None -> state, BoxFollower.Other
-            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, _) ->
-                match typeOperand state next with
-                | state, None -> state, BoxFollower.Other
-                | state, Some cast ->
-
-                match nonPrefixInBlock next with
-                | Some after when isBranchOnValue after -> state, BoxFollower.TestedCast cast
-                | Some after ->
-                    match fst ops.[after] with
-                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, _) ->
-                        match typeOperand state after with
-                        | state, Some unboxed -> state, BoxFollower.CastUnboxed (cast, unboxed)
-                        | state, None -> state, BoxFollower.Other
-                    | _ -> state, BoxFollower.Other
-                | None -> state, BoxFollower.Other
-            | _ -> state, BoxFollower.Other
+            match BoxPattern.follower body (snd ops.[index]) with
+            | BoxFollower.Branch -> state, BoxFollower.Branch
+            | BoxFollower.Other -> state, BoxFollower.Other
+            | BoxFollower.Unboxed _ ->
+                let state, unboxed = named state (index + 1) UnaryMetadataTokenIlOp.Unbox_Any
+                state, BoxFollower.Unboxed unboxed
+            | BoxFollower.TestedCast _ ->
+                let state, cast = named state (index + 1) UnaryMetadataTokenIlOp.Isinst
+                state, BoxFollower.TestedCast cast
+            | BoxFollower.CastUnboxed _ ->
+                let state, cast = named state (index + 1) UnaryMetadataTokenIlOp.Isinst
+                let state, unboxed = named state (index + 2) UnaryMetadataTokenIlOp.Unbox_Any
+                state, BoxFollower.CastUnboxed (cast, unboxed)
 
         // Whether some instance of the body may name a byref-like type here: one a type variable
         // stands for, where its parameter allows it, or one whose definition is byref-like. No
@@ -5794,11 +5763,10 @@ module EscapeAnalysis =
 
     /// What the JIT raises, refusing to compile a body running as `caller` over `site`: nothing
     /// where it compiles it, and opaque where only an instance of an open definition decides.
-    /// Shared code names the canonical form of a type, which the JIT's comparisons of types do not
-    /// decide (`compareTypesForEquality` and `compareTypesForCast`, jitinterface.cpp), so it
-    /// refuses a box of one that it would otherwise fold; but where it inlines the body into a
-    /// caller, it sees the type as it is, and may fold it. The cases where the comparisons decide
-    /// a cast from a canonical form all the same are not followed. A refusal is reported for each.
+    /// Shared code names the canonical form of a type, which the JIT's comparisons of types decide
+    /// less often (`JitTypeComparison`), so it may refuse a box of one that it folds where it
+    /// inlines the body into a caller that names the type as it is. Shared code's answer is
+    /// reported, which covers the inlined copy's.
     let private refusalAt
         (state : EscapeAnalysisState)
         (caller : Instantiation)
@@ -5837,49 +5805,78 @@ module EscapeAnalysis =
             state, []
         else
 
-        // The handle of a type the instance names, where the JIT sees it as it is rather than in
-        // its canonical form.
-        let exactly (state : EscapeAnalysisState) (spelled : SpelledType) =
-            if shared spelled then
-                state, None
-            else
-                concretizeIn state caller spelled.Type spelled.SpelledIn
-
-        let state, folded =
+        // Whether the JIT may refuse the body over the site.
+        let state, refuses =
             match site with
-            | RefusalSite.Newarr _ -> state, false
+            | RefusalSite.Newarr _ -> state, true
             | RefusalSite.Box (boxed, follower) ->
 
-            let state, boxedExactly = exactly state boxed
+            let view (handle : ConcreteTypeHandle) (spelled : SpelledType) : JitTypeView =
+                {
+                    Type = handle
+                    Canonical = shared spelled
+                }
 
-            // Whether the JIT decides that `spelled` is the boxed type.
-            let isBoxed (state : EscapeAnalysisState) (spelled : SpelledType) =
-                match exactly state spelled with
-                | state, Some other -> state, boxedExactly = Some other
-                | state, None -> state, false
+            let boxed = view handle boxed
 
-            match follower with
-            | BoxFollower.Branch -> state, true
-            | BoxFollower.Other -> state, false
-            | BoxFollower.Unboxed unboxed -> isBoxed state unboxed
-            | BoxFollower.CastUnboxed (cast, unboxed) ->
-                match isBoxed state cast with
-                | state, true -> isBoxed state unboxed
-                | state, false -> state, false
-            // The JIT decides a cast between types it sees as they are, either way, but not one to
-            // a `Nullable<T>`. Nor does it decide one from a type the runtime marks as
-            // `IDynamicInterfaceCastable`, but it marks only classes (`MethodTableBuilder`).
-            | BoxFollower.TestedCast cast ->
-                match boxedExactly, exactly state cast with
-                | Some _, (state, Some castHandle) ->
-                    let toNullable =
-                        AllConcreteTypes.lookup castHandle state.TypeSystem.ConcreteTypes
-                        |> Option.exists (fun concrete -> concrete.Identity = state.BaseTypes.Nullable.Identity)
+            // What the JIT resolves a type the follower names to, in this instance. Where the
+            // analysis does not instantiate it, it cannot tell whether the type loads.
+            let resolve
+                (state : EscapeAnalysisState)
+                (operand : TokenResolution<SpelledType>)
+                : EscapeAnalysisState * TokenResolution<JitTypeView>
+                =
+                match operand with
+                | TokenResolution.Raises -> state, TokenResolution.Raises
+                | TokenResolution.Undecided -> state, TokenResolution.Undecided
+                | TokenResolution.Resolves spelled ->
+                    match concretizeIn state caller spelled.Type spelled.SpelledIn with
+                    | state, Some handle -> state, TokenResolution.Resolves (view handle spelled)
+                    | state, None -> state, TokenResolution.Undecided
 
-                    state, not toNullable
-                | _, (state, _) -> state, false
+            let resolveInto
+                (state : EscapeAnalysisState)
+                (operand : TokenResolution<SpelledType>)
+                (follower : JitTypeView -> BoxFollower<JitTypeView>)
+                =
+                match resolve state operand with
+                | state, TokenResolution.Resolves resolved -> state, TokenResolution.Resolves (follower resolved)
+                | state, TokenResolution.Raises -> state, TokenResolution.Raises
+                | state, TokenResolution.Undecided -> state, TokenResolution.Undecided
 
-        if folded then
+            let state, resolved =
+                match follower with
+                | BoxFollower.Branch -> state, TokenResolution.Resolves BoxFollower.Branch
+                | BoxFollower.Other -> state, TokenResolution.Resolves BoxFollower.Other
+                | BoxFollower.Unboxed unboxed -> resolveInto state unboxed BoxFollower.Unboxed
+                | BoxFollower.TestedCast cast -> resolveInto state cast BoxFollower.TestedCast
+                | BoxFollower.CastUnboxed (cast, unboxed) ->
+                    match resolve state cast with
+                    // The JIT resolves the `unbox.any`'s token only once it proves the `isinst`'s
+                    // type is the boxed type.
+                    | state, TokenResolution.Resolves cast when JitTypeComparison.provesEqual cast boxed ->
+                        resolveInto state unboxed (fun unboxed -> BoxFollower.CastUnboxed (cast, unboxed))
+                    | state, TokenResolution.Resolves _ -> state, TokenResolution.Resolves BoxFollower.Other
+                    | state, TokenResolution.Raises -> state, TokenResolution.Raises
+                    | state, TokenResolution.Undecided -> state, TokenResolution.Undecided
+
+            match resolved with
+            | TokenResolution.Raises -> state, false
+            | TokenResolution.Undecided -> state, true
+            | TokenResolution.Resolves follower ->
+                match
+                    BoxPattern.foldsByRefLike
+                        JitTypeComparison.provesEqual
+                        (JitTypeComparison.decidesCastFromValueType state.BaseTypes state.TypeSystem)
+                        boxed
+                        follower
+                with
+                | Some folds -> state, not folds
+                // A cast from a canonical form to a generic interface, which the JIT decides only
+                // where the canonical form casts to it.
+                | None -> state, true
+
+        if not refuses then
             state, []
         else
 
