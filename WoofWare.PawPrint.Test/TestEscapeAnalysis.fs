@@ -11373,10 +11373,17 @@ public static class Runners
         peBuilder.Serialize blob |> ignore<BlobContentId>
         blob.ToArray ()
 
-    /// Each runner of `modifiedOperands` this test emits: what it does with the local of the type
-    /// the token names (`Span` loads local 0, `Tuple` local 1), and what the JIT does compiling it.
+    /// Each runner of `modifiedOperands` the test below emits, and what the JIT does compiling it.
     let private modifiedRefusals : (string * (ModifiedOperands -> InstructionEncoder -> unit) * Refusal) list =
-        let boxed (pick : ModifiedOperands -> EntityHandle) (local : int) (code : InstructionEncoder) operands =
+        // Boxes the local of type `Span<int>` (`local` 0) or `ValueTuple<int>` (1), naming the type
+        // `pick` chooses.
+        let boxed
+            (pick : ModifiedOperands -> EntityHandle)
+            (local : int)
+            (operands : ModifiedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
             code.LoadLocalAddress local
             code.OpCode ILOpCode.Initobj
             code.Token (if local = 0 then operands.Span else operands.Tuple)
@@ -11384,42 +11391,65 @@ public static class Runners
             code.OpCode ILOpCode.Box
             code.Token (pick operands)
 
-        let newarr (pick : ModifiedOperands -> EntityHandle) (code : InstructionEncoder) operands =
+        let popped
+            (pick : ModifiedOperands -> EntityHandle)
+            (local : int)
+            (operands : ModifiedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
+            boxed pick local operands code
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+
+        let unboxed
+            (pick : ModifiedOperands -> EntityHandle)
+            (local : int)
+            (unbox : ModifiedOperands -> EntityHandle)
+            (operands : ModifiedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
+            boxed pick local operands code
+            code.OpCode ILOpCode.Unbox_any
+            code.Token (unbox operands)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+
+        let branched
+            (pick : ModifiedOperands -> EntityHandle)
+            (local : int)
+            (operands : ModifiedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
+            let label = code.DefineLabel ()
+            boxed pick local operands code
+            code.Branch (ILOpCode.Brtrue_s, label)
+            code.MarkLabel label
+            code.OpCode ILOpCode.Ret
+
+        let newarr (pick : ModifiedOperands -> EntityHandle) (operands : ModifiedOperands) (code : InstructionEncoder) =
             code.LoadConstantI4 1
             code.OpCode ILOpCode.Newarr
             code.Token (pick operands)
             code.OpCode ILOpCode.Pop
             code.OpCode ILOpCode.Ret
 
-        let popped pick local =
-            fun operands (code : InstructionEncoder) ->
-                boxed pick local code operands
-                code.OpCode ILOpCode.Pop
-                code.OpCode ILOpCode.Ret
-
-        let branched pick local =
-            fun operands (code : InstructionEncoder) ->
-                let label = code.DefineLabel ()
-                boxed pick local code operands
-                code.Branch (ILOpCode.Brtrue_s, label)
-                code.MarkLabel label
-                code.OpCode ILOpCode.Ret
-
         [
             "BoxModifiedSpanPop", popped _.ModifiedSpan 0, Refusal.Raises invalidProgram
+            "BoxModifiedSpanUnboxTuple", unboxed _.ModifiedSpan 0 _.Tuple, Refusal.Raises invalidProgram
             // The JIT folds a box that a branch follows, of any type.
             "BoxModifiedSpanBrtrue", branched _.ModifiedSpan 0, Refusal.Compiles
-            "NewarrModifiedSpan", (fun operands code -> newarr _.ModifiedSpan code operands), Refusal.Raises typeLoad
+            "NewarrModifiedSpan", newarr _.ModifiedSpan, Refusal.Raises typeLoad
             // `ValueTuple<int>` is no byref-like type, however its argument is modified.
             "BoxModifiedTuplePop", popped _.ModifiedTuple 1, Refusal.Compiles
-            "NewarrModifiedTuple", (fun operands code -> newarr _.ModifiedTuple code operands), Refusal.Compiles
+            "NewarrModifiedTuple", newarr _.ModifiedTuple, Refusal.Compiles
+            "NewarrModifiedMarked", newarr _.ModifiedMarked, Refusal.Compiles
             // A type that does not load raises what binding the token does, before the JIT can
             // refuse the box.
-            "NewarrModifiedMarked", (fun operands code -> newarr _.ModifiedMarked code operands), Refusal.Compiles
             "BoxModifiedGoneSpanPop", popped _.ModifiedGoneSpan 0, Refusal.Raises typeLoad
-            "NewarrModifiedGoneSpan",
-            (fun operands code -> newarr _.ModifiedGoneSpan code operands),
-            Refusal.Raises typeLoad
+            "NewarrModifiedGoneSpan", newarr _.ModifiedGoneSpan, Refusal.Raises typeLoad
         ]
 
     /// PawPrint instantiates no generic type whose argument carries a custom modifier, so the
