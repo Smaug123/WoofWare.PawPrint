@@ -3437,6 +3437,27 @@ public static class Cases
             il.Emit Emit.OpCodes.Ldc_I4_0
             il.Emit Emit.OpCodes.Ret
 
+            // At tier 0 the JIT compiles a block behind a branch on a constant too; optimising, it
+            // folds the branch and never sees the call.
+            let unreached =
+                calls.DefineMethod ("Unreached", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+
+            unreached.SetImplementationFlags MethodImplAttributes.NoOptimization
+            let il = unreached.GetILGenerator ()
+            il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, refStruct)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, refStruct)
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
             let gatedOff =
                 calls.DefineMethod ("GatedOff", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
 
@@ -3465,7 +3486,7 @@ public static class Cases
         try
             let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
 
-            for name in [ "Directly" ; "ThroughVariable" ; "Caught" ; "GatedOff" ] do
+            for name in [ "Directly" ; "ThroughVariable" ; "Caught" ; "Unreached" ; "GatedOff" ] do
                 let raised =
                     try
                         calls.GetMethod(name).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
@@ -3484,6 +3505,7 @@ public static class Cases
                 "Directly", "Directly"
                 "ThroughVariable", "DefaultOf"
                 "Caught", "Caught"
+                "Unreached", "Unreached"
                 "GatedOff", "Gated"
             ] do
             let next, sources =
