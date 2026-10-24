@@ -47,10 +47,14 @@ type BaseChainFailure =
     /// metadata says it does.
     | BaseTypeAbsent of TypeResolutionMiss
 
+    /// The chain reaches a shape PawPrint does not implement walking.
+    | Unmodelled of UnmodelledBinding
+
     override this.ToString () : string =
         match this with
         | BaseChainFailure.LoadFailed failure -> string<AssemblyLoadFailure> failure
         | BaseChainFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
+        | BaseChainFailure.Unmodelled unmodelled -> unmodelled.Diagnostic
 
 type IAssemblyLoad =
     /// <param name="loadedAssemblies">
@@ -74,20 +78,6 @@ type IAssemblyLoad =
 
 [<RequireQualifiedAccess>]
 module IAssemblyLoad =
-    /// <summary>
-    /// Bind an AssemblyReference, terminating if it does not bind. This is what most callers want:
-    /// they are walking metadata that has to be there, and have nowhere to put a failure.
-    /// </summary>
-    let load
-        (loader : IAssemblyLoad)
-        (loadedAssemblies : LoadedAssemblies)
-        (referencedIn : AssemblyName)
-        (handle : AssemblyReferenceHandle)
-        : LoadedAssemblies * DumpedAssembly
-        =
-        match loader.TryLoadAssembly loadedAssemblies referencedIn handle with
-        | Ok loaded -> loaded
-        | Error failure -> failwith (string<AssemblyLoadFailure> failure)
 
     /// <summary>
     /// An <c>IAssemblyLoad</c> which refuses to go to disk: it binds an AssemblyReference only if

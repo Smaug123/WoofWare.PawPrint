@@ -97,7 +97,7 @@ module TestTypeResolutionBaseAssemblies =
 
         let unit = topLevelTypeDef fsharpCore "Microsoft.FSharp.Core" "Unit"
 
-        let loadedAfter, _resolvedIn, resolved =
+        let loadedAfter, (_resolvedIn, resolved) =
             TypeResolution.resolveTypeFromDefn
                 loggerFactory
                 runtimeDirs
@@ -107,6 +107,7 @@ module TestTypeResolutionBaseAssemblies =
                 ImmutableArray.Empty
                 fsharpCore
                 loaded
+            |> BindingResult.bound
 
         Netstandard21FSharpCore.isLoaded loadedAfter.DefinitionNames |> shouldEqual true
 
@@ -140,7 +141,7 @@ module TestTypeResolutionBaseAssemblies =
                     ]
             )
 
-        let loadedAfter, _resolvedIn, resolved =
+        let loadedAfter, (_resolvedIn, resolved) =
             TypeResolution.resolveTypeFromDefn
                 loggerFactory
                 runtimeDirs
@@ -150,6 +151,7 @@ module TestTypeResolutionBaseAssemblies =
                 ImmutableArray.Empty
                 fsharpCore
                 loaded
+            |> BindingResult.bound
 
         Netstandard21FSharpCore.isLoaded loadedAfter.DefinitionNames |> shouldEqual true
 
@@ -198,7 +200,7 @@ public class Holder
                 failwith "Expected a TypeRef to Microsoft.FSharp.Core.FSharpFunc`2 in the compiled Holder assembly"
             )
 
-        let loadedAfter, _resolvedIn, resolved =
+        let loadedAfter, (_resolvedIn, resolved) =
             TypeResolution.resolveTypeFromRef
                 loggerFactory
                 runtimeDirs
@@ -206,6 +208,7 @@ public class Holder
                 fsharpFuncRef
                 ImmutableArray.Empty
                 loaded
+            |> BindingResult.bound
 
         Netstandard21FSharpCore.isLoaded loadedAfter.DefinitionNames |> shouldEqual true
 

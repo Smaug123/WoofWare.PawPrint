@@ -144,6 +144,7 @@ module LoadedTypeResolution =
             match resolveTypeFromExport fromAssembly assemblies ImmutableArray.Empty parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
+            | TypeResolutionResult.Unmodelled unmodelled -> TypeResolutionResult.Unmodelled unmodelled
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
 
             match resolveExportedTypeByChain targetAssembly (Some parentIdentity) ty with
@@ -152,10 +153,14 @@ module LoadedTypeResolution =
                 let typeDef = Assembly.resolveTypeIdentityDefinition targetAssembly identity
                 TypeResolutionResult.Resolved (targetAssembly, identity, TypeInfo.applyGenericArgs genericArgs typeDef)
         | ExportedTypeData.AssemblyFile _ ->
-            failwithf
-                "AssemblyFile exported types are not yet supported while resolving %A from %s"
-                ty.Handle
-                fromAssembly.DefinitionFullName
+            TypeResolutionResult.Unmodelled
+                {
+                    Diagnostic =
+                        sprintf
+                            "AssemblyFile exported types are not yet supported while resolving %A from %s"
+                            ty.Handle
+                            fromAssembly.DefinitionFullName
+                }
 
     and resolveTypeRef
         (assemblies : LoadedAssemblies)
@@ -168,11 +173,15 @@ module LoadedTypeResolution =
         | TypeRefResolutionScope.Assembly r ->
             match referencedInAssembly.AssemblyReferences.TryGetValue r with
             | false, _ ->
-                failwithf
-                    "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A"
-                    r
-                    referencedInAssembly.DefinitionFullName
-                    (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
+                TypeResolutionResult.Unmodelled
+                    {
+                        Diagnostic =
+                            sprintf
+                                "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A"
+                                r
+                                referencedInAssembly.DefinitionFullName
+                                (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
+                    }
             | true, assemblyRef ->
 
             match assemblies.TryResolveReference assemblyRef with
@@ -184,6 +193,7 @@ module LoadedTypeResolution =
             match resolveTypeRefInAssembly assemblies ImmutableArray.Empty referencedInAssembly parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
+            | TypeResolutionResult.Unmodelled unmodelled -> TypeResolutionResult.Unmodelled unmodelled
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
                 resolveNestedTypeInAssembly assemblies genericArgs targetAssembly parentIdentity target.Name
         | TypeRefResolutionScope.ModuleDef _ ->
@@ -195,12 +205,16 @@ module LoadedTypeResolution =
                 (Some target.Namespace)
                 target.Name
         | TypeRefResolutionScope.ModuleRef moduleRef ->
-            failwithf
-                "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
-                target.Namespace
-                target.Name
-                referencedInAssembly.DefinitionFullName
-                moduleRef
+            TypeResolutionResult.Unmodelled
+                {
+                    Diagnostic =
+                        sprintf
+                            "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
+                            target.Namespace
+                            target.Name
+                            referencedInAssembly.DefinitionFullName
+                            moduleRef
+                }
 
     and resolveTopLevelTypeFromName
         (assy : DumpedAssembly)

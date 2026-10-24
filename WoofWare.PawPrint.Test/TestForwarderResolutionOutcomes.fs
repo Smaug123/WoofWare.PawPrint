@@ -290,14 +290,11 @@ public class Stranger
             assemblies.TryByDefinitionName searchedIn |> Option.isSome |> shouldEqual true
         | other -> failwith $"expected the base type to be reported absent, got %O{other}"
 
-    /// Both failure outcomes are new information; every existing caller goes through the wrapper,
-    /// which still terminates on them because it has no way to report either.
+    /// A caller with no way to report either failure stops on it, with the description
+    /// `describeExportFailure` gives.
     [<TestCase(true)>]
     [<TestCase(false)>]
-    let ``the terminating wrapper still crashes, and says which failure it was``
-        (targetAssemblyIsPresent : bool)
-        : unit
-        =
+    let ``a failure to follow a forwarder is described as the failure it was`` (targetAssemblyIsPresent : bool) : unit =
         let layout =
             if targetAssemblyIsPresent then
                 LibLayout.DeclaresSomethingElse
@@ -308,24 +305,23 @@ public class Stranger
             withLayout
                 layout
                 (fun loggerFactory dirs facade exported assemblies ->
-                    let exn =
-                        Assert.Throws<Exception> (fun () ->
-                            TypeResolution.resolveTypeFromExport
-                                loggerFactory
-                                dirs
-                                facade
-                                exported
-                                ImmutableArray.Empty
-                                assemblies
-                            |> ignore<LoadedAssemblies * DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>>
-                        )
+                    let _, resolution =
+                        TypeResolution.tryResolveTypeFromExport
+                            loggerFactory
+                            dirs
+                            facade
+                            exported
+                            ImmutableArray.Empty
+                            assemblies
 
-                    exn.Message
+                    match TypeResolution.exportedType resolution with
+                    | Ok _ -> failwith "expected the forwarder to arrive nowhere"
+                    | Error failure -> TypeResolution.describeExportFailure exported facade failure
                 )
 
-        // Deliberately distinguishing the two, rather than merely asserting that something threw:
-        // the wrapper reports different facts on its two arms, and a caller reading the crash has
-        // to be able to tell "no such DLL" from "that DLL has no such type".
+        // Deliberately distinguishing the two, rather than merely asserting that something failed:
+        // a caller reading the stopped run has to be able to tell "no such DLL" from "that DLL has
+        // no such type".
         if targetAssemblyIsPresent then
             message |> shouldContainText "does not arrive"
             message |> shouldContainText "is not declared in"

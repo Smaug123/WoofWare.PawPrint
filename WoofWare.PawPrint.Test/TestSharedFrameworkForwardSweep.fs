@@ -137,9 +137,15 @@ module TestSharedFrameworkForwardSweep =
                     with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         let handle, referencedIn = assyRef.Handle
-                        let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
+
+                        let assemblies, _ =
+                            (match loadAssembly.TryLoadAssembly assemblies referencedIn handle with
+                             | Ok loaded -> loaded
+                             | Error failure -> failwith (string<AssemblyLoadFailure> failure))
+
                         go (LoadedAssemblies.assertReferenceBound describe assyRef assemblies) (fuel - 1)
                     | TypeResolutionResult.NotFound miss -> failwithf "%O" miss
+                    | TypeResolutionResult.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
                     | TypeResolutionResult.Resolved (targetAssembly, identity, _) ->
                         assemblies, targetAssembly, identity
 

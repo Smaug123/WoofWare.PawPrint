@@ -1019,17 +1019,21 @@ module NativeSignature =
             let rightBytes = resolveSignatureBlob operation state instruction.Arguments.[3]
 
             let assemblies, areEqual =
-                SignatureComparison.signaturesAreEqual
-                    ctx.LoggerFactory
-                    state.DotnetRuntimeDirs
-                    operation
-                    state.TypeSystem._LoadedAssemblies
-                    leftAssembly
-                    leftBytes
-                    left
-                    rightAssembly
-                    rightBytes
-                    right
+                match
+                    SignatureComparison.signaturesAreEqual
+                        ctx.LoggerFactory
+                        state.DotnetRuntimeDirs
+                        operation
+                        state.TypeSystem._LoadedAssemblies
+                        leftAssembly
+                        leftBytes
+                        left
+                        rightAssembly
+                        rightBytes
+                        right
+                with
+                | assemblies, Ok areEqual -> assemblies, areEqual
+                | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
             let state =
                 { state with

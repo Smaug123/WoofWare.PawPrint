@@ -73,37 +73,53 @@ module SignatureComparison =
         | NominalToken.Reference typeRef -> typeRef.Namespace, typeRef.Name
         | NominalToken.Definition typeDef -> typeDef.Namespace, typeDef.Name
 
-    /// The enclosing type's token in the same module, or None for a top-level type.
-    let private enclosingOf (operation : string) (nominal : Nominal) : Nominal option =
+    /// A failure to bind that PawPrint does not model, with what was being done when it arose.
+    let private unmodelled (operation : string) (what : string) : Result<'a, TypeBindingFailure> =
+        Error (
+            TypeBindingFailure.Unmodelled
+                {
+                    Diagnostic = $"%s{operation}: %s{what}"
+                }
+        )
+
+    /// The enclosing type's token in the same module, or None for a top-level type. Metadata whose
+    /// enclosing row is not in the module is unmodelled.
+    let private enclosingOf (operation : string) (nominal : Nominal) : Result<Nominal option, TypeBindingFailure> =
         match nominal.Token with
         | NominalToken.Reference typeRef ->
             match typeRef.ResolutionScope with
             | TypeRefResolutionScope.TypeRef enclosing ->
                 match nominal.Module.TypeRefs.TryGetValue enclosing with
                 | true, enclosing ->
-                    Some
-                        { nominal with
-                            Token = NominalToken.Reference enclosing
-                        }
+                    Ok (
+                        Some
+                            { nominal with
+                                Token = NominalToken.Reference enclosing
+                            }
+                    )
                 | false, _ ->
-                    failwith
-                        $"%s{operation}: type reference %s{typeRef.Name} in %s{nominal.Module.DefinitionFullName} is scoped to a TypeRef row that assembly does not contain"
+                    unmodelled
+                        operation
+                        $"type reference %s{typeRef.Name} in %s{nominal.Module.DefinitionFullName} is scoped to a TypeRef row that assembly does not contain"
             | TypeRefResolutionScope.Assembly _
             | TypeRefResolutionScope.ModuleDef _
-            | TypeRefResolutionScope.ModuleRef _ -> None
+            | TypeRefResolutionScope.ModuleRef _ -> Ok None
         | NominalToken.Definition typeDef ->
             if typeDef.IsNested then
                 match nominal.Module.TypeDefs.TryGetValue typeDef.DeclaringType with
                 | true, enclosing ->
-                    Some
-                        { nominal with
-                            Token = NominalToken.Definition enclosing
-                        }
+                    Ok (
+                        Some
+                            { nominal with
+                                Token = NominalToken.Definition enclosing
+                            }
+                    )
                 | false, _ ->
-                    failwith
-                        $"%s{operation}: type definition %s{typeDef.Name} in %s{nominal.Module.DefinitionFullName} names an enclosing type that assembly does not contain"
+                    unmodelled
+                        operation
+                        $"type definition %s{typeDef.Name} in %s{nominal.Module.DefinitionFullName} names an enclosing type that assembly does not contain"
             else
-                None
+                Ok None
 
     /// Resolve a token to the TypeDef that defines it, which is the identity `CompareTypeTokens`
     /// ultimately compares. Following a reference can load the assembly it names, hence the
@@ -115,34 +131,60 @@ module SignatureComparison =
     /// `ClassLoader::ResolveTokenToTypeDefThrowing` likewise reads metadata and loads no types.
     ///
     /// A miss is a bound assembly that does not declare the name. CoreCLR's resolver returns FALSE
-    /// for that and `CompareTypeTokens` answers FALSE, so the miss is handed back for the caller
-    /// to answer the same way. An assembly that `loadAssembly` cannot bind at all fails loudly, as
-    /// CoreCLR throws from its own.
+    /// for that and `CompareTypeTokens` answers FALSE, so the caller answers the same way. An
+    /// assembly that `loadAssembly` cannot bind at all is a failure, as CoreCLR throws from its own.
     let rec private resolveNominal
         (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
         (nominal : Nominal)
-        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        : LoadedAssemblies * Result<ResolvedTypeIdentity option, TypeBindingFailure>
         =
         match nominal.Token with
-        | NominalToken.Definition typeDef -> assemblies, Ok typeDef.Identity
+        | NominalToken.Definition typeDef -> assemblies, Ok (Some typeDef.Identity)
         | NominalToken.Reference typeRef ->
             match LoadedTypeResolution.resolveTypeRef assemblies nominal.Module ImmutableArray.Empty typeRef with
-            | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
-            | TypeResolutionResult.NotFound miss -> assemblies, Error miss
+            | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok (Some identity)
+            | TypeResolutionResult.NotFound _ -> assemblies, Ok None
+            | TypeResolutionResult.Unmodelled unmodelled -> assemblies, Error (TypeBindingFailure.Unmodelled unmodelled)
             | TypeResolutionResult.FirstLoadAssy loadFirst ->
                 let handle, referencedIn = loadFirst.Handle
-                let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
+
+                match loadAssembly.TryLoadAssembly assemblies referencedIn handle with
+                | Error (AssemblyLoadFailure.NoSuchAssembly reference) ->
+                    assemblies, Error (TypeBindingFailure.AssemblyUnavailable reference)
+                | Error (AssemblyLoadFailure.LoadingNotPermitted _ as failure) ->
+                    failwith (string<AssemblyLoadFailure> failure)
+                | Ok (assemblies, _) ->
 
                 let assemblies =
                     LoadedAssemblies.assertReferenceBound $"type reference %s{typeRef.Name}" loadFirst assemblies
 
                 resolveNominal loadAssembly assemblies nominal
 
+    /// Whether `compare` finds each pair equal, in order, stopping at the first it does not or that
+    /// fails to bind, as CoreCLR's comparison returns at the first difference.
+    let private allEqual
+        (compare : LoadedAssemblies -> 'a -> 'a -> LoadedAssemblies * Result<bool, TypeBindingFailure>)
+        (assemblies : LoadedAssemblies)
+        (pairs : ('a * 'a) seq)
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
+        =
+        let mutable assemblies = assemblies
+        let mutable answer = Ok true
+        use pairs = pairs.GetEnumerator ()
+
+        while answer = Ok true && pairs.MoveNext () do
+            let l, r = pairs.Current
+            let loaded, compared = compare assemblies l r
+            assemblies <- loaded
+            answer <- compared
+
+        assemblies, answer
+
     /// `CompareTypeTokens` (siginfo.cpp), step for step: the same row of one module, then names,
     /// then the enclosing types by the same steps, then each side resolved in turn. The order is
     /// the point, not a saving: it decides which assemblies are loaded, or fail to bind, before an
-    /// answer is reached, and PawPrint fails loudly where CoreCLR throws.
+    /// answer is reached, and a failure to bind is reported where CoreCLR throws.
     let rec private compareNominal
         (loadAssembly : IAssemblyLoad)
         (operation : string)
@@ -150,11 +192,14 @@ module SignatureComparison =
         (assemblies : LoadedAssemblies)
         (left : Nominal)
         (right : Nominal)
-        : LoadedAssemblies * bool
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         if depth > maxNestingDepth then
-            failwith
-                $"%s{operation}: %O{nameOf left} in %s{left.Module.DefinitionFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+            assemblies,
+            unmodelled
+                operation
+                $"%O{nameOf left} in %s{left.Module.DefinitionFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+        else
 
         match left.Token, right.Token with
         | NominalToken.Reference lRef, NominalToken.Reference rRef when
@@ -170,7 +215,7 @@ module SignatureComparison =
             // The row, not the description: two rows of one module may describe the same type,
             // and CoreCLR does not take this shortcut for them. The module check is what makes
             // the comparison meaningful, since a handle indexes its own module's tables.
-            assemblies, true
+            assemblies, Ok true
         | NominalToken.Definition lDef, NominalToken.Definition rDef ->
             // Two definitions are the same type only if they are the same definition. CoreCLR has
             // one escape from that — CLR type equivalence, which makes separately embedded
@@ -180,11 +225,11 @@ module SignatureComparison =
             // "two type defs can't be the same unless they are identical". PawPrint models a
             // Linux guest (`SimulatedUnixPlatform`), so equivalence is not a behaviour it should
             // reproduce; a build for a Windows guest would have to revisit it.
-            assemblies, lDef.Identity = rDef.Identity
+            assemblies, Ok (lDef.Identity = rDef.Identity)
         | _, _ ->
 
         if nameOf left <> nameOf right then
-            assemblies, false
+            assemblies, Ok false
         else
 
         // A nested type's row carries an empty namespace and only its own leaf name, so the
@@ -192,33 +237,34 @@ module SignatureComparison =
         // resolution happens, on both sides, before either leaf's.
         let assemblies, enclosingMatch =
             match enclosingOf operation left, enclosingOf operation right with
-            | Some lEnclosing, Some rEnclosing ->
+            | Error failure, _
+            | _, Error failure -> assemblies, Error failure
+            | Ok (Some lEnclosing), Ok (Some rEnclosing) ->
                 compareNominal loadAssembly operation (depth + 1) assemblies lEnclosing rEnclosing
-            | None, None -> assemblies, true
-            | Some _, None
-            | None, Some _ -> assemblies, false
+            | Ok None, Ok None -> assemblies, Ok true
+            | Ok (Some _), Ok None
+            | Ok None, Ok (Some _) -> assemblies, Ok false
 
-        if not enclosingMatch then
-            assemblies, false
-        else
+        match enclosingMatch with
+        | Error failure -> assemblies, Error failure
+        | Ok false -> assemblies, Ok false
+        | Ok true ->
 
-        let assemblies, lIdentity = resolveNominal loadAssembly assemblies left
+        match resolveNominal loadAssembly assemblies left with
+        | assemblies, Error failure -> assemblies, Error failure
+        | assemblies, Ok None -> assemblies, Ok false
+        | assemblies, Ok (Some lIdentity) ->
 
-        match lIdentity with
-        | Error _ -> assemblies, false
-        | Ok lIdentity ->
-
-        let assemblies, rIdentity = resolveNominal loadAssembly assemblies right
-
-        match rIdentity with
-        | Error _ -> assemblies, false
-        | Ok rIdentity -> assemblies, lIdentity = rIdentity
+        match resolveNominal loadAssembly assemblies right with
+        | assemblies, Error failure -> assemblies, Error failure
+        | assemblies, Ok None -> assemblies, Ok false
+        | assemblies, Ok (Some rIdentity) -> assemblies, Ok (lIdentity = rIdentity)
 
     /// `CompareTypeTokens` (siginfo.cpp) on two type references or definitions of signatures, `left`
     /// spelled in `leftModule` and `right` in `rightModule`, binding assemblies with `loadAssembly`:
     /// whether they name one type definition. It compares names before it resolves either, and a
     /// reference into an assembly that binds but does not declare the type names no type, so it is
-    /// unequal to every other; one into an assembly `loadAssembly` cannot bind fails loudly, where
+    /// unequal to every other; one into an assembly `loadAssembly` cannot bind is a failure, where
     /// CoreCLR throws. The element types' kinds, class or value type, are not compared.
     let compareTypeTokens
         (loadAssembly : IAssemblyLoad)
@@ -228,7 +274,7 @@ module SignatureComparison =
         (left : TypeDefn)
         (rightModule : DumpedAssembly)
         (right : TypeDefn)
-        : LoadedAssemblies * bool
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         compareNominal
             loadAssembly
@@ -253,19 +299,29 @@ module SignatureComparison =
         (left : TypeDefn)
         (rightAssembly : DumpedAssembly)
         (right : TypeDefn)
-        : LoadedAssemblies * bool
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         let recurse assemblies l r =
             compareSignatureTypes loggerFactory dotnetRuntimeDirs operation assemblies leftAssembly l rightAssembly r
 
+        // `first`, and if it finds them equal, `next`.
+        let andThen
+            (next : LoadedAssemblies -> LoadedAssemblies * Result<bool, TypeBindingFailure>)
+            (assemblies, first)
+            =
+            match first with
+            | Ok true -> next assemblies
+            | Ok false
+            | Error _ -> assemblies, first
+
         match left, right with
-        | TypeDefn.PrimitiveType l, TypeDefn.PrimitiveType r -> assemblies, l = r
-        | TypeDefn.Void, TypeDefn.Void -> assemblies, true
+        | TypeDefn.PrimitiveType l, TypeDefn.PrimitiveType r -> assemblies, Ok (l = r)
+        | TypeDefn.Void, TypeDefn.Void -> assemblies, Ok true
         // Symbolic, as CoreCLR is: with a null Substitution the VAR/MVAR arms of
         // `CompareElementType` compare the index and nothing else. This is what stops a type
         // parameter comparing equal to whatever an instantiation would substitute for it.
-        | TypeDefn.GenericTypeParameter l, TypeDefn.GenericTypeParameter r -> assemblies, l = r
-        | TypeDefn.GenericMethodParameter l, TypeDefn.GenericMethodParameter r -> assemblies, l = r
+        | TypeDefn.GenericTypeParameter l, TypeDefn.GenericTypeParameter r -> assemblies, Ok (l = r)
+        | TypeDefn.GenericMethodParameter l, TypeDefn.GenericMethodParameter r -> assemblies, Ok (l = r)
         | TypeDefn.Byref l, TypeDefn.Byref r
         | TypeDefn.Pointer l, TypeDefn.Pointer r
         | TypeDefn.Pinned l, TypeDefn.Pinned r
@@ -278,48 +334,33 @@ module SignatureComparison =
             //
             // Rank alone then decides the shape: the decoder refuses a non-canonical `ArrayShape`,
             // and canonical shapes of one rank carry identical sizes and lower bounds.
-            let assemblies, elementsMatch = recurse assemblies lElt rElt
-
-            if not elementsMatch then
-                assemblies, false
-            else
-                assemblies, lRank = rRank
+            recurse assemblies lElt rElt
+            |> andThen (fun assemblies -> assemblies, Ok (lRank = rRank))
         | TypeDefn.Modified l, TypeDefn.Modified r ->
             // A modreq never equals a modopt, and the modifier itself is compared nominally.
             // Nesting order is preserved by the decoder, so recursing through `Unmodified`
             // compares multiple modifiers pairwise in order, as `CompareElementType`'s `goto redo`
             // does.
             if l.IsRequired <> r.IsRequired then
-                assemblies, false
+                assemblies, Ok false
             else
-                let assemblies, modifiersMatch = recurse assemblies l.Modifier r.Modifier
-
-                if not modifiersMatch then
-                    assemblies, false
-                else
-                    recurse assemblies l.Unmodified r.Unmodified
+                recurse assemblies l.Modifier r.Modifier
+                |> andThen (fun assemblies -> recurse assemblies l.Unmodified r.Unmodified)
         | TypeDefn.GenericInstantiation (lGeneric, lArgs), TypeDefn.GenericInstantiation (rGeneric, rArgs) ->
             // The generic definition before the argument count, as `CompareElementType` reads
             // the blob, for the same reason as the array arm above. Well-formed metadata cannot
             // reach a count mismatch with one definition, since the arity is part of its name,
             // but the order is kept so that a malformed pair loads what CoreCLR would load.
-            let assemblies, genericMatches = recurse assemblies lGeneric rGeneric
-
-            if not genericMatches then
-                assemblies, false
-            elif lArgs.Length <> rArgs.Length then
-                assemblies, false
-            else
-                ((assemblies, true), Seq.zip lArgs rArgs)
-                ||> Seq.fold (fun (assemblies, soFar) (l, r) ->
-                    if not soFar then
-                        (assemblies, false)
-                    else
-                        recurse assemblies l r
-                )
+            recurse assemblies lGeneric rGeneric
+            |> andThen (fun assemblies ->
+                if lArgs.Length <> rArgs.Length then
+                    assemblies, Ok false
+                else
+                    allEqual recurse assemblies (Seq.zip lArgs rArgs)
+            )
         | TypeDefn.FunctionPointer l, TypeDefn.FunctionPointer r ->
             if l.Header.Get.RawValue <> r.Header.Get.RawValue then
-                assemblies, false
+                assemblies, Ok false
             elif l.GenericParameterCount <> r.GenericParameterCount then
                 // CoreCLR reads one compressed integer from each blob after the calling-convention
                 // bytes and compares it as `argCnt` (siginfo.cpp, the FNPTR arm). For a GENERIC
@@ -327,7 +368,7 @@ module SignatureComparison =
                 // CallConv | GenParamCount | ParamCount | RetType | Params — so differing counts are
                 // rejected there, before any element is parsed. For a non-GENERIC signature the count
                 // is zero on both sides and this branch cannot fire.
-                assemblies, false
+                assemblies, Ok false
             elif l.Header.Get.IsGeneric then
                 // The calling-convention bytes and the generic-parameter counts are equal by the
                 // branches above, and those are the last two things CoreCLR decides without
@@ -342,36 +383,31 @@ module SignatureComparison =
                 // the numeric count values reinterpreted as element types, which a correctly decoded
                 // signature no longer knows. So refuse every pair that reaches here, including one whose
                 // parameter counts differ, rather than trying to predict it.
-                failwith
-                    $"%s{operation}: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.DefinitionFullName} against %s{rightAssembly.DefinitionFullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
+                assemblies,
+                unmodelled
+                    operation
+                    $"comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.DefinitionFullName} against %s{rightAssembly.DefinitionFullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
             elif List.length l.ParameterTypes <> List.length r.ParameterTypes then
                 // For a non-GENERIC signature this *is* CoreCLR's `argCnt` comparison: the integer it
                 // reads after the calling-convention byte is the parameter count. A GENERIC one never
                 // reaches here, having been refused above.
-                assemblies, false
+                assemblies, Ok false
             else
-                let assemblies, returnMatches =
+                let returnsMatch =
                     match l.ReturnType, r.ReturnType with
-                    | MethodReturnType.Void, MethodReturnType.Void -> assemblies, true
-                    | MethodReturnType.Returns l, MethodReturnType.Returns r -> recurse assemblies l r
-                    | _, _ -> assemblies, false
+                    | MethodReturnType.Void, MethodReturnType.Void -> assemblies, Ok true
+                    | MethodReturnType.Returns lReturn, MethodReturnType.Returns rReturn ->
+                        recurse assemblies lReturn rReturn
+                    | _, _ -> assemblies, Ok false
 
-                if not returnMatches then
-                    assemblies, false
-                else
-                    ((assemblies, true), List.zip l.ParameterTypes r.ParameterTypes)
-                    ||> List.fold (fun (assemblies, soFar) (l, r) ->
-                        if not soFar then
-                            (assemblies, false)
-                        else
-                            recurse assemblies l r
-                    )
+                returnsMatch
+                |> andThen (fun assemblies -> allEqual recurse assemblies (List.zip l.ParameterTypes r.ParameterTypes))
         | (TypeDefn.FromDefinition (_, lKind) | TypeDefn.FromReference (_, lKind)),
           (TypeDefn.FromDefinition (_, rKind) | TypeDefn.FromReference (_, rKind)) ->
             // CoreCLR fails a CLASS against a VALUETYPE on the element-type byte alone, before it
             // reads a token, so two spellings of one type with different kinds are unequal.
             if lKind <> rKind then
-                assemblies, false
+                assemblies, Ok false
             else
                 compareNominal
                     (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
@@ -380,7 +416,7 @@ module SignatureComparison =
                     assemblies
                     (nominalOfLeaf operation assemblies leftAssembly left)
                     (nominalOfLeaf operation assemblies rightAssembly right)
-        | _, _ -> assemblies, false
+        | _, _ -> assemblies, Ok false
 
     /// Compare two decoded signatures as `MetaSig::CompareMethodSigs` does once its same-module
     /// byte-equality fast path has failed: calling convention, then argument count, then the
@@ -394,7 +430,7 @@ module SignatureComparison =
         (left : MethodSignature<TypeDefn>)
         (rightAssembly : DumpedAssembly)
         (right : MethodSignature<TypeDefn>)
-        : LoadedAssemblies * bool
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         // CoreCLR reads one argument count from the blob and uses it for both the comparison and
         // the walk. Only a call site's MemberRef can carry a VARARG sentinel, so for the signatures
@@ -414,43 +450,21 @@ module SignatureComparison =
         // compared. This is what makes a static property differ from an instance one (HASTHIS) and
         // a PROPERTY blob differ from a METHOD one.
         if left.Header.RawValue <> right.Header.RawValue then
-            assemblies, false
+            assemblies, Ok false
         elif left.GenericParameterCount <> right.GenericParameterCount then
-            assemblies, false
+            assemblies, Ok false
         elif left.ParameterTypes.Length <> right.ParameterTypes.Length then
-            assemblies, false
+            assemblies, Ok false
         else
 
-        let assemblies, returnMatches =
-            compareSignatureTypes
-                loggerFactory
-                dotnetRuntimeDirs
-                operation
-                assemblies
-                leftAssembly
-                left.ReturnType
-                rightAssembly
-                right.ReturnType
+        let compare assemblies l r =
+            compareSignatureTypes loggerFactory dotnetRuntimeDirs operation assemblies leftAssembly l rightAssembly r
 
-        if not returnMatches then
-            assemblies, false
-        else
-
-        ((assemblies, true), Seq.zip left.ParameterTypes right.ParameterTypes)
-        ||> Seq.fold (fun (assemblies, soFar) (l, r) ->
-            if not soFar then
-                (assemblies, false)
-            else
-                compareSignatureTypes
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    operation
-                    assemblies
-                    leftAssembly
-                    l
-                    rightAssembly
-                    r
-        )
+        // The return type first, then each parameter, as `MetaSig::CompareMethodSigs` walks them.
+        allEqual
+            compare
+            assemblies
+            (Seq.append [ left.ReturnType, right.ReturnType ] (Seq.zip left.ParameterTypes right.ParameterTypes))
 
     /// Compare two signatures exactly as `Signature_AreEqual` does: CoreCLR's same-module
     /// byte-equality fast path, then the structural comparison.
@@ -470,13 +484,13 @@ module SignatureComparison =
         (rightAssembly : DumpedAssembly)
         (rightBytes : byte[])
         (right : MethodSignature<TypeDefn>)
-        : LoadedAssemblies * bool
+        : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         if
             leftAssembly.DefinitionFullName = rightAssembly.DefinitionFullName
             && leftBytes = rightBytes
         then
-            assemblies, true
+            assemblies, Ok true
         else
             compareDecodedSignatures
                 loggerFactory

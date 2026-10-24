@@ -75,7 +75,7 @@ module TestGenericEnvironmentCycles =
         (methodGenericArgs : TypeDefn list)
         : TypeInfo<TypeDefn, TypeDefn>
         =
-        let _, _, resolved =
+        let _, (_, resolved) =
             TypeResolution.resolveTypeFromDefn
                 fixture.LoggerFactory
                 [ runtimeDir ]
@@ -85,6 +85,7 @@ module TestGenericEnvironmentCycles =
                 (ImmutableArray.CreateRange methodGenericArgs)
                 fixture.Corelib
                 fixture.Loaded
+            |> BindingResult.bound
 
         resolved
 

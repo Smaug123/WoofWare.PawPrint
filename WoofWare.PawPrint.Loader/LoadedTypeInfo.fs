@@ -41,6 +41,8 @@ module LoadedTypeInfo =
             failwith "seems pretty unlikely that we could have constructed this object without loading its base type"
         | TypeResolutionResult.NotFound miss ->
             failwithf "Base type reference from %s does not resolve: %O" a.DefinitionFullName miss
+        | TypeResolutionResult.Unmodelled unmodelled ->
+            failwithf "Base type reference from %s does not resolve: %s" a.DefinitionFullName unmodelled.Diagnostic
 
     let private getTypeSpec
         (loadedAssemblies : LoadedAssemblies)
@@ -72,6 +74,12 @@ module LoadedTypeInfo =
                         a.DefinitionFullName
                 | TypeResolutionResult.NotFound miss ->
                     failwithf "Base type traversal could not resolve %O from %s: %O" signature a.DefinitionFullName miss
+                | TypeResolutionResult.Unmodelled unmodelled ->
+                    failwithf
+                        "Base type traversal could not resolve %O from %s: %s"
+                        signature
+                        a.DefinitionFullName
+                        unmodelled.Diagnostic
                 | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                     resolvedAssembly, resolvedType.TypeDefHandle
             | unexpected ->

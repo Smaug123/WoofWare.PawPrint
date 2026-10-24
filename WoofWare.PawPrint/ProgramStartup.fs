@@ -192,6 +192,12 @@ module internal ProgramStartup =
                             typeRef.Name
                             currentAssembly.DefinitionFullName
                             miss
+                    | TypeResolutionResult.Unmodelled unmodelled ->
+                        failwithf
+                            "Base type reference %s from %s does not resolve: %s"
+                            typeRef.Name
+                            currentAssembly.DefinitionFullName
+                            unmodelled.Diagnostic
                     | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                         continueWithResolved state resolvedType resolvedAssembly
 

@@ -5501,11 +5501,15 @@ module CliType =
         // all: a field type we have only just read in may itself derive from a class in a third
         // assembly, and nothing before this point had any reason to bind that reference.
         let assemblies =
-            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                loadAssembly
-                assemblies
-                (assemblies.ByDefinitionName concreteType.AssemblyFullName)
-                concreteType.Definition.Get
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    loadAssembly
+                    assemblies
+                    (assemblies.ByDefinitionName concreteType.AssemblyFullName)
+                    concreteType.Definition.Get
+            with
+            | assemblies, None -> assemblies
+            | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
         let isValueType = LoadedTypeInfo.isValueType corelib assemblies typeDef
 

@@ -23,6 +23,26 @@ type FieldReferenceTarget =
     /// CoreCLR's load of the parent reaches a type reference to an assembly no runtime directory
     /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
     | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+    /// The row, or its parent, is a shape PawPrint does not implement binding.
+    | Unmodelled of UnmodelledBinding
+
+[<RequireQualifiedAccess>]
+module FieldReferenceTarget =
+    /// A failure to bind a type that a candidate field's signature, or the reference's, names while
+    /// comparing the two. CoreCLR throws `FileNotFoundException` from the comparison for an assembly
+    /// it cannot bind, which PawPrint does not raise to the guest, so that too is unmodelled.
+    let internal ofFailure (failure : TypeBindingFailure) : FieldReferenceTarget =
+        match failure with
+        | TypeBindingFailure.AssemblyUnavailable _ ->
+            FieldReferenceTarget.Unmodelled
+                {
+                    Diagnostic = TypeBindingFailure.describe failure
+                }
+        | TypeBindingFailure.Unmodelled unmodelled -> FieldReferenceTarget.Unmodelled unmodelled
+        | TypeBindingFailure.TypeAbsent _
+        | TypeBindingFailure.BaseTypeAbsent _ ->
+            failwith
+                $"BUG: comparing field signatures reported %O{failure}, but it answers a reference that names nothing as unequal rather than failing"
 
 /// <summary>
 /// Which field a MemberRef names, answered at the level of generic definitions.
@@ -53,11 +73,15 @@ module FieldReferenceResolution =
         let row = referencingAssembly.Members.[reference]
         let name = referencingAssembly.Strings row.Name
 
-        let header, fieldType =
-            match row.Signature with
-            | MemberSignature.Field (header, ty) -> header, ty
-            | MemberSignature.Method _ ->
-                failwith $"MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} names a method, not a field"
+        match row.Signature with
+        | MemberSignature.Method _ ->
+            assemblies,
+            FieldReferenceTarget.Unmodelled
+                {
+                    Diagnostic =
+                        $"MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} names a method, not a field"
+                }
+        | MemberSignature.Field (header, fieldType) ->
 
         let operation =
             $"resolving the reference to field %s{name} from %s{referencingAssembly.DefinitionFullName}"
@@ -98,8 +122,9 @@ module FieldReferenceResolution =
                             referencingAssembly
                             fieldType
                     with
-                    | assemblies, true -> assemblies, FieldReferenceTarget.Defined (declaring, field.Handle)
-                    | assemblies, false -> search assemblies rest
+                    | assemblies, Ok true -> assemblies, FieldReferenceTarget.Defined (declaring, field.Handle)
+                    | assemblies, Ok false -> search assemblies rest
+                    | assemblies, Error failure -> assemblies, FieldReferenceTarget.ofFailure failure
 
             // `MethodTableBuilder::InitializeFieldDescs` places each field in one of three runs,
             // keeping metadata order within a run; `List.sortBy` is stable.
@@ -120,5 +145,12 @@ module FieldReferenceResolution =
         | assemblies, MemberReferenceParent.Unresolved miss -> assemblies, FieldReferenceTarget.ParentTypeMissing miss
         | assemblies, MemberReferenceParent.AssemblyUnavailable reference ->
             assemblies, FieldReferenceTarget.ParentAssemblyUnavailable reference
-        | _, MemberReferenceParent.VarArgDefinition _ ->
-            failwith $"%s{operation}: a field reference's parent is a MethodDef, which ECMA-335 does not permit"
+        | assemblies, MemberReferenceParent.Unmodelled unmodelled ->
+            assemblies, FieldReferenceTarget.Unmodelled unmodelled
+        | assemblies, MemberReferenceParent.VarArgDefinition _ ->
+            assemblies,
+            FieldReferenceTarget.Unmodelled
+                {
+                    Diagnostic =
+                        $"%s{operation}: a field reference's parent is a MethodDef, which ECMA-335 does not permit"
+                }
