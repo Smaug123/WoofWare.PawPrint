@@ -977,6 +977,14 @@ module TypeResolution =
                     ty |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
 
                 assemblies, Ok (baseClassTypes.Corelib, ty)
+        // `ELEMENT_TYPE_VOID` in a type position, as a TypeSpec may spell it, names CoreLib's
+        // `System.Void` as the primitive element types name theirs.
+        | TypeDefn.Void ->
+            let ty =
+                baseClassTypes.Void
+                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Void is not generic")
+
+            assemblies, Ok (baseClassTypes.Corelib, ty)
         | TypeDefn.GenericTypeParameter param ->
             let arg = typeGenericArgs.[param]
             let link = ExpandingParam.Type param

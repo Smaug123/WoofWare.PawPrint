@@ -34,10 +34,13 @@ module TestFabricatedVoidParentMemberReference =
         | Returns
         | Refused
 
-    /// The type a scenario's MemberRef is re-pointed through.
+    /// The type a scenario's MemberRef is re-pointed through: a TypeRef, or a TypeSpec spelling
+    /// `void` itself (`ELEMENT_TYPE_VOID`) or naming `System.Void` as a value type.
     type private Parent =
         | Void
         | Int32
+        | VoidSpec
+        | ValueTypeVoidSpec
 
     let private instanceMethod (declaring : Type) (name : string) (parameters : Type list) : MethodInfo =
         declaring.GetMethod (
@@ -113,9 +116,26 @@ module TestFabricatedVoidParentMemberReference =
                 il.Emit OpCodes.Ldnull
                 il.Emit (OpCodes.Callvirt, target)
                 il.Emit OpCodes.Pop
+            // The member is found by name and signature through the parent, wherever the image
+            // first named it, so these find `ValueType`'s `ToString` and `GetHashCode` too.
+            "LdftnVoidSpec",
+            instanceMethod typeof<Enum> "ToString" [],
+            Parent.VoidSpec,
+            Expected.Refused,
+            fun il target ->
+                il.Emit (OpCodes.Ldftn, target)
+                il.Emit OpCodes.Pop
+            "LdftnValueTypeVoidSpec",
+            instanceMethod typeof<string> "GetHashCode" [],
+            Parent.ValueTypeVoidSpec,
+            Expected.Refused,
+            fun il target ->
+                il.Emit (OpCodes.Ldftn, target)
+                il.Emit OpCodes.Pop
         ]
 
-    /// Re-point the parent of each scenario's MemberRef at the TypeRef its scenario names.
+    /// Re-point the parent of each scenario's MemberRef at the type its scenario names. The two
+    /// TypeSpecs are the image's `int&` and `int*`, their signatures rewritten in place.
     let private repoint (image : byte[]) : byte[] =
         use pe = new PEReader (new MemoryStream (image))
         let reader = pe.GetMetadataReader ()
@@ -130,19 +150,41 @@ module TestFabricatedVoidParentMemberReference =
             )
             |> Seq.exactlyOne
 
+        let typeSpec (signature : byte[]) : TypeSpecificationHandle =
+            seq { 1 .. reader.GetTableRowCount TableIndex.TypeSpec }
+            |> Seq.map MetadataTokens.TypeSpecificationHandle
+            |> Seq.filter (fun handle -> reader.GetBlobBytes (reader.GetTypeSpecification handle).Signature = signature)
+            |> Seq.exactlyOne
+
+        // ELEMENT_TYPE_BYREF and ELEMENT_TYPE_PTR of ELEMENT_TYPE_I4 (ECMA-335 II.23.1.16).
+        let voidSpec = typeSpec [| 0x10uy ; 0x08uy |]
+        let valueTypeVoidSpec = typeSpec [| 0x0Fuy ; 0x08uy |]
+
+        let typeRefRow (handle : TypeReferenceHandle) : int =
+            MetadataTokens.GetRowNumber (TypeReferenceHandle.op_Implicit handle : EntityHandle)
+
+        let typeSpecRow (handle : TypeSpecificationHandle) : int =
+            MetadataTokens.GetRowNumber (TypeSpecificationHandle.op_Implicit handle : EntityHandle)
+
         // MemberRefParent is a coded index over five tables, so its tag is three bits wide
-        // (ECMA-335 II.24.2.6), and TypeRef's tag is 1.
+        // (ECMA-335 II.24.2.6); TypeRef's tag is 1 and TypeSpec's is 4.
         let coded (parent : Parent) : int =
-            let handle =
-                match parent with
-                | Parent.Void -> typeRef "Void"
-                | Parent.Int32 -> typeRef "Int32"
+            match parent with
+            | Parent.Void -> (typeRefRow (typeRef "Void") <<< 3) ||| 1
+            | Parent.Int32 -> (typeRefRow (typeRef "Int32") <<< 3) ||| 1
+            | Parent.VoidSpec -> (typeSpecRow voidSpec <<< 3) ||| 4
+            | Parent.ValueTypeVoidSpec -> (typeSpecRow valueTypeVoidSpec <<< 3) ||| 4
 
-            (MetadataTokens.GetRowNumber (TypeReferenceHandle.op_Implicit handle : EntityHandle)
-             <<< 3)
-            ||| 1
-
-        if reader.GetTableRowCount TableIndex.TypeRef >= (1 <<< 13) then
+        if
+            [
+                TableIndex.TypeDef
+                TableIndex.TypeRef
+                TableIndex.ModuleRef
+                TableIndex.MethodDef
+                TableIndex.TypeSpec
+            ]
+            |> List.exists (fun table -> reader.GetTableRowCount table >= (1 <<< 13))
+        then
             failwith "the fabricated image is too large for a two-byte MemberRefParent column"
 
         let tableStart =
@@ -151,6 +193,35 @@ module TestFabricatedVoidParentMemberReference =
 
         let rowSize = reader.GetTableRowSize TableIndex.MemberRef
         let patched = Array.copy image
+
+        // Each blob is its compressed length and then its bytes (ECMA-335 II.24.2.4). Both start two
+        // bytes long, and the length is rewritten with the signature.
+        let rewriteSignature (handle : TypeSpecificationHandle) (signature : byte list) : unit =
+            let blob = (reader.GetTypeSpecification handle).Signature
+
+            let offset =
+                pe.PEHeaders.MetadataStartOffset
+                + reader.GetHeapMetadataOffset HeapIndex.Blob
+                + MetadataTokens.GetHeapOffset (BlobHandle.op_Implicit blob : Handle)
+
+            if patched.[offset] <> 2uy || signature.Length > 2 then
+                failwith "expected a two-byte TypeSpec blob to rewrite"
+
+            patched.[offset] <- byte signature.Length
+
+            for i, b in List.indexed signature do
+                patched.[offset + 1 + i] <- b
+
+        // ELEMENT_TYPE_VOID; and ELEMENT_TYPE_VALUETYPE of the TypeRef, whose TypeDefOrRef coded
+        // index has a two-bit tag of 1 and compresses to one byte while it is below 0x80.
+        rewriteSignature voidSpec [ 0x01uy ]
+
+        let valueTypeVoid = (typeRefRow (typeRef "Void") <<< 2) ||| 1
+
+        if valueTypeVoid >= 0x80 then
+            failwith "the fabricated image has too many TypeRefs for a one-byte TypeDefOrRef index"
+
+        rewriteSignature valueTypeVoidSpec [ 0x11uy ; byte valueTypeVoid ]
 
         for _, target, parent, _, _ in scenarios do
             let rows =
@@ -188,7 +259,8 @@ module TestFabricatedVoidParentMemberReference =
         patched
 
     /// `static class Probes`, with one `static int` method of no arguments per scenario, and one
-    /// more naming `System.Void` and `System.Int32` so that the image has a TypeRef to each.
+    /// more naming `System.Void`, `System.Int32`, `int&` and `int*`, so that the image has a TypeRef
+    /// to each of the first two and a TypeSpec of each of the others.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "VoidParentMemberReference", typeof<obj>.Assembly)
@@ -211,7 +283,13 @@ module TestFabricatedVoidParentMemberReference =
         define
             "NamesParents"
             (fun il ->
-                for parent in [ typeof<Void> ; typeof<int> ] do
+                for parent in
+                    [
+                        typeof<Void>
+                        typeof<int>
+                        typeof<int>.MakeByRefType ()
+                        typeof<int>.MakePointerType ()
+                    ] do
                     il.Emit (OpCodes.Ldtoken, parent)
                     il.Emit OpCodes.Pop
             )
