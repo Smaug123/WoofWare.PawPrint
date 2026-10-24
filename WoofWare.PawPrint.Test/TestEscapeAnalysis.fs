@@ -9853,6 +9853,9 @@ public static class Runners
     ///   - `BoxT<T>(T)`, `box !!0; pop`, and `BoxTBranch<T>(T)`, `box !!0; brtrue`;
     ///   - `NewarrT<T>()`, `ldc.i4.0; newarr !!0; pop`;
     ///   - `BoxU<U>(U)`, `box !!0; pop`.
+    ///
+    /// The image is compiled against a `RefusalsDep` declaring `RefusalsDep.Gone`, which the one
+    /// `refusalsDependency` makes does not.
     let private fabricateRefusals () : byte[] =
         // F# refuses `typeof` of a byref-like type (FS0412).
         let ofInt (definition : string) : Type =
@@ -9862,6 +9865,19 @@ public static class Runners
         let readOnlySpan = ofInt "System.ReadOnlySpan`1"
         let empty = span.GetProperty("Empty").GetMethod
         let flush = typeof<Stream>.GetMethod ("Flush", Type.EmptyTypes)
+
+        let gone =
+            Emit
+                .PersistedAssemblyBuilder(AssemblyName "RefusalsDep", typeof<obj>.Assembly)
+                .DefineDynamicModule("RefusalsDep")
+                .DefineType(
+                    "RefusalsDep.Gone",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+                .CreateType ()
 
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "Refusals", typeof<obj>.Assembly)
@@ -10005,17 +10021,48 @@ public static class Runners
                     il.MarkLabel next
                 )
 
-        let boxTUnbox =
+        // `box !!0; isinst target; brtrue`.
+        let boxTCastTo (name : string) (target : Type) =
             generic
-                "BoxTUnbox"
+                name
                 true
                 true
                 (fun il parameter ->
+                    let next = il.DefineLabel ()
                     il.Emit Emit.OpCodes.Ldarg_0
                     il.Emit (Emit.OpCodes.Box, parameter)
-                    il.Emit (Emit.OpCodes.Unbox_Any, parameter)
-                    il.Emit Emit.OpCodes.Pop
+                    il.Emit (Emit.OpCodes.Isinst, target)
+                    il.Emit (Emit.OpCodes.Brtrue, next)
+                    il.MarkLabel next
                 )
+
+        let boxTCastDisposable = boxTCastTo "BoxTCastDisposable" typeof<IDisposable>
+        let boxTCastEquatable = boxTCastTo "BoxTCastEquatable" typeof<IEquatable<int>>
+
+        // `box !!0; unbox.any !!0; pop`, with these implementation flags.
+        let boxTUnboxWith (name : string) (flags : MethodImplAttributes) =
+            let method =
+                generic
+                    name
+                    true
+                    true
+                    (fun il parameter ->
+                        il.Emit Emit.OpCodes.Ldarg_0
+                        il.Emit (Emit.OpCodes.Box, parameter)
+                        il.Emit (Emit.OpCodes.Unbox_Any, parameter)
+                        il.Emit Emit.OpCodes.Pop
+                    )
+
+            method.SetImplementationFlags flags
+            method
+
+        let boxTUnbox = boxTUnboxWith "BoxTUnbox" MethodImplAttributes.IL
+
+        let boxTUnboxNoInlining =
+            boxTUnboxWith "BoxTUnboxNoInlining" MethodImplAttributes.NoInlining
+
+        let boxTUnboxNoOptimization =
+            boxTUnboxWith "BoxTUnboxNoOptimization" MethodImplAttributes.NoOptimization
 
         let newarrT =
             generic
@@ -10198,6 +10245,57 @@ public static class Runners
                 returns il 0
             )
 
+        // A protected block starting between the box and the branch starts a block there too. The
+        // IL is invalid, the stack not being empty where the protected block starts, but the JIT
+        // refuses it over the box.
+        define
+            "BoxBranchInTry"
+            (fun il ->
+                let result = il.DeclareLocal typeof<int>
+                boxed il
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                let next = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Brtrue, next)
+                il.MarkLabel next
+                il.Emit Emit.OpCodes.Ldc_I4_2
+                il.Emit (Emit.OpCodes.Stloc, result)
+                il.BeginCatchBlock typeof<exn>
+                il.Emit Emit.OpCodes.Pop
+                il.EndExceptionBlock ()
+                il.Emit (Emit.OpCodes.Ldloc, result)
+                il.Emit Emit.OpCodes.Ret
+            )
+
+        // The JIT resolves the token of what follows the box as it matches the pattern, and raises
+        // there where it does not bind, rather than refusing the box.
+        define
+            "BoxUnboxGone"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Unbox_Any, gone)
+                il.Emit Emit.OpCodes.Pop
+                returns il 0
+            )
+
+        define
+            "BoxIsinstGoneBrtrue"
+            (fun il ->
+                boxed il
+                il.Emit (Emit.OpCodes.Isinst, gone)
+                branches Emit.OpCodes.Brtrue il
+            )
+
+        for name, cast in [ "BoxIsinstSameUnboxGone", span ; "BoxIsinstObjectUnboxGone", typeof<obj> ] do
+            define
+                name
+                (fun il ->
+                    boxed il
+                    il.Emit (Emit.OpCodes.Isinst, cast)
+                    il.Emit (Emit.OpCodes.Unbox_Any, gone)
+                    il.Emit Emit.OpCodes.Pop
+                    returns il 0
+                )
+
         define "BoxIfArg" (onlyIf (popped boxed))
 
         define
@@ -10301,8 +10399,30 @@ public static class Runners
             define $"CallsBoxTCast%s{name}" (calls (boxTCast.MakeGenericMethod [| held |]) (pushesDefault held))
             define $"CallsBoxTUnbox%s{name}" (calls (boxTUnbox.MakeGenericMethod [| held |]) (pushesDefault held))
 
+        let shared = holderOf typeof<string>
+
+        for name, callee in
+            [
+                "CallsBoxTCastDisposableShared", boxTCastDisposable
+                "CallsBoxTCastEquatableShared", boxTCastEquatable
+                "CallsBoxTUnboxNoInliningShared", boxTUnboxNoInlining
+                "CallsBoxTUnboxNoOptimizationShared", boxTUnboxNoOptimization
+            ] do
+            define name (calls (callee.MakeGenericMethod [| shared |]) (pushesDefault shared))
+
         runners.CreateType () |> ignore<Type>
 
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// The `RefusalsDep` that `fabricateRefusals`' image runs against, which declares no
+    /// `RefusalsDep.Gone`.
+    let private refusalsDependency () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "RefusalsDep", typeof<obj>.Assembly)
+
+        builder.DefineDynamicModule "RefusalsDep" |> ignore<Emit.ModuleBuilder>
         use image = new MemoryStream ()
         builder.Save image
         image.ToArray ()
@@ -10317,6 +10437,9 @@ public static class Runners
         /// It refuses the callee's shared code, raising this, but not where it inlines the callee,
         /// which it may: there it sees the callee's types as they are. The analysis reports it.
         | UnlessInlined of string
+        /// It refuses, raising `raised`. The analysis reports `bound` too, which binding a token
+        /// the JIT never resolves would raise: it binds every token the JIT compiles (`bind`).
+        | RaisesBesideBinding of raised : string * bound : string
 
     /// Each runner of `fabricateRefusals`, and what the JIT does compiling it.
     let private refusals : (string * Refusal) list =
@@ -10367,20 +10490,50 @@ public static class Runners
             "CallsBoxTUnboxShared", Refusal.UnlessInlined invalidProgram
             "CallsBoxTCastUnshared", Refusal.Compiles
             "CallsBoxTUnboxUnshared", Refusal.Compiles
+            // It decides a cast from a canonical form to an interface with no type arguments all
+            // the same.
+            "CallsBoxTCastDisposableShared", Refusal.Compiles
+            // But to one with them only where the canonical form casts to it, which PawPrint cannot
+            // tell; this one does not.
+            "CallsBoxTCastEquatableShared", Refusal.UnlessInlined invalidProgram
+            // It never inlines a method that forbids it, nor one marked `NoOptimization`.
+            "CallsBoxTUnboxNoInliningShared", Refusal.Raises invalidProgram
+            "CallsBoxTUnboxNoOptimizationShared", Refusal.Raises invalidProgram
+            // A protected block's bounds start blocks.
+            "BoxBranchInTry", Refusal.Raises invalidProgram
+            // The token of what follows the box does not bind, which the JIT raises instead.
+            "BoxUnboxGone", Refusal.Raises typeLoad
+            "BoxIsinstGoneBrtrue", Refusal.Raises typeLoad
+            "BoxIsinstSameUnboxGone", Refusal.Raises typeLoad
+            // It resolves the `unbox.any`'s token only once it proves the `isinst`'s type is the
+            // boxed type.
+            "BoxIsinstObjectUnboxGone", Refusal.RaisesBesideBinding (invalidProgram, typeLoad)
         ]
 
     [<Test>]
     let ``the JIT refuses a method whose instruction names what it cannot compile, wherever it is`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let image = fabricateRefusals ()
+        let dependencyImage = refusalsDependency ()
 
         let fixture =
             Assembly.read loggerFactory (Some "Refusals.dll") (new MemoryStream (image))
+
+        let dependency =
+            Assembly.read loggerFactory (Some "RefusalsDep.dll") (new MemoryStream (dependencyImage))
 
         // The fixture exercises what it claims to: the real runtime raises exactly that exception,
         // for either argument, or none.
         let context =
             System.Runtime.Loader.AssemblyLoadContext ("Refusals", isCollectible = true)
+
+        context.add_Resolving (
+            Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                match name.Name with
+                | "RefusalsDep" -> context.LoadFromStream (new MemoryStream (dependencyImage))
+                | _ -> null
+            )
+        )
 
         let runtimeFailures =
             try
@@ -10403,6 +10556,7 @@ public static class Runners
                             | Refusal.Compiles -> [ [] ]
                             | Refusal.Raises refusal -> [ List.replicate 2 refusal ]
                             | Refusal.UnlessInlined refusal -> [ [] ; List.replicate 2 refusal ]
+                            | Refusal.RaisesBesideBinding (raised, _) -> [ List.replicate 2 raised ]
 
                         if not (List.contains raised expected) then
                             yield $"%s{name}: the real runtime raised %A{raised}, not one of %A{expected}"
@@ -10423,7 +10577,7 @@ public static class Runners
                         }
             }
 
-        let mutable analysis = analysisUnder profile [ fixture ] id
+        let mutable analysis = analysisUnder profile [ fixture ; dependency ] id
 
         let shownRefusals (shown : Set<string>) : Set<string> =
             refusalTypes |> Set.filter (fun ty -> shown.Contains ("=" + ty))
@@ -10457,17 +10611,16 @@ public static class Runners
                     // exception is and reports.
                     let reported =
                         match refused with
-                        | Refusal.Compiles -> None
+                        | Refusal.Compiles -> []
                         | Refusal.Raises refusal
-                        | Refusal.UnlessInlined refusal -> Some refusal
+                        | Refusal.UnlessInlined refusal -> [ refusal ]
+                        | Refusal.RaisesBesideBinding (raised, bound) -> [ raised ; bound ]
 
                     let madeShown, madeOpaque =
-                        match reported with
-                        | Some refusal -> made refusal
-                        | None -> Set.empty, Set.empty
+                        let made = List.map made reported
+                        Set.unionMany (List.map fst made), Set.unionMany (List.map snd made)
 
-                    let expected =
-                        reported |> Option.toList |> Set.ofList |> Set.union (shownRefusals madeShown)
+                    let expected = Set.union (Set.ofList reported) (shownRefusals madeShown)
 
                     if not (Set.isSubset opaque madeOpaque) || shownRefusals shown <> expected then
                         yield
