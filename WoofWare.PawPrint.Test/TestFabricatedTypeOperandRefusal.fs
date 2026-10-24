@@ -29,6 +29,8 @@ module TestFabricatedTypeOperandRefusal =
 
     /// Each opcode's body, over the type operand it is given. Every body leaves the stack empty, and
     /// the method then returns 1.
+    ///
+    /// Beside these, `scenarios` holds bodies over an operand PawPrint does not implement.
     let private shapes : (string * (ILGenerator -> Type -> unit)) list =
         let intLocal (il : ILGenerator) : LocalBuilder = il.DeclareLocal typeof<int>
 
@@ -149,6 +151,22 @@ module TestFabricatedTypeOperandRefusal =
 
                 yield $"%s{name}_Void", emit, voidType, refusal
                 yield $"%s{name}_Byref", emit, byrefType, refusal
+
+            // The JIT refuses the operand as it resolves the token, before it reads the length, so a
+            // length of a shape PawPrint does not implement is refused all the same.
+            let bare : (string * (ILGenerator -> Type -> unit)) list =
+                [
+                    "NewarrNativeLength",
+                    fun il t ->
+                        il.Emit OpCodes.Ldc_I4_0
+                        il.Emit OpCodes.Conv_I
+                        il.Emit (OpCodes.Newarr, t)
+                        il.Emit OpCodes.Pop
+                ]
+
+            for name, emit in bare do
+                yield $"%s{name}_Void", emit, voidType, Expected.Refused
+                yield $"%s{name}_Byref", emit, byrefType, Expected.Refused
         ]
 
     /// `static class Probes`, with one `static int` method of no arguments per scenario.

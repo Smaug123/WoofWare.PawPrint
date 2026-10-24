@@ -218,7 +218,8 @@ module internal UnaryMetadataIlOpContext =
     /// Raises into the guest CoreCLR's refusal of <paramref name="handle"/> as this instruction's
     /// type operand, or <c>None</c> where the instruction may consume it (see
     /// <c>TypeOperand.refusal</c>). An op calls this on the operand it resolved, from either
-    /// universe, before anything it does could fault.
+    /// universe, before it pops or decodes anything: the JIT refuses the operand as it resolves the
+    /// token, so nothing on the stack can pre-empt the refusal.
     /// </summary>
     let refuseTypeOperand
         (ctx : UnaryMetadataIlOpContext)

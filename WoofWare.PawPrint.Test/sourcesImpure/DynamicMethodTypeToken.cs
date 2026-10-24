@@ -542,6 +542,58 @@ public class Program
             return 28;
         }
 
+        // 29, 30, 31. The JIT refuses the operand as it resolves the entry, before it looks at the
+        // stack: so with nothing to pop (29, 31), and with a native-int length (30), which PawPrint
+        // does not implement, all measured.
+        Func<int> bareLdobj = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Ldobj, typeof(void));
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            bareLdobj();
+            return 29;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        Func<int> bareUnboxAny = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Unbox_Any, typeof(void));
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            bareUnboxAny();
+            return 31;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        Func<int> nativeLength = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Conv_I);
+            il.Emit(OpCodes.Newarr, typeof(void));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            nativeLength();
+            return 30;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

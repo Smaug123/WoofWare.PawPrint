@@ -93,7 +93,6 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteType =
             match ctx.TypeOperand with
@@ -114,6 +113,8 @@ module internal UnaryMetadataObjectOps =
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteType state with
         | Some raised -> raised
         | None ->
+
+        let actualObj, state = IlMachineState.popEvalStack thread state
 
         castToReferenceType loggerFactory baseClassTypes "Castclass" thread targetConcreteType actualObj state
 
@@ -770,7 +771,6 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteType =
             match ctx.TypeOperand with
@@ -791,6 +791,8 @@ module internal UnaryMetadataObjectOps =
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteType state with
         | Some raised -> raised
         | None ->
+
+        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let isinstCheck
             (state : IlMachineState)
@@ -838,8 +840,6 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        // ECMA-335 III.4.33
-        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteTypeHandle =
             match ctx.TypeOperand with
@@ -860,6 +860,9 @@ module internal UnaryMetadataObjectOps =
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteTypeHandle state with
         | Some raised -> raised
         | None ->
+
+        // ECMA-335 III.4.33
+        let actualObj, state = IlMachineState.popEvalStack thread state
 
         // The type token need not denote a nominal type: `unbox.any !!T` with `T = int[]`
         // concretizes to a structural array handle, which by design has no row in
@@ -1058,7 +1061,6 @@ module internal UnaryMetadataObjectOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteTypeHandle =
             match ctx.TypeOperand with
@@ -1079,6 +1081,8 @@ module internal UnaryMetadataObjectOps =
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx targetConcreteTypeHandle state with
         | Some raised -> raised
         | None ->
+
+        let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, result =
             BoxedValue.unboxAddress loggerFactory baseClassTypes "Unbox" targetConcreteTypeHandle actualObj state

@@ -13,27 +13,6 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let currentState = state.ThreadState.[thread]
-        let popped, methodState = MethodState.popFromStack currentState.MethodState
-
-        // Commit the pop straight into `state` rather than merging a pre-pop `ThreadState`
-        // entry back in at the end: there are two exits from here — the raise below and the
-        // allocation — and both have to return a state in which the operand really has been
-        // popped.
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add thread (ThreadState.setFrame currentState.ActiveMethodState methodState currentState)
-            }
-
-        let len =
-            match popped with
-            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
-            | popped ->
-                failwith
-                    $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
-
         let typeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, concreteTypeHandle =
@@ -53,7 +32,7 @@ module internal UnaryMetadataArrayOps =
                     state
                     assy.DefinitionFullName
                     typeGenerics
-                    methodState.Generics
+                    state.ThreadState.[thread].MethodState.Generics
                     elementType
 
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
@@ -108,6 +87,31 @@ module internal UnaryMetadataArrayOps =
                 thread
                 state
         else
+
+        let currentState = state.ThreadState.[thread]
+        let popped, methodState = MethodState.popFromStack currentState.MethodState
+
+        // Commit the pop straight into `state` rather than merging a pre-pop `ThreadState`
+        // entry back in at the end: there are two exits from here — the raise below and the
+        // allocation — and both have to return a state in which the operand really has been
+        // popped.
+        //
+        // Popped and decoded only once the element type is accepted: the JIT refuses an operand
+        // as it resolves the token, so a length of a shape PawPrint does not decode cannot
+        // pre-empt that refusal.
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.setFrame currentState.ActiveMethodState methodState currentState)
+            }
+
+        let len =
+            match popped with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
+            | popped ->
+                failwith
+                    $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
 
         // The length is checked *after* the element type has been resolved, as CoreCLR does:
         // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that

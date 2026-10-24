@@ -13,7 +13,6 @@ module internal UnaryMetadataMemoryOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let popped, state = IlMachineState.popEvalStack thread state
         let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, concreteTypeHandle =
@@ -39,6 +38,8 @@ module internal UnaryMetadataMemoryOps =
         match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
         | Some raised -> raised
         | None ->
+
+        let popped, state = IlMachineState.popEvalStack thread state
 
         let zeroOfType, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
