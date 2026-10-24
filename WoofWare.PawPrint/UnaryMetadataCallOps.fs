@@ -1733,6 +1733,10 @@ module internal UnaryMetadataCallOps =
                 currentMethod.Generics
                 ty
 
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
+
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
         let state =

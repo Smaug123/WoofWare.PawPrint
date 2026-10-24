@@ -49,7 +49,7 @@ module internal DynamicMethodExecution =
     /// <para>
     /// The <c>Error</c> is a clause type the scope does not name — measured on real .NET as an
     /// <c>InvalidProgramException</c> raised by the first invocation, so it belongs to the *caller*
-    /// and not to the method being prepared. Its payload is <c>DynamicScopeOperand.closedType</c>'s:
+    /// and not to the method being prepared. Its payload is <c>DynamicScopeOperand.closedType</c>'s, or a refusal of <c>TypeOperand.refusal</c>'s:
     /// the exception type to raise, and a diagnostic for the log.
     /// </para>
     /// <para>
@@ -114,13 +114,25 @@ module internal DynamicMethodExecution =
                             match acc with
                             | Error e -> Error e
                             | Ok acc ->
-                                DynamicScopeOperand.closedType
-                                    baseClassTypes
-                                    $"%s{operation}: catch clause"
-                                    index
-                                    state
-                                    handle
-                                |> Result.map (fun ty -> Map.add index ty acc)
+                                // The JIT resolves a clause's type as it does a type-consuming
+                                // instruction's operand, so refuses the same closed types.
+                                match
+                                    DynamicScopeOperand.closedType
+                                        baseClassTypes
+                                        $"%s{operation}: catch clause"
+                                        index
+                                        state
+                                        handle
+                                with
+                                | Error e -> Error e
+                                | Ok ty ->
+                                    match TypeOperand.refusal baseClassTypes state.TypeSystem.ConcreteTypes ty with
+                                    | Some refusal ->
+                                        Error (
+                                            baseClassTypes.InvalidProgramException,
+                                            $"DynamicScope entry %d{index} names %O{refusal}"
+                                        )
+                                    | None -> Ok (Map.add index ty acc)
                         )
                         (Ok Map.empty)
 

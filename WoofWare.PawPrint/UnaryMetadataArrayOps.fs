@@ -13,27 +13,6 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let currentState = state.ThreadState.[thread]
-        let popped, methodState = MethodState.popFromStack currentState.MethodState
-
-        // Commit the pop straight into `state` rather than merging a pre-pop `ThreadState`
-        // entry back in at the end: there are two exits from here — the raise below and the
-        // allocation — and both have to return a state in which the operand really has been
-        // popped.
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add thread (ThreadState.setFrame currentState.ActiveMethodState methodState currentState)
-            }
-
-        let len =
-            match popped with
-            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
-            | popped ->
-                failwith
-                    $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
-
         let typeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, concreteTypeHandle =
@@ -53,8 +32,12 @@ module internal UnaryMetadataArrayOps =
                     state
                     assy.DefinitionFullName
                     typeGenerics
-                    methodState.Generics
+                    state.ThreadState.[thread].MethodState.Generics
                     elementType
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let zeroOfType, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
@@ -105,6 +88,31 @@ module internal UnaryMetadataArrayOps =
                 state
         else
 
+        let currentState = state.ThreadState.[thread]
+        let popped, methodState = MethodState.popFromStack currentState.MethodState
+
+        // Commit the pop straight into `state` rather than merging a pre-pop `ThreadState`
+        // entry back in at the end: there are two exits from here — the raise below and the
+        // allocation — and both have to return a state in which the operand really has been
+        // popped.
+        //
+        // Popped and decoded only once the element type is accepted: the JIT refuses an operand
+        // as it resolves the token, so a length of a shape PawPrint does not decode cannot
+        // pre-empt that refusal.
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.setFrame currentState.ActiveMethodState methodState currentState)
+            }
+
+        let len =
+            match popped with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
+            | popped ->
+                failwith
+                    $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
+
         // The length is checked *after* the element type has been resolved, as CoreCLR does:
         // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that
         // cannot be loaded is reported as such even when the length would independently have
@@ -136,47 +144,31 @@ module internal UnaryMetadataArrayOps =
 
         state, WhatWeDid.Executed
 
-    /// Resolves the array element-type token shared by Ldelem and Stelem (ECMA-335 III.4.9
-    /// "Ldelem", III.4.20 "Stelem"): both instructions' `type` operand is a metadata token
-    /// that must be a TypeDef, TypeRef, or TypeSpec naming the array's element type, and the
-    /// resolution rules for each token kind don't depend on which of the two instructions is
-    /// doing the resolving.
-    let private resolveElementTypeToken
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (activeAssy : DumpedAssembly)
-        (declaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (metadataToken : MetadataToken)
-        (opName : string)
+    /// The element type an `ldelem` or `stelem` names (ECMA-335 III.4.9, III.4.20), which must be
+    /// a TypeDef, TypeRef or TypeSpec, resolved as `newarr` and `ldelema` resolve theirs.
+    let private elementTypeOperand
+        (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : IlMachineState * ConcreteTypeHandle
         =
-        match metadataToken with
-        | MetadataToken.TypeDefinition defn ->
-            state,
-            activeAssy,
-            activeAssy.TypeDefs.[defn]
-            |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
-        | MetadataToken.TypeSpecification spec ->
-            IlMachineState.resolveTypeFromSpecConcrete
-                loggerFactory
-                baseClassTypes
-                spec
-                activeAssy
-                declaringTypeGenerics
-                methodGenerics
+        let state, elementType, assy =
+            IlMachineState.resolveTypeMetadataToken
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
                 state
-        | MetadataToken.TypeReference refHandle ->
-            // A bare TypeRef in an ldelem/stelem token is a closed type name: a TypeRef row
-            // is only ever a (namespace, name, resolution scope) triple, with nowhere to
-            // record generic arguments, so a parametric element type always reaches these
-            // instructions through a TypeSpec instead (e.g. `ldelem !!T` / `stelem !!T`
-            // encode a TypeSpec wrapping a GenericTypeParameter). The generic-args array
-            // here is therefore always empty -- this falls out of the TypeReference token
-            // kind itself, not of which instruction is consuming it.
-            IlMachineTypeResolution.resolveType loggerFactory refHandle ImmutableArray.Empty activeAssy state
-        | x -> failwith $"TODO: {opName} element type resolution unimplemented for {x}"
+                ctx.ActiveAssembly
+                ctx.MetadataToken
+
+        let state = state.WithLoadedAssembly assy
+
+        IlMachineState.concretizeType
+            ctx.LoggerFactory
+            ctx.BaseClassTypes
+            state
+            assy.DefinitionFullName
+            ctx.CurrentMethod.DeclaringTypeGenerics
+            ctx.CurrentMethod.Generics
+            elementType
 
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -212,6 +204,31 @@ module internal UnaryMetadataArrayOps =
             else
                 state
 
+        // Resolved whether or not the prefix is present: the JIT resolves the token as it compiles
+        // the instruction, and refuses it there, either way (measured).
+        let state, tokenElementHandle =
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, elementType, elementAssy =
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).
+                let state = state.WithLoadedAssembly elementAssy
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    elementAssy.DefinitionFullName
+                    typeGenerics
+                    methodGenerics
+                    elementType
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx tokenElementHandle state with
+        | Some raised -> raised
+        | None ->
+
         let index, state = IlMachineState.popEvalStack thread state
         let arr, state = IlMachineState.popEvalStack thread state
 
@@ -242,8 +259,7 @@ module internal UnaryMetadataArrayOps =
             state, WhatWeDid.Executed
 
         if wasReadonly then
-            // The readonly. prefix suppresses the array-element-type check, so we can skip
-            // resolving the metadata token entirely.
+            // The readonly. prefix suppresses the array-element-type check.
             buildResult state
         else
             // ECMA-335 III.4.10: the array's runtime element type must exactly equal the
@@ -253,30 +269,7 @@ module internal UnaryMetadataArrayOps =
             // The exact-equality semantics — not assignment-compatibility — match CoreCLR
             // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
             // compared with `arr->GetArrayElementTypeHandle()`).
-            let state, tokenElementHandle =
-                match ctx.TypeOperand with
-                | ResolvedTypeOperand.FromScope handle -> state, handle
-                | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                    let state, elementType, elementAssy =
-                        IlMachineState.resolveTypeMetadataToken
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            activeAssy
-                            metadataToken
-
-                    // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).
-                    let state = state.WithLoadedAssembly elementAssy
-
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        elementAssy.DefinitionFullName
-                        typeGenerics
-                        methodGenerics
-                        elementType
-
+            //
             // The zero itself is discarded — this path only wants the handle — but computing it is
             // not: laying a type out reads its field types, which can bind assembly references
             // nothing else in the run names, and `cliTypeZeroOfHandle` returns those bindings in the
@@ -301,23 +294,13 @@ module internal UnaryMetadataArrayOps =
     let executeStelem (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
+        let state, concreteTypeHandle = elementTypeOperand ctx state
 
-        let state, assy, elementType =
-            resolveElementTypeToken
-                loggerFactory
-                baseClassTypes
-                activeAssy
-                declaringTypeGenerics
-                currentMethod.Generics
-                metadataToken
-                "Stelem"
-                state
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let contents, state = IlMachineState.popEvalStack thread state
         let index, state = IlMachineState.popEvalStack thread state
@@ -330,18 +313,8 @@ module internal UnaryMetadataArrayOps =
         | ArrayElementOperands.Faulted (state, whatWeDid) -> state, whatWeDid
         | ArrayElementOperands.InRange (arr, index) ->
 
-        let elementType =
-            LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state.TypeSystem._LoadedAssemblies elementType
-
-        let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
-                loggerFactory
-                baseClassTypes
-                assy
-                elementType
-                declaringTypeGenerics
-                ImmutableArray.Empty
-                state
+        let zeroOfType, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         // ECMA-335 III.4.x runtime-assignment-compatibility gate (see
         // IlMachineStateExecution.checkArrayStoreVariance).
@@ -367,23 +340,13 @@ module internal UnaryMetadataArrayOps =
     let executeLdelem (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
+        let state, concreteTypeHandle = elementTypeOperand ctx state
 
-        let state, assy, elementType =
-            resolveElementTypeToken
-                loggerFactory
-                baseClassTypes
-                activeAssy
-                declaringTypeGenerics
-                currentMethod.Generics
-                metadataToken
-                "Ldelem"
-                state
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx concreteTypeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let index, state = IlMachineState.popEvalStack thread state
         let arr, state = IlMachineState.popEvalStack thread state

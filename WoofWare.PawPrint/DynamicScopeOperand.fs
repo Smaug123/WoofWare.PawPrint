@@ -437,37 +437,22 @@ module internal DynamicScopeOperand =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <see cref="typeHandleTarget"/> plus the narrowing the eleven closed-type opcodes want. A
-    /// closed target is not automatically a legal operand: measured on real .NET, against a closed
-    /// control that runs, a byref (<c>typeof(int).MakeByRefType()</c>) and <c>System.Void</c> are
-    /// <c>InvalidProgramException</c> for <c>sizeof</c>, <c>newarr</c> and <c>box</c> alike, whereas
-    /// a *pointer* type is perfectly legal and answers 8 — so pointers, arrays and function pointers
-    /// are not refused here. The equivalent metadata operands are not validated either; that is
-    /// pre-existing and unreachable from any compiler, where this is newly reachable because
-    /// <c>ILGenerator.Emit</c> accepts any <c>RuntimeType</c>.
+    /// <see cref="typeHandleTarget"/> plus the narrowing the eleven closed-type opcodes want: an open
+    /// generic definition, a bare generic parameter and an open constructed type are each an
+    /// <c>InvalidProgramException</c> for them, against a closed control that runs (measured).
     /// </para>
     /// <para>
-    /// Of those, only the <c>System.Void</c> refusal has a test: a guest cannot yet build a byref or
-    /// pointer <c>Type</c> at all, because <c>Type.MakeByRefType</c> and <c>Type.MakePointerType</c>
-    /// bottom out in the unimplemented <c>RuntimeTypeHandle_MakeByRef</c> QCall. The byref arm is
-    /// kept rather than deferred because it is measured rather than guessed, and because it becomes
-    /// reachable the moment that unrelated QCall lands, at which point nothing would prompt anyone
-    /// to add it.
+    /// None of those refusals applies to <c>ldtoken</c>, which is why it reads the target through
+    /// <see cref="typeHandleTarget"/> instead: an open definition, a bare generic parameter and
+    /// <c>System.Void</c> are all measured to run there.
     /// </para>
     /// <para>
-    /// None of these three refusals applies to <c>ldtoken</c>, which is why it reads the target
-    /// through <see cref="typeHandleTarget"/> instead: an open definition, a bare generic parameter
-    /// and <c>System.Void</c> are all measured to run there.
-    /// </para>
-    /// <para>
-    /// Where this stops: it answers the questions that are *about the scope* — is the
-    /// entry a type handle, and is the target a closed type — plus the two shapes above. It does
-    /// not answer "is this type a legal operand of this opcode", which is a per-opcode question
-    /// (<c>sizeof Span&lt;int&gt;</c> is legal and answers 16; <c>newarr Span&lt;int&gt;</c> is a
-    /// <c>TypeLoadException</c> — both measured) and one PawPrint does not answer for metadata
-    /// operands either. Answering it belongs with the ops, for both universes at once; adding
-    /// shapes here one at a time would make the same IL behave differently depending on which
-    /// universe its operand came from.
+    /// Where this stops: it answers the questions that are *about the scope* — is the entry a type
+    /// handle, and is the target a closed type. A closed type is not thereby a legal operand: a byref
+    /// and <c>System.Void</c> are closed, and refused by every instruction that consumes a type
+    /// whichever universe its token came from, so the consumer asks <c>TypeOperand.refusal</c> of
+    /// what this returns, as it does of a metadata operand. Whether a type is a legal operand of one
+    /// particular opcode is that opcode's question.
     /// </para>
     /// </remarks>
     let closedType
@@ -478,18 +463,14 @@ module internal DynamicScopeOperand =
         (handle : DynamicMethodHandle)
         : Result<ConcreteTypeHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
         =
-        let invalidProgram (why : string) =
-            Error (baseClassTypes.InvalidProgramException, why)
-
         match typeHandleTarget baseClassTypes operation scopeIndex state handle with
         | Error e -> Error e
-        | Ok (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as handle)) ->
-            invalidProgram $"DynamicScope entry %d{scopeIndex} names the byref type %O{handle}"
-        | Ok (RuntimeTypeHandleTarget.Closed handle) when isCorelibType baseClassTypes.Void state handle ->
-            invalidProgram $"DynamicScope entry %d{scopeIndex} names System.Void"
         | Ok (RuntimeTypeHandleTarget.Closed handle) -> Ok handle
         | Ok notClosed ->
-            invalidProgram $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
+            Error (
+                baseClassTypes.InvalidProgramException,
+                $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
+            )
 
     /// The field-registry id inside a `RuntimeFieldHandleInternal`, or `None` for the null sentinel,
     /// whose several spellings all mean `default`. Duplicates `NativeCall`'s
