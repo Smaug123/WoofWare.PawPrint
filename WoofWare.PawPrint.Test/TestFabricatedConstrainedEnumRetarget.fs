@@ -19,7 +19,9 @@ open WoofWare.PawPrint
 /// formatting the enum's name where `Int32` would format its number. `String.GetHashCode` is a
 /// class's method in that slot, which CoreCLR resolves by slot on `Int32`, giving
 /// `Int32.GetHashCode`, even where the method is a sealed class's final override, which a call on a
-/// box would run. No C# source spells any of these calls on an enum.
+/// box would run. A body overriding `Object.GetHashCode` by a MethodImpl under another name holds a
+/// slot of its own, so a call naming it is not retargeted, and runs it on the box. No C# source
+/// spells any of these calls on an enum.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFabricatedConstrainedEnumRetarget =
@@ -49,6 +51,8 @@ module TestFabricatedConstrainedEnumRetarget =
     ///   argument.
     /// * `StringHash(DayOfWeek)` calls `String.GetHashCode` on the argument, and `SealedHash(DayOfWeek)`
     ///   calls `Sealed.GetHashCode`, a final override returning 42 on a sealed class.
+    ///   `RenamedHash(DayOfWeek)` calls `Renamed.Hash`, which overrides `Object.GetHashCode` by a
+    ///   MethodImpl, returning 43.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Retarget", typeof<obj>.Assembly)
@@ -153,10 +157,33 @@ module TestFabricatedConstrainedEnumRetarget =
             il.Emit (OpCodes.Ldc_I4_S, 42y)
             il.Emit OpCodes.Ret
 
+        let renamedClass =
+            modul.DefineType ("Renamed", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<obj>)
+
+        // `Hash`, overriding `Object.GetHashCode` by a MethodImpl rather than by name.
+        let renamedHash =
+            renamedClass.DefineMethod (
+                "Hash",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Final
+                ||| MethodAttributes.HideBySig,
+                typeof<int>,
+                Type.EmptyTypes
+            )
+
+        do
+            let il = renamedHash.GetILGenerator ()
+            il.Emit (OpCodes.Ldc_I4_S, 43y)
+            il.Emit OpCodes.Ret
+
+        renamedClass.DefineMethodOverride (renamedHash, typeof<obj>.GetMethod ("GetHashCode", Type.EmptyTypes))
+
         for name, getHashCode in
             [
                 "StringHash", typeof<string>.GetMethod ("GetHashCode", Type.EmptyTypes)
                 "SealedHash", (sealedHash :> MethodInfo)
+                "RenamedHash", (renamedHash :> MethodInfo)
             ] do
             let il =
                 retarget.DefineMethod(name, attributes, typeof<int>, [| typeof<DayOfWeek> |]).GetILGenerator ()
@@ -167,6 +194,7 @@ module TestFabricatedConstrainedEnumRetarget =
             il.Emit OpCodes.Ret
 
         sealedClass.CreateType () |> ignore<Type>
+        renamedClass.CreateType () |> ignore<Type>
         retarget.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
@@ -266,3 +294,7 @@ public static class Driver
         : unit
         =
         run "Retarget.SealedHash(DayOfWeek.Friday)" 5
+
+    [<Test>]
+    let ``a final override of GetHashCode by a MethodImpl holds a slot of its own, and runs on the box`` () : unit =
+        run "Retarget.RenamedHash(DayOfWeek.Friday)" 43
