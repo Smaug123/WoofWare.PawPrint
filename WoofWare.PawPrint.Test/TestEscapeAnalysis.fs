@@ -7608,6 +7608,333 @@ public static unsafe class Addresses
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client compiled against one version of a provider, run against another lacking two types,
+    /// accessing fields and calling methods. The JIT loads in full the owner of each member a token
+    /// names, before it resolves the member: a method or field definition's declaring type, a
+    /// member reference's parent. It loads in full, too, the type of each field an instruction
+    /// accesses, as the field's definition spells it. Each caller names the member inside a
+    /// `catch` of every exception, of its own assembly or of another compiled against the complete
+    /// provider, and names neither the owner nor the field's type in a local or in its own
+    /// signature. The host's CoreCLR, running each caller against the same assemblies, says which
+    /// fail, and where.
+    [<Test>]
+    let ``the JIT loads the owner of each member a token names, and the type of each field an instruction accesses``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let middle =
+            """
+namespace Middle;
+
+public class DerivesFromGone : Provider.Gone
+{
+    public static int Count;
+    public static void M() { }
+}
+
+public static class Fields
+{
+    public static Provider.Gone StaticGone;
+    public static int StaticInt;
+}
+"""
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+
+namespace Client;
+
+public class DerivesFromGone : Provider.Gone
+{
+    public static int Count;
+    public static void M() { }
+}
+public struct HoldsGone { public Provider.GoneStruct G; }
+public static class Box<T>
+{
+    public static int Count;
+    public static void M() { }
+}
+
+public class Fields
+{
+    public static Provider.Gone StaticGone;
+    public static DerivesFromGone StaticDerivesFromGone;
+    public static int StaticInt;
+    public Provider.Gone InstanceGone;
+    public static Fields Make() => new Fields();
+}
+
+public static class StructFields
+{
+    public static HoldsGone StaticHoldsGone;
+}
+
+public static class Takes
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Use(object o) { }
+}
+
+public static class Members
+{
+    public static string ReadsStaticGone()
+    {
+        try { Takes.Use(Fields.StaticGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string WritesStaticGone()
+    {
+        try { Fields.StaticGone = null; return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsStaticDerivesFromGone()
+    {
+        try { Takes.Use(Fields.StaticDerivesFromGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsStaticInt()
+    {
+        try { Takes.Use(Fields.StaticInt); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsInstanceGone()
+    {
+        try { Takes.Use(Fields.Make().InstanceGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsStaticHoldsGone()
+    {
+        try { Takes.Use(StructFields.StaticHoldsGone.G); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsDerivesFromGoneCount()
+    {
+        try { Takes.Use(DerivesFromGone.Count); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsDerivesFromGoneM()
+    {
+        try { DerivesFromGone.M(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsBoxOfHoldsGoneCount()
+    {
+        try { Takes.Use(Box<HoldsGone>.Count); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsBoxOfHoldsGoneM()
+    {
+        try { Box<HoldsGone>.M(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ElsewhereReadsStaticGone()
+    {
+        try { Takes.Use(Middle.Fields.StaticGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ElsewhereReadsStaticInt()
+    {
+        try { Takes.Use(Middle.Fields.StaticInt); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ElsewhereReadsDerivesFromGoneCount()
+    {
+        try { Takes.Use(Middle.DerivesFromGone.Count); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ElsewhereCallsDerivesFromGoneM()
+    {
+        try { Middle.DerivesFromGone.M(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let middleImage = compile "Middle" [ completeProvider ] middle
+        let clientImage = compile "Client" [ completeProvider ; middleImage ] client
+
+        let typeLoad = "System.TypeLoadException"
+
+        // Each caller, the name of the type whose load fails, or would, and what running it does.
+        let methods =
+            [
+                "ReadsStaticGone", "Gone", CallOutcome.Escapes typeLoad
+                "WritesStaticGone", "Gone", CallOutcome.Escapes typeLoad
+                "ReadsStaticDerivesFromGone", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                "ReadsStaticInt", "Fields", CallOutcome.Runs
+                "ReadsInstanceGone", "Gone", CallOutcome.Escapes typeLoad
+                "ReadsStaticHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad
+                "ReadsDerivesFromGoneCount", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                "CallsDerivesFromGoneM", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                "ReadsBoxOfHoldsGoneCount", "HoldsGone", CallOutcome.Escapes typeLoad
+                "CallsBoxOfHoldsGoneM", "HoldsGone", CallOutcome.Escapes typeLoad
+                // CoreCLR matches the reference to the field by its signature, which names a type that
+                // is not there, before it loads the type.
+                "ElsewhereReadsStaticGone", "Gone", CallOutcome.Escapes "System.MissingFieldException"
+                "ElsewhereReadsStaticInt", "Fields", CallOutcome.Runs
+                "ElsewhereReadsDerivesFromGoneCount", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                "ElsewhereCallsDerivesFromGoneM", "DerivesFromGone", CallOutcome.Escapes typeLoad
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("MemberTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | "Middle" -> context.LoadFromStream (new MemoryStream (middleImage))
+                    | _ -> null
+                )
+            )
+
+            try
+                let members =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Members"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let outcome =
+                        try
+                            match members.GetMethod(name).Invoke ((null : obj), [||]) with
+                            | null -> CallOutcome.Runs
+                            | caught -> CallOutcome.Caught (unbox<string> caught)
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let middleAssembly = read "Middle" middleImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; middleAssembly ; providerAssembly ]
+                (fun loaded ->
+                    let loaded, _ =
+                        loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly
+
+                    let loaded, _ =
+                        loaded.WithBoundReference (referenceTo clientAssembly "Middle") middleAssembly
+
+                    fst (loaded.WithBoundReference (referenceTo middleAssembly "Provider") providerAssembly)
+                )
+
+        let named = namedTypes clientAssembly
+
+        // The runtime makes the exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeTypeLoad =
+            let next, made = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            render analysis made
+
+        let failures =
+            [
+                for name, failingType, expected in methods do
+                    let key = methodNamed clientAssembly "Client.Members" name
+                    let method = clientAssembly.Methods.[key.Method.Get]
+
+                    // Only the member's owner or the field's type names the type: nothing the JIT
+                    // loads of the caller's own signature or of its locals does.
+                    let ownLoads =
+                        [
+                            match method.Signature.ReturnType with
+                            | MethodReturnType.Void -> ()
+                            | MethodReturnType.Returns returned -> yield JitTypePosition.OwnReturn, returned
+                            for parameter in method.Signature.ParameterTypes do
+                                yield JitTypePosition.OwnParameter, parameter
+                            match method.Body with
+                            | MethodBody.Il body ->
+                                for local in Option.defaultValue ImmutableArray.Empty body.LocalVars do
+                                    yield JitTypePosition.Local, local
+                            | _ -> ()
+                        ]
+                        |> List.choose (fun (position, spelling) -> JitTypeLoads.load position spelling)
+
+                    if
+                        ownLoads
+                        |> List.exists (fun load ->
+                            match load with
+                            | JitTypeLoad.InFull loaded -> List.contains failingType (named loaded)
+                            | other -> failwith $"%s{name}: the JIT loads %O{other} of its own signature or a local"
+                        )
+                    then
+                        yield $"%s{name}: the JIT loads %s{failingType} for its own signature or a local: %A{ownLoads}"
+
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [
+                            typeLoad
+                            "System.MissingFieldException"
+                            "System.MissingMethodException"
+                            "System.IO.FileNotFoundException"
+                        ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    // What escapes is the exception the caller's compilation raises, and whatever
+                    // making that one raises.
+                    let unexplained =
+                        match expected with
+                        | CallOutcome.Escapes exceptionName ->
+                            if not (List.contains exceptionName escaping) then
+                                escaping @ [ $"no %s{exceptionName}" ]
+                            else
+                                escaping
+                                |> List.filter (fun escaped ->
+                                    escaped <> exceptionName && not (madeTypeLoad.Contains $"=%s{escaped}")
+                                )
+                        | CallOutcome.Caught _
+                        | CallOutcome.Runs -> escaping
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
