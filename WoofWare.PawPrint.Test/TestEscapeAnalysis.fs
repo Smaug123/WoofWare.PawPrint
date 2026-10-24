@@ -17544,3 +17544,88 @@ public static class Cases
         let _, escapes = EscapeAnalysis.escapes (analysisOver [] id) constructor
         escapes.Unknown |> shouldEqual false
         escapes.Assumes |> shouldContain Assumption.FieldsWrittenVisibly
+
+    /// A field of a struct an explicit layout embeds: another field of the container may lie over it,
+    /// so that a store in that one is a store in the struct's, though the struct's own layout is
+    /// sequential.
+    [<Test>]
+    let ``a struct's field another field of an explicit layout overlaps holds what is stored in either`` () : unit =
+        let image =
+            fieldFixture
+                "OverlappingStructFields"
+                []
+                (fun modul baseType hit made ->
+                    let payload =
+                        modul.DefineType (
+                            "Fields.Payload",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.SequentialLayout,
+                            typeof<ValueType>
+                        )
+
+                    let held = payload.DefineField ("held", baseType, FieldAttributes.Private)
+
+                    let read =
+                        payload.DefineMethod (
+                            "Read",
+                            MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = read.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Ldfld, held)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+                    payload.CreateType () |> ignore<Type>
+
+                    // `alias` lies over `payload.held`.
+                    let container =
+                        modul.DefineType (
+                            "Fields.Container",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.ExplicitLayout
+                        )
+
+                    let containerConstructor =
+                        container.DefineDefaultConstructor MethodAttributes.Public
+
+                    let inner = container.DefineField ("payload", payload, FieldAttributes.Public)
+                    inner.SetOffset 0
+                    let alias = container.DefineField ("alias", baseType, FieldAttributes.Public)
+                    alias.SetOffset 0
+                    container.CreateType () |> ignore<Type>
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, containerConstructor)
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stfld, alias)
+                    il.Emit (Emit.OpCodes.Ldflda, inner)
+                    il.Emit (Emit.OpCodes.Call, read)
+                    il.Emit Emit.OpCodes.Ret
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        let shown, unknown, raised = fieldFixtureAnswers "OverlappingStructFields" image
+        raised |> shouldEqual "=Fields.E1"
+
+        if not unknown && not (shown.Contains raised) then
+            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
