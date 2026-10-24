@@ -53,6 +53,9 @@ module TestFabricatedConstrainedEnumRetarget =
     ///   calls `Sealed.GetHashCode`, a final override returning 42 on a sealed class.
     ///   `RenamedHash(DayOfWeek)` calls `Renamed.Hash`, which overrides `Object.GetHashCode` by a
     ///   MethodImpl, returning 43.
+    /// * `NativeIntHash(nint)`, `UNativeIntHash(nuint)`, `BooleanHash(bool)` and `CharHash(char)`
+    ///   store the argument through the address of a local of an enum over its type, and call
+    ///   `Object.GetHashCode` on that local.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Retarget", typeof<obj>.Assembly)
@@ -193,6 +196,30 @@ module TestFabricatedConstrainedEnumRetarget =
             il.Emit (OpCodes.Callvirt, getHashCode)
             il.Emit OpCodes.Ret
 
+        // An enum over each primitive whose enums PawPrint keeps as a wrapper around `value__`
+        // rather than flattening to the primitive.
+        for name, underlying, store in
+            [
+                "NativeInt", typeof<nativeint>, OpCodes.Stind_I
+                "UNativeInt", typeof<unativeint>, OpCodes.Stind_I
+                "Boolean", typeof<bool>, OpCodes.Stind_I1
+                "Char", typeof<char>, OpCodes.Stind_I2
+            ] do
+            let enumType = modul.DefineEnum ("E_" + name, TypeAttributes.Public, underlying)
+            let enumType = enumType.CreateType ()
+
+            let il =
+                retarget.DefineMethod(name + "Hash", attributes, typeof<int>, [| underlying |]).GetILGenerator ()
+
+            let local = il.DeclareLocal enumType
+            il.Emit (OpCodes.Ldloca, local)
+            il.Emit OpCodes.Ldarg_0
+            il.Emit store
+            il.Emit (OpCodes.Ldloca, local)
+            il.Emit (OpCodes.Constrained, enumType)
+            il.Emit (OpCodes.Callvirt, typeof<obj>.GetMethod ("GetHashCode", Type.EmptyTypes))
+            il.Emit OpCodes.Ret
+
         sealedClass.CreateType () |> ignore<Type>
         renamedClass.CreateType () |> ignore<Type>
         retarget.CreateType () |> ignore<Type>
@@ -298,3 +325,24 @@ public static class Driver
     [<Test>]
     let ``a final override of GetHashCode by a MethodImpl holds a slot of its own, and runs on the box`` () : unit =
         run "Retarget.RenamedHash(DayOfWeek.Friday)" 43
+
+    // `Int32`'s storage is an enum's own, but an enum over these primitives keeps its `value__`
+    // apart from the primitive, so the primitive's method must read the enum's storage as its own.
+    // Each hash is reduced modulo 251 to fit an exit code.
+
+    [<Test>]
+    let ``an enum over nint is retargeted to IntPtr's GetHashCode`` () : unit =
+        run "(int)((uint)Retarget.NativeIntHash((nint)5) % 251)" 5
+
+    [<Test>]
+    let ``an enum over nuint is retargeted to UIntPtr's GetHashCode`` () : unit =
+        run "(int)((uint)Retarget.UNativeIntHash((nuint)5) % 251)" 5
+
+    [<Test>]
+    let ``an enum over bool is retargeted to Boolean's GetHashCode`` () : unit =
+        run "(int)((uint)Retarget.BooleanHash(true) % 251)" 1
+
+    [<Test>]
+    let ``an enum over char is retargeted to Char's GetHashCode`` () : unit =
+        // 'A' | ('A' << 16) is 4259905.
+        run "(int)((uint)Retarget.CharHash('A') % 251)" 184
