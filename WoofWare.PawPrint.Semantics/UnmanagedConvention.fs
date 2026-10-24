@@ -95,9 +95,9 @@ module UnmanagedConvention =
 
     /// The convention of a call of `method`, a P/Invoke of `assembly`
     /// (`getUnmanagedCallConvForMethod`, `PInvoke::GetCallingConvention_IgnoreErrors`): its
-    /// signature's, if that names an unmanaged convention; otherwise its import's, unless that says
-    /// `WinApi`; otherwise its `[UnmanagedCallConv]` attribute's, if it has one, and otherwise its
-    /// signature's modifiers'.
+    /// signature's, if that names an unmanaged convention; otherwise its import's, if that names one
+    /// but `WinApi`; otherwise its `[UnmanagedCallConv]` attribute's, if it has one, and otherwise
+    /// its signature's modifiers'.
     let ofPInvoke (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : UnmanagedConvention =
         let definition = assembly.Methods.[method]
 
@@ -108,8 +108,15 @@ module UnmanagedConvention =
                 definition.TryNativeImport
                 |> Option.map (fun import -> import.Attributes &&& MethodImportAttributes.CallingConventionMask)
 
+            // CoreCLR reads bits naming no convention, zero or a value out of range, as `WinApi`
+            // (`GetCallConvValueForPInvokeCallConv`).
             match importConvention with
-            | Some convention when convention <> MethodImportAttributes.CallingConventionWinApi ->
+            | Some convention when
+                convention = MethodImportAttributes.CallingConventionCDecl
+                || convention = MethodImportAttributes.CallingConventionStdCall
+                || convention = MethodImportAttributes.CallingConventionThisCall
+                || convention = MethodImportAttributes.CallingConventionFastCall
+                ->
                 UnmanagedConvention.NotSwift
             | _ when not (NamedAttribute.ofMethod unmanagedCallConv assembly method).IsEmpty ->
                 UnmanagedConvention.MaybeSwift
