@@ -3192,10 +3192,12 @@ module EscapeAnalysis =
     /// holds: what its own assembly's `stfld`s and `stsfld`s store in it, or null. So it is when
     /// no other assembly can name the field, it being private, or internal to an assembly that
     /// makes no other its friend (`InternalsVisibleTo`); its own assembly's IL never takes its
-    /// address; no member reference of that assembly may name it; its type is a class whose layout
-    /// is not explicit, where no other field can lie over it (a struct's may lie under a field of a
-    /// container of explicit layout that embeds the struct); and, in CoreLib, CoreCLR's native code
-    /// does not bind it by name (`VmBoundField`), which it may write.
+    /// address; no member reference of that assembly may name it; its type is a class of automatic
+    /// layout: not explicit, where another field can lie over it (a struct's may lie under a field
+    /// of a container of explicit layout that embeds the struct), and not sequential, which the
+    /// interop marshaller writes as a formatted class (`Marshal.PtrToStructure`, a P/Invoke's `[Out]`
+    /// parameter); and, in CoreLib, CoreCLR's native code does not bind it by name (`VmBoundField`),
+    /// which it may write.
     let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
         if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
             state, false
@@ -3227,7 +3229,7 @@ module EscapeAnalysis =
             not closedToOthers
             || boundByTheVm
             || definition.Attributes.HasFlag FieldAttributes.Literal
-            || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes = TypeLayoutKind.Explicit
+            || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes <> TypeLayoutKind.Auto
         then
             state, false
         else

@@ -4,11 +4,14 @@ open System.IO
 
 /// The fields of CoreLib that CoreCLR's native code binds by name, through the rows of its
 /// `vm/corelib.h`: each `DEFINE_FIELD`, by which the VM finds a field to read or write, and each
-/// `DEFINE_FIELD_U`, which lays a managed field out as a field of a native object the VM reads and
-/// writes. So the VM may write any of them where no instruction names it, as
-/// `CastCache::Initialize` stores the cast cache's table in `CastHelpers.s_table`. The rows of every
-/// supported runtime at once, from the embedded `VmBoundFields.tsv`, which `TestVmBoundField` holds
-/// to each runtime's `corelib.h`.
+/// `DEFINE_FIELD_U`, which checks that a managed field lies where a field of a native object does.
+/// The VM may write any of them where no instruction names it, as `CastCache::Initialize` stores
+/// the cast cache's table in `CastHelpers.s_table`. It is a lower bound on what the VM writes, not
+/// the whole of it: the VM reaches a field through the C++ layout of its class (`vm/object.h`)
+/// whether or not a row checks it, as `ReflectFieldObject::SetKeepAlive` writes
+/// `RuntimeFieldInfoStub.m_keepalive`, for which `corelib.h` has no row. The rows of every supported
+/// runtime at once, from the embedded `VmBoundFields.tsv`, which `TestVmBoundField` holds to each
+/// runtime's `corelib.h`.
 [<RequireQualifiedAccess>]
 module VmBoundField =
 
