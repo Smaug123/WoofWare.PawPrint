@@ -173,8 +173,9 @@ method) may add more:
   full, as it does the owner of each member a token names (a method or field definition's
   declaring type, a member reference's parent) before it resolves the member, and the type of each
   field an instruction accesses, as the field's definition spells it: what each derives from and
-  implements, and the type of each of its value-type fields, transitively, must be there too
-  (`TypeLoad`). A parameter
+  implements, the type of each of its value-type fields, transitively, and, for a type outside
+  CoreLib, each type its type parameters' constraints name, must be there too (`TypeLoad`). A
+  parameter
   of a class type it loads where the method called is compiled, which that method's own answer
   says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
   nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method,
@@ -414,7 +415,16 @@ was compiled against it, a missing member or type is reported as above, and says
 needs rebuilding (or, for a package, a different version). Other ways such a change can break a
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), and a generic instantiation it spells that a
-constraint added since now rejects.
+constraint added since now rejects (a constraint naming a type that is not there is reported, as
+above).
+
+Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of time
+(ReadyToRun: the shared framework's, and a program's published that way) binds what it names as it
+runs instead, so that a failure the analysis reports as escaping a method past all its handlers is
+raised there at the instruction, where the method's own handlers can catch it, or not at all on a
+path that does not run. CoreCLR also loads no constraints in a ReadyToRun image that skips type
+validation; the analysis loads them in every assembly outside CoreLib, which can only add
+exceptions that may escape.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`

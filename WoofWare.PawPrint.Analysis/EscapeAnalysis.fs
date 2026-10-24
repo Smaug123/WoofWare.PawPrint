@@ -698,10 +698,19 @@ type EscapeAnalysisState =
 ///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
-/// and signals that they do not. What else such a disagreement can break is not checked, and the
-/// exception it causes is not reported: a member that has become inaccessible to its caller, a
-/// generic instantiation that a constraint added since rejects, or a named type whose own base
-/// type, interfaces or fields are gone.
+/// and signals that they do not; so too a type that CoreCLR's full load of a type the JIT loads
+/// reaches: its base types, its interfaces, the types of its value-type fields and, outside CoreLib,
+/// its type parameters' constraints (<c>TypeLoad</c>). What else such a disagreement can break is
+/// not checked, and the exception it causes is not reported: a member that has become inaccessible
+/// to its caller, or a generic instantiation that a constraint added since rejects.
+///
+/// Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of
+/// time (ReadyToRun: the shared framework's, and a program's published that way) binds what it
+/// names as it runs instead, so that a failure reported as escaping a method past all its handlers
+/// is raised there at the instruction, where the method's own handlers can catch it, or not at all
+/// on a path that does not run. CoreCLR also loads no constraints in a ReadyToRun image that skips
+/// type validation, which the analysis does not tell from any other assembly outside CoreLib: it
+/// loads them, which can only add exceptions that may escape.
 ///
 /// A generic method's IL is read once, since every instantiation runs the same IL, but its summary
 /// is computed for each closed instantiation a call reaches. An instantiation decides what a

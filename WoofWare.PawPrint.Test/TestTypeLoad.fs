@@ -328,7 +328,8 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 2
 
     /// Generic definitions whose type parameters' constraints name types the provider lacks, or an
-    /// assembly that is not there, loaded through `typeof` of the definition itself.
+    /// assembly that is not there, loaded through `typeof` of the definition itself. An interface
+    /// instantiation that is not a parameter's first constraint is one CoreCLR never walks.
     let private curatedConstrainedDeclarations : string =
         """
 public class ConstrainedToGone<T> where T : Provider.Gone { }
@@ -358,6 +359,10 @@ public class StaticGoneHolder { public static Provider.GoneStruct F; }
 public interface IStaticGoneHolder { public static Provider.GoneStruct F; }
 public class ConstrainedToStaticGoneHolder<T> where T : StaticGoneHolder { }
 public class ConstrainedToIStaticGoneHolder<T> where T : IStaticGoneHolder { }
+public class InterfaceOfGoneSecond<T> where T : Provider.IKept, Provider.IKeptGeneric<Provider.Gone> { }
+public class InterfaceOfGoneAfterClass<T> where T : Provider.Kept, Provider.IKeptGeneric<Provider.Gone> { }
+public class InterfaceOfGoneAfterStruct<T> where T : struct, Provider.IKeptGeneric<Provider.Gone> { }
+public class InterfaceOfGoneAfterVariable<T, U> where T : U, Provider.IKeptGeneric<Provider.Gone> { }
 """
 
     let private curatedConstrainedNames : string list =
@@ -387,6 +392,10 @@ public class ConstrainedToIStaticGoneHolder<T> where T : IStaticGoneHolder { }
             "StaticFieldBeforeConstraint<>"
             "ConstrainedToStaticGoneHolder<>"
             "ConstrainedToIStaticGoneHolder<>"
+            "InterfaceOfGoneSecond<>"
+            "InterfaceOfGoneAfterClass<>"
+            "InterfaceOfGoneAfterStruct<>"
+            "InterfaceOfGoneAfterVariable<,>"
         ]
 
     [<Test>]
