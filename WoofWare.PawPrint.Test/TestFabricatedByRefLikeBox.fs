@@ -282,14 +282,20 @@ module TestFabricatedByRefLikeBox =
         landedOn.MarkLabel tests
         branches OpCodes.Brtrue landedOn
 
-        // `System.Void` is no type `isinst` takes, which the JIT refuses as it resolves the token.
-        define
-            "BoxIsinstVoidBrtrue"
-            (fun il ->
-                boxesHeld il
-                il.Emit (OpCodes.Isinst, typeof<Void>)
-                branches OpCodes.Brtrue il
-            )
+        // `System.Void` and a byref are no types `isinst` takes, which the JIT refuses as it
+        // resolves the token while matching the pattern.
+        for name, target in
+            [
+                "BoxIsinstVoidBrtrue", typeof<Void>
+                "BoxIsinstByrefBrtrue", typeof<int>.MakeByRefType ()
+            ] do
+            define
+                name
+                (fun il ->
+                    boxesHeld il
+                    il.Emit (OpCodes.Isinst, target)
+                    branches OpCodes.Brtrue il
+                )
 
         // A protected block starting between the box and the branch starts a block there too. The
         // IL is invalid, the stack not being empty where the protected block starts, but the JIT
@@ -549,6 +555,8 @@ public static class Driver
         if ((r = ExpectRefused(Boxes.BoxIsinstNullableBrtrue, 29, 30)) != 0) return r;
         if ((r = ExpectRefused(() => Boxes.BoxBranchLandedOn(false), 31, 32)) != 0) return r;
         if ((r = ExpectRefused(Boxes.BoxBranchInTry, 53, 54)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.BoxIsinstVoidBrtrue, 65, 66)) != 0) return r;
+        if ((r = ExpectRefused(Boxes.BoxIsinstByrefBrtrue, 67, 68)) != 0) return r;
 
         if ((r = ExpectRefused(Boxes.CallsBoxTPopHeld, 33, 34)) != 0) return r;
         if ((r = Expect(Boxes.CallsBoxTPopInt, 3, 35)) != 0) return r;
@@ -620,26 +628,19 @@ public static class Driver
         | FabricatedOutcome.Exited code -> code |> shouldEqual 1
         | FabricatedOutcome.Failed e -> raise (Exception ("PawPrint did not run the guest to completion", e))
 
-    /// Where whether the JIT folds a box turns on whether it inlines the method, on what it decides
-    /// for a canonical form PawPrint does not build, or on its refusing a metadata operand, which
-    /// PawPrint does not validate, PawPrint stops rather than guess. Under `inliningDecides`, the
-    /// real runtime may fold the box or refuse it; otherwise it refuses it.
-    [<TestCase("CallsBoxTCastObjectShared", 2, "inlines", true)>]
-    [<TestCase("CallsBoxTUnboxShared", 4, "inlines", true)>]
-    [<TestCase("CallsBoxHeldCastTShared", 1, "inlines", true)>]
-    [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form", true)>]
-    [<TestCase("BoxIsinstVoidBrtrue", 1, "System.Void", false)>]
-    let ``PawPrint refuses to guess whether the JIT folds a box``
-        (callee : string)
-        (folded : int)
-        (reason : string)
-        (inliningDecides : bool)
-        =
+    /// Where whether the JIT folds a box turns on whether it inlines the method, or on what it
+    /// decides for a canonical form PawPrint does not build, PawPrint stops rather than guess. The
+    /// real runtime may fold the box or refuse it.
+    [<TestCase("CallsBoxTCastObjectShared", 2, "inlines")>]
+    [<TestCase("CallsBoxTUnboxShared", 4, "inlines")>]
+    [<TestCase("CallsBoxHeldCastTShared", 1, "inlines")>]
+    [<TestCase("CallsBoxTCastEquatableShared", 1, "canonical form")>]
+    let ``PawPrint refuses to guess whether the JIT folds a box`` (callee : string) (folded : int) (reason : string) =
         let onHost, onPawPrint =
             FabricatedGuest.runOnBoth "ByRefLikeBox" (fabricate ()) $"%s{callee}Driver" (refusalDriver callee folded)
 
         match onHost with
-        | RealRuntimeResult.NormalExit 0 when inliningDecides -> ()
+        | RealRuntimeResult.NormalExit 0
         | RealRuntimeResult.NormalExit 1 -> ()
         | other -> failwith $"real runtime did not exit as expected: %O{other}"
 

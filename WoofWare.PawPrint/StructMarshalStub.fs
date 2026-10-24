@@ -403,12 +403,31 @@ module StructMarshalStub =
             SynthesisedMethod.StructMarshalStub
         )
 
-    /// `MarshalOperation` (stubgen.h:26): the third argument CoreLib passes to the stub.
+    /// Which of CoreCLR's struct-marshalling bodies a frame runs.
     [<RequireQualifiedAccess>]
-    type private Operation =
-        | Marshal
-        | Unmarshal
-        | Cleanup
+    type private StubKind =
+        /// .NET 10's stub, which `MarshalNative_TryGetStructMarshalStub` mints and CoreLib calls
+        /// through `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`. It zeroes
+        /// the whole unmanaged image at the start of `Marshal` and the end of `Cleanup`.
+        | MarshalStub
+        /// The body .NET 11's VM gives one of `StructureMarshaler<T>`'s methods, of signature
+        /// `(ref T, byte*, ref CleanupWorkListElement?)`. It touches only the fields' bytes:
+        /// `StructureMarshaler<T>.ConvertToUnmanaged` and `Free` zero the image around it.
+        | StructureMarshalerBody
+
+    /// What a struct-marshalling frame was called to do.
+    type private StubCall =
+        {
+            Kind : StubKind
+            /// The struct marshalled.
+            StructType : ConcreteTypeHandle
+            Operation : StructMarshalOperation
+            /// The managed struct. Null where `Operation` is `Cleanup` and the caller has no
+            /// struct to name.
+            Managed : ManagedPointerSource
+            /// The unmanaged image.
+            Native : ManagedPointerSource
+        }
 
     /// The conversion results a part-way-through `Marshal` invocation of the stub has accumulated.
     ///
@@ -433,11 +452,12 @@ module StructMarshalStub =
     let private completedConversions (frame : MethodState) : EvalStackValue list =
         frame.EvaluationStack.Values |> List.rev
 
-    let private operationOf (operation : string) (value : EvalStackValue) : Operation =
+    /// `MarshalOperation` (stubgen.h:26): the third argument CoreLib passes to .NET 10's stub.
+    let private operationOf (operation : string) (value : EvalStackValue) : StructMarshalOperation =
         match value with
-        | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> Operation.Marshal
-        | EvalStackValue.Int32 (Int32Source.Verbatim 1) -> Operation.Unmarshal
-        | EvalStackValue.Int32 (Int32Source.Verbatim 2) -> Operation.Cleanup
+        | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> StructMarshalOperation.Marshal
+        | EvalStackValue.Int32 (Int32Source.Verbatim 1) -> StructMarshalOperation.Unmarshal
+        | EvalStackValue.Int32 (Int32Source.Verbatim 2) -> StructMarshalOperation.Cleanup
         | other ->
             failwith
                 $"%s{operation}: expected a MarshalOperation (0=Marshal, 1=Unmarshal, 2=Cleanup) as the third argument, got %O{other}"
@@ -447,6 +467,68 @@ module StructMarshalStub =
         | EvalStackValue.ManagedPointer src -> src
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> ManagedPointerSource.Byref src
         | other -> failwith $"%s{operation}: expected %s{what} to be a managed pointer, got %O{other}"
+
+    /// What the struct-marshalling frame `instruction` was called to do, read from its body and
+    /// arguments.
+    let private stubCallOf (operation : string) (state : IlMachineState) (instruction : MethodState) : StubCall =
+        let executing = instruction.ExecutingMethod
+
+        match executing.Body with
+        | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
+            if instruction.Arguments.Length <> 4 then
+                failwith
+                    $"%s{operation}: expected the four arguments of `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`, got %d{instruction.Arguments.Length}"
+
+            let structType =
+                AllConcreteTypes.findExistingConcreteType
+                    state.TypeSystem.ConcreteTypes
+                    executing.RequiredDeclaringType.Identity
+                    executing.DeclaringTypeGenerics
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: declaring type %s{MethodOwner.describe executing.Owner} is not registered in AllConcreteTypes"
+                )
+
+            {
+                Kind = StubKind.MarshalStub
+                StructType = structType
+                Operation = operationOf operation (EvalStackValue.ofCliType instruction.Arguments.[2])
+                Managed =
+                    managedPointerOf
+                        operation
+                        "the managed struct reference"
+                        (EvalStackValue.ofCliType instruction.Arguments.[0])
+                Native =
+                    managedPointerOf
+                        operation
+                        "the native image pointer"
+                        (EvalStackValue.ofCliType instruction.Arguments.[1])
+            }
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.StructureMarshalerBody op) ->
+            if instruction.Arguments.Length <> 3 then
+                failwith
+                    $"%s{operation}: expected the three arguments `(ref T, byte*, ref CleanupWorkListElement?)`, got %d{instruction.Arguments.Length}"
+
+            let structType =
+                match List.ofSeq executing.DeclaringTypeGenerics with
+                | [ structType ] -> structType
+                | generics ->
+                    failwith
+                        $"%s{operation}: StructureMarshaler<T> has one type argument, but this instantiation has %d{generics.Length}"
+
+            {
+                Kind = StubKind.StructureMarshalerBody
+                StructType = structType
+                Operation = op
+                Managed =
+                    managedPointerOf operation "the managed struct" (EvalStackValue.ofCliType instruction.Arguments.[0])
+                Native =
+                    managedPointerOf
+                        operation
+                        "the unmanaged image"
+                        (EvalStackValue.ofCliType instruction.Arguments.[1])
+            }
+        | other -> failwith $"%s{operation}: a frame whose body is %O{other} is not a struct-marshalling body"
 
     /// `System.Byte` as a concrete type, for forming byte-view byrefs into the native image. Same
     /// derivation as `CellAwareMemOps`, whose own copy is private.
@@ -612,36 +694,19 @@ module StructMarshalStub =
         (state : IlMachineState)
         : ExecutionResult
         =
-        let operation = "struct-marshal stub"
+        let operation =
+            match instruction.ExecutingMethod.Body with
+            | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub -> "struct-marshal stub"
+            | _ -> Intrinsics.formatMethodKey (Intrinsics.methodKey state instruction.ExecutingMethod)
 
-        let typeHandle =
-            AllConcreteTypes.findExistingConcreteType
-                state.TypeSystem.ConcreteTypes
-                instruction.ExecutingMethod.RequiredDeclaringType.Identity
-                instruction.ExecutingMethod.DeclaringTypeGenerics
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: declaring type %s{MethodOwner.describe instruction.ExecutingMethod.Owner} is not registered in AllConcreteTypes"
-            )
-
+        let call = stubCallOf operation state instruction
+        let typeHandle = call.StructType
         let frameId = state.ThreadState.[thread].ActiveMethodState
 
-        if instruction.Arguments.Length <> 4 then
-            failwith
-                $"%s{operation}: expected the four arguments of `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`, got %d{instruction.Arguments.Length}"
-
-        let op = operationOf operation (EvalStackValue.ofCliType instruction.Arguments.[2])
-
-        // The managed struct (a byref onto a box's payload) and its native image. Which is read
-        // and which written depends on the operation.
-        let managed =
-            managedPointerOf
-                operation
-                "the managed struct reference"
-                (EvalStackValue.ofCliType instruction.Arguments.[0])
-
-        let nativeImage =
-            managedPointerOf operation "the native image pointer" (EvalStackValue.ofCliType instruction.Arguments.[1])
+        // The managed struct and its native image. Which is read and which written depends on the
+        // operation.
+        let managed = call.Managed
+        let nativeImage = call.Native
 
         /// The stub's work is done: pop its frame and hand control back to CoreLib. The stub returns
         /// void, so its evaluation stack must be empty by now, which `returnStackFrame` checks.
@@ -691,20 +756,37 @@ module StructMarshalStub =
                 // cases our frame stays put and the dispatch loop takes it from here.
                 ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
-        /// The plan for the stub's type, derived from `value`. `nativeSizeOnly` callers pass the
-        /// type's zero because they need only the total.
+        /// The plan for the stub's type, derived from `value`. Callers that need only the plan's
+        /// shape pass the type's zero.
         let planFor (value : CliType) : StructMarshalPlan =
             match
                 tryComputePlan state.TypeSystem.ConcreteTypes state.TypeSystem._LoadedAssemblies baseClassTypes value
             with
             | Result.Ok plan -> plan
             | Result.Error reason ->
+
+            match call.Kind, reason with
+            | StubKind.MarshalStub, _ ->
                 // Unreachable in practice: the QCall only mints a stub pointer for a type whose
                 // plan it has already computed, from that type's zero value. Reaching it means
                 // the plan is not a function of the type alone, which would be a bug worth
                 // seeing.
                 failwith
                     $"%s{operation}: type %O{typeHandle} has no marshal plan at stub-execution time, though the QCall minted a stub for it: %s{reason.Reason}"
+            // The VM gives a `StructureMarshaler<T>` method this body without consulting PawPrint,
+            // so this is where a struct PawPrint cannot marshal is first refused.
+            | StubKind.StructureMarshalerBody, MarshalSizeError.NotMarshalable why ->
+                failwith
+                    $"TODO: CoreCLR's VM replaces the body of %s{operation} with one that marshals %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes typeHandle} field by field, but refuses to build it: %s{why}. PawPrint does not yet raise the exception CoreCLR does for this"
+            | StubKind.StructureMarshalerBody, MarshalSizeError.NotImplemented why ->
+                failwith
+                    $"TODO: CoreCLR's VM replaces the body of %s{operation} with one that marshals %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes typeHandle} field by field, since that struct is not blittable, and PawPrint has not implemented its marshalling: %s{why}"
+
+        // Whatever the operation, a struct with no plan is refused before anything is touched.
+        let typeZero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+        let typePlan = planFor typeZero
 
         let byteView = byteType operation baseClassTypes state
 
@@ -730,9 +812,9 @@ module StructMarshalStub =
                 value
 
         /// Write the unmanaged image: each step contributes its native value at its placement, and
-        /// every byte not covered by a step is zeroed.
+        /// for .NET 10's stub every byte not covered by a step is zeroed.
         ///
-        /// The gaps have to be zeroed because CoreCLR's stub does the equivalent with `initblk`
+        /// The gaps have to be zeroed because .NET 10's stub does the equivalent with `initblk`
         /// over the whole image — at the top of its Marshal stream (dllimport.cpp:1290, "so we can
         /// do a partial cleanup if marshalling fails") and at the end of its Cleanup stream
         /// (:1319) — and a guest reading the buffer can see the difference.
@@ -764,23 +846,36 @@ module StructMarshalStub =
             // Placements ascend for sequential layout but not for explicit layout, and explicit
             // fields may overlap; ordering by offset makes the gap walk correct for both, and
             // `max` keeps an overlapped range from being re-zeroed as if it were a gap.
-            for step in plan.Steps |> List.sortBy (fun s -> s.Placement.NativeOffset) do
-                let offset = step.Placement.NativeOffset
+            //
+            // .NET 11's body writes the fields alone, into an image its caller has zeroed.
+            let zeroesGaps =
+                match call.Kind with
+                | StubKind.MarshalStub -> true
+                | StubKind.StructureMarshalerBody -> false
 
-                if offset > cursor then
+            if zeroesGaps then
+                for step in plan.Steps |> List.sortBy (fun s -> s.Placement.NativeOffset) do
+                    let offset = step.Placement.NativeOffset
+
+                    if offset > cursor then
+                        state <-
+                            CellAwareMemOps.clear
+                                baseClassTypes
+                                operation
+                                state
+                                (addressOf cursor state)
+                                (offset - cursor)
+
+                    cursor <- max cursor (offset + step.Placement.NativeSize.Size)
+
+                if cursor < plan.NativeSize.Size then
                     state <-
-                        CellAwareMemOps.clear baseClassTypes operation state (addressOf cursor state) (offset - cursor)
-
-                cursor <- max cursor (offset + step.Placement.NativeSize.Size)
-
-            if cursor < plan.NativeSize.Size then
-                state <-
-                    CellAwareMemOps.clear
-                        baseClassTypes
-                        operation
-                        state
-                        (addressOf cursor state)
-                        (plan.NativeSize.Size - cursor)
+                        CellAwareMemOps.clear
+                            baseClassTypes
+                            operation
+                            state
+                            (addressOf cursor state)
+                            (plan.NativeSize.Size - cursor)
 
             // Fields last, and in declaration order: under explicit layout two fields may cover
             // the same bytes, and CoreCLR marshals them in declaration order, so the later one
@@ -818,8 +913,8 @@ module StructMarshalStub =
                 (nativeZero step)
                 (ManagedPointerSource.requireAddressed native)
 
-        match op with
-        | Operation.Cleanup ->
+        match call.Operation with
+        | StructMarshalOperation.Cleanup ->
             // CoreLib calls the stub with `Cleanup` before `Marshal` when `fDeleteOld` is set, to
             // release whatever the previous contents owned. Every field kind we support owns
             // nothing — a copied value, an OADate double, a BOOL and an ANSI byte all live
@@ -827,18 +922,20 @@ module StructMarshalStub =
             // own native memory (a `ByValTStr`, an allocated array) would have to release it
             // here; `tryComputePlan` refuses every such kind today.
             //
-            // The zeroing, though, is not optional: CoreCLR clears the native image after the
+            // The zeroing, though, is not optional: .NET 10's stub clears the native image after the
             // per-field release "so we don't leave anything dangling", and a guest calling
-            // `DestroyStructure` and then reading the buffer sees that. The type's zero value is
-            // enough here, because only the plan's total size is wanted.
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
-
-            finish (clearImage (planFor zero) state)
-        | Operation.Unmarshal ->
+            // `DestroyStructure` and then reading the buffer sees that. On .NET 11,
+            // `StructureMarshaler<T>.Free` clears it after this body returns. Only the plan's
+            // total size is wanted, which the type's zero gives.
+            match call.Kind with
+            | StubKind.MarshalStub -> finish (clearImage typePlan state)
+            | StubKind.StructureMarshalerBody -> finish state
+        | StructMarshalOperation.Unmarshal ->
             // CoreCLR's Unmarshal stream converts each field from its native form and stores it
             // into the field's managed home, in declaration order, so that under explicit layout
             // a later-declared field overwrites an earlier one it overlaps. The managed homes are
-            // the fields of the box `PtrToStructureHelper` handed us (Marshal.CoreCLR.cs:291).
+            // the fields of the box `Marshal.PtrToStructure` allocated, whose payload CoreLib
+            // hands over as a byref.
             //
             // A `CopyBytes` field is a load of its native bytes and a store to its home, and a
             // `WinBool` or `CBool` field the same with a comparison against zero between. An
@@ -857,8 +954,8 @@ module StructMarshalStub =
             //                                 yet to be stored.
             //
             // The counter is sound only while the plan's step order is a deterministic function
-            // of the type, which `planFor` below makes it: it is computed from the type's zero,
-            // never from the box's current contents.
+            // of the type, which `typePlan` is: it is computed from the type's zero, never from
+            // the box's current contents.
             let box =
                 match managed with
                 | ManagedPointerSource.Byref {
@@ -875,8 +972,7 @@ module StructMarshalStub =
                 failwith
                     $"%s{operation}: expected the managed struct reference to address a box of %O{typeHandle}, which is the type the stub was minted for, but it holds a %O{boxed.Declared}"
 
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
-            let plan = planFor zero
+            let plan = typePlan
             checkInsideImage plan
             let steps = Array.ofList plan.Steps
 
@@ -1038,7 +1134,7 @@ module StructMarshalStub =
                         $"%s{operation}: unmarshalling %O{typeHandle}, expected this frame's evaluation stack to hold the stub's own progress record, but it holds %O{other}"
 
             unmarshalFrom resumeAt state
-        | Operation.Marshal ->
+        | StructMarshalOperation.Marshal ->
 
         let completed = completedConversions (IlMachineState.getFrame thread frameId state)
         let completedCount = List.length completed
@@ -1052,10 +1148,13 @@ module StructMarshalStub =
 
         let plan = planFor sourceValue
 
-        // CoreCLR opens its Marshal stream by zeroing the whole native image (dllimport.cpp:1290,
-        // "so we can do a partial cleanup if marshalling fails"), and only then writes fields. We
-        // must too, or padding — bytes 12..15 of `{DateTime; int; DateTime}`, say — keeps whatever
-        // the guest's buffer held before, which a guest reading the image can see.
+        // .NET 10's stub opens its Marshal stream by zeroing the whole native image
+        // (dllimport.cpp:1290, "so we can do a partial cleanup if marshalling fails"), and only
+        // then writes fields. We must too, or padding — bytes 12..15 of
+        // `{DateTime; int; DateTime}`, say — keeps whatever the guest's buffer held before, which a
+        // guest reading the image can see. .NET 11's body leaves that to
+        // `StructureMarshaler<T>.ConvertToUnmanaged`, which zeroes the image before calling it and
+        // again, through `Free`, if it throws.
         //
         // This runs on *every* pass of the re-executing `calli`, not just the first. Zeroing is
         // idempotent and nothing else can write to the buffer in between, so the repetition costs
@@ -1064,7 +1163,10 @@ module StructMarshalStub =
         // Cleanup stream and re-zeroes (dllimport.cpp:1319); here, the buffer was zeroed on the
         // pass that pushed the conversion and we never write on the pass that throws. Both leave
         // a zeroed image, including when the guest handed us a dirty buffer.
-        let state = clearImage plan state
+        let state =
+            match call.Kind with
+            | StubKind.MarshalStub -> clearImage plan state
+            | StubKind.StructureMarshalerBody -> state
 
         let conversions =
             plan.Steps

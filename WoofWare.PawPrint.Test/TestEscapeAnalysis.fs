@@ -11062,197 +11062,6 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
-    /// `Probe.Runners.Modified()`: `box Span<int>; unbox.any List<int modopt(IsConst)>; pop`, whose
-    /// unboxed type PawPrint does not instantiate, a generic argument carrying a custom modifier. No
-    /// C# spells it, nor does `Reflection.Emit`.
-    [<Test>]
-    let ``the JIT's refusal of a box is reported where the analysis cannot instantiate what follows it`` () : unit =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        let metadata = MetadataBuilder ()
-        let ilStream = BlobBuilder ()
-        let bodies = MethodBodyStreamEncoder ilStream
-
-        metadata.AddModule (
-            0,
-            metadata.GetOrAddString "Probe.dll",
-            metadata.GetOrAddGuid (Guid "6c1e9a35-0b7d-4f28-93a4-5d2e8f17c4b0"),
-            Unchecked.defaultof<GuidHandle>,
-            Unchecked.defaultof<GuidHandle>
-        )
-        |> ignore<ModuleDefinitionHandle>
-
-        metadata.AddAssembly (
-            metadata.GetOrAddString "Probe",
-            Version (1, 0, 0, 0),
-            Unchecked.defaultof<StringHandle>,
-            Unchecked.defaultof<BlobHandle>,
-            Unchecked.defaultof<AssemblyFlags>,
-            AssemblyHashAlgorithm.None
-        )
-        |> ignore<AssemblyDefinitionHandle>
-
-        let coreName = typeof<obj>.Assembly.GetName ()
-
-        let core =
-            metadata.AddAssemblyReference (
-                metadata.GetOrAddString coreName.Name,
-                coreName.Version,
-                Unchecked.defaultof<StringHandle>,
-                metadata.GetOrAddBlob (coreName.GetPublicKeyToken ()),
-                Unchecked.defaultof<AssemblyFlags>,
-                Unchecked.defaultof<BlobHandle>
-            )
-
-        let typeRef (ns : string) (name : string) : EntityHandle =
-            metadata.AddTypeReference (
-                (AssemblyReferenceHandle.op_Implicit core : EntityHandle),
-                metadata.GetOrAddString ns,
-                metadata.GetOrAddString name
-            )
-            |> TypeReferenceHandle.op_Implicit
-
-        let objectRef = typeRef "System" "Object"
-        let spanRef = typeRef "System" "Span`1"
-        let listRef = typeRef "System.Collections.Generic" "List`1"
-        let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
-
-        let typeSpec (encode : SignatureTypeEncoder -> unit) : EntityHandle =
-            let blob = BlobBuilder ()
-            encode (BlobEncoder(blob).TypeSpecificationSignature ())
-
-            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
-            |> TypeSpecificationHandle.op_Implicit
-
-        let span =
-            typeSpec (fun t -> t.GenericInstantiation(spanRef, 1, true).AddArgument().Int32 ())
-
-        let modifiedList =
-            typeSpec (fun t ->
-                let argument = t.GenericInstantiation(listRef, 1, false).AddArgument ()
-
-                argument.CustomModifiers().AddModifier (isConstRef, true)
-                |> ignore<CustomModifiersEncoder>
-
-                argument.Int32 ()
-            )
-
-        let locals =
-            let blob = BlobBuilder ()
-
-            BlobEncoder(blob)
-                .LocalVariableSignature(1)
-                .AddVariable()
-                .Type()
-                .GenericInstantiation(spanRef, 1, true)
-                .AddArgument()
-                .Int32 ()
-
-            metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
-
-        let signature =
-            let blob = BlobBuilder ()
-
-            BlobEncoder(blob)
-                .MethodSignature()
-                .Parameters (0, (fun returns -> returns.Void ()), ignore<ParametersEncoder>)
-
-            metadata.GetOrAddBlob blob
-
-        let code = InstructionEncoder (BlobBuilder ())
-        code.LoadLocalAddress 0
-        code.OpCode ILOpCode.Initobj
-        code.Token span
-        code.LoadLocal 0
-        code.OpCode ILOpCode.Box
-        code.Token span
-        code.OpCode ILOpCode.Unbox_any
-        code.Token modifiedList
-        code.OpCode ILOpCode.Pop
-        code.OpCode ILOpCode.Ret
-
-        let body =
-            bodies.AddMethodBody (
-                code,
-                maxStack = 1,
-                localVariablesSignature = locals,
-                attributes = MethodBodyAttributes.InitLocals
-            )
-
-        metadata.AddMethodDefinition (
-            MethodAttributes.Public ||| MethodAttributes.Static,
-            MethodImplAttributes.IL,
-            metadata.GetOrAddString "Modified",
-            signature,
-            body,
-            MetadataTokens.ParameterHandle 1
-        )
-        |> ignore<MethodDefinitionHandle>
-
-        metadata.AddTypeDefinition (
-            Unchecked.defaultof<TypeAttributes>,
-            Unchecked.defaultof<StringHandle>,
-            metadata.GetOrAddString "<Module>",
-            Unchecked.defaultof<EntityHandle>,
-            MetadataTokens.FieldDefinitionHandle 1,
-            MetadataTokens.MethodDefinitionHandle 1
-        )
-        |> ignore<TypeDefinitionHandle>
-
-        metadata.AddTypeDefinition (
-            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed,
-            metadata.GetOrAddString "Probe",
-            metadata.GetOrAddString "Runners",
-            objectRef,
-            MetadataTokens.FieldDefinitionHandle 1,
-            MetadataTokens.MethodDefinitionHandle 1
-        )
-        |> ignore<TypeDefinitionHandle>
-
-        let peBuilder =
-            ManagedPEBuilder (
-                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
-                MetadataRootBuilder metadata,
-                ilStream
-            )
-
-        let blob = BlobBuilder ()
-        peBuilder.Serialize blob |> ignore<BlobContentId>
-        let image = blob.ToArray ()
-
-        // The real runtime refuses the box: `List<int>` is not the boxed type.
-        let context =
-            System.Runtime.Loader.AssemblyLoadContext ("ModifiedFollower", isCollectible = true)
-
-        let raised =
-            try
-                try
-                    context
-                        .LoadFromStream(new MemoryStream (image))
-                        .GetType("Probe.Runners")
-                        .GetMethod("Modified")
-                        .Invoke ((null : obj), [||])
-                    |> ignore<obj>
-
-                    None
-                with :? TargetInvocationException as e ->
-                    Some (e.InnerException.GetType().FullName)
-            finally
-                context.Unload ()
-
-        raised |> shouldEqual (Some invalidProgram)
-
-        let fixture =
-            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (image))
-
-        let analysis = analysisOver [ fixture ] id
-
-        let analysis, escapes =
-            EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Runners" "Modified")
-
-        render analysis escapes
-        |> Set.contains ("=" + invalidProgram)
-        |> shouldEqual true
-
     /// The type tokens a runner of `modifiedOperands` names.
     type private ModifiedOperands =
         {
@@ -11264,6 +11073,8 @@ public static class Runners
             Tuple : EntityHandle
             /// `ValueTuple<int modopt(IsConst)>`
             ModifiedTuple : EntityHandle
+            /// `List<int modopt(IsConst)>`
+            ModifiedList : EntityHandle
             /// `Span<System.Gone modopt(IsConst)>`, which CoreLib declares no `System.Gone` for
             ModifiedGoneSpan : EntityHandle
             /// `Probe.Marked<int modopt(IsConst)>`, of a class carrying `IsByRefLikeAttribute`, which
@@ -11322,6 +11133,7 @@ public static class Runners
         let objectRef = typeRef "System" "Object"
         let spanRef = typeRef "System" "Span`1"
         let tupleRef = typeRef "System" "ValueTuple`1"
+        let listRef = typeRef "System.Collections.Generic" "List`1"
         let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
         let goneRef = typeRef "System" "Gone"
         let byRefLikeRef = typeRef "System.Runtime.CompilerServices" "IsByRefLikeAttribute"
@@ -11337,12 +11149,13 @@ public static class Runners
 
         let instance
             (root : EntityHandle)
+            (valueType : bool)
             (modified : bool)
             (spellArgument : SignatureTypeEncoder -> unit)
             (encoder : SignatureTypeEncoder)
             : unit
             =
-            let argument = encoder.GenericInstantiation(root, 1, true).AddArgument ()
+            let argument = encoder.GenericInstantiation(root, 1, valueType).AddArgument ()
 
             if modified then
                 argument.CustomModifiers().AddModifier (isConstRef, true)
@@ -11354,28 +11167,21 @@ public static class Runners
 
         let operands =
             {
-                Span = typeSpec (instance spanRef false int32)
-                ModifiedSpan = typeSpec (instance spanRef true int32)
-                Tuple = typeSpec (instance tupleRef false int32)
-                ModifiedTuple = typeSpec (instance tupleRef true int32)
-                ModifiedGoneSpan = typeSpec (instance spanRef true (fun argument -> argument.Type (goneRef, false)))
-                ModifiedMarked =
-                    typeSpec (fun t ->
-                        let argument =
-                            t.GenericInstantiation(TypeDefinitionHandle.op_Implicit marked, 1, false).AddArgument ()
-
-                        argument.CustomModifiers().AddModifier (isConstRef, true)
-                        |> ignore<CustomModifiersEncoder>
-
-                        argument.Int32 ()
-                    )
+                Span = typeSpec (instance spanRef true false int32)
+                ModifiedSpan = typeSpec (instance spanRef true true int32)
+                Tuple = typeSpec (instance tupleRef true false int32)
+                ModifiedTuple = typeSpec (instance tupleRef true true int32)
+                ModifiedList = typeSpec (instance listRef false true int32)
+                ModifiedGoneSpan =
+                    typeSpec (instance spanRef true true (fun argument -> argument.Type (goneRef, false)))
+                ModifiedMarked = typeSpec (instance (TypeDefinitionHandle.op_Implicit marked) false true int32)
             }
 
         let locals =
             let blob = BlobBuilder ()
             let variables = BlobEncoder(blob).LocalVariableSignature 2
-            instance spanRef false int32 (variables.AddVariable().Type ())
-            instance tupleRef false int32 (variables.AddVariable().Type ())
+            instance spanRef true false int32 (variables.AddVariable().Type ())
+            instance tupleRef true false int32 (variables.AddVariable().Type ())
             metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
 
         let signature =
@@ -11628,6 +11434,63 @@ public static class Runners
         match runtimeFailures @ analysisFailures with
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// `Probe.Runners.Modified()`: `box Span<int>; unbox.any List<int modopt(IsConst)>; pop`, whose
+    /// unboxed type PawPrint does not instantiate, a generic argument carrying a custom modifier.
+    [<Test>]
+    let ``the JIT's refusal of a box is reported where the analysis cannot instantiate what follows it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            modifiedOperands
+                [
+                    "Modified",
+                    fun operands code ->
+                        code.LoadLocalAddress 0
+                        code.OpCode ILOpCode.Initobj
+                        code.Token operands.Span
+                        code.LoadLocal 0
+                        code.OpCode ILOpCode.Box
+                        code.Token operands.Span
+                        code.OpCode ILOpCode.Unbox_any
+                        code.Token operands.ModifiedList
+                        code.OpCode ILOpCode.Pop
+                        code.OpCode ILOpCode.Ret
+                ]
+
+        // The real runtime refuses the box: `List<int>` is not the boxed type.
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("ModifiedFollower", isCollectible = true)
+
+        let raised =
+            try
+                try
+                    context
+                        .LoadFromStream(new MemoryStream (image))
+                        .GetType("Probe.Runners")
+                        .GetMethod("Modified")
+                        .Invoke ((null : obj), [||])
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        raised |> shouldEqual (Some invalidProgram)
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Runners" "Modified")
+
+        render analysis escapes
+        |> Set.contains ("=" + invalidProgram)
+        |> shouldEqual true
 
     [<Test>]
     let ``only an instance decides whether the JIT refuses a box or newarr of a type variable that allows a byref-like type``

@@ -7,9 +7,10 @@ open WoofWare.PawPrint
 
 /// On .NET 11, `Marshal` marshals a struct through `StructureMarshaler<T>`, and for a struct that is
 /// not blittable CoreCLR's VM replaces the bodies of its `ConvertToUnmanagedCore`,
-/// `ConvertToManaged` and `FreeCore` with a stub that marshals the struct field by field. The
-/// method's own IL copies the managed image, which for such a struct is the wrong answer, so
-/// PawPrint fails the run at each of the three, naming it and the struct.
+/// `ConvertToManaged` and `FreeCore` with a stub that marshals the struct field by field. PawPrint
+/// runs its own struct-marshal plan in their place, and where it has no plan for the struct it
+/// fails the run at each of the three, naming the method, the struct and the field it cannot
+/// marshal.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStructureMarshalerRefusal =
@@ -22,7 +23,7 @@ using System.Runtime.InteropServices;
 public unsafe class Program
 {
     // A `bool` field marshals as a four-byte `BOOL`, so this struct is not blittable, though
-    // CoreCLR blits its pointer field.
+    // CoreCLR blits its pointer field. PawPrint's plan has no step for a pointer field.
     [StructLayout(LayoutKind.Sequential)]
     struct WithBool
     {
@@ -77,7 +78,9 @@ public unsafe class Program
             $"replaces the body of System.Private.CoreLib System.StubHelpers.StructureMarshaler`1.%s{methodName}("
 
         exc.Message |> shouldContainText "Program+WithBool"
-        exc.Message |> shouldContainText "not blittable"
+
+        exc.Message
+        |> shouldContainText "field P is neither blittable nor a marshalling case"
 
     [<Test>]
     let ``StructureToPtr refuses at ConvertToUnmanagedCore`` () : unit =
