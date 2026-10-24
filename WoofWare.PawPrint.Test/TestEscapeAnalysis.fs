@@ -763,11 +763,6 @@ public static class SR
         let synchronizationContextWait =
             "System.Threading.SynchronizationContext::InvokeWaitMethodHelper IL VirtualCall System.Threading.SynchronizationContext::Wait"
 
-        // Making a type's RuntimeType on first use can finish loading the type, which no contract
-        // describes.
-        let runtimeTypeFromHandle =
-            "System.RuntimeTypeHandle::GetRuntimeTypeFromHandleSlow entry NativeBody"
-
         [
             { expect "Fixture.Cases" "ThrowsDirectly" with
                 Contains = [ ioe ]
@@ -800,8 +795,9 @@ public static class SR
                 // Its monitor is its type's, never null.
                 Excludes = [ "=System.ArgumentNullException" ; "=System.ArgumentException" ]
                 Unknown = Some true
-                // The JIT may look up its monitor, its type's RuntimeType, which it makes on first use.
-                Sources = Some [ runtimeTypeFromHandle ; synchronizationContextWait ]
+                // The JIT may make its monitor, its type's RuntimeType, on first use, which allocates
+                // and does no more: its type is fully loaded once its code runs.
+                Sources = Some [ synchronizationContextWait ]
             }
             { expect "Fixture.Cases" "ReleasesEarly" with
                 Contains = [ "=System.Threading.SynchronizationLockException" ]
@@ -4494,11 +4490,12 @@ public static class Box<T>
 }
 """
 
-    /// Whether each of `methods` of `runtimeTypeLookupSource` reaches
-    /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, which the JIT calls to make a type's
-    /// `RuntimeType` where it cannot embed it, as `reaches` says.
-    let private looksUpRuntimeType
-        (reaches : bool)
+    /// That none of `methods` of `runtimeTypeLookupSource` reaches
+    /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle`, and that each one's answer is known: where the
+    /// JIT calls that method to make a type's `RuntimeType`, it passes a fully loaded type, so the
+    /// analysis takes the call to raise only what allocating the `RuntimeType` raises, in place of
+    /// the method's IL.
+    let private runsNoLookupIl
         (analysis : EscapeAnalysisState)
         (fixture : DumpedAssembly)
         (methods : string list)
@@ -4510,13 +4507,14 @@ public static class Box<T>
         let mutable analysis = analysis
 
         for name in methods do
-            let next, reached =
-                EscapeAnalysis.reachable analysis (methodNamed fixture "RuntimeTypeLookup.Cases" name)
-
+            let key = methodNamed fixture "RuntimeTypeLookup.Cases" name
+            let next, reached = EscapeAnalysis.reachable analysis key
+            let next, escapes = EscapeAnalysis.escapes next key
             analysis <- next
 
-            if reached.Contains lookup <> reaches then
-                failwith $"%s{name}: reaches GetRuntimeTypeFromHandle %b{reached.Contains lookup}"
+            if reached.Contains lookup || escapes.Unknown then
+                failwith
+                    $"%s{name}: reaches GetRuntimeTypeFromHandle %b{reached.Contains lookup}, unknown %b{escapes.Unknown}"
 
     [<Test>]
     let ``loading a type that shared code looks up at run time makes its RuntimeType`` () : unit =
@@ -4531,26 +4529,19 @@ public static class Box<T>
 
         let analysis = analysisOver [ fixture ] id
 
-        // The definitions stand for every instantiation, the shared ones among them.
-        looksUpRuntimeType
-            true
+        runsNoLookupIl
             analysis
             fixture
             [
+                // The definitions stand for every instantiation, the shared ones among them.
                 "Of"
                 "OfString"
                 "OfSharedStruct"
                 "OfList"
                 "OfListOfString"
                 "OfBoxString"
-            ]
-
-        // Where the type is exact, the JIT embeds its `RuntimeType`, which it makes as it compiles.
-        looksUpRuntimeType
-            false
-            analysis
-            fixture
-            [
+                // Where the type is exact, the JIT embeds its `RuntimeType`, which it makes as it
+                // compiles.
                 "OfInt"
                 "OfListOfInt"
                 "FirstOfPartlyShared"
@@ -4563,16 +4554,130 @@ public static class Box<T>
                 "AcceleratedOfString"
             ]
 
-        // The `RuntimeType` comes from native code the analysis does not see into.
-        let _, ofString =
-            EscapeAnalysis.escapes analysis (methodNamed fixture "RuntimeTypeLookup.Cases" "OfString")
+    /// An `ldtoken` of a type variable, and nothing else, which the JIT compiles to a call making
+    /// the type's `RuntimeTypeHandle` where the code is shared and to a constant where it is not.
+    /// Calling `Type.GetTypeFromHandle`, as C#'s `typeof` does, raises more than the call the JIT
+    /// makes, so these leave it out.
+    [<Test>]
+    let ``a type that shared code looks up raises only what allocating its RuntimeType raises`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Handles", typeof<obj>.Assembly)
 
-        ofString.Unknown |> shouldEqual true
+            let modul = builder.DefineDynamicModule "Handles"
 
-        let _, ofInt =
-            EscapeAnalysis.escapes analysis (methodNamed fixture "RuntimeTypeLookup.Cases" "OfInt")
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
 
-        ofInt.Unknown |> shouldEqual false
+            let handleOf =
+                emitted.DefineMethod (
+                    "HandleOf",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [||]
+                )
+
+            let parameter = handleOf.DefineGenericParameters([| "T" |]).[0]
+            let il = handleOf.GetILGenerator ()
+            il.Emit (Emit.OpCodes.Ldtoken, parameter)
+            il.Emit Emit.OpCodes.Pop
+            il.Emit Emit.OpCodes.Ret
+
+            // The same, where its argument says to.
+            let handleIf =
+                emitted.DefineMethod (
+                    "HandleIf",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [| typeof<bool> |]
+                )
+
+            let parameter = handleIf.DefineGenericParameters([| "T" |]).[0]
+            let il = handleIf.GetILGenerator ()
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            il.Emit (Emit.OpCodes.Ldtoken, parameter)
+            il.Emit Emit.OpCodes.Pop
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ret
+
+            for name, argument in [ "OfString", typeof<string> ; "OfInt", typeof<int> ] do
+                let il =
+                    emitted
+                        .DefineMethod(name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+                        .GetILGenerator ()
+
+                il.Emit (Emit.OpCodes.Call, handleOf.MakeGenericMethod argument)
+                il.Emit Emit.OpCodes.Ret
+
+            let il =
+                emitted
+                    .DefineMethod(
+                        "NeverOfString",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        [||]
+                    )
+                    .GetILGenerator ()
+
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Call, handleIf.MakeGenericMethod typeof<string>)
+            il.Emit Emit.OpCodes.Ret
+
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Handles.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let answer (name : string) : Set<string> * bool =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture "Emitted" name)
+
+            analysis <- next
+            render analysis escapes, escapes.Unknown
+
+        let calling = "=System.StackOverflowException"
+        let allocating = "=System.OutOfMemoryException"
+
+        // The definition stands for every instantiation, the shared ones among them.
+        answer "HandleOf" |> shouldEqual (Set.ofList [ allocating ; calling ], false)
+        answer "OfString" |> shouldEqual (Set.ofList [ allocating ; calling ], false)
+        // The JIT embeds an exact type's handle, which it makes as it compiles.
+        answer "OfInt" |> shouldEqual (Set.singleton calling, false)
+        // A run that skips the `ldtoken` makes nothing.
+        answer "HandleIf" |> shouldEqual (Set.ofList [ allocating ; calling ], false)
+        answer "NeverOfString" |> shouldEqual (Set.singleton calling, false)
+
+    [<Test>]
+    let ``CoreLib's own calls of GetRuntimeTypeFromHandle may finish loading the type`` () : unit =
+        // Its callers in CoreLib pass handles that no contract says are of fully loaded types, so
+        // its slow path, which loads the type fully first, is opaque to them.
+        let corelib = hostCoreLib ()
+        let analysis = analysisOver [] id
+
+        let method =
+            methodNamed corelib "System.RuntimeTypeHandle" "GetRuntimeTypeFromHandle"
+
+        let analysis, escapes = EscapeAnalysis.escapes analysis method
+        escapes.Unknown |> shouldEqual true
+        let analysis, sources = EscapeAnalysis.unknownSources analysis method
+
+        sources
+        |> Seq.map (renderSite analysis)
+        |> List.ofSeq
+        |> shouldEqual [ "System.RuntimeTypeHandle::GetRuntimeTypeFromHandleSlow entry NativeBody" ]
 
     /// Code that loads a handle of a field, which C# compiles to `ldtoken`: the data of a
     /// `ReadOnlySpan<T>`, by `RuntimeHelpers.CreateSpan`, and that of an array, by
@@ -4988,16 +5093,9 @@ public static class Cases
             folded "NotOfType"
             folded "WithInt"
             folded "EitherOperand"
-            // Shared code looks `T[]` up, and makes its `RuntimeType` by calling into native code
-            // the analysis does not see into.
-            { folded "Generic" with
-                Unknown = Some true
-                Assumes = None
-            }
-            { folded "WithString" with
-                Unknown = Some true
-                Assumes = None
-            }
+            // Shared code looks `T[]` up, and makes its `RuntimeType`, which only allocates.
+            folded "Generic"
+            folded "WithString"
             { expect "TypeOperand.Cases" "Compared" with
                 Excludes = [ same ; different ]
                 Unknown = Some false
@@ -5038,12 +5136,18 @@ public static class Cases
         reachesOf called Set.empty true "TypeOperand.Cases" analysis fixture typeOperandFolded
 
         // The JIT still makes the `typeof`'s `RuntimeType` to compare with, which it looks up at
-        // run time where the code is shared.
+        // run time where the code is shared, but it runs no IL to make it.
         let lookup =
             Set.singleton (methodNamed (hostCoreLib ()) "System.RuntimeTypeHandle" "GetRuntimeTypeFromHandle")
 
-        reachesOf lookup lookup true "TypeOperand.Cases" analysis fixture [ "Generic" ; "WithString" ]
-        reachesOf lookup Set.empty true "TypeOperand.Cases" analysis fixture [ "OfType" ; "WithInt" ]
+        reachesOf
+            lookup
+            Set.empty
+            true
+            "TypeOperand.Cases"
+            analysis
+            fixture
+            [ "Generic" ; "WithString" ; "OfType" ; "WithInt" ]
 
         // Tier 0 does not expand `Object.GetType`, so an object's type is got by calling it.
         let getType = methodNamed (hostCoreLib ()) "System.Object" "GetType"
