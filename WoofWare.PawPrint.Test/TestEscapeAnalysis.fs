@@ -3161,6 +3161,141 @@ public static class Cases
 
         boxesWhereTheRealRuntimeAllocates image fixture "Emitted" "OwnPlain" "OwnFinal"
 
+    /// A struct that inherits two equally specific default bodies of one interface method has none
+    /// of its own, so a `constrained.` call of the method boxes the receiver, and the dispatch on
+    /// the box then raises `AmbiguousImplementationException`. Measured on .NET 10 under MinOpts:
+    /// the JIT calls `CORINFO_HELP_BOX` before the interface call.
+    [<Test>]
+    let ``a constrained call whose dispatch fails boxes its receiver before it raises`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Diamond", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Diamond"
+
+            let interfaceAttributes =
+                TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
+
+            let root = modul.DefineType ("IRoot", interfaceAttributes)
+
+            let rootMethod =
+                root.DefineMethod (
+                    "M",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let root = root.CreateType ()
+
+            let side (name : string) (value : int) : Type =
+                let side = modul.DefineType (name, interfaceAttributes)
+                side.AddInterfaceImplementation root
+
+                let body =
+                    side.DefineMethod (
+                        "IRoot.M",
+                        MethodAttributes.Private
+                        ||| MethodAttributes.Virtual
+                        ||| MethodAttributes.Final
+                        ||| MethodAttributes.HideBySig
+                        ||| MethodAttributes.NewSlot,
+                        typeof<int>,
+                        [||]
+                    )
+
+                let il = body.GetILGenerator ()
+                il.Emit (Emit.OpCodes.Ldc_I4, value)
+                il.Emit Emit.OpCodes.Ret
+                side.DefineMethodOverride (body, rootMethod)
+                side.CreateType ()
+
+            let left = side "ILeft" 1
+            let right = side "IRight" 2
+
+            let diamond =
+                modul.DefineType (
+                    "Diamond",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            diamond.AddInterfaceImplementation root
+            diamond.AddInterfaceImplementation left
+            diamond.AddInterfaceImplementation right
+
+            diamond.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let diamond = diamond.CreateType ()
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let il =
+                emitted
+                    .DefineMethod("Call", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+                    .GetILGenerator ()
+
+            il.DeclareLocal diamond |> ignore<Emit.LocalBuilder>
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, diamond)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, diamond)
+            il.Emit (Emit.OpCodes.Callvirt, rootMethod)
+            il.Emit Emit.OpCodes.Ret
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Diamond", isCollectible = true)
+
+        try
+            let raised =
+                try
+                    context
+                        .LoadFromStream(new MemoryStream (image))
+                        .GetType("Emitted")
+                        .GetMethod("Call")
+                        .Invoke ((null : obj), Array.empty<obj>)
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType ())
+
+            raised
+            |> shouldEqual (Some typeof<System.Runtime.AmbiguousImplementationException>)
+        finally
+            context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Diamond.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+        let analysis, reached = helpersReached analysis fixture "Emitted" "Call"
+        reached |> shouldContain "Box"
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Emitted" "Call")
+
+        render analysis escapes
+        |> shouldContain "=System.Runtime.AmbiguousImplementationException"
+
     /// C# makes a ref struct implement every method of an interface itself, but IL may leave it to
     /// inherit a default interface body. A `constrained.` call of that body on the ref struct boxes
     /// the receiver, which CoreCLR's JIT refuses to compile (`getBoxHelper`, jitinterface.cpp,
