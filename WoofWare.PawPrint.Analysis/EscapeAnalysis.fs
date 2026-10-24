@@ -328,9 +328,9 @@ type internal LocalFacts =
         /// it makes. Empty for a call the JIT emits in place of the body's own.
         Calls : (int * CallSite * SpelledArgument list) list
         /// Each `ldtoken` of a type that mentions a type variable, by its offset, with the type as
-        /// the body spells it. `Calls` has the runtime's call of
-        /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle` there, which an instance makes only where
-        /// its shared code looks the type up at run time.
+        /// the body spells it. An instance whose shared code looks the type up at run time raises
+        /// there what the runtime's call making its `RuntimeType` does (`lookupRaises`), which
+        /// `Raises` does not have.
         LookedUp : (int * SpelledType) list
         /// Each instruction whose `CastHelpers` method only an instance decides, by its offset.
         /// `Calls` has the runtime's call of each one some instance calls there.
@@ -946,30 +946,6 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeWrappedException(object), found %d{found.Length}"
 
-    /// `RuntimeTypeHandle.GetRuntimeTypeFromHandle(IntPtr)`, which the JIT calls in place of
-    /// `ldtoken` of a type to make its `RuntimeType` where it cannot embed it: the method that
-    /// `CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPEHANDLE` and `CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPE`
-    /// are bound to (jithelpers.h).
-    let private runtimeTypeLookup (state : EscapeAnalysisState) : MethodKey =
-        let corelib = state.BaseTypes.Corelib
-
-        let found =
-            corelib.TryGetTopLevelTypeDef "System" "RuntimeTypeHandle"
-            |> Option.toList
-            |> List.collect (fun ty -> List.ofSeq ty.Methods)
-            |> List.filter (fun m ->
-                m.Name = "GetRuntimeTypeFromHandle"
-                && m.IsStatic
-                && m.Signature.ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.IntPtr ]
-            )
-            |> List.choose (fun m -> m.TryMetadata)
-
-        match found with
-        | [ facts ] -> MethodKey.make corelib facts.Handle
-        | found ->
-            failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one RuntimeTypeHandle.GetRuntimeTypeFromHandle(IntPtr), found %d{found.Length}"
-
     /// The kind of member whose handle an `ldtoken` loads.
     [<RequireQualifiedAccess>]
     type private MemberHandle =
@@ -1081,6 +1057,27 @@ module EscapeAnalysis =
         | thrown, [ made ] -> thrown, made
         | thrown, made ->
             failwith $"BUG: making %O{thrown} by its parameterless constructor runs %d{made.Length} methods"
+
+    /// What the JIT's own call of `RuntimeTypeHandle.GetRuntimeTypeFromHandle` raises, which the
+    /// analysis takes in place of the method's IL: the `OutOfMemoryException` of allocating the
+    /// `RuntimeType`, which CoreCLR raises preallocated, and the `StackOverflowException` of making
+    /// a call. The JIT makes the call (`CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPE` and
+    /// `CORINFO_HELP_GETSYNCFROMCLASSHANDLE`, jithelpers.h) only with a type that is fully loaded:
+    /// one its code's generic dictionary holds, which `Dictionary::PopulateEntry` loads to
+    /// `CLASS_LOADED`; a type argument of the exact class or method its code runs for, which a full
+    /// load of that class or method loads fully too; or that class itself, which the prestub loads
+    /// fully before the code runs. So the method's slow path, the QCall
+    /// `RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow`, has nothing left to load
+    /// (`MethodTable::CheckRestore`) and only allocates. It refuses only a runtime-async
+    /// continuation, on .NET 11, which is of no type a token names. CoreLib's own calls of the
+    /// method get no such promise, so they run its IL.
+    let private lookupRaises (state : EscapeAnalysisState) : ThrownType list =
+        [ "System.OutOfMemoryException" ; "System.StackOverflowException" ]
+        |> List.map (fun name ->
+            match runtimeRaises state name ExceptionMaking.Preallocated with
+            | thrown, [] -> thrown
+            | thrown, made -> failwith $"BUG: raising %O{thrown} preallocated runs %d{made.Length} methods"
+        )
 
     /// What the runtime raises for an `OpcodeFault` that `op` raises (`runtimeRaises`).
     let private faultRaises
@@ -4029,8 +4026,9 @@ module EscapeAnalysis =
         // and `CORINFO_HELP_MON_EXIT`): `Monitor.Enter(lock, ref acquired)` before the body, with
         // `acquired` false, and `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, however it
         // ends. The lock is the receiver as the caller passed it, which `call` may pass as null, or
-        // for a static method its type's `RuntimeType`, which the JIT may look up with
-        // `RuntimeTypeHandle.GetRuntimeTypeFromHandle` (`CORINFO_HELP_GETSYNCFROMCLASSHANDLE`).
+        // for a static method its type's `RuntimeType`, which the JIT may make by calling
+        // `RuntimeTypeHandle.GetRuntimeTypeFromHandle` (`CORINFO_HELP_GETSYNCFROMCLASSHANDLE`), which
+        // raises only what `lookupRaises` says.
         let state, spellings, monitor =
             let synchronized =
                 match method with
@@ -4086,10 +4084,7 @@ module EscapeAnalysis =
                         [ SpelledArgument.Value lock ; SpelledArgument.Value StackValue.Unknown ]
                     )
                     if method.IsStatic then
-                        OutsideBodyFact.Runs (
-                            corelibStatic state "System" "RuntimeTypeHandle" "GetRuntimeTypeFromHandle" 1,
-                            [ SpelledArgument.Value StackValue.Unknown ]
-                        )
+                        yield! lookupRaises state |> List.map OutsideBodyFact.Raises
                 ]
 
         let outsideBody = Set.union bindingFailures (Set.ofList monitor)
@@ -4922,12 +4917,7 @@ module EscapeAnalysis =
                 | _ -> state, helperCalls, receiverBoxes
             )
 
-        let calls =
-            stubs
-            @ (lookedUp
-               |> List.map (fun (offset, _) -> offset, runtimeRuns (runtimeTypeLookup state), []))
-            @ helperCalls
-            @ calls
+        let calls = stubs @ helperCalls @ calls
 
         let regions = List.ofSeq body.ExceptionRegions
 
@@ -6139,9 +6129,8 @@ module EscapeAnalysis =
                             Opaque = facts.Opaque |> List.filter (fun (offset, _, _) -> at offset)
                             Assumed = facts.Assumed |> List.filter (fst >> at)
                             Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
-                            // These two are read only to drop `Calls` at their offsets, which are
-                            // filtered.
-                            LookedUp = facts.LookedUp
+                            LookedUp = facts.LookedUp |> List.filter (fst >> at)
+                            // Read only to drop `Calls` at its offsets, which are filtered.
                             HelperSites = facts.HelperSites
                             // What the JIT compiles, which no value a caller passes decides.
                             ReceiverBoxes = facts.ReceiverBoxes
@@ -6158,38 +6147,34 @@ module EscapeAnalysis =
                             Branching = facts.Branching
                         }
 
-            // The JIT embeds the `RuntimeType` of a type that the instance's code does not look up.
+            // The JIT makes the `RuntimeType` of a type that the instance's code looks up, and embeds
+            // that of any other type, which it makes as it compiles.
             let refined =
-                match instance.Arguments with
-                | Instantiation.Open -> refined
-                | Instantiation.Closed (typeArguments, methodArguments) ->
-                    let embedded =
+                let lookedUp =
+                    match instance.Arguments with
+                    | Instantiation.Open -> refined.LookedUp
+                    | Instantiation.Closed (typeArguments, methodArguments) ->
                         refined.LookedUp
                         |> List.filter (fun (_, spelled) ->
-                            not (
-                                CodeSharing.namesSharedArgument
-                                    state.BaseTypes
-                                    state.TypeSystem
-                                    typeArguments
-                                    methodArguments
-                                    spelled.Type
-                            )
+                            CodeSharing.namesSharedArgument
+                                state.BaseTypes
+                                state.TypeSystem
+                                typeArguments
+                                methodArguments
+                                spelled.Type
                         )
-                        |> List.map fst
-                        |> Set.ofList
 
-                    if embedded.IsEmpty then
-                        refined
-                    else
-                        let lookup = runtimeRuns (runtimeTypeLookup state)
+                if lookedUp.IsEmpty then
+                    refined
+                else
+                    let raised = lookupRaises state
 
-                        { refined with
-                            Calls =
-                                refined.Calls
-                                |> List.filter (fun (offset, site, _) ->
-                                    not (embedded.Contains offset && site = lookup)
-                                )
-                        }
+                    { refined with
+                        Raises =
+                            (lookedUp
+                             |> List.collect (fun (offset, _) -> raised |> List.map (fun thrown -> offset, thrown)))
+                            @ refined.Raises
+                    }
 
             // The JIT calls the one `CastHelpers` method, if any, that the instance's instruction
             // picks.
