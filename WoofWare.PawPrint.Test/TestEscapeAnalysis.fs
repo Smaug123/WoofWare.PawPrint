@@ -7638,6 +7638,7 @@ namespace Middle;
 public class DerivesFromGone : Provider.Gone
 {
     public static int Count;
+    public static Provider.Gone GoneField;
     public static void M() { }
 }
 
@@ -7758,6 +7759,11 @@ public static class Members
         try { Middle.DerivesFromGone.M(); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
+    public static string ElsewhereReadsDerivesFromGoneGoneField()
+    {
+        try { Takes.Use(Middle.DerivesFromGone.GoneField); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
 }
 """
 
@@ -7795,6 +7801,8 @@ public static class Members
                 "ElsewhereReadsStaticInt", "Fields", CallOutcome.Runs
                 "ElsewhereReadsDerivesFromGoneCount", "DerivesFromGone", CallOutcome.Escapes typeLoad
                 "ElsewhereCallsDerivesFromGoneM", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                // CoreCLR loads the owner before it matches the reference to the field.
+                "ElsewhereReadsDerivesFromGoneGoneField", "DerivesFromGone", CallOutcome.Escapes typeLoad
             ]
 
         // What running each caller does on the host's CoreCLR.
