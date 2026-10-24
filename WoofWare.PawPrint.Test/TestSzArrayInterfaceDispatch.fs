@@ -315,14 +315,23 @@ module TestSzArrayInterfaceDispatch =
 
                 assignable |> shouldEqual false
 
-                let _, resolved = resolve state concretizedMethod mdArrayHandle
+                // Nothing on `System.Array`'s chain implements the interface, so dispatch finds no
+                // method at all, rather than an SZArrayHelper body.
+                let _, resolved =
+                    IlMachineStateExecution.tryResolveVirtualImplementation
+                        loggerFactory
+                        bct
+                        unusedThread
+                        concretizedMethod.Generics
+                        concretizedMethod
+                        mdArrayHandle
+                        true
+                        state
 
                 match resolved with
-                | None -> ()
-                | Some resolved ->
-
-                resolved.RequiredDeclaringType.Identity
-                |> shouldNotEqual bct.SZArrayHelper.Identity
+                | IlMachineStateExecution.ResolvedVirtualCall.Fails (DispatchFailure.NotImplemented method) ->
+                    method.IdentityKey |> shouldEqual concretizedMethod.IdentityKey
+                | other -> failwith $"expected no implementation, got %O{other}"
             with e ->
                 raise (Exception ($"%O{case}: %s{e.Message}", e))
 
