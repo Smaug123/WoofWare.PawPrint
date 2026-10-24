@@ -201,7 +201,9 @@
           projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
           testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
           nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
-          doCheck = true;
+          # CI's `build` job runs this suite on every supported runtime, and running it here as
+          # well would cost a CI runner another 10-20 minutes.
+          doCheck = false;
         };
       };
       checks =
