@@ -2410,8 +2410,10 @@ public static class SR
     /// reference type call the method `getCastingHelperStatic` (jitinterface.cpp) picks
     /// (`impCastClassOrIsInstToTree`); `unbox` and `unbox.any` of a value type, the one
     /// `getUnBoxHelper` picks; `box` of a struct, the one `getBoxHelper` picks
-    /// (`impImportAndPushBox`); `ldelema` of a reference type with no `readonly.` prefix,
-    /// `LdelemaRef`; and `stelem.ref`, and `stelem` of a reference type, `StelemRef` (importer.cpp).
+    /// (`impImportAndPushBox`), as does a `constrained.` call that boxes its receiver to call a
+    /// method the type does not declare (`CORINFO_BOX_THIS`); `ldelema` of a reference type with no
+    /// `readonly.` prefix, `LdelemaRef`; and `stelem.ref`, and `stelem` of a reference type,
+    /// `StelemRef` (importer.cpp).
     let private castSource =
         """
 using System;
@@ -2428,6 +2430,34 @@ public struct Comparable : IComparable
 }
 
 public enum Colour { Red }
+
+public struct Plain { public int X; }
+
+public struct Named
+{
+    public int X;
+    public override string ToString() => "named";
+    public override int GetHashCode() => 1;
+}
+
+public interface IDefaulted
+{
+    int Default() => 1;
+}
+
+public struct Defaulting : IDefaulted { public int X; }
+
+public struct Implementing : IDefaulted
+{
+    public int X;
+    public int Default() => 2;
+}
+
+public struct Explicit : IDefaulted
+{
+    public int X;
+    int IDefaulted.Default() => 3;
+}
 
 public static class Cases
 {
@@ -2481,6 +2511,26 @@ public static class Cases
     public static ref int ElementOfInt(int[] a) => ref ElementOf(a);
     // A `constrained.` call on an element takes its address with `readonly. ldelema`.
     public static int HashOfElement<T>(T[] a) => a[0].GetHashCode();
+
+    // A `constrained.` call boxes a value type's receiver where the method that runs is not one the
+    // type declares.
+    public static string NameOfNamed(Named n) => n.ToString();
+    public static Type TypeOf<T>(T t) => t.GetType();
+    public static Type TypeOfPlain(Plain p) => TypeOf(p);
+    public static Type TypeOfNamed(Named n) => TypeOf(n);
+    public static Type TypeOfNullable(int? i) => TypeOf(i);
+    public static Type TypeOfInt(int i) => TypeOf(i);
+    public static Type TypeOfColour(Colour c) => TypeOf(c);
+    public static Type TypeOfString(string s) => TypeOf(s);
+    public static int HashOf<T>(T t) => t.GetHashCode();
+    public static int HashOfNamed(Named n) => HashOf(n);
+    public static int HashOfNullable(int? i) => HashOf(i);
+    public static string NameOf<T>(T t) => t.ToString();
+    public static string NameOfNamedOf(Named n) => NameOf(n);
+    public static int DefaultOf<T>(T t) where T : IDefaulted => t.Default();
+    public static int DefaultOfDefaulting(Defaulting d) => DefaultOf(d);
+    public static int DefaultOfImplementing(Implementing i) => DefaultOf(i);
+    public static int DefaultOfExplicit(Explicit e) => DefaultOf(e);
 
     public static void Store(object[] a, object o) => a[0] = o;
     public static void StoreString(string[] a, string s) => a[0] = s;
@@ -2609,7 +2659,27 @@ public static class Cases
                 // Shared code takes the address of a `__Canon`, a reference type's.
                 "ElementOfString", [ "LdelemaRef" ]
                 "ElementOfInt", []
-                "HashOfElement", []
+                // The definition stands for every instantiation, as below.
+                "HashOfElement", [ "Box" ; "Box_Nullable" ]
+                // A struct's own override runs on the receiver's address.
+                "NameOfNamed", []
+                // `Object.GetType` is no method of the struct's, whatever it overrides.
+                "TypeOfPlain", [ "Box" ]
+                "TypeOfNamed", [ "Box" ]
+                "TypeOfNullable", [ "Box" ; "Box_Nullable" ]
+                // A primitive or an enum is boxed inline, and a reference type not at all.
+                "TypeOfInt", []
+                "TypeOfColour", []
+                "TypeOfString", []
+                "HashOfNamed", []
+                // `Nullable<T>` declares `GetHashCode`.
+                "HashOfNullable", []
+                "NameOfNamedOf", []
+                // A default interface body is no method of the struct's; one it implements, even
+                // explicitly, is.
+                "DefaultOfDefaulting", [ "Box" ]
+                "DefaultOfImplementing", []
+                "DefaultOfExplicit", []
                 // A store of null calls it too, which tests for null itself.
                 "Store", [ "StelemRef" ]
                 "StoreString", [ "StelemRef" ]
@@ -2644,6 +2714,10 @@ public static class Cases
                 "IsNull", [ "Box" ; "Box_Nullable" ]
                 "ElementOf", [ "LdelemaRef" ]
                 "StoreOf", [ "StelemRef" ]
+                "TypeOf", [ "Box" ; "Box_Nullable" ]
+                "HashOf", [ "Box" ; "Box_Nullable" ]
+                "NameOf", [ "Box" ; "Box_Nullable" ]
+                "DefaultOf", [ "Box" ; "Box_Nullable" ]
             ]
 
         let mutable analysis = analysisOver [ fixture ] id
@@ -2802,6 +2876,327 @@ public static class Cases
         array |> shouldEqual (Set.singleton "StelemRef")
         let _, pointer = helpersReached analysis fixture "Emitted" "StorePointer"
         pointer |> shouldEqual Set.empty
+
+    /// Calls the JIT compiles without optimising (`MethodImplOptions.NoOptimization`), as it compiles
+    /// a method at tier 0. Each case makes one `constrained.` call on a struct, a `Nullable<T>` or a
+    /// string, of a method that allocates nothing, so a case allocates only where the JIT boxes the
+    /// call's receiver.
+    let private boxThisSource =
+        """
+using System;
+using System.Runtime.CompilerServices;
+
+namespace BoxThis;
+
+public struct Plain { public int X; }
+
+public struct Named
+{
+    public int X;
+    public override string ToString() => "named";
+    public override int GetHashCode() => 1;
+}
+
+public interface IDefaulted { int Default() => 1; }
+
+public interface IGenericDefaulted<T> { int Default() => 2; }
+
+public struct Defaulting : IDefaulted, IGenericDefaulted<string> { public int X; }
+
+public struct Implementing : IDefaulted, IGenericDefaulted<string>
+{
+    public int X;
+    public int Default() => 3;
+}
+
+public struct Explicit : IDefaulted
+{
+    public int X;
+    int IDefaulted.Default() => 4;
+}
+
+public static class Calls
+{
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static Type TypeOf<T>(T t) => t.GetType();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int HashOf<T>(T t) => t.GetHashCode();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static string NameOf<T>(T t) => t.ToString();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int DefaultOf<T>(T t) where T : IDefaulted => t.Default();
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static int GenericDefaultOf<T>(T t) where T : IGenericDefaulted<string> => t.Default();
+}
+
+public static class Cases
+{
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfPlain() => Calls.TypeOf(new Plain());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfNamed() => Calls.TypeOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfNullable() => Calls.TypeOf((int?)1);
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void TypeOfString() => Calls.TypeOf("s");
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void HashOfNamed() => Calls.HashOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void HashOfNullable() => Calls.HashOf((int?)1);
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void NameOfNamed() => Calls.NameOf(new Named());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void NameOfNamedDirectly()
+    {
+        var n = new Named();
+        n.ToString();
+    }
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfDefaulting() => Calls.DefaultOf(new Defaulting());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfImplementing() => Calls.DefaultOf(new Implementing());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void DefaultOfExplicit() => Calls.DefaultOf(new Explicit());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void GenericDefaultOfDefaulting() => Calls.GenericDefaultOf(new Defaulting());
+
+    [MethodImpl(MethodImplOptions.NoOptimization)]
+    public static void GenericDefaultOfImplementing() => Calls.GenericDefaultOf(new Implementing());
+}
+"""
+
+    [<Test>]
+    let ``a constrained call reaches a CastHelpers box exactly where the real runtime allocates for it`` () : unit =
+        let image =
+            Roslyn.compileOptimizedAssembly "BoxThis" OutputKind.DynamicallyLinkedLibrary [ boxThisSource ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "BoxThis.dll") (new MemoryStream (image))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("BoxThis", isCollectible = true)
+
+        try
+            let cases =
+                context
+                    .LoadFromStream(new MemoryStream (image))
+                    .GetType("BoxThis.Cases")
+                    .GetMethods (BindingFlags.Public ||| BindingFlags.Static)
+                |> List.ofArray
+
+            // The first calls compile the case and what it calls, and make the `RuntimeType`
+            // `GetType` answers.
+            let allocates (case : MethodInfo) : bool =
+                let run = case.CreateDelegate<Action> ()
+                run.Invoke ()
+                run.Invoke ()
+                let before = GC.GetAllocatedBytesForCurrentThread ()
+
+                for _ in 1..64 do
+                    run.Invoke ()
+
+                GC.GetAllocatedBytesForCurrentThread () - before > 0L
+
+            let observed = cases |> List.map (fun case -> case.Name, allocates case)
+
+            // The real runtime boxes some receivers and not others, so the comparison is not vacuous.
+            observed
+            |> List.filter snd
+            |> List.map fst
+            |> shouldContain "DefaultOfDefaulting"
+
+            observed
+            |> List.filter (snd >> not)
+            |> List.map fst
+            |> shouldContain "DefaultOfImplementing"
+
+            let failures =
+                ((analysisOver [ fixture ] id, []), observed)
+                ||> List.fold (fun (analysis, failures) (name, allocated) ->
+                    let analysis, reached = helpersReached analysis fixture "BoxThis.Cases" name
+                    let boxes = reached.Contains "Box" || reached.Contains "Box_Nullable"
+
+                    if boxes = allocated then
+                        analysis, failures
+                    else
+                        analysis,
+                        $"BoxThis.Cases::%s{name}: the real runtime allocates %b{allocated}, but the analysis reaches %A{Set.toList reached}"
+                        :: failures
+                )
+                |> snd
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
+
+    /// C# makes a ref struct implement every method of an interface itself, but IL may leave it to
+    /// inherit a default interface body. A `constrained.` call of that body on the ref struct boxes
+    /// the receiver, which CoreCLR's JIT refuses to compile (`getBoxHelper`, jitinterface.cpp,
+    /// raises `InvalidProgramException`), whether the type is named directly or through a type
+    /// variable that allows it.
+    [<Test>]
+    let ``a constrained call that would box a ref struct is opaque, and the real runtime refuses it`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "RefBoxes", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "RefBoxes"
+
+            let defaulted =
+                modul.DefineType (
+                    "IDefaulted",
+                    TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
+                )
+
+            let defaultBody =
+                defaulted.DefineMethod (
+                    "Default",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let il = defaultBody.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldc_I4_1
+            il.Emit Emit.OpCodes.Ret
+            let defaulted = defaulted.CreateType ()
+
+            let refStruct =
+                modul.DefineType (
+                    "RefDefaulting",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            refStruct.AddInterfaceImplementation defaulted
+
+            refStruct.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<System.Runtime.CompilerServices.IsByRefLikeAttribute>.GetConstructor [||],
+                    [||]
+                )
+            )
+
+            refStruct.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let refStruct = refStruct.CreateType ()
+
+            let calls =
+                modul.DefineType ("Calls", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+            let defaultOf =
+                calls.DefineMethod ("DefaultOf", MethodAttributes.Public ||| MethodAttributes.Static)
+
+            let parameter = (defaultOf.DefineGenericParameters [| "T" |]).[0]
+            // `gpAllowByRefLike` (corhdr.h), which `allows ref struct` sets.
+            parameter.SetGenericParameterAttributes (enum<GenericParameterAttributes> 0x20)
+            parameter.SetInterfaceConstraints [| defaulted |]
+            defaultOf.SetReturnType typeof<int>
+            defaultOf.SetParameters [| parameter.AsType () |]
+            let il = defaultOf.GetILGenerator ()
+            il.Emit (Emit.OpCodes.Ldarga_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, parameter.AsType ())
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+
+            let caller (name : string) (call : Emit.ILGenerator -> unit) =
+                let il =
+                    calls
+                        .DefineMethod(name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+                        .GetILGenerator ()
+
+                il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                il.Emit (Emit.OpCodes.Initobj, refStruct)
+                call il
+                il.Emit Emit.OpCodes.Ret
+
+            caller
+                "Directly"
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                    il.Emit (Emit.OpCodes.Constrained, refStruct)
+                    il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+                )
+
+            caller
+                "ThroughVariable"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldloc_0
+                    il.Emit (Emit.OpCodes.Call, defaultOf.MakeGenericMethod [| refStruct |])
+                )
+
+            calls.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "RefBoxes.dll") (new MemoryStream (image))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("RefBoxes", isCollectible = true)
+
+        try
+            let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
+
+            for name in [ "Directly" ; "ThroughVariable" ] do
+                let raised =
+                    try
+                        calls.GetMethod(name).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
+                        None
+                    with :? TargetInvocationException as e ->
+                        Some (e.InnerException.GetType ())
+
+                raised |> shouldEqual (Some typeof<InvalidProgramException>)
+        finally
+            context.Unload ()
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, directly =
+            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "Directly")
+
+        directly
+        |> Seq.map (renderSite analysis)
+        |> Set.ofSeq
+        |> shouldEqual (Set.singleton "Calls::Directly IL BoxedByRefLikeReceiver IDefaulted::Default")
+
+        let analysis, throughVariable =
+            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "ThroughVariable")
+
+        throughVariable
+        |> Seq.map (renderSite analysis)
+        |> Set.ofSeq
+        |> shouldEqual (Set.singleton "Calls::DefaultOf IL BoxedByRefLikeReceiver IDefaulted::Default")
 
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
