@@ -175,8 +175,8 @@ method) may add more:
   declaring type, a member reference's parent) before it resolves the member, and the type of each
   field an instruction accesses, as the field's definition spells it: what each derives from and
   implements, the type of each of its value-type fields, transitively, and, for a type outside
-  CoreLib, each type its type parameters' constraints name, must be there too (`TypeLoad`). A
-  parameter
+  CoreLib, each type its type parameters' constraints and its generic methods' constraints name,
+  must be there too (`TypeLoad`). A parameter
   of a class type it loads where the method called is compiled, which that method's own answer
   says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
   nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method:

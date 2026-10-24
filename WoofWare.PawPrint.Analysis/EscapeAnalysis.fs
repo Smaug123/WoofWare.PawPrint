@@ -737,9 +737,10 @@ type EscapeAnalysisState =
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
 /// and signals that they do not; so too a type that CoreCLR's full load of a type the JIT loads
 /// reaches: its base types, its interfaces, the types of its value-type fields and, outside CoreLib,
-/// its type parameters' constraints (<c>TypeLoad</c>). What else such a disagreement can break is
-/// not checked, and the exception it causes is not reported: a member that has become inaccessible
-/// to its caller, or a generic instantiation that a constraint added since rejects.
+/// the constraints of its type parameters and of its generic methods' (<c>TypeLoad</c>). What else
+/// such a disagreement can break is not checked, and the exception it causes is not reported: a
+/// member that has become inaccessible to its caller, or a generic instantiation that a constraint
+/// added since rejects.
 ///
 /// Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of
 /// time (ReadyToRun: the shared framework's, and a program's published that way) binds what it
