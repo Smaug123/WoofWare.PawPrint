@@ -75,6 +75,13 @@ module TestVmBoundField =
                     match current with
                     | Some named -> classes, current, Set.add (named, fieldUMatch.Groups.[1].Value) fields
                     | None -> failwith $"corelib.h has a DEFINE_FIELD_U row before any DEFINE_CLASS_U: %s{line}"
+                elif
+                    Regex.IsMatch (line, @"^(?://\s*)?DEFINE_CLASS\(")
+                    || line.StartsWith "DEFINE_CLASS_U("
+                    || line.StartsWith "DEFINE_FIELD("
+                    || line.StartsWith "DEFINE_FIELD_U("
+                then
+                    failwith $"corelib.h has a row binding a class or a field that the check cannot read: %s{line}"
                 else
                     classes, current, fields
             )
