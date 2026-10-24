@@ -7203,9 +7203,19 @@ public static unsafe class Uco
 
         blob |> FsCheck.FSharp.Gen.filter (hasNullLength >> not)
 
+    /// The blobs of each application of `[UnmanagedCallersOnly]` to one method: mostly one, and
+    /// sometimes two, of which CoreCLR reads the first.
+    let private ucoApplications : FsCheck.Gen<byte[] list> =
+        FsCheck.FSharp.Gen.frequency
+            [
+                8, FsCheck.FSharp.Gen.map List.singleton ucoBlob
+                1, FsCheck.FSharp.Gen.listOfLength 2 ucoBlob
+            ]
+
     /// An assembly `Client` whose type `Uco` has a static `[UnmanagedCallersOnly]` method `M<i>`
-    /// for each blob, applying the attribute with that blob, and taking a pointer to `goneStruct`.
-    let private ucoMethods (goneStruct : Type) (blobs : byte[] list) : byte[] =
+    /// for each list of blobs, applying the attribute once with each blob in order, and taking a
+    /// pointer to `goneStruct`.
+    let private ucoMethods (goneStruct : Type) (blobs : byte[] list list) : byte[] =
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
 
@@ -7218,7 +7228,7 @@ public static unsafe class Uco
             typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes
 
         blobs
-        |> List.iteri (fun i blob ->
+        |> List.iteri (fun i applications ->
             let method =
                 uco.DefineMethod (
                     $"M%d{i}",
@@ -7227,7 +7237,9 @@ public static unsafe class Uco
                     [| goneStruct.MakePointerType () |]
                 )
 
-            method.SetCustomAttribute (attribute, blob)
+            for blob in applications do
+                method.SetCustomAttribute (attribute, blob)
+
             method.GetILGenerator().Emit Emit.OpCodes.Ret
         )
 
@@ -7236,7 +7248,8 @@ public static unsafe class Uco
         builder.Save image
         image.ToArray ()
 
-    /// For generated `[UnmanagedCallersOnly]` blobs, well-formed and not, on a method taking a
+    /// For generated `[UnmanagedCallersOnly]` blobs, well-formed and not, sometimes two on one method,
+    /// of which CoreCLR reads the first, on a method taking a
     /// pointer to a type missing at run time, the escape analysis agrees with the host's JIT: a
     /// `TypeLoadException` exactly where CoreCLR reads Swift's convention from the blob, an unknown
     /// answer from the method's entry exactly where CoreCLR cannot read the blob (and raises
@@ -7263,7 +7276,7 @@ public static unsafe class Uco
                         "System.ArgumentException"
                     ]
 
-            let property (blobs : byte[] list) : unit =
+            let property (blobs : byte[] list list) : unit =
                 let image = ucoMethods goneStruct blobs
                 let names = blobs |> List.mapi (fun i _ -> $"M%d{i}")
                 let host = ucoCompilations image incomplete "Uco" names
@@ -7292,7 +7305,10 @@ public static unsafe class Uco
                                 | _ -> false
 
                             if not agrees then
-                                let shown = blob |> Array.map (sprintf "%02X") |> String.concat " "
+                                let shown =
+                                    blob
+                                    |> List.map (Array.map (sprintf "%02X") >> String.concat " ")
+                                    |> String.concat "] ["
 
                                 yield
                                     $"[%s{shown}]: the host's JIT %A{host.[name]}, the analysis %A{outcome} unknown at %A{Set.toList sources}"
@@ -7306,7 +7322,7 @@ public static unsafe class Uco
                 FsCheck.FSharp.Prop.forAll
                     (FsCheck.FSharp.Arb.fromGen (
                         FsCheck.FSharp.Gen.choose (1, 10)
-                        |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoBlob)
+                        |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoApplications)
                     ))
                     property
             )
