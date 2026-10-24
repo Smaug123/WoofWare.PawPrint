@@ -6796,69 +6796,511 @@ public static unsafe class Probe
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// An `[UnmanagedCallersOnly]` method that Swift's calling convention calls: the JIT compiling
-    /// it loads in full what a pointer parameter points to, as well as what the method's other
-    /// parameters load (`lvaInitSpecialSwiftParam`). No exception may leave such a method, so the
-    /// host cannot run it to say so.
-    [<Test>]
-    let ``a pointer parameter of a method Swift calls loads what it points to`` () : unit =
+    /// How compiling an `[UnmanagedCallersOnly]` method ends on the host's CoreCLR, which
+    /// `RuntimeHelpers.PrepareMethod` asks of it: the JIT compiles the method as native code calls
+    /// it, a reverse P/Invoke, and the exception compiling it raises comes out of `PrepareMethod`.
+    [<RequireQualifiedAccess>]
+    type private UcoCompilation =
+        | Compiled
+        | Raises of exceptionName : string
+
+    /// A provider whose `GoneStruct` the client is compiled against, and a version of it without
+    /// that type, which the client runs against.
+    let private ucoProvider (complete : bool) : byte[] =
+        Roslyn.compileAssembly
+            "Provider"
+            OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                "namespace Provider; public struct Kept { }"
+                + (if complete then " public struct GoneStruct { }" else "")
+            ]
+
+    /// How compiling each method of `typeName` named in `methods` ends on the host, with the
+    /// assembly `image` loaded beside `provider`.
+    let private ucoCompilations
+        (image : byte[])
+        (provider : byte[])
+        (typeName : string)
+        (methods : string list)
+        : Map<string, UcoCompilation>
+        =
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyConventions", isCollectible = true)
+
+        context.add_Resolving (
+            Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                match name.Name with
+                | "Provider" -> context.LoadFromStream (new MemoryStream (provider))
+                | _ -> null
+            )
+        )
+
+        try
+            let declaring = (context.LoadFromStream (new MemoryStream (image))).GetType typeName
+
+            methods
+            |> List.map (fun name ->
+                // Looking a method up by name alone reads none of its signature's types.
+                let handle = (declaring.GetMethod name).MethodHandle
+
+                let outcome =
+                    try
+                        Runtime.CompilerServices.RuntimeHelpers.PrepareMethod handle
+                        UcoCompilation.Compiled
+                    with e ->
+                        UcoCompilation.Raises (e.GetType().FullName)
+
+                name, outcome
+            )
+            |> Map.ofList
+        finally
+            context.Unload ()
+
+    /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
+    /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
+    /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
+    /// `Compiled`; with the places that make each answer unknown.
+    let private ucoAnalysed
+        (image : byte[])
+        (provider : byte[])
+        (typeName : string)
+        (methods : string list)
+        : Map<string, UcoCompilation * Set<string>>
+        =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let provider (complete : bool) : string =
-            "namespace Provider; public struct Kept { }"
-            + (if complete then " public struct GoneStruct { }" else "")
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
 
+        let client = read "Client" image
+        let providerAssembly = read "Provider" provider
+
+        let reference =
+            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ client ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        methods
+        |> List.map (fun name ->
+            let key = methodNamed client typeName name
+            let next, escapes = EscapeAnalysis.escapes analysis key
+            let next, sources = EscapeAnalysis.unknownSources next key
+            analysis <- next
+
+            let outcome =
+                if (render analysis escapes).Contains "=System.TypeLoadException" then
+                    UcoCompilation.Raises "System.TypeLoadException"
+                elif escapes.Unknown then
+                    UcoCompilation.Raises "Unknown"
+                else
+                    UcoCompilation.Compiled
+
+            name, (outcome, sources |> Seq.map (renderSite analysis) |> Set.ofSeq)
+        )
+        |> Map.ofList
+
+    /// Each method takes a pointer to a type missing at run time. CoreCLR compiles an
+    /// `[UnmanagedCallersOnly]` method for the calling convention it reads from the attribute's
+    /// `CallConvs`, matching each type by its serialised name alone; a second base convention, or
+    /// none, gives the platform's default, and the modifiers combine with Swift. Only where it
+    /// reads Swift's, on a target that compiles Swift calls, does the JIT load what a pointer
+    /// parameter points to (`lvaInitSpecialSwiftParam`), and fail to. The host says which.
+    [<Test>]
+    let ``the JIT loads a pointer parameter's target only where CoreCLR reads Swift's convention from UnmanagedCallersOnly``
+        ()
+        : unit
+        =
         let client =
             """
+using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Client;
 
-public static unsafe class Swift
+public static unsafe class Uco
 {
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
-    public static void PointerToKept(Provider.Kept* x) { }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
-    public static void PointerToGoneStruct(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly] public static void NoCallConvs(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void Swift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void SwiftKept(Provider.Kept* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void SwiftByte(byte* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })] public static void Cdecl(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })] public static void SwiftThenCdecl(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl), typeof(CallConvSwift) })] public static void CdeclThenSwift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvSwift) })] public static void SwiftTwice(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvSuppressGCTransition) })] public static void SwiftSuppress(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvMemberFunction), typeof(CallConvSwift) })] public static void MemberSwift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvMemberFunction) })] public static void Member(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new Type[0])] public static void Empty(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) }, EntryPoint = "e")] public static void SwiftEntryPoint(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(EntryPoint = "e", CallConvs = new[] { typeof(CallConvSwift) })] public static void EntryPointSwift(Provider.GoneStruct* x) { }
 }
 """
 
-        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+        let clientImage =
             Roslyn.compileAssembly
-                name
+                "Client"
                 OutputKind.DynamicallyLinkedLibrary
-                (references
-                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
-                [ text ]
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (ucoProvider true))
+                ]
+                [ client ]
 
-        let read (name : string) (image : byte[]) : DumpedAssembly =
-            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+        let typeLoad = UcoCompilation.Raises "System.TypeLoadException"
 
-        let clientAssembly =
-            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
+        let expected =
+            [
+                "NoCallConvs", UcoCompilation.Compiled
+                "Swift", typeLoad
+                "SwiftKept", UcoCompilation.Compiled
+                "SwiftByte", UcoCompilation.Compiled
+                "Cdecl", UcoCompilation.Compiled
+                "SwiftThenCdecl", UcoCompilation.Compiled
+                "CdeclThenSwift", UcoCompilation.Compiled
+                "SwiftTwice", UcoCompilation.Compiled
+                "SwiftSuppress", typeLoad
+                "MemberSwift", typeLoad
+                "Member", UcoCompilation.Compiled
+                "Empty", UcoCompilation.Compiled
+                "SwiftEntryPoint", typeLoad
+                "EntryPointSwift", typeLoad
+            ]
 
-        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+        let names = List.map fst expected
+        let incomplete = ucoProvider false
+        let host = ucoCompilations clientImage incomplete "Client.Uco" names
+        let analysed = ucoAnalysed clientImage incomplete "Client.Uco" names
 
-        let reference =
-            clientAssembly.AssemblyReferences.Values
-            |> Seq.find (fun r -> r.Name.Name = "Provider")
+        let failures =
+            [
+                for name, wanted in expected do
+                    if host.[name] <> wanted then
+                        yield $"%s{name}: the host's JIT %A{host.[name]}, not %A{wanted}"
 
-        let analysis =
-            analysisOver
-                [ clientAssembly ; providerAssembly ]
-                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+                    let outcome, sources = analysed.[name]
 
-        let raisesTypeLoad (analysis : EscapeAnalysisState) (name : string) : EscapeAnalysisState * bool =
-            let analysis, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Swift" name)
+                    if outcome <> wanted then
+                        yield $"%s{name}: the analysis says %A{outcome}, unknown at %A{Set.toList sources}"
+            ]
 
-            analysis, (render analysis escapes).Contains "=System.TypeLoadException"
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
-        let analysis, kept = raisesTypeLoad analysis "PointerToKept"
-        let _, gone = raisesTypeLoad analysis "PointerToGoneStruct"
-        (kept, gone) |> shouldEqual (false, true)
+    /// `CallConvs = null`, which C# accepts, serialises the array's length as the null sentinel,
+    /// and CoreCLR reads the elements of the null array it parsed: compiling the method faults in
+    /// the runtime and the process dies (`TryGetCallingConventionFromTypeArray`). The analysis
+    /// cannot say that, so its answer is unknown, from the method's entry. The host runs the
+    /// compilation in a process of its own.
+    [<Test>]
+    let ``compiling an UnmanagedCallersOnly method whose CallConvs is null kills the process, which the analysis does not name``
+        ()
+        : unit
+        =
+        let guest =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+public static class Program
+{
+    [UnmanagedCallersOnly(CallConvs = null)]
+    public static void NullArray(int x) { }
+
+    public static int Main()
+    {
+        RuntimeHelpers.PrepareMethod(typeof(Program).GetMethod("NullArray").MethodHandle);
+        return 0;
+    }
+}
+"""
+
+        match
+            RealRuntime.executeWithRealRuntime
+                [||]
+                (Roslyn.compileAssembly "NullCallConvs" OutputKind.ConsoleApplication [] [ guest ])
+        with
+        // A signal reports as `128 + signo`: SIGSEGV's 11.
+        | RealRuntimeResult.NormalExit 139
+        | RealRuntimeResult.Aborted _ -> ()
+        | other -> failwith $"Compiling the method ends %A{other}, not in the process's death"
+
+        let client =
+            """
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Uco
+{
+    [UnmanagedCallersOnly(CallConvs = null)] public static void NullArray(Provider.GoneStruct* x) { }
+}
+"""
+
+        let clientImage =
+            Roslyn.compileAssembly
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (ucoProvider true))
+                ]
+                [ client ]
+
+        let outcome, sources =
+            (ucoAnalysed clientImage (ucoProvider false) "Client.Uco" [ "NullArray" ]).["NullArray"]
+
+        (outcome, Set.toList sources)
+        |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// The bytes of a `SerString`: the null sentinel, or a `PackedLen` and the UTF-8 bytes.
+    let private serString (text : string option) : byte list =
+        match text with
+        | None -> [ 0xFFuy ]
+        | Some text ->
+            let bytes = Text.Encoding.UTF8.GetBytes text |> List.ofArray
+
+            let length =
+                match bytes.Length with
+                | n when n < 0x80 -> [ byte n ]
+                | n when n < 0x4000 -> [ byte (0x80 ||| (n >>> 8)) ; byte (n &&& 0xFF) ]
+                | n -> failwith $"No generated SerString is %d{n} bytes long"
+
+            length @ bytes
+
+    /// The little-endian bytes of a 32-bit count.
+    let private count32 (count : int) : byte list =
+        BitConverter.GetBytes count |> List.ofArray
+
+    /// Serialised type names an `[UnmanagedCallersOnly]` blob may list in its `CallConvs`, some of
+    /// which CoreCLR recognises and some of which it does not.
+    let private callConvNames : string option list =
+        let ns = "System.Runtime.CompilerServices."
+
+        let qualified =
+            ", System.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a"
+
+        [
+            for name in
+                [
+                    "CallConvSwift"
+                    "CallConvCdecl"
+                    "CallConvStdcall"
+                    "CallConvThiscall"
+                    "CallConvFastcall"
+                    "CallConvSuppressGCTransition"
+                    "CallConvMemberFunction"
+                ] do
+                yield Some (ns + name)
+                yield Some (ns + name + qualified)
+
+            yield Some (ns + "CallConvSwift,Nowhere")
+            yield Some (ns + "CallConvSwift ,Nowhere")
+            yield Some (ns + "CallConvSwiftX")
+            yield Some (ns + "CallConvSwif")
+            yield Some (ns + "CallConvSwift+Nested")
+            yield Some ("System.Runtime.InteropServices.CallConvSwift" + qualified)
+            yield Some "CallConvSwift"
+            yield Some ""
+            yield None
+        ]
+
+    /// One named argument of a generated `[UnmanagedCallersOnly]` blob, as bytes: mostly the two
+    /// the attribute declares, sometimes one CoreCLR refuses.
+    let private ucoNamedArgument : FsCheck.Gen<byte list> =
+        let kind = FsCheck.FSharp.Gen.elements [ 0x53uy ; 0x54uy ]
+
+        let callConvs =
+            FsCheck.FSharp.Gen.map3
+                (fun kind elements skew ->
+                    [ kind ; 0x1Duy ; 0x50uy ]
+                    @ serString (Some "CallConvs")
+                    @ count32 (max 0 (List.length elements + skew))
+                    @ List.collect serString elements
+                )
+                kind
+                (FsCheck.FSharp.Gen.choose (0, 4)
+                 |> FsCheck.FSharp.Gen.bind (fun n ->
+                     FsCheck.FSharp.Gen.listOfLength n (FsCheck.FSharp.Gen.elements callConvNames)
+                 ))
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        8, FsCheck.FSharp.Gen.constant 0
+                        1, FsCheck.FSharp.Gen.constant 1
+                        1, FsCheck.FSharp.Gen.constant -1
+                    ])
+
+        let stringArgument (name : string option) =
+            FsCheck.FSharp.Gen.map2
+                (fun kind value -> [ kind ; 0x0Euy ] @ serString name @ serString value)
+                kind
+                (FsCheck.FSharp.Gen.elements [ Some "e" ; None ; Some "" ])
+
+        FsCheck.FSharp.Gen.frequency
+            [
+                8, callConvs
+                4, stringArgument (Some "EntryPoint")
+                1, stringArgument (Some "EntryPoinx")
+                1, stringArgument (Some "CallConvs")
+                1, stringArgument None
+                1, stringArgument (Some "")
+                1,
+                kind
+                |> FsCheck.FSharp.Gen.map (fun kind ->
+                    [ kind ; 0x1Duy ; 0x0Euy ] @ serString (Some "CallConvs") @ count32 0
+                )
+                1,
+                kind
+                |> FsCheck.FSharp.Gen.map (fun kind ->
+                    [ kind ; 0x1Duy ; 0x51uy ] @ serString (Some "CallConvs") @ count32 0
+                )
+                1,
+                FsCheck.FSharp.Gen.constant ([ 0x52uy ; 0x0Euy ] @ serString (Some "EntryPoint") @ serString (Some "e"))
+            ]
+
+    /// A generated `[UnmanagedCallersOnly]` blob: a prolog, a count of named arguments, and the
+    /// arguments, each sometimes wrong, and sometimes cut short. None holds four `0xFF` bytes in a
+    /// row, so that no reading of it finds the null array's length, whose compilation kills the
+    /// process.
+    let private ucoBlob : FsCheck.Gen<byte[]> =
+        let blob =
+            FsCheck.FSharp.Gen.map4
+                (fun prolog arguments countForm cut ->
+                    let count = List.length arguments
+
+                    let countBytes =
+                        match countForm with
+                        | 0 when count = 0 -> []
+                        | 1 -> [ 0x00uy ; 0x80uy ]
+                        | 2 -> [ byte (count + 1) ; 0x00uy ]
+                        | _ -> [ byte count ; 0x00uy ]
+
+                    let whole = prolog @ countBytes @ List.concat arguments
+                    let kept = max 0 (List.length whole - cut)
+                    List.truncate kept whole |> Array.ofList
+                )
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        12, FsCheck.FSharp.Gen.constant [ 0x01uy ; 0x00uy ]
+                        1, FsCheck.FSharp.Gen.constant [ 0x02uy ; 0x00uy ]
+                    ])
+                (FsCheck.FSharp.Gen.choose (0, 3)
+                 |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoNamedArgument))
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        8, FsCheck.FSharp.Gen.constant 3
+                        2, FsCheck.FSharp.Gen.constant 0
+                        1, FsCheck.FSharp.Gen.constant 1
+                        1, FsCheck.FSharp.Gen.constant 2
+                    ])
+                (FsCheck.FSharp.Gen.frequency
+                    [ 8, FsCheck.FSharp.Gen.constant 0 ; 2, FsCheck.FSharp.Gen.choose (1, 12) ])
+
+        let hasNullLength (bytes : byte[]) : bool =
+            bytes |> Array.windowed 4 |> Array.exists (Array.forall (fun b -> b = 0xFFuy))
+
+        blob |> FsCheck.FSharp.Gen.filter (hasNullLength >> not)
+
+    /// An assembly `Client` whose type `Uco` has a static `[UnmanagedCallersOnly]` method `M<i>`
+    /// for each blob, applying the attribute with that blob, and taking a pointer to `goneStruct`.
+    let private ucoMethods (goneStruct : Type) (blobs : byte[] list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Client"
+
+        let uco =
+            modul.DefineType ("Uco", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        let attribute =
+            typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes
+
+        blobs
+        |> List.iteri (fun i blob ->
+            let method =
+                uco.DefineMethod (
+                    $"M%d{i}",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [| goneStruct.MakePointerType () |]
+                )
+
+            method.SetCustomAttribute (attribute, blob)
+            method.GetILGenerator().Emit Emit.OpCodes.Ret
+        )
+
+        uco.CreateType () |> ignore<Type>
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// For generated `[UnmanagedCallersOnly]` blobs, well-formed and not, on a method taking a
+    /// pointer to a type missing at run time, the escape analysis agrees with the host's JIT: a
+    /// `TypeLoadException` exactly where CoreCLR reads Swift's convention from the blob, an unknown
+    /// answer from the method's entry exactly where CoreCLR cannot read the blob (and raises
+    /// `COMException`), and nothing otherwise.
+    [<Test>]
+    let ``the escape analysis reads an UnmanagedCallersOnly blob's conventions as the host's JIT does`` () : unit =
+        let complete = ucoProvider true
+        let incomplete = ucoProvider false
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyBlobs", isCollectible = true)
+
+        try
+            let goneStruct =
+                (context.LoadFromStream (new MemoryStream (complete))).GetType "Provider.GoneStruct"
+
+            let property (blobs : byte[] list) : unit =
+                let image = ucoMethods goneStruct blobs
+                let names = blobs |> List.mapi (fun i _ -> $"M%d{i}")
+                let host = ucoCompilations image incomplete "Uco" names
+                let analysed = ucoAnalysed image incomplete "Uco" names
+
+                let failures =
+                    [
+                        for i, blob in List.indexed blobs do
+                            let name = $"M%d{i}"
+                            let outcome, sources = analysed.[name]
+                            let entry = $"Uco::%s{name} entry "
+
+                            // Making a `TypeLoadException` runs code whose answer is itself
+                            // unknown, so only the method's own entry says whether the analysis
+                            // read the blob.
+                            let agrees =
+                                match host.[name], outcome with
+                                | UcoCompilation.Compiled, UcoCompilation.Compiled -> sources.IsEmpty
+                                | UcoCompilation.Raises "System.TypeLoadException",
+                                  UcoCompilation.Raises "System.TypeLoadException" ->
+                                    not (sources |> Set.exists (fun site -> site.StartsWith entry))
+                                | UcoCompilation.Raises "System.Runtime.InteropServices.COMException",
+                                  UcoCompilation.Raises "Unknown" ->
+                                    sources = Set.singleton (entry + "UnreadableCallingConvention")
+                                | _ -> false
+
+                            if not agrees then
+                                let shown = blob |> Array.map (sprintf "%02X") |> String.concat " "
+
+                                yield
+                                    $"[%s{shown}]: the host's JIT %A{host.[name]}, the analysis %A{outcome} unknown at %A{Set.toList sources}"
+                    ]
+
+                if not failures.IsEmpty then
+                    failures |> String.concat Environment.NewLine |> failwith
+
+            FsCheck.Check.One (
+                FsCheck.Config.QuickThrowOnFailure.WithMaxTest 40,
+                FsCheck.FSharp.Prop.forAll
+                    (FsCheck.FSharp.Arb.fromGen (
+                        FsCheck.FSharp.Gen.choose (1, 10)
+                        |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoBlob)
+                    ))
+                    property
+            )
+        finally
+            context.Unload ()
 
     /// What running a method of `Client.Calls` does, each of which makes one call inside a `catch`
     /// of every exception.
