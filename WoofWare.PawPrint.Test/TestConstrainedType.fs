@@ -16,8 +16,10 @@ open WoofWare.PawPrint.Analysis
 /// underlying primitive where the method called holds `Object.GetHashCode`'s slot number, checked
 /// against the host: the rule against the host's own `MethodDesc::GetSlot` over the methods of the
 /// types an enum or a primitive answers to, and the escape analysis's dispatch against what probes
-/// making such calls do on the real runtime. Both read the host's own CoreLib, the image the host
-/// has loaded.
+/// making such calls do on the real runtime. So too `ConstrainedType.resolveClassMethodOnValueType`,
+/// what CoreCLR resolves a class's method to on a value type, against the host's method tables, and
+/// the analysis's dispatch of such calls of a method that cannot be overridden against probes on the
+/// real runtime. All read the host's own CoreLib, the image the host has loaded.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestConstrainedType =
