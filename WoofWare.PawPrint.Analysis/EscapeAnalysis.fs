@@ -3533,23 +3533,46 @@ module EscapeAnalysis =
 
                                 let state, addressUse = addressUse state index
 
+                                // Making a delegate over a static method may load what its
+                                // signature names (`COMDelegate::GetDelegateCtor`), which
+                                // `JitTypeLoads` does not describe: every type of it is taken to
+                                // load in full.
+                                let overStatic =
+                                    match addressUse, target with
+                                    | MethodAddressUse.DelegateTarget, Some (CallTarget.Method callee) ->
+                                        (snd (methodOf state callee.Callee)).IsStatic
+                                    | _ -> false
+
                                 state,
                                 Some (
                                     signature,
                                     MemberOperand.Address (
                                         JitTypeLoads.preparation tokenOp token.Token prefix addressUse
-                                    )
+                                    ),
+                                    overStatic
                                 )
                             | _, Some signature ->
                                 state,
                                 memberOperand state tokenOp signature target
-                                |> Option.map (fun operand -> signature, operand)
+                                |> Option.map (fun operand -> signature, operand, false)
 
                         match operand with
                         | None -> state, failures, [], []
-                        | Some (signature, operand) ->
+                        | Some (signature, operand, overStatic) ->
                             let state, loads = calleeSignatureLoads state assembly operand signature
-                            let possible = loads.Possible |> List.collect (Some >> raisesOf)
+
+                            let state, delegateFailures =
+                                if overStatic then
+                                    ((state, []), signatureTypes signature)
+                                    ||> List.fold (fun (state, delegateFailures) spelling ->
+                                        let state, failure = spellingLoadFailure state assembly spelling
+                                        state, Option.toList failure @ delegateFailures
+                                    )
+                                else
+                                    state, []
+
+                            let possible =
+                                loads.Possible @ List.rev delegateFailures |> List.collect (Some >> raisesOf)
 
                             let inlined =
                                 match operand with
