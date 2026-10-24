@@ -3182,11 +3182,11 @@ module EscapeAnalysis =
 
     /// Whether `Assumption.FieldsWrittenVisibly`, where the analysis may take it, says what `field`
     /// holds: what its own assembly's `stfld`s and `stsfld`s store in it, or null. So it is when
-    /// the field is of a reference type; no other assembly can name it, being private, or
-    /// internal to an assembly that makes no other its friend (`InternalsVisibleTo`); its own
-    /// assembly's IL never takes its address; no member reference of that assembly may name it;
-    /// its type's layout is not explicit, which may lay another field over it; and, in CoreLib,
-    /// CoreCLR's native code does not bind it by name (`VmBoundField`), which it may write.
+    /// no other assembly can name the field, it being private, or internal to an assembly that
+    /// makes no other its friend (`InternalsVisibleTo`); its own assembly's IL never takes its
+    /// address; no member reference of that assembly may name it; its type's layout is not
+    /// explicit, which may lay another field over it; and, in CoreLib, CoreCLR's native code does
+    /// not bind it by name (`VmBoundField`), which it may write.
     let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
         if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
             state, false
@@ -3194,7 +3194,9 @@ module EscapeAnalysis =
 
         let assembly = assemblyOf state field.AssemblyFullName
         let definition = assembly.Fields.[field.Handle]
-        let declaring = assembly.TypeDefs.[definition.DeclaringType.Identity.TypeDefinition.Get]
+
+        let declaring =
+            assembly.TypeDefs.[definition.DeclaringType.Identity.TypeDefinition.Get]
 
         let closedToOthers =
             match definition.Attributes &&& FieldAttributes.FieldAccessMask with
@@ -3218,19 +3220,6 @@ module EscapeAnalysis =
             || definition.Attributes.HasFlag FieldAttributes.Literal
             || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes = TypeLayoutKind.Explicit
         then
-            state, false
-        else
-
-        let state, reference =
-            isReference
-                state
-                {
-                    Type = definition.Signature
-                    SpelledIn = assembly.DefinitionFullName
-                    InBodyContext = true
-                }
-
-        if not reference then
             state, false
         else
 
