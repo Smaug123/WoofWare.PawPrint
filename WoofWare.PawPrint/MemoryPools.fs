@@ -443,6 +443,23 @@ module MemoryBlock =
 
         block
 
+    /// Set the `count` bytes at `offset` to `value`, whatever they held: evict whatever the range
+    /// intersects, as `writeCell` does, and store each byte through the overlay. A cell wholly
+    /// inside the range goes whatever it holds, which is why this, unlike `writeBytes`, can store
+    /// over a cell that is not byte-addressable.
+    let fill (containerDesc : string) (offset : int) (count : int) (value : byte) (block : MemoryBlock) : MemoryBlock =
+        checkRange "MemoryBlock.fill" containerDesc block.Size offset count
+
+        let evicted = evictRange containerDesc offset count block
+        let mutable bytes = evicted.Bytes
+
+        for i in offset .. offset + count - 1 do
+            bytes <- Map.add i value bytes
+
+        { evicted with
+            Bytes = bytes
+        }
+
 [<RequireQualifiedAccess>]
 module StackMemoryPool =
     let empty : StackMemoryPool =
@@ -546,6 +563,18 @@ module StackMemoryPool =
         =
         let block = getBlock blockId pool
         let updated = MemoryBlock.writeBytes (string blockId) offset bytes block
+        setBlock blockId updated pool
+
+    let fill
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (value : byte)
+        (pool : StackMemoryPool)
+        : StackMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.fill (string blockId) offset count value block
         setBlock blockId updated pool
 
 [<RequireQualifiedAccess>]
@@ -692,4 +721,16 @@ module NativeMemoryPool =
         =
         let block = getBlock blockId pool
         let updated = MemoryBlock.writeBytes (string blockId) offset bytes block
+        setBlock blockId updated pool
+
+    let fill
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (value : byte)
+        (pool : NativeMemoryPool)
+        : NativeMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.fill (string blockId) offset count value block
         setBlock blockId updated pool

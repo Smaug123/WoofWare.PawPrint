@@ -78,7 +78,7 @@ module TestSharedTypeGraphResolution =
         (methodGenericArgs : TypeDefn list)
         : TypeDefn
         =
-        let assemblies, _, resolved =
+        let assemblies, (_, resolved) =
             TypeResolution.resolveTypeFromDefn
                 fixture.LoggerFactory
                 [ runtimeDir ]
@@ -88,6 +88,7 @@ module TestSharedTypeGraphResolution =
                 (ImmutableArray.CreateRange methodGenericArgs)
                 fixture.Corelib
                 fixture.Loaded
+            |> BindingResult.bound
 
         LoadedTypeInfo.typeInfoToTypeDefn fixture.BaseTypes assemblies resolved
 

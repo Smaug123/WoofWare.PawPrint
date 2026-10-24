@@ -959,6 +959,7 @@ public class ThingException : System.Exception { }
                         | None -> None
                         | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Some "TypeLoadException"
                         | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Some "FileNotFoundException"
+                        | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
 
                     assemblies, failure
 
@@ -991,6 +992,7 @@ public class ThingException : System.Exception { }
                             | assemblies, TypeReferenceIdentity.TypeAbsent _ -> assemblies, None
                             | assemblies, TypeReferenceIdentity.AssemblyUnavailable _ ->
                                 assemblies, Some "FileNotFoundException"
+                            | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
                         | _ -> loadFails assemblies loaded
 
                 // Why the first of `meetings` whose type the JIT loads fails to load, where it makes

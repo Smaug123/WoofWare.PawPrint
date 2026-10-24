@@ -127,16 +127,20 @@ module MemberReferenceInstantiation =
                 // The bare definition, as a TypeReference parent resolves to it (base chain loaded):
                 // its formals stand, rather than being substituted from an environment the parent
                 // supplies none of.
-                let assemblies, _, targetType =
-                    TypeResolution.resolveTypeFromDefn
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        (TypeDefn.FromDefinition (assy.TypeDefs.[parent].Identity, SignatureTypeKind.Unknown))
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
-                        assy
-                        state._LoadedAssemblies
+                let assemblies, targetType =
+                    match
+                        TypeResolution.resolveTypeFromDefn
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            (TypeDefn.FromDefinition (assy.TypeDefs.[parent].Identity, SignatureTypeKind.Unknown))
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            assy
+                            state._LoadedAssemblies
+                    with
+                    | assemblies, Ok (_, targetType) -> assemblies, targetType
+                    | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
                 withAssemblies assemblies state, targetType, ImmutableArray.Empty
             | MetadataToken.TypeSpecification parent ->
@@ -245,6 +249,7 @@ module MemberReferenceInstantiation =
             | FieldReferenceTarget.DependsOnInstantiation ->
                 refuse
                     "has a type variable for its parent, whose instantiation resolution does not yet take into account"
+            | FieldReferenceTarget.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
         | MemberSignature.Method _ ->
             let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =

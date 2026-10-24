@@ -2396,8 +2396,9 @@ module Intrinsics =
             // `ZeroMemoryNativeThreshold` it P/Invokes into native memset (label `MZER05`) —
             // so, exactly as for its `Memmove` sibling, the managed IL is not a route PawPrint
             // can take. Routing the intrinsic through `CellAwareMemOps.clear` writes each
-            // destination cell's own zero, preserving cell shape for storage that is not
-            // byte-addressable, and falls back to the byte walk for flat storage.
+            // managed destination cell's own zero, preserving cell shape for storage that is not
+            // byte-addressable, and stores zero bytes over a range of native or `localloc`
+            // memory, replacing every cell the range wholly covers.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
                 ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],

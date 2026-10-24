@@ -104,6 +104,8 @@ module TypeIdentityTestHelpers =
         | TypeResolutionResult.FirstLoadAssy assyRef ->
             failwithf "Expected a resolved type, but the resolver requested assembly load for %s" assyRef.Name.FullName
         | TypeResolutionResult.NotFound miss -> failwithf "Expected a resolved type, but: %O" miss
+        | TypeResolutionResult.Unmodelled unmodelled ->
+            failwithf "Expected a resolved type, but: %s" unmodelled.Diagnostic
         | TypeResolutionResult.Resolved (assy, identity, typeInfo) -> assy, identity, typeInfo
 
     let findTypeRef (predicate : TypeRef -> bool) (assy : DumpedAssembly) : TypeRef =

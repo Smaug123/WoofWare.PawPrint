@@ -39,6 +39,8 @@ module TypeLoad =
         | TypeAbsent of TypeResolutionMiss
         /// A type reference is to an assembly no runtime directory supplies.
         | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+        /// The load reaches a shape PawPrint does not implement loading.
+        | Unmodelled of UnmodelledBinding
 
     /// A type reference's definition, or why it has none.
     let internal ofIdentity (identity : TypeReferenceIdentity) : Result<ResolvedTypeIdentity, LoadMiss> =
@@ -46,6 +48,7 @@ module TypeLoad =
         | TypeReferenceIdentity.Resolved identity -> Ok identity
         | TypeReferenceIdentity.TypeAbsent miss -> Error (LoadMiss.TypeAbsent miss)
         | TypeReferenceIdentity.AssemblyUnavailable reference -> Error (LoadMiss.AssemblyUnavailable reference)
+        | TypeReferenceIdentity.Unmodelled unmodelled -> Error (LoadMiss.Unmodelled unmodelled)
 
     /// The CoreCLR load levels a walk distinguishes.
     [<RequireQualifiedAccess>]
@@ -147,25 +150,48 @@ module TypeLoad =
         | Some (BaseTypeInfo.TypeSpec handle) -> Some definedIn.TypeSpecs.[handle].Signature
 
     /// A type definition's interface implementations, in metadata order, as spellings in its own
-    /// assembly.
+    /// assembly; one ECMA-335 does not permit is unmodelled.
     let private interfaceSpellings
         (definedIn : DumpedAssembly)
         (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeDefn list
+        : Result<TypeDefn, UnmodelledBinding> list
         =
         definition.ImplementedInterfaces
         |> Seq.map (fun implementation ->
             match implementation.InterfaceHandle with
             | MetadataToken.TypeDefinition handle ->
-                TypeDefn.FromDefinition (definedIn.TypeDefs.[handle].Identity, SignatureTypeKind.Class)
+                Ok (TypeDefn.FromDefinition (definedIn.TypeDefs.[handle].Identity, SignatureTypeKind.Class))
             | MetadataToken.TypeReference handle ->
-                TypeDefn.FromReference (definedIn.TypeRefs.[handle], SignatureTypeKind.Class)
-            | MetadataToken.TypeSpecification handle -> definedIn.TypeSpecs.[handle].Signature
+                Ok (TypeDefn.FromReference (definedIn.TypeRefs.[handle], SignatureTypeKind.Class))
+            | MetadataToken.TypeSpecification handle -> Ok definedIn.TypeSpecs.[handle].Signature
             | other ->
-                failwith
-                    $"%s{definition.Namespace}.%s{definition.Name} in %s{definedIn.DefinitionFullName} implements %O{other}, which ECMA-335 does not permit as an interface"
+                Error
+                    {
+                        Diagnostic =
+                            $"%s{definition.Namespace}.%s{definition.Name} in %s{definedIn.DefinitionFullName} implements %O{other}, which ECMA-335 does not permit as an interface"
+                    }
         )
         |> List.ofSeq
+
+    /// `step` over a type definition's base, then over each of its interfaces in metadata order: the
+    /// order CoreCLR loads a type's parents in. An interface spelled in a way PawPrint does not
+    /// model is a step that misses.
+    let private parentSteps
+        (step : TypeDefn -> LoadWalk -> LoadWalk * LoadMiss option)
+        (definedIn : DumpedAssembly)
+        (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : (LoadWalk -> LoadWalk * LoadMiss option) list
+        =
+        let interfaces =
+            interfaceSpellings definedIn definition
+            |> List.map (fun spelling ->
+                match spelling with
+                | Ok spelling -> step spelling
+                | Error unmodelled -> fun walk -> walk, Some (LoadMiss.Unmodelled unmodelled)
+            )
+
+        (baseSpelling definedIn definition |> Option.toList |> List.map step)
+        @ interfaces
 
     /// The types of a type definition's value-type fields that have a `FieldDesc` (a literal has
     /// none), in `FieldDesc` order: its instance fields, then its ordinary static fields, then its
@@ -263,7 +289,8 @@ module TypeLoad =
         =
         let unavailable (walk : LoadWalk, result : Result<ResolvedTypeIdentity, LoadMiss>) =
             match result with
-            | Error (LoadMiss.AssemblyUnavailable _ as miss) -> walk, Some miss
+            | Error (LoadMiss.AssemblyUnavailable _ as miss)
+            | Error (LoadMiss.Unmodelled _ as miss) -> walk, Some miss
             | Error (LoadMiss.TypeAbsent _)
             | Ok _ -> walk, None
 
@@ -407,13 +434,7 @@ module TypeLoad =
                 && isValueTypeSpelling field.Signature
             )
 
-        firstMiss
-            (List.map
-                parent
-                (Option.toList (baseSpelling definedIn definition)
-                 @ interfaceSpellings definedIn definition)
-             @ List.map field fields)
-            walk
+        firstMiss (parentSteps parent definedIn definition @ List.map field fields) walk
 
     /// `CLASS_LOAD_EXACTPARENTS` for a type spelled in `spellingAssembly`, after its approximate
     /// load. An instantiation's arguments stay at the approximate level until `DoFullyLoad`.
@@ -458,12 +479,7 @@ module TypeLoad =
         let definedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
         let definition = definedIn.TypeDefs.[identity.TypeDefinition.Get]
 
-        firstMiss
-            (List.map
-                (exact loggerFactory dotnetRuntimeDirs definedIn)
-                (Option.toList (baseSpelling definedIn definition)
-                 @ interfaceSpellings definedIn definition))
-            walk
+        firstMiss (parentSteps (exact loggerFactory dotnetRuntimeDirs definedIn) definedIn definition) walk
 
     /// Whether a field of this type has a primitive `FieldDesc` rather than a value-type one, which
     /// `MethodTableBuilder` decides from metadata without loading the type: its definition (an
@@ -560,10 +576,7 @@ module TypeLoad =
                 |> andThen (load spelling)
 
         firstMiss
-            (List.map
-                load
-                (Option.toList (baseSpelling definedIn definition)
-                 @ interfaceSpellings definedIn definition)
+            (parentSteps load definedIn definition
              @ List.map loadField (valueTypeFields definition))
             walk
 

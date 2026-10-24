@@ -819,21 +819,15 @@ module StructMarshalStub =
         /// do a partial cleanup if marshalling fails") and at the end of its Cleanup stream
         /// (:1319) — and a guest reading the buffer can see the difference.
         ///
-        /// It is the *field* ranges that cannot simply be byte-zeroed alongside them.
-        /// `CellAwareMemOps.clear` byte-walks a `NativeMemoryByte` root by design — for byte
-        /// storage the byte walk is the modelled access shape — so it cannot overwrite a cell that
-        /// has no byte rendering, and a destination reused after a previous marshal holds exactly
-        /// such a cell whenever the struct has a pointer field. Writing each field slot as a typed
-        /// value replaces the cell wholesale, which both clears it and is what the marshal has to
-        /// do anyway.
+        /// The field ranges are not zeroed first, since writing each field slot as a typed value
+        /// replaces whatever it covers.
         ///
-        /// Known limitation (#801): that reasoning holds only while the gaps are gaps in *both*
-        /// the old and the new contents of the buffer. Reuse one buffer for two different struct
-        /// layouts — `{ IntPtr; DateTime }` then `{ int; DateTime }` — and the second layout's
-        /// padding at bytes 4..7 lands inside the first's pointer cell, where the gap clear
-        /// byte-walks into it and throws. CoreCLR's `initblk` has no notion of cells and so has no
-        /// such trouble; closing it needs a "drop any cells overlapping this range" operation on
-        /// the native memory pool, which does not exist yet.
+        /// Known limitation (#801): `CellAwareMemOps.clear` replaces a pointer cell only when the
+        /// cleared range covers all of it. Reuse one buffer for two different struct layouts —
+        /// `{ IntPtr; DateTime }` then `{ int; DateTime }` — and the second layout's padding at
+        /// bytes 4..7 lands inside the first's pointer cell, whose bytes 0..3 have no value to
+        /// keep, so the gap clear throws. CoreCLR's `initblk` has no notion of cells and so has no
+        /// such trouble.
         let writeImage
             (plan : StructMarshalPlan)
             (valueFor : StructMarshalStep -> CliType)

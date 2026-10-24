@@ -108,6 +108,21 @@ module StackMemoryPool =
     val writeBytes :
         blockId : StackMemoryBlockId -> offset : int -> bytes : byte[] -> pool : StackMemoryPool -> StackMemoryPool
 
+    /// Set the `count` bytes at `offset` to `value`, whatever they held.
+    ///
+    /// Unlike `writeBytes`, this evicts: afterwards the range holds plain bytes, and every cell
+    /// lying wholly inside it is gone, a tagged pointer included, since storing over every byte of
+    /// a pointer replaces it. A cell the range only partly covers keeps its bytes outside the
+    /// range, as for `writeCell`, and fails when those have no value (of a tagged pointer, or of
+    /// a live reference).
+    val fill :
+        blockId : StackMemoryBlockId ->
+        offset : int ->
+        count : int ->
+        value : byte ->
+        pool : StackMemoryPool ->
+            StackMemoryPool
+
 [<RequireQualifiedAccess>]
 module NativeMemoryPool =
     /// A pool owning no blocks. The machine state holds exactly one.
@@ -191,3 +206,14 @@ module NativeMemoryPool =
     /// cell fails rather than discarding the tag.
     val writeBytes :
         blockId : NativeMemoryBlockId -> offset : int -> bytes : byte[] -> pool : NativeMemoryPool -> NativeMemoryPool
+
+    /// Set the `count` bytes at `offset` to `value`, whatever they held. As for the stack pool,
+    /// every cell lying wholly inside the range is evicted, a tagged pointer included, and a cell
+    /// the range only partly covers keeps its bytes outside it, failing when those have no value.
+    val fill :
+        blockId : NativeMemoryBlockId ->
+        offset : int ->
+        count : int ->
+        value : byte ->
+        pool : NativeMemoryPool ->
+            NativeMemoryPool

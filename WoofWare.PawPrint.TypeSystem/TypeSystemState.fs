@@ -491,13 +491,17 @@ module TypeSystemState =
         : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromRef
-                loggerFactory
-                dotnetRuntimeDirs
-                referencedInAssembly
-                target
-                typeGenericArgs
-                state._LoadedAssemblies
+            match
+                TypeResolution.resolveTypeFromRef
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    referencedInAssembly
+                    target
+                    typeGenericArgs
+                    state._LoadedAssemblies
+            with
+            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
 
         { state with
             _LoadedAssemblies = assemblies
@@ -515,7 +519,11 @@ module TypeSystemState =
         : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveType loggerFactory dotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
+            match
+                TypeResolution.resolveType loggerFactory dotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
+            with
+            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure assy.TypeRefs.[ty] assy failure)
 
         { state with
             _LoadedAssemblies = assemblies
@@ -535,15 +543,19 @@ module TypeSystemState =
         : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromSpec
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                ty
-                assy
-                typeGenericArgs
-                methodGenericArgs
-                state._LoadedAssemblies
+            match
+                TypeResolution.resolveTypeFromSpec
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    ty
+                    assy
+                    typeGenericArgs
+                    methodGenericArgs
+                    state._LoadedAssemblies
+            with
+            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         { state with
             _LoadedAssemblies = assemblies

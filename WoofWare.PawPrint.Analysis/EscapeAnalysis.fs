@@ -1183,6 +1183,7 @@ module EscapeAnalysis =
         | state, TypeReferenceIdentity.Resolved identity -> state, Some identity
         | state, TypeReferenceIdentity.TypeAbsent _
         | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, None
+        | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
     /// The type definition a type spelling names, looking through custom modifiers and
     /// instantiations. `None` for a spelling that names no definition: a type variable, an array, a
@@ -1778,6 +1779,7 @@ module EscapeAnalysis =
             | state, TypeReferenceIdentity.Resolved _ -> state, None
             | state, TypeReferenceIdentity.TypeAbsent _ -> state, Some BindFailure.TypeAbsent
             | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, Some BindFailure.AssemblyUnavailable
+            | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         | TypeDefn.GenericInstantiation (root, arguments) ->
             firstBindFailure state assembly (Seq.append [ root ] arguments)
         | TypeDefn.Array (element, _)
@@ -1822,6 +1824,7 @@ module EscapeAnalysis =
             match miss with
             | TypeLoad.LoadMiss.TypeAbsent _ -> BindFailure.TypeAbsent
             | TypeLoad.LoadMiss.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
+            | TypeLoad.LoadMiss.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
         let load (state : EscapeAnalysisState) (spellingAssembly : DumpedAssembly) (spelling : TypeDefn) =
             let assemblies, loaded, miss =
@@ -1862,6 +1865,7 @@ module EscapeAnalysis =
             | state, TypeReferenceIdentity.Resolved identity -> ofDefinition state identity
             | state, TypeReferenceIdentity.TypeAbsent _ -> state, Some BindFailure.TypeAbsent
             | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, Some BindFailure.AssemblyUnavailable
+            | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         | _ ->
             let state, miss = load state assembly spelling
             state, Option.map ofMiss miss
@@ -2199,6 +2203,7 @@ module EscapeAnalysis =
                     state, TokenReferent.Other, raisesOf (Some BindFailure.AssemblyUnavailable)
                 | FieldReferenceTarget.DependsOnInstantiation -> state, TokenReferent.Other, [ dependsOnInstantiation ]
                 | FieldReferenceTarget.Defined (declaring, field) -> state, TokenReferent.Field (declaring, field), []
+                | FieldReferenceTarget.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         // The JIT loads the type a type token names in full.
         | MetadataToken.TypeDefinition handle ->
             let state, failure =
@@ -2295,6 +2300,7 @@ module EscapeAnalysis =
             | state, TypeReferenceIdentity.TypeAbsent _ -> state, None
             | state, TypeReferenceIdentity.Resolved _
             | state, TypeReferenceIdentity.AssemblyUnavailable _ -> spellingLoadFailure state assembly spelling
+            | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         | _ -> spellingLoadFailure state assembly spelling
 
     /// What the loads of the types of a member's signature fail with, where the JIT compiling an
@@ -3507,6 +3513,7 @@ module EscapeAnalysis =
                 | FieldReferenceTarget.DependsOnInstantiation
                 | FieldReferenceTarget.ParentTypeMissing _
                 | FieldReferenceTarget.ParentAssemblyUnavailable _ -> state, None
+                | FieldReferenceTarget.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
             | other -> failwith $"A field instruction in %s{assembly.DefinitionFullName} names %O{other}"
 
         // What this instruction raises by running a type initializer, which `OpcodeFaults` says it

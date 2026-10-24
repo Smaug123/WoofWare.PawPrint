@@ -290,11 +290,15 @@ module ExecutionConcretization =
         : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
         =
         let loadedAssemblies =
-            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                (IlMachineState.loader loggerFactory state)
-                state.TypeSystem._LoadedAssemblies
-                (state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
-                field.DeclaringType.Definition.Get
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    (IlMachineState.loader loggerFactory state)
+                    state.TypeSystem._LoadedAssemblies
+                    (state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
+                    field.DeclaringType.Definition.Get
+            with
+            | assemblies, None -> assemblies
+            | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
         let state =
             { state with

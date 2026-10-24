@@ -30,11 +30,14 @@ type UnvouchedLoad =
     | UnsupportedSpelling of TypeDefn
     /// A spelling nested more deeply than PawPrint follows.
     | TooDeep
+    /// A type reference whose binding PawPrint does not implement.
+    | UnmodelledReference of UnmodelledBinding
 
     override this.ToString () : string =
         match this with
         | UnvouchedLoad.OutsideCoreLib (_, name) -> $"%s{name} is not declared by CoreLib"
         | UnvouchedLoad.MissNestedOutsideCoreLib miss -> $"%O{miss}, outside CoreLib"
+        | UnvouchedLoad.UnmodelledReference unmodelled -> unmodelled.Diagnostic
         | UnvouchedLoad.AssemblyNotLoaded reference -> $"following a type reference needs %s{reference.FullName}"
         | UnvouchedLoad.ConstrainedDefinition (_, name) -> $"%s{name} constrains a generic parameter"
         | UnvouchedLoad.WrongArity (_, name, spelled) -> $"%s{name} is instantiated at %d{spelled} arguments"
@@ -156,6 +159,7 @@ module ParentLoadVouching =
                     Ok Named.Absent
                 | TypeResolutionResult.NotFound miss -> Error (UnvouchedLoad.MissNestedOutsideCoreLib miss)
                 | TypeResolutionResult.FirstLoadAssy assembly -> Error (UnvouchedLoad.AssemblyNotLoaded assembly)
+                | TypeResolutionResult.Unmodelled unmodelled -> Error (UnvouchedLoad.UnmodelledReference unmodelled)
             | other -> failwith $"BUG: %O{other} is not a nominal spelling"
 
         let spelledKind (spelling : TypeDefn) : SignatureTypeKind =

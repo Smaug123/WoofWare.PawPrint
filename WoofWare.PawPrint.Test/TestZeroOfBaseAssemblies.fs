@@ -283,11 +283,15 @@ public struct Outer
         // loading only the outer's base chain and confirming netstandard is
         // still absent.
         let assembliesAfterOuterBaseChain =
-            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                loadAssembly
-                concretizeCtx.LoadedAssemblies
-                concretizeCtx.LoadedAssemblies.[outerAssembly.Name]
-                outerTypeDef.TypeDefHandle
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    loadAssembly
+                    concretizeCtx.LoadedAssemblies
+                    concretizeCtx.LoadedAssemblies.[outerAssembly.Name]
+                    outerTypeDef.TypeDefHandle
+            with
+            | assemblies, None -> assemblies
+            | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
         assembliesAfterOuterBaseChain.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
