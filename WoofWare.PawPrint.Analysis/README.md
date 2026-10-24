@@ -130,8 +130,13 @@ method) may add more:
   type variable decides the method, a generic definition calls each some instance does, and an
   instance the one its code does. The JIT boxes without the call where it optimises fully, or where
   it folds the box, and stores without it where it optimises and can show the store needs no type
-  check (`gtCanSkipCovariantStoreCheck`), which the analysis does not follow. A `constrained.` call that boxes a value type, to call a method the type inherits, boxes
-  it the same way (`CORINFO_BOX_THIS`), which the analysis does not follow yet;
+  check (`gtCanSkipCovariantStoreCheck`), which the analysis does not follow. A `constrained.` call
+  on a value type boxes its receiver the same way where the method it runs is no method the type
+  declares: one it inherits from `Object`, `ValueType` or `Enum`, a default interface body, or one
+  that is not virtual, such as `Object.GetType` (`CORINFO_BOX_THIS`, `getCallInfo`). The analysis
+  follows that box too, as an instance's dispatch decides it. The JIT refuses to box a ref struct
+  there (`InvalidProgramException`), which the analysis does not follow: such a call is opaque, as
+  is one on a type variable that allows a ref struct in a definition asked about by itself;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   and one of a static virtual method runs the implementation the type supplies, whatever derives
   from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
