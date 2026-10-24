@@ -49,6 +49,21 @@ type JitTypePosition =
     /// where the IL is verifiable, each value type of the target's signature is one of the `Invoke`
     /// signature's, so walking it again would load nothing new.
     | ShuffleThunkSignature
+    /// A parameter of a method a call of unmanaged code passes arguments to, which the VM's walk of
+    /// the signature for whether the call needs marshalling may reach (`PInvoke::MarshalingRequired`,
+    /// `vm/dllimport.cpp`). The walk loads a value type or an instantiation in full; a pointer, a
+    /// function pointer or a primitive it passes over without loading anything, and it ends at any
+    /// other type without loading it. The JIT asks for the walk only where it may make the
+    /// transition to unmanaged code in the caller's own code (`impCheckForPInvokeCall`), so these
+    /// are loads it may make or not (`JitTypeLoad.Possibly`).
+    | MarshallingWalk
+    /// A parameter of a method a call by Swift's calling convention passes arguments to, on a JIT
+    /// target that compiles such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'), where
+    /// the JIT makes the transition to unmanaged code in the caller's own code: it reads what a
+    /// pointer points to and a function pointer's signature, for the Swift-specific arguments
+    /// (`impPopArgsForSwiftCall`). It does so only where the walk finds that nothing in the
+    /// signature needs marshalling, so these are loads it may make or not (`JitTypeLoad.Possibly`).
+    | SwiftCalleeParameter
     /// The type of a field an instruction accesses (`getFieldInfo`).
     | FieldType
     /// The type a type token names, including a `catch` clause's (`resolveToken`).
@@ -139,9 +154,9 @@ type FunctionPointerPreparation =
 type MemberOperand =
     /// `call`, `callvirt`, `newobj` or `calli` of managed code.
     | Call
-    /// A call of unmanaged code: of a method CoreCLR implements by a P/Invoke, or `calli` by an
-    /// unmanaged calling convention.
-    | UnmanagedCall
+    /// A call of unmanaged code, by a calling convention that is Swift's or not: of a method CoreCLR
+    /// implements by a P/Invoke, or `calli` by an unmanaged calling convention.
+    | UnmanagedCall of UnmanagedConvention
     /// `jmp`.
     | Jump
     /// `ldftn` or `ldvirtftn` (`JitTypeLoads.preparation`).
@@ -157,12 +172,10 @@ type MemberOperand =
 type MemberPositions =
     /// At these positions, in the order it meets them.
     | Described of JitTypePosition list
-    /// At positions `JitTypeLoads` does not describe: an unmanaged call's. What the JIT reads of its
-    /// signature depends on whether it makes the transition to unmanaged code in the caller's own
-    /// code (`impCheckForPInvokeCall`), on the VM's walk of the signature for whether the call
-    /// needs marshalling (`PInvoke::MarshalingRequired`), and on the calling convention, Swift's
-    /// reading more (`impPopArgsForSwiftCall`).
-    | Undescribed
+    /// At positions given together with the types of the signature (`JitTypeLoads.unmanagedMeetings`):
+    /// an unmanaged call's, as CoreCLR's walk of its signature ends at the first type that needs
+    /// marshalling.
+    | BySignature
 
 /// Which types the JIT loads when it compiles a method, by where each appears.
 [<RequireQualifiedAccess>]
@@ -246,6 +259,21 @@ module JitTypeLoads =
                 Some (JitTypeLoad.Approximately spelling)
             else
                 None
+        // The walk ends at a type variable, an element type its table does not pass over.
+        | JitTypePosition.MarshallingWalk ->
+            match spelling with
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _ -> None
+            | TypeDefn.GenericInstantiation _ -> Some (JitTypeLoad.Possibly (JitTypeLoad.InFull spelling))
+            | spelling when isValueType spelling -> Some (JitTypeLoad.Possibly (JitTypeLoad.InFull spelling))
+            | _ -> None
+        // A value type `CalleeParameter` loads already; a byref ends the walk, so the JIT never
+        // reads one here.
+        | JitTypePosition.SwiftCalleeParameter ->
+            match spelling with
+            | TypeDefn.Pointer _
+            | TypeDefn.FunctionPointer _ -> Some (JitTypeLoad.Possibly (JitTypeLoad.InFull spelling))
+            | _ -> None
         // `ConvToJitSig`, `getFieldInfo` and `resolveToken` load every type but a primitive.
         | JitTypePosition.OwnReturn
         | JitTypePosition.CalleeReturn
@@ -300,7 +328,7 @@ module JitTypeLoads =
         match operand with
         | MemberOperand.Call ->
             MemberPositions.Described [ JitTypePosition.CalleeReturn ; JitTypePosition.CalleeParameter ]
-        | MemberOperand.UnmanagedCall -> MemberPositions.Undescribed
+        | MemberOperand.UnmanagedCall _ -> MemberPositions.BySignature
         | MemberOperand.Jump -> MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.Address FunctionPointerPreparation.BeforeReturnType ->
             MemberPositions.Described [ JitTypePosition.FunctionPointerSignature ; JitTypePosition.CalleeReturn ]
@@ -320,3 +348,33 @@ module JitTypeLoads =
             MemberPositions.Described [ JitTypePosition.CalleeReturn ]
         | MemberOperand.FieldAccess -> MemberPositions.Described [ JitTypePosition.FieldType ]
         | MemberOperand.Token -> MemberPositions.Described []
+
+    /// Where the JIT compiling a call of unmanaged code by `convention` meets the types of
+    /// `signature`, the signature of the method it calls or the call site's, in the order it meets
+    /// them, for an instruction whose operand `memberPositions` answers
+    /// `MemberPositions.BySignature`: the return type, as of any call; each parameter, which the
+    /// VM's walk for whether the call needs marshalling may reach; for a convention that may be
+    /// Swift's, each parameter again; and each parameter as any call passes it.
+    let unmanagedMeetings
+        (convention : UnmanagedConvention)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : (JitTypePosition * TypeDefn) list
+        =
+        let at (position : JitTypePosition) : (JitTypePosition * TypeDefn) list =
+            signature.ParameterTypes |> List.map (fun parameter -> position, parameter)
+
+        let returned =
+            match signature.ReturnType with
+            | MethodReturnType.Void -> []
+            | MethodReturnType.Returns returned -> [ JitTypePosition.CalleeReturn, returned ]
+
+        let swift =
+            match convention with
+            | UnmanagedConvention.NotSwift -> []
+            | UnmanagedConvention.Swift
+            | UnmanagedConvention.MaybeSwift -> at JitTypePosition.SwiftCalleeParameter
+
+        returned
+        @ at JitTypePosition.MarshallingWalk
+        @ swift
+        @ at JitTypePosition.CalleeParameter
