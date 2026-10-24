@@ -39,6 +39,16 @@ type JitTypePosition =
     /// a static virtual method a `constrained.` prefix names (`getCallInfo`), which it does not
     /// where the type is one of the type variables of code shared between instantiations.
     | PossibleFunctionPointerSignature
+    /// The return type or a parameter of a delegate's `Invoke` method, or of the method a delegate
+    /// open over it is made over (`JitTypeLoads.delegateClosure`), which CoreCLR walks to make a thunk
+    /// that shuffles the arguments of each call, loading every value type approximately to lay them
+    /// out (`COMDelegate::GetDelegateCtor`, `SetupShuffleThunk`, `ArgIterator`). It walks the
+    /// `Invoke` method's signature and then the target's, each its return type and then its
+    /// parameters, as each method's own definition spells it.
+    /// CoreCLR keeps the thunk on the delegate type, so a later delegate of that type walks neither;
+    /// where the IL is verifiable, each value type of the target's signature is one of the `Invoke`
+    /// signature's, so walking it again would load nothing new.
+    | ShuffleThunkSignature
     /// The type of a field an instruction accesses (`getFieldInfo`).
     | FieldType
     /// The type a type token names, including a `catch` clause's (`resolveToken`).
@@ -59,6 +69,11 @@ type JitTypeLoad =
     /// is passed over; one into an assembly that is not there fails, as binding it must load the
     /// assembly (`ClassLoader::ResolveTokenToTypeDefThrowing`).
     | InFullIfDefined of TypeDefn
+    /// The type, approximately (`CLASS_LOAD_APPROXPARENTS`): an instantiation's generic definition
+    /// and, of its arguments, the value types, each approximately; a definition's base and
+    /// interfaces approximately and the types of its value-type fields, but nothing a later level
+    /// loads, such as an interface's type arguments or a class argument of an instantiation.
+    | Approximately of TypeDefn
     /// What the JIT may load or not, depending on how it compiles the method: if at all, as the
     /// load inside says.
     | Possibly of JitTypeLoad
@@ -68,15 +83,28 @@ type JitTypeLoad =
 type MethodAddressUse =
     /// It is the method argument of the delegate constructor that the `newobj` right after the
     /// `ldftn` calls, which the JIT reads straight off the `ldftn` (`fgOptimizeDelegateConstructor`).
-    /// Making the delegate may then load the value types of the signature in full, for the
-    /// `newobj` rather than the `ldftn`: CoreCLR sets up a thunk to shuffle the arguments of a
-    /// delegate over a static method (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does
-    /// not describe.
+    /// Making a delegate open over its target then loads, for the `newobj` rather than the `ldftn`,
+    /// the types at `JitTypePosition.ShuffleThunkSignature` (`JitTypeLoads.delegateClosure`).
     | DelegateTarget
     /// The `pop` right after the `ldftn` drops it, and with it the JIT's request for it.
     | Discarded
     /// Anything else: it is a function pointer.
     | FunctionPointer
+
+/// Whether a delegate closes over the first argument of the method it is made over, which decides
+/// whether CoreCLR makes a thunk to shuffle the arguments of each call
+/// (`COMDelegate::GetDelegateCtor`).
+[<RequireQualifiedAccess>]
+type DelegateClosure =
+    /// Its `Invoke` method takes as many arguments as the target does, counting an instance
+    /// method's `this`: the target is a static method, or an instance method whose receiver each
+    /// call passes. A thunk drops the delegate from each call's arguments, so CoreCLR walks both
+    /// signatures to make one (`JitTypePosition.ShuffleThunkSignature`).
+    | Open
+    /// Its `Invoke` method takes any other number of arguments, one fewer where the IL is
+    /// verifiable: the delegate holds the target's first argument, an instance method's receiver
+    /// or a static method's first parameter, and passes it in the delegate's place, needing no thunk.
+    | Closed
 
 /// Whether an `ldftn` has a `constrained.` prefix, naming the type whose implementation of a static
 /// virtual method it takes the address of.
@@ -213,6 +241,11 @@ module JitTypeLoads =
         | JitTypePosition.PossibleFunctionPointerSignature ->
             load JitTypePosition.FunctionPointerSignature spelling
             |> Option.map JitTypeLoad.Possibly
+        | JitTypePosition.ShuffleThunkSignature ->
+            if isValueType spelling then
+                Some (JitTypeLoad.Approximately spelling)
+            else
+                None
         // `ConvToJitSig`, `getFieldInfo` and `resolveToken` load every type but a primitive.
         | JitTypePosition.OwnReturn
         | JitTypePosition.CalleeReturn
@@ -220,6 +253,21 @@ module JitTypeLoads =
         | JitTypePosition.TypeToken
         | JitTypePosition.MethodArgument
         | JitTypePosition.DeclaringType -> Some (JitTypeLoad.InFull spelling)
+
+    /// Whether a delegate whose `Invoke` method has `invokeParameters` parameters closes over the
+    /// first argument of a target with `targetParameters` parameters, static or not
+    /// (`COMDelegate::GetDelegateCtor`).
+    let delegateClosure (invokeParameters : int) (targetParameters : int) (targetIsStatic : bool) : DelegateClosure =
+        let targetArguments =
+            if targetIsStatic then
+                targetParameters
+            else
+                targetParameters + 1
+
+        if invokeParameters = targetArguments then
+            DelegateClosure.Open
+        else
+            DelegateClosure.Closed
 
     /// When CoreCLR prepares as a function pointer the method that `op`, an `ldftn` or
     /// `ldvirtftn`, names by `token`, with or without a `constrained.` prefix, whose address has

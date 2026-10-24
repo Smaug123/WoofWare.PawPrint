@@ -7461,10 +7461,9 @@ public static unsafe class Addresses
                 "PointerToReturnsDerivesFromGone", "DerivesFromGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "PointerToGenericTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "DelegateToVirtualTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
-                // Making a delegate over a static method, or an open one over an instance method,
-                // loads what its signature names, which `JitTypeLoads` does not describe and the
-                // analysis takes to load in full for any delegate.
-                "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, [ typeLoad ]
+                // A delegate closed over its target's receiver needs no thunk to shuffle the
+                // arguments, which would load the value types of the signature.
+                "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, []
                 "DelegateToStaticTakesGoneStruct", "GoneStruct", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 // The caller's JIT, inlining the method taking the address, asks for it.
                 "CallsInlinedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
@@ -7994,6 +7993,7 @@ public delegate void TakesWrapsGone(Wraps<Provider.Gone> w);
 public delegate void TakesViaInterface(ViaInterface v);
 public delegate void TakesGone(Provider.Gone g);
 public delegate void TakesGoneStruct(Provider.GoneStruct s);
+public delegate void TakesInt(int i);
 
 public class Target
 {
@@ -8008,6 +8008,7 @@ public static class Targets
     public static void TakesViaInterface(ViaInterface v) { }
     public static void TakesGone(Provider.Gone g) { }
     public static void ExtensionTakesHoldsGone(this Target t, HoldsGone h) { }
+    public static void TakesInt(int i) { }
     public static void TakesGoneStruct(Provider.GoneStruct s) { }
     public static void GenericTakesGoneStruct<U>(Provider.GoneStruct s) { }
 }
@@ -8079,6 +8080,16 @@ public static class Members
         try { Takes.Use(new TakesHoldsGone(new Target().ExtensionTakesHoldsGone)); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
+    public static string MismatchedTarget()
+    {
+        try { Takes.Use(new TakesInt(Targets.TakesInt)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string MismatchedInvoke()
+    {
+        try { Takes.Use(new TakesHoldsGone(Targets.TakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
     public static string UnsharedOverTypeArgument() => Shared.OverTypeArgument<int>();
     public static string SharedOverTypeArgument() => Shared.OverTypeArgument<string>();
     public static string UnsharedOverMethodArgument() => Shared.OverMethodArgument<int>();
@@ -8094,9 +8105,66 @@ public static class Members
                  |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
                 [ text ]
 
+        // The image with the `ldftn` of `Targets.{from}` in `Members.{caller}` naming
+        // `Targets.{onto}` instead, so that the delegate made over it has a signature other than
+        // its target's, which C# has no way to say.
+        let retarget (caller : string) (from : string) (onto : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PortableExecutable.PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let methodsOf (typeName : string) =
+                metadata.TypeDefinitions
+                |> Seq.map metadata.GetTypeDefinition
+                |> Seq.filter (fun ty -> metadata.GetString ty.Name = typeName)
+                |> Seq.exactlyOne
+                |> fun ty -> ty.GetMethods ()
+                |> Seq.map (fun handle -> handle, metadata.GetMethodDefinition handle)
+                |> List.ofSeq
+
+            let tokenOf (name : string) : int =
+                methodsOf "Targets"
+                |> List.filter (fun (_, m) -> metadata.GetString m.Name = name)
+                |> List.exactlyOne
+                |> fst
+                |> fun handle ->
+                    Ecma335.MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit handle : EntityHandle)
+
+            let ldftn (name : string) : byte[] =
+                Array.append [| 0xFEuy ; 0x06uy |] (BitConverter.GetBytes (tokenOf name))
+
+            let body =
+                methodsOf "Members"
+                |> List.filter (fun (_, m) -> metadata.GetString m.Name = caller)
+                |> List.exactlyOne
+                |> snd
+
+            let rva = body.RelativeVirtualAddress
+
+            let section =
+                pe.PEHeaders.SectionHeaders
+                |> Seq.find (fun s -> rva >= s.VirtualAddress && rva < s.VirtualAddress + s.VirtualSize)
+
+            let start = rva - section.VirtualAddress + section.PointerToRawData
+            let size = (pe.GetMethodBody rva).Size
+            let original = ldftn from
+
+            match
+                [ start .. start + size - original.Length ]
+                |> List.filter (fun i -> patched.[i .. i + original.Length - 1] = original)
+            with
+            | [ at ] -> Array.blit (ldftn onto) 0 patched at original.Length
+            | found -> failwith $"%s{caller} takes the address of %s{from} %d{found.Length} times, not once"
+
+            patched
+
         let completeProvider = compile "Provider" [] (provider true)
         let incompleteProvider = compile "Provider" [] (provider false)
-        let clientImage = compile "Client" [ completeProvider ] client
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> retarget "MismatchedTarget" "TakesInt" "TakesHoldsGone"
+            |> retarget "MismatchedInvoke" "TakesHoldsGone" "TakesInt"
 
         let typeLoad = "System.TypeLoadException"
 
@@ -8104,6 +8172,12 @@ public static class Members
         let methods =
             [
                 "OpenStaticHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad
+                // A delegate taking an `int` over a method taking a `HoldsGone`: the target's
+                // signature is walked too.
+                "MismatchedTarget", "HoldsGone", CallOutcome.Escapes typeLoad
+                // A delegate taking a `HoldsGone` over a method taking an `int`: the `Invoke`
+                // method's signature is walked too.
+                "MismatchedInvoke", "HoldsGone", CallOutcome.Escapes typeLoad
                 // The approximate load of an instantiation leaves out a class argument.
                 "OpenStaticWrapsGone", "Gone", CallOutcome.Runs
                 // The approximate load of a type loads only the generic definition of an interface.

@@ -1809,6 +1809,14 @@ module EscapeAnalysis =
             | None -> spellingBindFailure state assembly spelling
         )
 
+    /// What CoreCLR raises where a load meets `miss`. A load the Loader does not model fails the
+    /// analysis instead.
+    let private bindFailureOfMiss (miss : TypeLoad.LoadMiss) : BindFailure =
+        match miss with
+        | TypeLoad.LoadMiss.TypeAbsent _ -> BindFailure.TypeAbsent
+        | TypeLoad.LoadMiss.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
+        | TypeLoad.LoadMiss.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
+
     /// Why CoreCLR's full load of a type `assembly` spells fails, at the first type reference it
     /// reaches that names nothing (`TypeLoad.loadMiss`): the base classes, interfaces and value-type
     /// fields of each type it names, transitively, as well as the references it spells. The JIT
@@ -1820,12 +1828,6 @@ module EscapeAnalysis =
         (spelling : TypeDefn)
         : EscapeAnalysisState * BindFailure option
         =
-        let ofMiss (miss : TypeLoad.LoadMiss) : BindFailure =
-            match miss with
-            | TypeLoad.LoadMiss.TypeAbsent _ -> BindFailure.TypeAbsent
-            | TypeLoad.LoadMiss.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
-            | TypeLoad.LoadMiss.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
-
         let load (state : EscapeAnalysisState) (spellingAssembly : DumpedAssembly) (spelling : TypeDefn) =
             let assemblies, loaded, miss =
                 TypeLoad.loadMissFrom
@@ -1845,7 +1847,7 @@ module EscapeAnalysis =
         // A type definition's load is memoised; it is the same wherever a token names it.
         let ofDefinition (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
             match state.TypeLoads.TryFind identity with
-            | Some miss -> state, Option.map ofMiss miss
+            | Some miss -> state, Option.map bindFailureOfMiss miss
             | None ->
                 let state, miss =
                     load
@@ -1856,7 +1858,7 @@ module EscapeAnalysis =
                 { state with
                     TypeLoads = state.TypeLoads.Add (identity, miss)
                 },
-                Option.map ofMiss miss
+                Option.map bindFailureOfMiss miss
 
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.FromDefinition (identity, _) -> ofDefinition state identity
@@ -1868,7 +1870,7 @@ module EscapeAnalysis =
             | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         | _ ->
             let state, miss = load state assembly spelling
-            state, Option.map ofMiss miss
+            state, Option.map bindFailureOfMiss miss
 
     /// The first of `spellings`, in order, whose full load fails (`spellingLoadFailure`), and why.
     let private firstLoadFailure
@@ -1889,6 +1891,75 @@ module EscapeAnalysis =
         match signature.ReturnType with
         | MethodReturnType.Void -> signature.ParameterTypes
         | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
+
+    /// Why CoreCLR's approximate load of a value type `assembly` spells fails, at the first type
+    /// reference it reaches that names nothing (`TypeLoad.approximateLoadMissFrom`), or `None` if no
+    /// reference it reaches fails to bind.
+    let private approximateLoadFailure
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * BindFailure option
+        =
+        let assemblies, miss =
+            TypeLoad.approximateLoadMissFrom
+                state.LoggerFactory
+                state.RuntimeDirs
+                assembly
+                spelling
+                state.LoadedDefinitions
+                state.TypeSystem._LoadedAssemblies
+
+        withAssemblies state assemblies, Option.map bindFailureOfMiss miss
+
+    /// Why CoreCLR fails to make a delegate of type `delegateType` over `target`, the method an
+    /// `ldftn` or `ldvirtftn` names: the first type at `JitTypePosition.ShuffleThunkSignature`,
+    /// in the `Invoke` method's signature and then the target's, each as its definition spells it,
+    /// whose load fails. `None` where it needs no thunk to shuffle the arguments, the delegate being
+    /// closed over its target (`JitTypeLoads.delegateClosure`), or where every load succeeds.
+    let private shuffleThunkFailure
+        (state : EscapeAnalysisState)
+        (delegateType : ResolvedTypeIdentity)
+        (target : MethodKey)
+        : EscapeAnalysisState * BindFailure option
+        =
+        let delegateAssembly, definition = definitionOf state delegateType
+
+        let invoke =
+            match definition.Methods |> List.filter (fun method -> method.Name = "Invoke") with
+            | [ invoke ] -> invoke
+            | methods ->
+                failwith
+                    $"BUG: delegate type %O{delegateType} has %d{methods.Length} methods named Invoke, but CoreCLR loads a delegate type only with one"
+
+        let targetAssembly, targetMethod = methodOf state target
+
+        match
+            JitTypeLoads.delegateClosure
+                invoke.Signature.ParameterTypes.Length
+                targetMethod.Signature.ParameterTypes.Length
+                targetMethod.IsStatic
+        with
+        | DelegateClosure.Closed -> state, None
+        | DelegateClosure.Open ->
+            let spellings =
+                (signatureTypes invoke.Signature
+                 |> List.map (fun spelling -> delegateAssembly, spelling))
+                @ (signatureTypes targetMethod.Signature
+                   |> List.map (fun spelling -> targetAssembly, spelling))
+
+            ((state, None), spellings)
+            ||> List.fold (fun (state, failure) (assembly, spelling) ->
+                match failure with
+                | Some _ -> state, failure
+                | None ->
+                    match JitTypeLoads.load JitTypePosition.ShuffleThunkSignature spelling with
+                    | None -> state, None
+                    | Some (JitTypeLoad.Approximately loaded) -> approximateLoadFailure state assembly loaded
+                    | Some other ->
+                        failwith
+                            $"BUG: JitTypeLoads.load answers %O{other} for %O{spelling} in a delegate's shuffle thunk"
+            )
 
     /// Whether a spelling mentions a type variable of the body that spells it.
     let rec private mentionsTypeVariable (spelling : TypeDefn) : bool =
@@ -2361,6 +2432,7 @@ module EscapeAnalysis =
             match load with
             | JitTypeLoad.InFull loaded -> spellingLoadFailure state assembly loaded
             | JitTypeLoad.InFullIfDefined loaded -> spellingLoadFailureIfDefined state assembly loaded
+            | JitTypeLoad.Approximately loaded -> approximateLoadFailure state assembly loaded
             | JitTypeLoad.Possibly load -> failureOf state load
 
         let state, failures =
@@ -3586,28 +3658,47 @@ module EscapeAnalysis =
 
             back (index - 1)
 
-        // What becomes of the address the `ldftn` at `index` pushes, by the instruction right after
-        // it: a `newobj` of a delegate's constructor, a `pop`, or anything else.
-        let addressUse (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * MethodAddressUse =
+        // The delegate type whose constructor a `newobj` right after the instruction at `index`
+        // calls, if it calls one.
+        let delegateMade
+            (state : EscapeAnalysisState)
+            (index : int)
+            : EscapeAnalysisState * ResolvedTypeIdentity option
+            =
             if index + 1 >= ops.Length then
-                state, MethodAddressUse.FunctionPointer
+                state, None
             else
 
             match fst ops.[index + 1] with
-            | IlOp.Nullary NullaryIlOp.Pop -> state, MethodAddressUse.Discarded
             | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, MetadataOperand.FromMetadata constructor) ->
                 match callTarget state assembly constructor.Token with
                 | state, CallTarget.Method constructor ->
-                    match
-                        derivesFrom
-                            state
-                            (declaringTypeOf state constructor.Callee)
-                            state.BaseTypes.DelegateType.Identity
-                    with
-                    | state, true -> state, MethodAddressUse.DelegateTarget
-                    | state, false -> state, MethodAddressUse.FunctionPointer
-                | state, _ -> state, MethodAddressUse.FunctionPointer
-            | _ -> state, MethodAddressUse.FunctionPointer
+                    let made = declaringTypeOf state constructor.Callee
+
+                    match derivesFrom state made state.BaseTypes.DelegateType.Identity with
+                    | state, true -> state, Some made
+                    | state, false -> state, None
+                | state, _ -> state, None
+            | _ -> state, None
+
+        // What becomes of the address the `ldftn` at `index` pushes, by the instruction right after
+        // it: a `newobj` of a delegate's constructor, a `pop`, or anything else.
+        let addressUse (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * MethodAddressUse =
+            let popped =
+                index + 1 < ops.Length
+                && (
+                    match fst ops.[index + 1] with
+                    | IlOp.Nullary NullaryIlOp.Pop -> true
+                    | _ -> false
+                )
+
+            if popped then
+                state, MethodAddressUse.Discarded
+            else
+
+            match delegateMade state index with
+            | state, Some _ -> state, MethodAddressUse.DelegateTarget
+            | state, None -> state, MethodAddressUse.FunctionPointer
 
         // 0. Bind the token the instruction names, which the JIT does before the body runs. This
         // binds every instruction's, as the JIT does for code no run reaches unless a branch it
@@ -3669,7 +3760,7 @@ module EscapeAnalysis =
                                     declaring,
                                     MemberSignature.Field (field.SignatureHeader, field.Signature),
                                     MemberOperand.FieldAccess,
-                                    []
+                                    None
                                 )
                             | _, _, None -> state, None
                             | (UnaryMetadataTokenIlOp.Ldftn | UnaryMetadataTokenIlOp.Ldvirtftn), _, Some signature ->
@@ -3680,16 +3771,15 @@ module EscapeAnalysis =
 
                                 let state, addressUse = addressUse state index
 
-                                // Making a delegate over a static method, or an open one over an
-                                // instance method, may load what its target's signature names
-                                // (`COMDelegate::GetDelegateCtor`), which `JitTypeLoads` does not
-                                // describe: for any delegate, every type of it is taken to load in
-                                // full.
-                                let delegateLoads =
-                                    match addressUse with
-                                    | MethodAddressUse.DelegateTarget -> signatureTypes signature
-                                    | MethodAddressUse.Discarded
-                                    | MethodAddressUse.FunctionPointer -> []
+                                let state, delegateMade =
+                                    match addressUse, target with
+                                    | MethodAddressUse.DelegateTarget, Some (CallTarget.Method callee) ->
+                                        match delegateMade state index with
+                                        | state, Some made -> state, Some (made, callee.Callee)
+                                        | _ ->
+                                            failwith
+                                                $"BUG: the ldftn at %d{index} takes a delegate's target, but no delegate is made after it"
+                                    | _ -> state, None
 
                                 state,
                                 Some (
@@ -3698,27 +3788,32 @@ module EscapeAnalysis =
                                     MemberOperand.Address (
                                         JitTypeLoads.preparation tokenOp token.Token prefix addressUse
                                     ),
-                                    delegateLoads
+                                    delegateMade
                                 )
                             | _, _, Some signature ->
                                 state,
                                 memberOperand state tokenOp signature target
-                                |> Option.map (fun operand -> assembly, MemberSignature.Method signature, operand, [])
+                                |> Option.map (fun operand -> assembly, MemberSignature.Method signature, operand, None)
 
                         match operand with
                         | None -> state, failures, [], []
-                        | Some (spellingAssembly, signature, operand, delegateLoads) ->
+                        | Some (spellingAssembly, signature, operand, delegateMade) ->
                             let state, loads = memberSignatureLoads state spellingAssembly operand signature
 
-                            let state, delegateFailures =
-                                ((state, []), delegateLoads)
-                                ||> List.fold (fun (state, delegateFailures) spelling ->
-                                    let state, failure = spellingLoadFailure state spellingAssembly spelling
-                                    state, Option.toList failure @ delegateFailures
-                                )
+                            // Making the delegate, the JIT compiles the `newobj` after the address
+                            // instruction. CoreCLR walks the signatures to make its thunk where the
+                            // JIT compiles it, or, for a static target that code shared between
+                            // instantiations names through its type variables, as it runs
+                            // (`Delegate_Construct`), where the method's own handlers can catch
+                            // the failure. Either is taken to fail the compilation.
+                            let state, delegateFailure =
+                                match loads.Definite, delegateMade with
+                                | None, Some (made, target) -> shuffleThunkFailure state made target
+                                | _ -> state, None
 
                             let possible =
-                                loads.Possible @ List.rev delegateFailures |> List.collect (Some >> raisesOf)
+                                loads.Possible @ Option.toList delegateFailure
+                                |> List.collect (Some >> raisesOf)
 
                             let inlined =
                                 match operand with

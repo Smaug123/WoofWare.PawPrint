@@ -472,6 +472,27 @@ public class ThingException : System.Exception { }
                                [ spelt.Shape ])
                         []
                 )
+            // A delegate over a static method that does not close over its first argument is open
+            // over it, so CoreCLR makes a thunk to shuffle the arguments, walking the `Invoke`
+            // method's signature and then the target's.
+            probe
+                "OpenDelegateParameter"
+                $"Keep(new TakesDelegate%d{k}(Takes%d{k}));"
+                (fun spelt ->
+                    meets
+                        ((JitTypePosition.DeclaringType, spelt.Definition $"TakesDelegate%d{k}")
+                         :: addressMeetings
+                             UnaryMetadataTokenIlOp.Ldftn
+                             methodDefinition
+                             MethodAddressUse.DelegateTarget
+                             TypeDefn.Void
+                             [ spelt.Shape ]
+                         @ [
+                             JitTypePosition.ShuffleThunkSignature, spelt.Shape
+                             JitTypePosition.ShuffleThunkSignature, spelt.Shape
+                         ])
+                        []
+                )
             // The local, if Roslyn keeps one, is a function pointer, which the JIT does not load;
             // the call never runs.
             probe
@@ -949,19 +970,20 @@ public class ThingException : System.Exception { }
                 File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), incompleteProvider)
                 let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
 
+                // The exception a load meeting `miss` fails with.
+                let failureOf (miss : TypeLoad.LoadMiss option) : string option =
+                    match miss with
+                    | None -> None
+                    | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Some "TypeLoadException"
+                    | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Some "FileNotFoundException"
+                    | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
+
                 // Why loading `spelling` in full fails.
                 let loadFails (assemblies : LoadedAssemblies) (spelling : TypeDefn) : LoadedAssemblies * string option =
                     let assemblies, miss =
                         TypeLoad.loadMiss loggerFactory dirs baseClassTypes client spelling assemblies
 
-                    let failure =
-                        match miss with
-                        | None -> None
-                        | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Some "TypeLoadException"
-                        | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Some "FileNotFoundException"
-                        | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
-
-                    assemblies, failure
+                    assemblies, failureOf miss
 
                 // Why `load` fails, where the JIT makes the loads it may make or not if `possible`.
                 let rec loadMiss
@@ -972,6 +994,17 @@ public class ThingException : System.Exception { }
                     =
                     match load with
                     | JitTypeLoad.InFull loaded -> loadFails assemblies loaded
+                    | JitTypeLoad.Approximately loaded ->
+                        let assemblies, miss =
+                            TypeLoad.approximateLoadMissFrom
+                                loggerFactory
+                                dirs
+                                client
+                                loaded
+                                TypeLoad.nothingLoaded
+                                assemblies
+
+                        assemblies, failureOf miss
                     | JitTypeLoad.Possibly load ->
                         if possible then
                             loadMiss assemblies possible load
