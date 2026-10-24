@@ -460,6 +460,30 @@ module TestJitImport =
             if not optimises && code.Surely <> code.Maybe then
                 failwith $"Unoptimised, Surely %O{code.Surely} should be Maybe %O{code.Maybe}"
 
+            // Surely is exactly what the rule gives: every branch it cannot fold kept, every
+            // branch it may fold contributing nothing.
+            let ruled =
+                reach
+                    stepArray
+                    regions
+                    (fun index ->
+                        match kind index with
+                        | Branch.Decided target -> [ target ]
+                        | Branch.Kept -> allSuccessors stepArray index
+                        | Branch.MayFold ->
+                            match stepArray.[index] with
+                            | Step.Brtrue _
+                            | Step.Brfalse _
+                            | Step.BneUn _
+                            | Step.Switch _ -> []
+                            | _ -> allSuccessors stepArray index
+                    )
+                    None
+                |> toOffsets
+
+            if code.Surely <> ruled then
+                failwith $"Surely is %O{code.Surely}, but the rule gives %O{ruled}"
+
             if code.Surely.Count < code.Maybe.Count then
                 cover Shown.SurelyFallsShort
 
