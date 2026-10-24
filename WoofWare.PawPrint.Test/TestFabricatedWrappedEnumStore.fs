@@ -61,6 +61,7 @@ module TestFabricatedWrappedEnumStore =
     /// the enum's storage then holds, read through its address:
     ///
     /// * `<name>Local` stores it with `stloc` into a local of the enum.
+    /// * `<name>Twice` does that twice, so the second store's slot holds what the first stored.
     /// * `<name>Argument` passes it to a method whose parameter is the enum.
     /// * `<name>Return` gets it back from a method returning the enum, which returns the primitive.
     /// * `<name>Static` stores it with `stsfld` into a static field of the enum.
@@ -92,6 +93,15 @@ module TestFabricatedWrappedEnumStore =
             do
                 let il = probe "Local"
                 let local = il.DeclareLocal enumType
+                il.Emit OpCodes.Ldarg_0
+                il.Emit (OpCodes.Stloc, local)
+                readLocal il local
+
+            do
+                let il = probe "Twice"
+                let local = il.DeclareLocal enumType
+                il.Emit OpCodes.Ldarg_0
+                il.Emit (OpCodes.Stloc, local)
                 il.Emit OpCodes.Ldarg_0
                 il.Emit (OpCodes.Stloc, local)
                 readLocal il local
@@ -172,21 +182,25 @@ module TestFabricatedWrappedEnumStore =
         | other -> failwith $"no probe argument for %s{other}"
 
     [<TestCase("NativeInt", "Local")>]
+    [<TestCase("NativeInt", "Twice")>]
     [<TestCase("NativeInt", "Argument")>]
     [<TestCase("NativeInt", "Return")>]
     [<TestCase("NativeInt", "Static")>]
     [<TestCase("NativeInt", "Element")>]
     [<TestCase("UNativeInt", "Local")>]
+    [<TestCase("UNativeInt", "Twice")>]
     [<TestCase("UNativeInt", "Argument")>]
     [<TestCase("UNativeInt", "Return")>]
     [<TestCase("UNativeInt", "Static")>]
     [<TestCase("UNativeInt", "Element")>]
     [<TestCase("Boolean", "Local")>]
+    [<TestCase("Boolean", "Twice")>]
     [<TestCase("Boolean", "Argument")>]
     [<TestCase("Boolean", "Return")>]
     [<TestCase("Boolean", "Static")>]
     [<TestCase("Boolean", "Element")>]
     [<TestCase("Char", "Local")>]
+    [<TestCase("Char", "Twice")>]
     [<TestCase("Char", "Argument")>]
     [<TestCase("Char", "Return")>]
     [<TestCase("Char", "Static")>]
