@@ -170,8 +170,11 @@ method) may add more:
   instantiates, the type of each local the body declares, the method's own return type and
   parameter types, and the return type of each method it calls (directly, through managed `calli`,
   or by `jmp`) with the type of each parameter of a call that is a value type, the JIT loads in
-  full, as it does a member reference's parent: what each derives from and implements, and the
-  type of each of its value-type fields, transitively, must be there too (`TypeLoad`). A parameter
+  full, as it does the owner of each member a token names (a method or field definition's
+  declaring type, a member reference's parent) before it resolves the member, and the type of each
+  field an instruction accesses, as the field's definition spells it: what each derives from and
+  implements, and the type of each of its value-type fields, transitively, must be there too
+  (`TypeLoad`). A parameter
   of a class type it loads where the method called is compiled, which that method's own answer
   says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
   nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method,
@@ -405,15 +408,13 @@ That holds for a set of assemblies that agree with each other. When one has chan
 was compiled against it, a missing member or type is reported as above, and says that the set
 needs rebuilding (or, for a package, a different version). Other ways such a change can break a
 caller are not checked, and are not reported: a member made inaccessible to it
-(`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
-constraint added since now rejects, and a type whose own base type, interfaces or fields are no
-longer there (`TypeLoadException`) where it declares a method or field that the body names by its
-definition.
+(`FieldAccessException`, `MethodAccessException`), and a generic instantiation it spells that a
+constraint added since now rejects.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`
-clause, the method's own signature or the signature of a method it calls or takes the address of
-names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
+clause, the method's own signature, the signature of a method it calls or takes the address of,
+or the type of a field it accesses names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
 `AppDomain.AssemblyResolve` handlers, which may throw (the runtime then raises a `FileLoadException`
 wrapping what they threw), or load an assembly in its place whose code then runs.
 

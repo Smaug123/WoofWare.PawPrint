@@ -21,6 +21,7 @@
         <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="OpcodeFaults.fs" />
         <Compile Include="ControlFlow.fs" />
+        <Compile Include="JitImport.fs" />
         <Compile Include="BoxPattern.fs" />
         <Compile Include="StackEffect.fs" />
         <Compile Include="StackFlow.fs" />

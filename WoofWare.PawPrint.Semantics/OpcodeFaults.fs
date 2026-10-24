@@ -48,7 +48,8 @@ type ResolutionFault =
     /// `FileLoadException`, `BadImageFormatException`), and the token may fail to resolve against
     /// one that loaded (`TypeLoadException`, `MissingFieldException`, `MissingMethodException`,
     /// `InvalidProgramException`). Or it binds, and the JIT rejects the instruction for what it
-    /// names, with one of the same: `call` or `ldftn` of an abstract method
+    /// names, with one of the same: a byref or `System.Void` as the type operand of any instruction
+    /// but `ldtoken` (`InvalidProgramException`), `call` or `ldftn` of an abstract method
     /// (`BadImageFormatException`), `box` of a byref-like type that it does not fold away
     /// (`InvalidProgramException`; `BoxPattern`), or `newarr` of one (`TypeLoadException`). CoreCLR's JIT resolves every token of a method as it
     /// compiles it, so it raises most of these where the method is called, before any of its
@@ -75,13 +76,17 @@ type ResolutionFault =
     | TypeAccess
     /// Dispatching on the receiver's class finds no single method to run: the most specific
     /// implementation is a reabstraction (`EntryPointNotFoundException`), or no default interface
-    /// body is most specific (`System.Runtime.AmbiguousImplementationException`). Neither arises
-    /// within one C# compilation: it takes an interface changed after its implementer was compiled.
+    /// body is most specific (`System.Runtime.AmbiguousImplementationException`), or nothing
+    /// implements the interface method on the class at all (`EntryPointNotFoundException`). None
+    /// arises within one C# compilation: the first two take an interface changed after its
+    /// implementer was compiled, and the third unverifiable IL.
     | DispatchOnReceiver
-    /// The same as `DispatchOnReceiver`, dispatching on the type a `constrained.` prefix names. A
-    /// table keyed on the opcode cannot see the prefix, so every instruction that can take one
-    /// carries this. In code CoreCLR shares between instantiations, a `constrained. ldftn` may
-    /// instead hand out a pointer that raises when called.
+    /// The same as `DispatchOnReceiver`, dispatching on the type a `constrained.` prefix names,
+    /// except that where nothing implements a static abstract method on that type, the call raises
+    /// `System.Runtime.AmbiguousImplementationException`. A table keyed on the opcode cannot see the
+    /// prefix, so every instruction that can take one carries this. In code CoreCLR shares between
+    /// instantiations, a `constrained. ldftn` may instead hand out a pointer that raises when
+    /// called.
     | DispatchOnConstrainedType
 
 /// What performing one instruction can raise by itself.

@@ -332,7 +332,11 @@ module StackShapeOfMethod =
         | UnaryMetadataTokenIlOp.Ldelem ->
             match DynamicScopeOperand.closedType baseClassTypes operation index state handle with
             | Error (_, why) -> Error why
-            | Ok closed -> Ok (Some (TokenShape.Type (shapeOfConcreteType state closed)))
+            | Ok closed ->
+                // A type the instruction refuses when it runs is an entry it raises on.
+                match TypeOperand.refusal baseClassTypes state.TypeSystem.ConcreteTypes closed with
+                | Some refusal -> Error $"%s{operation}: DynamicScope entry %d{index} names %O{refusal}"
+                | None -> Ok (Some (TokenShape.Type (shapeOfConcreteType state closed)))
         | UnaryMetadataTokenIlOp.Castclass
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Newarr

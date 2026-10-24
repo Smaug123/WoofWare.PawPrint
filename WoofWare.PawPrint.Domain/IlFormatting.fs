@@ -464,6 +464,11 @@ module IlFormatting =
             [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
             [ header ; "  // No IL body (runtime-provided struct-marshal stub)" ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.StructureMarshalerBody operation) ->
+            [
+                header
+                $"  // No IL body (runtime-provided StructureMarshaler<T> body, %O{operation})"
+            ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
             [ header ; "  // No IL body (runtime-provided multicast delegate invoke stub)" ]
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->

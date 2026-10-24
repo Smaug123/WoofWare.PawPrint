@@ -28,7 +28,7 @@ module internal DefaultInterfaceImplementation =
         | _ -> false
 
     /// The definition of the interface method `method` instantiates.
-    let private definitionOf
+    let internal definitionOf
         (state : TypeSystemState)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>

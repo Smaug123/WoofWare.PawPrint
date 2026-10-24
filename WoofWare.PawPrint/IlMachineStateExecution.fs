@@ -122,6 +122,8 @@ module IlMachineStateExecution =
 
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Runs implementation
         | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, ResolvedVirtualCall.NotOverridden
+        | VirtualImplementation.NotImplemented ->
+            state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.NotImplemented methodToCall)
         | VirtualImplementation.Reabstracted reabstraction ->
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.Reabstracted reabstraction)
         | VirtualImplementation.Ambiguous candidates ->
@@ -386,9 +388,9 @@ module IlMachineStateExecution =
     type private IntrinsicOutcome =
         /// An implementation handled the call.
         | Handled of IlMachineState * CallCommitment
-        /// The call runs this method's IL, from this state: the callee's own IL, or the IL
-        /// `IntrinsicBody.lower` puts in place of its placeholder.
-        | RunIl of
+        /// The call runs this method's body, from this state: the callee's own, or the one
+        /// PawPrint puts in place of a body CoreCLR's JIT or VM replaces.
+        | RunBody of
             IlMachineState *
             WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
@@ -759,7 +761,7 @@ module IlMachineStateExecution =
 
         let outcome =
             match intrinsic with
-            | None -> IntrinsicOutcome.RunIl (state, methodToCall)
+            | None -> IntrinsicOutcome.RunBody (state, methodToCall)
             | Some (handle, key) ->
                 match tryHandleActivatorCreateInstance () with
                 | Some result -> IntrinsicOutcome.Handled result
@@ -806,13 +808,13 @@ module IlMachineStateExecution =
                     // `IntrinsicBody.substitutedBody`, which decides as this does.
                     match IntrinsicBody.classify declaringAssy handle with
                     | IntrinsicBody.OwnIl
-                    | IntrinsicBody.NoIl -> IntrinsicOutcome.RunIl (state, methodToCall)
+                    | IntrinsicBody.NoIl -> IntrinsicOutcome.RunBody (state, methodToCall)
                     | IntrinsicBody.JitExpansion expansion ->
                         // `gtIsRecursiveCall`: only the method's call to itself is must-expand. A
                         // call from anywhere else, a delegate's included, runs the method's IL,
                         // which reaches that call.
                         if not (MethodInfo.NominallyEqual activeMethodState.ExecutingMethod methodToCall) then
-                            IntrinsicOutcome.RunIl (state, methodToCall)
+                            IntrinsicOutcome.RunBody (state, methodToCall)
                         else
 
                         match IntrinsicBody.expandSelfCall state.HardwareIntrinsics expansion with
@@ -874,7 +876,7 @@ module IlMachineStateExecution =
                         | SelfCallExpansion.Unrecognised as expanded ->
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU that call is %A{expanded}"
-                    | IntrinsicBody.StructMarshalling ->
+                    | IntrinsicBody.StructMarshalling operation ->
                         let structType =
                             match List.ofSeq methodToCall.DeclaringTypeGenerics with
                             | [ structType ] -> structType
@@ -892,7 +894,7 @@ module IlMachineStateExecution =
                                 state
                                 structType
                         then
-                            IntrinsicOutcome.RunIl (state, methodToCall)
+                            IntrinsicOutcome.RunBody (state, methodToCall)
                         else
 
                         let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes structType
@@ -905,10 +907,17 @@ module IlMachineStateExecution =
                                 zero
                         with
                         | Blittability.Blittable
-                        | Blittability.BlittableUncopyable -> IntrinsicOutcome.RunIl (state, methodToCall)
+                        | Blittability.BlittableUncopyable -> IntrinsicOutcome.RunBody (state, methodToCall)
                         | Blittability.NotBlittable ->
-                            failwith
-                                $"TODO: CoreCLR's VM replaces the body of %s{Intrinsics.formatMethodKey key} with a stub that marshals %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes structType} field by field, since that struct is not blittable, and PawPrint does not run that stub"
+                            // The VM's body performs `operation` on the struct field by field, and
+                            // `StructMarshalStub.executeStubCall` runs it in the method's own frame.
+                            let body =
+                                MethodBody.RuntimeProvided (RuntimeBehaviour.StructureMarshalerBody operation)
+
+                            IntrinsicOutcome.RunBody (
+                                state,
+                                MethodInfo.setMethodVars body methodToCall.Signature methodToCall
+                            )
                     | IntrinsicBody.CallSiteExpansion ->
                         failwith
                             $"%s{Intrinsics.formatMethodKey key}: CoreCLR's JIT replaces every call to this method with code of its own, and its IL is not what runs. Only code the runtime generates calls it (IL stubs, the async resumption stub, runtime-async methods), and PawPrint runs none of those"
@@ -919,7 +928,7 @@ module IlMachineStateExecution =
 
                             methodToCall
                             |> MethodInfo.setMethodVars (MethodBody.Il stub) methodToCall.Signature
-                            |> fun methodToCall -> IntrinsicOutcome.RunIl (state, methodToCall)
+                            |> fun methodToCall -> IntrinsicOutcome.RunBody (state, methodToCall)
                         | None ->
 
                         // A substitution that depends on the method's instantiation, which the VM
@@ -932,7 +941,7 @@ module IlMachineStateExecution =
 
         match outcome with
         | IntrinsicOutcome.Handled (state, commitment) -> state, commitment
-        | IntrinsicOutcome.RunIl (state, methodToCall) ->
+        | IntrinsicOutcome.RunBody (state, methodToCall) ->
 
         // Get zero values for all parameters.
         //

@@ -96,6 +96,101 @@ module ControlFlow =
 
         Set.ofList (fromInstructions @ fromHandlers)
 
+    /// The entries of the handlers and filters that the instruction at `offset` enters if it raises:
+    /// those of every exception region whose protected block holds it.
+    let handlersEntered (body : MethodInstructions<'methodVars>) (offset : int) : int list =
+        body.ExceptionRegions
+        |> Seq.collect (fun region ->
+            let offsets, handlerEntries = entries region
+
+            if offsets.TryOffset <= offset && offset < offsets.TryOffset + offsets.TryLength then
+                handlerEntries
+            else
+                []
+        )
+        |> List.ofSeq
+
+    /// <summary>
+    /// The conditional branches a known Boolean decides, by their offsets, with that Boolean.
+    /// </summary>
+    /// <remarks>
+    /// <c>constants</c> maps the offset of an instruction that falls through to the Boolean it is
+    /// known to push. A <c>brtrue</c> or <c>brfalse</c> straight after it, which no branch or
+    /// handler entry also lands on, pops that value. The answer holds an entry for the offset after
+    /// each such instruction that nothing else lands on, whatever instruction is there; only a
+    /// <c>brtrue</c> or <c>brfalse</c> reads it.
+    /// </remarks>
+    let decidedBranches (body : MethodInstructions<'methodVars>) (constants : Map<int, bool>) : Map<int, bool> =
+        let landedOn = landedOn body
+
+        constants
+        |> Map.toSeq
+        |> Seq.choose (fun (offset, value) ->
+            let instruction =
+                match body.Locations.TryFind offset with
+                | Some instruction -> instruction
+                | None -> invalidArg (nameof constants) $"No instruction starts at offset %d{offset}"
+
+            match successorsOf offset instruction with
+            | Successors.FallThrough -> ()
+            | _ ->
+                invalidArg
+                    (nameof constants)
+                    $"The instruction at offset %d{offset}, %O{instruction}, does not fall through"
+
+            let next = offset + IlOp.NumberOfBytes instruction
+
+            if landedOn.Contains next then None else Some (next, value)
+        )
+        |> Map.ofSeq
+
+    /// The successors of the instruction at `offset`, following a `brtrue` or `brfalse` that
+    /// `decided` (as `decidedBranches` gives it) holds only the way its Boolean chooses.
+    let successorsDecided (decided : Map<int, bool>) (offset : int) (instruction : IlOp) : int list =
+        let fallThrough = offset + IlOp.NumberOfBytes instruction
+
+        let chosen (jumpWhen : bool) (target : int) : int list =
+            match Map.tryFind offset decided with
+            | Some value when value = jumpWhen -> [ target ]
+            | Some _ -> [ fallThrough ]
+            | None -> [ fallThrough ; target ]
+
+        match instruction, successorsOf offset instruction with
+        | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _),
+          Successors.TargetsAndFallThrough [ target ] -> chosen true target
+        | IlOp.UnaryConst (UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _),
+          Successors.TargetsAndFallThrough [ target ] -> chosen false target
+        | _, Successors.None -> []
+        | _, Successors.FallThrough -> [ fallThrough ]
+        | _, Successors.Targets targets -> targets
+        | _, Successors.TargetsAndFallThrough targets -> fallThrough :: targets
+        | _, Successors.Leave target -> [ target ]
+
+    /// The offsets control reaches from the entry of `body` when the instruction at each offset
+    /// goes on to `successors offset instruction`, and to the handlers it enters if it raises
+    /// (`handlersEntered`). A successor that is not an instruction of the body is ignored.
+    let reachable (body : MethodInstructions<'methodVars>) (successors : int -> IlOp -> int list) : Set<int> =
+        let seen = System.Collections.Generic.HashSet<int> ()
+        let worklist = System.Collections.Generic.Queue<int> ()
+
+        let visit (offset : int) : unit =
+            if body.Locations.ContainsKey offset && seen.Add offset then
+                worklist.Enqueue offset
+
+        visit 0
+
+        while worklist.Count > 0 do
+            let offset = worklist.Dequeue ()
+
+            for next in successors offset body.Locations.[offset] do
+                visit next
+
+            // A handler runs only when something in its protected block has.
+            for next in handlersEntered body offset do
+                visit next
+
+        Set.ofSeq seen
+
     /// <summary>
     /// The offsets a run of <c>body</c> may execute: those control reaches from the entry by
     /// fall-through, branches and <c>leave</c>, and the entry of every handler (and filter) whose
@@ -112,80 +207,4 @@ module ControlFlow =
     /// an offset a run executes.
     /// </remarks>
     let mayExecute (body : MethodInstructions<'methodVars>) (constants : Map<int, bool>) : Set<int> =
-        let landedOn = landedOn body
-
-        // The value on top of the stack on entry to each offset only the instruction before it
-        // leads to, where that instruction pushed a known Boolean.
-        let known : Map<int, bool> =
-            constants
-            |> Map.toSeq
-            |> Seq.choose (fun (offset, value) ->
-                let instruction =
-                    match body.Locations.TryFind offset with
-                    | Some instruction -> instruction
-                    | None -> invalidArg (nameof constants) $"No instruction starts at offset %d{offset}"
-
-                match successorsOf offset instruction with
-                | Successors.FallThrough -> ()
-                | _ ->
-                    invalidArg
-                        (nameof constants)
-                        $"The instruction at offset %d{offset}, %O{instruction}, does not fall through"
-
-                let next = offset + IlOp.NumberOfBytes instruction
-
-                if landedOn.Contains next then None else Some (next, value)
-            )
-            |> Map.ofSeq
-
-        let successors (offset : int) (instruction : IlOp) : int list =
-            let fallThrough = offset + IlOp.NumberOfBytes instruction
-
-            let chosen (jumpWhen : bool) (target : int) : int list =
-                match Map.tryFind offset known with
-                | Some value when value = jumpWhen -> [ target ]
-                | Some _ -> [ fallThrough ]
-                | None -> [ fallThrough ; target ]
-
-            match instruction, successorsOf offset instruction with
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _ | UnaryConstIlOp.Brtrue_s _),
-              Successors.TargetsAndFallThrough [ target ] -> chosen true target
-            | IlOp.UnaryConst (UnaryConstIlOp.Brfalse _ | UnaryConstIlOp.Brfalse_s _),
-              Successors.TargetsAndFallThrough [ target ] -> chosen false target
-            | _, Successors.None -> []
-            | _, Successors.FallThrough -> [ fallThrough ]
-            | _, Successors.Targets targets -> targets
-            | _, Successors.TargetsAndFallThrough targets -> fallThrough :: targets
-            | _, Successors.Leave target -> [ target ]
-
-        let seen = System.Collections.Generic.HashSet<int> ()
-        let worklist = System.Collections.Generic.Queue<int> ()
-
-        let visit (offset : int) : unit =
-            if body.Locations.ContainsKey offset && seen.Add offset then
-                worklist.Enqueue offset
-
-        visit 0
-
-        while worklist.Count > 0 do
-            while worklist.Count > 0 do
-                let offset = worklist.Dequeue ()
-
-                for next in successors offset body.Locations.[offset] do
-                    visit next
-
-            // A handler runs only when something in its protected block has; entering one can
-            // reach another protected block, so repeat until nothing new is entered.
-            for region in body.ExceptionRegions do
-                let offsets, handlerEntries = entries region
-
-                if
-                    seen
-                    |> Seq.exists (fun offset ->
-                        offsets.TryOffset <= offset && offset < offsets.TryOffset + offsets.TryLength
-                    )
-                then
-                    List.iter visit handlerEntries
-
-
-        Set.ofSeq seen
+        reachable body (successorsDecided (decidedBranches body constants))
