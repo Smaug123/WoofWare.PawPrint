@@ -1,6 +1,28 @@
 namespace WoofWare.PawPrint.Analysis
 
+open System.Reflection.Metadata
 open WoofWare.PawPrint
+
+/// A field definition, by the assembly that defines it and its row in that assembly's field table.
+type internal FieldKey =
+    {
+        AssemblyFullName : string
+        Row : int
+    }
+
+    /// The field's handle in its assembly.
+    member this.Handle : FieldDefinitionHandle =
+        Ecma335.MetadataTokens.FieldDefinitionHandle this.Row
+
+[<RequireQualifiedAccess>]
+module internal FieldKey =
+
+    /// The field `field` of the assembly of full name `assemblyFullName`.
+    let make (assemblyFullName : string) (field : FieldDefinitionHandle) : FieldKey =
+        {
+            AssemblyFullName = assemblyFullName
+            Row = Ecma335.MetadataTokens.GetRowNumber (FieldDefinitionHandle.op_Implicit field : EntityHandle)
+        }
 
 /// An object a stack slot may hold, by the type a body spells for it: an index into
 /// `BodySpellings.Spellings`. The spellings are the body's own, so a type variable in one is the
@@ -23,6 +45,10 @@ type internal SpelledObject =
     /// known, `Within` the declared parameter type. The body never stores to the argument or takes
     /// its address, so it holds that object throughout.
     | Argument of index : int * declared : int
+    /// What a `ldfld` or `ldsfld` of this field loads: what the field's writers store in it, where
+    /// `Assumption.FieldsWrittenVisibly` lets the analysis follow them; or, where it does not,
+    /// `Within` the field's declared type.
+    | Field of field : FieldKey * declared : int
 
 /// An integer as the evaluation stack holds it.
 [<RequireQualifiedAccess>]
