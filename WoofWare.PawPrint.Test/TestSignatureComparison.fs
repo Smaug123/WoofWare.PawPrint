@@ -1080,6 +1080,51 @@ public class Holder
         | other -> failwith $"expected SignatureArrayOrderDef to be unavailable, got %A{other}"
 
     [<Test>]
+    let ``the first parameter that differs answers, before any later one is resolved`` () : unit =
+        // `MetaSig::CompareMethodSigs` returns at the first element that compares unequal, so a
+        // later parameter naming an assembly that cannot be bound is never resolved, and the
+        // signatures are simply unequal.
+        let definingImage =
+            Roslyn.compileAssembly
+                "SignatureParameterOrderDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Mid { }" ]
+
+        let compileUser (name : string) (firstParameter : string) : DumpedAssembly =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definingImage ]
+                [
+                    $"public class Holder {{ public int this[%s{firstParameter} a, Mid b] => 0; }}"
+                ]
+            |> read
+
+        let left = compileUser "SignatureParameterOrderLeft" "int"
+        let right = compileUser "SignatureParameterOrderRight" "long"
+        let leftSig = holderProperty left "Item"
+        let rightSig = holderProperty right "Item"
+
+        // The premise: the first parameters differ, and the second names a type by reference.
+        match List.ofSeq leftSig.ParameterTypes, List.ofSeq rightSig.ParameterTypes with
+        | [ TypeDefn.PrimitiveType PrimitiveType.Int32 ; TypeDefn.FromReference _ ],
+          [ TypeDefn.PrimitiveType PrimitiveType.Int64 ; TypeDefn.FromReference _ ] -> ()
+        | l, r -> failwith $"expected (int, Mid) and (long, Mid), got %O{l} and %O{r}"
+
+        SignatureComparison.compareDecodedSignatures
+            fixture.LoggerFactory
+            noRuntimeDirs
+            "test"
+            (LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly right)
+            left
+            leftSig
+            right
+            rightSig
+        |> snd
+        |> shouldEqual (Ok false)
+
+    [<Test>]
     let ``a generic instantiation's definition is compared before its argument count`` () : unit =
         // `CompareElementType` reads a GENERICINST's definition before its argument count. A
         // count mismatch over one definition needs malformed metadata, since the arity is part of

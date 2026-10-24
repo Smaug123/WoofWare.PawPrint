@@ -37,6 +37,8 @@ module TestUnmodelledBinding =
             MethodSignature : MemberReferenceHandle
             /// `N.Exported`, exported from another file of the assembly.
             FileExport : ExportedTypeHandle
+            /// `N.Derived`, whose base type is `System.Gone`, which CoreLib does not declare.
+            Derived : TypeDefinitionHandle
         }
 
     let private emit () : byte[] * Shapes =
@@ -131,7 +133,8 @@ module TestUnmodelledBinding =
             il.OpCode ILOpCode.Ret
             MethodBodyStreamEncoder(ilStream).AddMethodBody il
 
-        // `<Module>` is row 1 and `Holder` row 2, which declares `M`, MethodDef row 1.
+        // `<Module>` is row 1, `Holder` row 2, which declares `M`, MethodDef row 1, and `Derived` row
+        // 3, which declares no method.
         metadata.AddTypeDefinition (
             TypeAttributes.NotPublic,
             Unchecked.defaultof<StringHandle>,
@@ -151,6 +154,16 @@ module TestUnmodelledBinding =
             MetadataTokens.MethodDefinitionHandle 1
         )
         |> ignore<TypeDefinitionHandle>
+
+        let derived =
+            metadata.AddTypeDefinition (
+                TypeAttributes.Public,
+                metadata.GetOrAddString "N",
+                metadata.GetOrAddString "Derived",
+                TypeReferenceHandle.op_Implicit absent,
+                MetadataTokens.FieldDefinitionHandle 1,
+                MetadataTokens.MethodDefinitionHandle 2
+            )
 
         let m =
             metadata.AddMethodDefinition (
@@ -215,6 +228,7 @@ module TestUnmodelledBinding =
             MethodParent = methodParent
             MethodSignature = methodSignature
             FileExport = fileExport
+            Derived = derived
         }
 
     /// The emitted image read, CoreLib, and everything needed to resolve against them.
@@ -389,3 +403,24 @@ module TestUnmodelledBinding =
               Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
                 ()
             | _, other -> failwith $"expected System.Gone to be absent, got %A{other}"
+
+    [<Test>]
+    let ``a type whose base type is absent is a named miss`` () : unit =
+        let f = fixture ()
+        let derived = f.Analysed.TypeDefs.[f.Shapes.Derived]
+
+        match
+            TypeResolution.resolveTypeFromDefn
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                (TypeDefn.FromDefinition (derived.Identity, SignatureTypeKind.Class))
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                f.Analysed
+                f.Assemblies
+        with
+        | _,
+          Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+            ()
+        | _, other -> failwith $"expected the base type to be absent, got %A{other}"
