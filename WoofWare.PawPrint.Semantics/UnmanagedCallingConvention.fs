@@ -111,8 +111,9 @@ module UnmanagedCallingConvention =
         | None -> Some conventions
 
     /// The calling convention CoreCLR compiles a method for whose `[UnmanagedCallersOnly]` names
-    /// `callConvs`, where the method's signature has the default or vararg calling convention, as
-    /// every method definition's does.
+    /// `callConvs`, where the method's signature has the default or vararg calling convention, which
+    /// ECMA-335 gives every method definition. CoreCLR reads another convention, which only
+    /// hand-written IL can give one, from the signature instead.
     let ofCallersOnly (callConvs : UnmanagedCallersOnlyCallConvs) : CallersOnlyConvention =
         match callConvs with
         | UnmanagedCallersOnlyCallConvs.Unnamed -> CallersOnlyConvention.PlatformDefault

@@ -1281,11 +1281,12 @@ module CustomAttribute =
             | Error e -> UnmanagedCallersOnlyCallConvs.Malformed e
             | Ok (header, valueOffset) ->
 
+            // `GetNonEmptyString` refuses the null name and the empty one; the empty one matches no
+            // argument below, which refuses it as well.
             match header.Name with
-            | None
-            | Some "" ->
+            | None ->
                 UnmanagedCallersOnlyCallConvs.Malformed
-                    $"CustomAttrib blob: named arg at offset %d{cursor} has no name, which GetNonEmptyString refuses"
+                    $"CustomAttrib blob: named arg at offset %d{cursor} has the null name, which GetNonEmptyString refuses"
             | Some name ->
 
             match header.ElemType, name with

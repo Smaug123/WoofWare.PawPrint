@@ -4329,7 +4329,9 @@ module EscapeAnalysis =
         // load more of a parameter's type. A convention the JIT cannot read raises, or kills the
         // process, before it loads the parameters' types; as where the JIT refuses a body
         // (`BoxedByRefLikeReceiver`), the answer keeps what the method would otherwise raise, and
-        // is unknown from its entry.
+        // is unknown from its entry. A method whose own signature names an unmanaged convention,
+        // which only hand-written IL can spell, CoreCLR reads from that signature instead; that is
+        // not modelled, and such a method is read here by its attribute.
         let parameterPosition, conventionFailures =
             match MethodInfo.unmanagedCallersOnly method with
             | None -> JitTypePosition.OwnParameter, Set.empty
