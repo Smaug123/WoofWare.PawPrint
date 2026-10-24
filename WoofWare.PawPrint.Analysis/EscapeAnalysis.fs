@@ -631,6 +631,9 @@ type EscapeAnalysisState =
             FieldContents : Map<FieldKey, ObjectClasses option>
             /// Where the IL of each assembly asked about so far writes its fields (`fieldWrites`).
             FieldWrites : Map<string, FieldWrites>
+            /// The facts of the IL of each method asked about so far whose body an answer takes a
+            /// contract for in place of that IL (`writerFacts`).
+            OwnFacts : Map<MethodKey, LocalFacts>
             /// The facts of each instance asked about so far (`instanceFacts`).
             InstanceFacts : Map<MethodInstance, LocalFacts>
         }
@@ -810,6 +813,7 @@ module EscapeAnalysis =
             Returns = Map.empty
             FieldContents = Map.empty
             FieldWrites = Map.empty
+            OwnFacts = Map.empty
             InstanceFacts = Map.empty
         }
 
@@ -3632,7 +3636,13 @@ module EscapeAnalysis =
             | MethodBody.Il body -> Runs.Il (body, None)
 
     /// What one body does by itself.
-    let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
+    /// The facts of `key`'s body, where CoreCLR runs `runs` for it (`runsFor`).
+    let private factsOfRuns
+        (state : EscapeAnalysisState)
+        (key : MethodKey)
+        (runs : Runs)
+        : EscapeAnalysisState * LocalFacts
+        =
         let assembly, method = methodOf state key
 
         let contracted
@@ -3667,7 +3677,7 @@ module EscapeAnalysis =
             names
             |> List.map (fun name -> ThrownType.Exactly (corelibType state name.Namespace name.Name))
 
-        match runsFor state.Assumptions assembly key with
+        match runs with
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
@@ -6337,7 +6347,8 @@ module EscapeAnalysis =
         match state.Facts.TryFind key with
         | Some facts -> state, facts
         | None ->
-            let state, facts = factsOf state key
+            let assembly = assemblyOf state key.AssemblyFullName
+            let state, facts = factsOfRuns state key (runsFor state.Assumptions assembly key)
 
             { state with
                 Facts = state.Facts.Add (key, facts)
@@ -6974,6 +6985,36 @@ module EscapeAnalysis =
             },
             refined
 
+    /// The IL that says what `instance` stores, where it writes a field (`fieldContents`), and its
+    /// facts: where CoreCLR runs that IL, the instance's own; where an answer takes an assumption's
+    /// contract, or CoreLib's resource lookup or `Object.GetType`, in place of it, those of the IL
+    /// itself, since the contract says what the IL raises, and the IL still stores what it stores.
+    /// `None` where no IL of the method says (a native, or an intrinsic whose IL is not what it
+    /// runs).
+    let private writerFacts
+        (state : EscapeAnalysisState)
+        (instance : MethodInstance)
+        : EscapeAnalysisState * (MethodInstructions<TypeDefn> * LocalFacts) option
+        =
+        let key = instance.Definition
+        let assembly, method = methodOf state key
+
+        match runsFor state.Assumptions assembly key, MethodInfo.tryIlBody method with
+        | Runs.Il (body, _), _ ->
+            let state, facts = instanceFacts state instance
+            state, Some (body, facts)
+        | (Runs.Assumed _ | Runs.ResourceLookup | Runs.ObjectGetType), Some own ->
+            match state.OwnFacts.TryFind key with
+            | Some facts -> state, Some (own, facts)
+            | None ->
+                let state, facts = factsOfRuns state key (Runs.Il (own, None))
+
+                { state with
+                    OwnFacts = state.OwnFacts.Add (key, facts)
+                },
+                Some (own, facts)
+        | _ -> state, None
+
     /// How many classes an object a call returns, or passes, may be of before only the type
     /// declared for it says what it is.
     let private returnedClassesLimit : int = 8
@@ -7090,11 +7131,8 @@ module EscapeAnalysis =
                                         Passed = Map.empty
                                     }
 
-                            let state, facts = instanceFacts state instance
-
                             // The writer's facts say what it stores only where they are of the IL
-                            // whose store this is: a contract in place of its body says nothing of
-                            // what it stores.
+                            // whose store this is.
                             let storedBy (op : IlOp option) : MetadataToken option =
                                 match op with
                                 | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Stfld | UnaryMetadataTokenIlOp.Stsfld),
@@ -7102,16 +7140,17 @@ module EscapeAnalysis =
                                     Some token.Token
                                 | _ -> None
 
-                            let ownStore =
-                                match runsFor state.Assumptions assembly key, MethodInfo.tryIlBody method with
-                                | Runs.Il (body, _), Some own ->
-                                    let scanned = storedBy (own.Locations.TryFind offset)
-                                    scanned.IsSome && storedBy (body.Locations.TryFind offset) = scanned
-                                | _ -> false
+                            let scanned =
+                                MethodInfo.tryIlBody method
+                                |> Option.bind (fun own -> storedBy (own.Locations.TryFind offset))
 
-                            if not ownStore then
+                            match writerFacts state instance with
+                            | state, None -> state, None
+                            | state, Some (body, _) when
+                                scanned.IsNone || storedBy (body.Locations.TryFind offset) <> scanned
+                                ->
                                 state, None
-                            else
+                            | state, Some (_, facts) ->
 
                             match Map.tryFind offset facts.Stored with
                             | Some (StackValue.Objects objects) ->
