@@ -499,7 +499,8 @@ module AbstractMachine =
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
-        | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
+        | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.StructureMarshalerBody _) ->
             StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
         | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
             MulticastDelegateStub.execute loggerFactory baseClassTypes thread instruction state
