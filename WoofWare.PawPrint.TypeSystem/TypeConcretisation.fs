@@ -777,11 +777,19 @@ module TypeConcretization =
             | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
             | TypeResolutionResult.NotFound miss ->
                 failwithf "Concretizing type reference %s from %s: %O" typeRef.Name currentAssemblyFullName miss
+            | TypeResolutionResult.Unmodelled unmodelled ->
+                failwithf
+                    "Concretizing type reference %s from %s: %s"
+                    typeRef.Name
+                    currentAssemblyFullName
+                    unmodelled.Diagnostic
             | TypeResolutionResult.FirstLoadAssy assemblyRef ->
                 let handle, referencedIn = assemblyRef.Handle
 
                 let newAssemblies, _ =
-                    IAssemblyLoad.load loadAssembly ctx.LoadedAssemblies referencedIn handle
+                    (match loadAssembly.TryLoadAssembly ctx.LoadedAssemblies referencedIn handle with
+                     | Ok loaded -> loaded
+                     | Error failure -> failwith (string<AssemblyLoadFailure> failure))
 
                 let newCtx =
                     { ctx with
@@ -1713,14 +1721,18 @@ module TypeConcretization =
             // nominal `TypeDefn`s in places (`SignatureTypeKind.Unknown` among them) where the
             // kind is not recovered from a blob at all.
             let assemblies, same =
-                SignatureComparison.compareTypeTokens
-                    loadAssembly
-                    $"comparing a signature of %s{leftCtx.AssemblyFullName} with one of %s{rightCtx.AssemblyFullName}"
-                    ctx.LoadedAssemblies
-                    (ctx.LoadedAssemblies.ByDefinitionName leftCtx.AssemblyFullName)
-                    leftTy
-                    (ctx.LoadedAssemblies.ByDefinitionName rightCtx.AssemblyFullName)
-                    rightTy
+                match
+                    SignatureComparison.compareTypeTokens
+                        loadAssembly
+                        $"comparing a signature of %s{leftCtx.AssemblyFullName} with one of %s{rightCtx.AssemblyFullName}"
+                        ctx.LoadedAssemblies
+                        (ctx.LoadedAssemblies.ByDefinitionName leftCtx.AssemblyFullName)
+                        leftTy
+                        (ctx.LoadedAssemblies.ByDefinitionName rightCtx.AssemblyFullName)
+                        rightTy
+                with
+                | assemblies, Ok same -> assemblies, same
+                | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
             same,
             { ctx with
@@ -2173,11 +2185,15 @@ module Concretization =
                 | None -> assemblies, concreteTypes
                 | Some concreteType ->
                     let assemblies =
-                        BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                            loadAssembly
-                            assemblies
-                            (assemblies.ByDefinitionName concreteType.AssemblyFullName)
-                            concreteType.Definition.Get
+                        match
+                            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                                loadAssembly
+                                assemblies
+                                (assemblies.ByDefinitionName concreteType.AssemblyFullName)
+                                concreteType.Definition.Get
+                        with
+                        | assemblies, None -> assemblies
+                        | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
                     let outerAssembly = assemblies.ByDefinitionName concreteType.AssemblyFullName
                     let outerTypeDef = outerAssembly.TypeDefs.[concreteType.Definition.Get]
@@ -2258,11 +2274,15 @@ module Concretization =
 
         // Ensure base type assemblies are loaded for the declaring type
         let assemblies =
-            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                loadAssembly
-                assemblies
-                (assemblies.ByDefinitionName declaringType.AssemblyFullName)
-                declaringType.Definition.Get
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    loadAssembly
+                    assemblies
+                    (assemblies.ByDefinitionName declaringType.AssemblyFullName)
+                    declaringType.Definition.Get
+            with
+            | assemblies, None -> assemblies
+            | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
         let concCtx =
             {

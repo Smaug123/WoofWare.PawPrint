@@ -18,6 +18,7 @@ module BaseChainLoading =
         | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
             assemblies, Ok (resolvedAssembly, resolvedType.TypeDefHandle)
         | TypeResolutionResult.NotFound miss -> assemblies, Error (BaseChainFailure.BaseTypeAbsent miss)
+        | TypeResolutionResult.Unmodelled unmodelled -> assemblies, Error (BaseChainFailure.Unmodelled unmodelled)
         | TypeResolutionResult.FirstLoadAssy assemblyRef ->
             let handle, referencedIn = assemblyRef.Handle
 
@@ -49,10 +50,17 @@ module BaseChainLoading =
             assemblies, Ok (resolvedAssembly, identity.TypeDefinition.Get)
         | TypeDefn.FromReference (typeRef, _) -> ensureTypeRefResolved loadAssembly assemblies sourceAssembly typeRef
         | unexpected ->
-            failwithf
-                "Unexpected TypeDefn shape while resolving base type from %s: %O"
-                sourceAssembly.DefinitionFullName
-                unexpected
+            assemblies,
+            Error (
+                BaseChainFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            sprintf
+                                "Unexpected TypeDefn shape while resolving base type from %s: %O"
+                                sourceAssembly.DefinitionFullName
+                                unexpected
+                    }
+            )
 
     /// <remarks>
     /// This threads the <c>DumpedAssembly</c> itself rather than its <c>AssemblyName</c>, and
@@ -113,16 +121,3 @@ module BaseChainLoading =
         =
         let typeDef = assy.TypeDefs.[typeDefinitionHandle]
         ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy typeDef.BaseType
-
-    /// As <see cref="tryEnsureTypeDefinitionBaseAssembliesLoaded"/>, for the callers that have
-    /// nowhere to put a failed bind.
-    let ensureTypeDefinitionBaseAssembliesLoaded
-        (loadAssembly : IAssemblyLoad)
-        (assemblies : LoadedAssemblies)
-        (assy : DumpedAssembly)
-        (typeDefinitionHandle : TypeDefinitionHandle)
-        : LoadedAssemblies
-        =
-        match tryEnsureTypeDefinitionBaseAssembliesLoaded loadAssembly assemblies assy typeDefinitionHandle with
-        | assemblies, None -> assemblies
-        | _, Some failure -> failwith (string<BaseChainFailure> failure)

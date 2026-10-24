@@ -169,7 +169,17 @@ public class Generic2<T, U>
     /// attempt to load one that is not fails outright.
     let private noRuntimeDirs : string seq = Seq.empty
 
-    let private compare (left : MethodSignature<TypeDefn>) (right : MethodSignature<TypeDefn>) : bool =
+    /// A comparison's answer, failing the test where it could not bind a type either side names.
+    let private answered (compared : Result<bool, TypeBindingFailure>) : bool =
+        match compared with
+        | Ok answer -> answer
+        | Error failure -> failwith $"the comparison failed to bind: %s{TypeBindingFailure.describe failure}"
+
+    let private compareResult
+        (left : MethodSignature<TypeDefn>)
+        (right : MethodSignature<TypeDefn>)
+        : Result<bool, TypeBindingFailure>
+        =
         SignatureComparison.compareDecodedSignatures
             fixture.LoggerFactory
             noRuntimeDirs
@@ -180,6 +190,9 @@ public class Generic2<T, U>
             fixture.Assembly
             right
         |> snd
+
+    let private compare (left : MethodSignature<TypeDefn>) (right : MethodSignature<TypeDefn>) : bool =
+        compareResult left right |> answered
 
     [<Test>]
     let ``a signature equals itself`` () : unit =
@@ -393,7 +406,7 @@ public class Holder
             rightBytes
             right
         |> snd
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     [<Test>]
     let ``byte-identical blobs in the same assembly are equal`` () : unit =
@@ -415,7 +428,7 @@ public class Holder
             bytes
             decoded
         |> snd
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     // A modopt cannot be produced from C#, so the required-versus-optional distinction is reached
     // by building the two signatures directly. `CompareElementType` fails a CMOD_REQD against a
@@ -536,7 +549,7 @@ public class Holder
             user
             (signatureNamed "Q")
         |> snd
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``the same reference spelled in two modules names different types`` () : unit =
@@ -615,7 +628,7 @@ public class Holder
             right
             rightSig
         |> snd
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     [<Test>]
     let ``the same reference in one module compares equal without resolving it`` () : unit =
@@ -675,7 +688,7 @@ public class Holder
             user
             (signatureNamed "Q")
         |> snd
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``two rows describing one type are not the same reference`` () : unit =
@@ -753,21 +766,20 @@ public class Holder
         // Falling through to resolution is the point, and resolution cannot succeed here:
         // `SignatureTwoRowsMid` is neither loaded nor findable. Taking the shortcut would instead
         // answer "equal" without ever looking.
-        let exn =
-            Assert.Throws<exn> (fun () ->
-                SignatureComparison.compareDecodedSignatures
-                    fixture.LoggerFactory
-                    noRuntimeDirs
-                    "test"
-                    assemblies
-                    user
-                    duplicateRow
-                    user
-                    original
-                |> ignore
-            )
-
-        exn.Message |> shouldContainText "SignatureTwoRowsMid"
+        match
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                user
+                duplicateRow
+                user
+                original
+        with
+        | _, Error (TypeBindingFailure.AssemblyUnavailable reference) ->
+            reference.Name.Name |> shouldEqual "SignatureTwoRowsMid"
+        | _, other -> failwith $"expected SignatureTwoRowsMid to be unavailable, got %A{other}"
 
     [<Test>]
     let ``nested types are separated by their enclosing names, without resolving`` () : unit =
@@ -837,7 +849,7 @@ public class Holder
             user
             (signatureNamed "Q")
         |> snd
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     /// The decoded PropertySig of the single property named on `Holder` in the given assembly.
     let private holderProperty (assembly : DumpedAssembly) (name : string) : MethodSignature<TypeDefn> =
@@ -896,7 +908,7 @@ public class Holder
         let leftSig = holderProperty left "P"
         let rightSig = holderProperty right "P"
 
-        let compareUnder (definition : DumpedAssembly) : bool =
+        let compareUnder (definition : DumpedAssembly) : Result<bool, TypeBindingFailure> =
             let assemblies =
                 LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly(right).WithLoadedAssembly definition
 
@@ -913,11 +925,11 @@ public class Holder
 
         // The control: with the assembly that does declare `Mid`, the two references resolve to
         // one definition. So what the stand-in changes below is the resolution's answer alone.
-        compareUnder (read realDefinition) |> shouldEqual true
+        compareUnder (read realDefinition) |> shouldEqual (Ok true)
 
         // The stand-in carries the same definition identity, so the reference binds to it, and
         // then finds no `Mid` there.
-        compareUnder (read standIn) |> shouldEqual false
+        compareUnder (read standIn) |> shouldEqual (Ok false)
 
     [<Test>]
     let ``one type spelled with different kinds is unequal`` () : unit =
@@ -979,6 +991,7 @@ public class Holder
                 defining
                 right
             |> snd
+            |> answered
 
         // The premise: a TypeRef in one module and a TypeDef in another, naming one type with one
         // kind, are equal. Nothing but the kind separates the cases below from this one.
@@ -998,7 +1011,7 @@ public class Holder
             user
             (respell byReference)
         |> snd
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     [<Test>]
     let ``an array's element is compared before its rank`` () : unit =
@@ -1035,7 +1048,7 @@ public class Holder
         | TypeDefn.Array (TypeDefn.FromReference _, 2), TypeDefn.Array (TypeDefn.FromReference _, 3) -> ()
         | l, r -> failwith $"expected rank-2 and rank-3 arrays of a TypeRef, got %O{l} and %O{r}"
 
-        let compareUnder (assemblies : LoadedAssemblies) : bool =
+        let compareUnder (assemblies : LoadedAssemblies) : Result<bool, TypeBindingFailure> =
             SignatureComparison.compareDecodedSignatures
                 fixture.LoggerFactory
                 noRuntimeDirs
@@ -1055,14 +1068,16 @@ public class Holder
                 .WithLoadedAssembly(right)
                 .WithLoadedAssembly (read definingImage)
 
-        compareUnder loadable |> shouldEqual false
+        compareUnder loadable |> shouldEqual (Ok false)
 
         // Without it, the element's resolution fails before the ranks are ever read.
         let unloadable =
             LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly right
 
-        let exn = Assert.Throws<exn> (fun () -> compareUnder unloadable |> ignore)
-        exn.Message |> shouldContainText "SignatureArrayOrderDef"
+        match compareUnder unloadable with
+        | Error (TypeBindingFailure.AssemblyUnavailable reference) ->
+            reference.Name.Name |> shouldEqual "SignatureArrayOrderDef"
+        | other -> failwith $"expected SignatureArrayOrderDef to be unavailable, got %A{other}"
 
     [<Test>]
     let ``a generic instantiation's definition is compared before its argument count`` () : unit =
@@ -1106,7 +1121,7 @@ public class Holder
                 original.ParameterTypes
             )
 
-        let compareUnder (assemblies : LoadedAssemblies) : bool =
+        let compareUnder (assemblies : LoadedAssemblies) : Result<bool, TypeBindingFailure> =
             SignatureComparison.compareDecodedSignatures
                 fixture.LoggerFactory
                 noRuntimeDirs
@@ -1126,14 +1141,16 @@ public class Holder
                 .WithLoadedAssembly(right)
                 .WithLoadedAssembly (read definingImage)
 
-        compareUnder loadable |> shouldEqual false
+        compareUnder loadable |> shouldEqual (Ok false)
 
         // Without it, the definition's resolution fails before the counts are ever compared.
         let unloadable =
             LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly right
 
-        let exn = Assert.Throws<exn> (fun () -> compareUnder unloadable |> ignore)
-        exn.Message |> shouldContainText "SignatureGenericOrderDef"
+        match compareUnder unloadable with
+        | Error (TypeBindingFailure.AssemblyUnavailable reference) ->
+            reference.Name.Name |> shouldEqual "SignatureGenericOrderDef"
+        | other -> failwith $"expected SignatureGenericOrderDef to be unavailable, got %A{other}"
 
     [<Test>]
     let ``enclosing types are resolved on both sides before either nested leaf`` () : unit =
@@ -1166,7 +1183,7 @@ public class Holder
         let leftSig = holderProperty left "P"
         let rightSig = holderProperty right "P"
 
-        let compareUnder (assemblies : LoadedAssemblies) : bool =
+        let compareUnder (assemblies : LoadedAssemblies) : Result<bool, TypeBindingFailure> =
             SignatureComparison.compareDecodedSignatures
                 fixture.LoggerFactory
                 noRuntimeDirs
@@ -1186,7 +1203,7 @@ public class Holder
                 .WithLoadedAssembly(read x)
                 .WithLoadedAssembly (read y)
 
-        compareUnder both |> shouldEqual false
+        compareUnder both |> shouldEqual (Ok false)
 
         // And the same reference resolved from two users of one `Outer+Inner` is equal, so the
         // recursion over the enclosing chain does reach the leaf when the enclosers agree.
@@ -1205,7 +1222,7 @@ public class Holder
             left
             leftSig
         |> snd
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
         // The order: the left `Outer` binds to the stand-in, which does declare `Outer`, so the
         // enclosing comparison goes on to bind the right `Outer` — and `SignatureNestedOrderY` is
@@ -1214,8 +1231,10 @@ public class Holder
         let standInOnly =
             LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly(right).WithLoadedAssembly (read xStandIn)
 
-        let exn = Assert.Throws<exn> (fun () -> compareUnder standInOnly |> ignore)
-        exn.Message |> shouldContainText "SignatureNestedOrderY"
+        match compareUnder standInOnly with
+        | Error (TypeBindingFailure.AssemblyUnavailable reference) ->
+            reference.Name.Name |> shouldEqual "SignatureNestedOrderY"
+        | other -> failwith $"expected SignatureNestedOrderY to be unavailable, got %A{other}"
 
     // ----- function pointers ---------------------------------------------------------------------
 
@@ -1259,19 +1278,20 @@ public class Holder
     /// at all and would have compared the parameter lists and called them equal.
     [<Test>]
     let ``two function pointers with the same generic calling convention and count are refused`` () : unit =
-        let compareAt (leftCount : int) (rightCount : int) : unit -> bool =
-            fun () ->
-                compare
-                    (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic leftCount))
-                    (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic rightCount))
+        let compareAt (leftCount : int) (rightCount : int) : Result<bool, TypeBindingFailure> =
+            compareResult
+                (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic leftCount))
+                (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic rightCount))
 
-        let thrown = Assert.Throws<exn> (fun () -> compareAt 1 1 () |> ignore<bool>)
-        thrown.Message |> shouldContainText "GENERIC calling convention"
+        match compareAt 1 1 with
+        | Error (TypeBindingFailure.Unmodelled unmodelled) ->
+            unmodelled.Diagnostic |> shouldContainText "GENERIC calling convention"
+        | other -> failwith $"expected the comparison to be unmodelled, got %A{other}"
 
         // The parameter lists are identical here, so without the count comparison these would have
         // answered "equal" rather than "unequal".
-        compareAt 1 2 () |> shouldEqual false
-        compareAt 2 1 () |> shouldEqual false
+        compareAt 1 2 |> shouldEqual (Ok false)
+        compareAt 2 1 |> shouldEqual (Ok false)
 
         // Differing *parameter* counts at equal generic arity are refused too, not answered: that
         // comparison happens inside `CompareElementType` with the count byte reinterpreted as an element
@@ -1295,16 +1315,14 @@ public class Holder
 
         let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
 
-        let differingParameterCounts =
-            Assert.Throws<exn> (fun () ->
-                compare
-                    (propertyOfFunctionPointerType (generic [ int32 ]))
-                    (propertyOfFunctionPointerType (generic [ int32 ; int32 ]))
-                |> ignore<bool>
-            )
-
-        differingParameterCounts.Message
-        |> shouldContainText "GENERIC calling convention"
+        match
+            compareResult
+                (propertyOfFunctionPointerType (generic [ int32 ]))
+                (propertyOfFunctionPointerType (generic [ int32 ; int32 ]))
+        with
+        | Error (TypeBindingFailure.Unmodelled unmodelled) ->
+            unmodelled.Diagnostic |> shouldContainText "GENERIC calling convention"
+        | other -> failwith $"expected the comparison to be unmodelled, got %A{other}"
 
     /// The refusal sits *after* the calling-convention comparison, because every pairing whose bytes
     /// differ has an answer CoreCLR defines: it compares those bytes before it reads any count.

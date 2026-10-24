@@ -136,6 +136,7 @@ module IlMachineMemberResolution =
                 ifGeneric definedIn.TypeDefs.[resolved.TypeDefHandle]
             | TypeResolutionResult.NotFound _
             | TypeResolutionResult.FirstLoadAssy _ -> None
+            | TypeResolutionResult.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _

@@ -2364,16 +2364,22 @@ module NativeRuntimeTypeHelpers =
         // to be closed first: a MethodDef token may name a type whose base class lives in an
         // assembly this run has not touched, and `Module.ResolveMethod` is allowed to be the first
         // thing that touches it. Same discharge as `ExecutionConcretization.concretizeFieldDeclaringType`.
+        let loadedAssemblies =
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    (IlMachineState.loader loggerFactory state)
+                    state.TypeSystem._LoadedAssemblies
+                    assembly
+                    method.RequiredDeclaringType.Definition.Get
+            with
+            | assemblies, None -> assemblies
+            | _, Some failure -> failwith (string<BaseChainFailure> failure)
+
         let state =
             { state with
                 TypeSystem =
                     { state.TypeSystem with
-                        _LoadedAssemblies =
-                            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                                (IlMachineState.loader loggerFactory state)
-                                state.TypeSystem._LoadedAssemblies
-                                assembly
-                                method.RequiredDeclaringType.Definition.Get
+                        _LoadedAssemblies = loadedAssemblies
                     }
             }
 

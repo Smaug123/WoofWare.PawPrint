@@ -56,13 +56,17 @@ module MethodTableLayout =
         : TypeConcretization.ConcretizationContext<DumpedAssembly> * DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, assembly, typeInfo =
-            TypeResolution.resolveTypeFromRef
-                loggerFactory
-                dotnetRuntimeDirs
-                referencedInAssembly
-                target
-                typeGenericArgs
-                ctx.LoadedAssemblies
+            match
+                TypeResolution.resolveTypeFromRef
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    referencedInAssembly
+                    target
+                    typeGenericArgs
+                    ctx.LoadedAssemblies
+            with
+            | assemblies, Ok (assembly, typeInfo) -> assemblies, assembly, typeInfo
+            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
 
         { ctx with
             LoadedAssemblies = assemblies

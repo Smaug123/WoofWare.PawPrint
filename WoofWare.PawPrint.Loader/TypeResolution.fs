@@ -32,6 +32,9 @@ type ExportedTypeResolution =
     /// caller asked to be thrown at, whereas an absent type is simply not found.
     | BaseTypeAbsent of TypeResolutionMiss
 
+    /// The chain reached a shape PawPrint does not implement following.
+    | Unmodelled of UnmodelledBinding
+
 /// <summary>
 /// Where following an assembly's type forwarders arrived, before anything the arrived-at type
 /// depends on has been loaded.
@@ -47,6 +50,9 @@ type ExportChainArrival =
 
     /// As <see cref="ExportedTypeResolution.TypeAbsent" />.
     | TypeAbsent of TypeResolutionMiss
+
+    /// As <see cref="ExportedTypeResolution.Unmodelled" />.
+    | Unmodelled of UnmodelledBinding
 
 /// <summary>
 /// The definition a type reference names, found without loading any type.
@@ -67,6 +73,56 @@ type TypeReferenceIdentity =
 
     /// Every assembly on the way bound, and the last one does not declare the name.
     | TypeAbsent of TypeResolutionMiss
+
+    /// The way reached a shape PawPrint does not implement resolving.
+    | Unmodelled of UnmodelledBinding
+
+/// <summary>
+/// Why a type that a guest's metadata names could not be bound and loaded.
+/// </summary>
+/// <remarks>
+/// The first three are distinct facts the real runtime reports differently, as for
+/// <see cref="ExportedTypeResolution" />: an assembly nobody supplies is a
+/// <c>FileNotFoundException</c>, a name its assembly does not declare a <c>TypeLoadException</c>, and
+/// a base type missing from where its derived type's metadata says a <c>TypeLoadException</c> too, but
+/// one a non-throwing lookup does not catch.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type TypeBindingFailure =
+    /// A reference on the way names an assembly no runtime directory supplies.
+    | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+    /// Every assembly on the way bound, and the last one does not declare the name.
+    | TypeAbsent of TypeResolutionMiss
+    /// The type was found, and a type in its base chain is not declared where the metadata says it
+    /// is.
+    | BaseTypeAbsent of TypeResolutionMiss
+    /// The way reached a shape PawPrint does not implement binding.
+    | Unmodelled of UnmodelledBinding
+
+/// Functions on <see cref="TypeBindingFailure" />.
+[<RequireQualifiedAccess>]
+module TypeBindingFailure =
+
+    /// What a base chain that could not be walked to its end means for binding the type it belongs
+    /// to. A load the loader was not permitted to make is a bug in the caller, not a fact about the
+    /// guest's metadata, so it terminates.
+    let ofBaseChain (failure : BaseChainFailure) : TypeBindingFailure =
+        match failure with
+        | BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference) ->
+            TypeBindingFailure.AssemblyUnavailable reference
+        | BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) ->
+            failwith (string<BaseChainFailure> failure)
+        | BaseChainFailure.BaseTypeAbsent miss -> TypeBindingFailure.BaseTypeAbsent miss
+        | BaseChainFailure.Unmodelled unmodelled -> TypeBindingFailure.Unmodelled unmodelled
+
+    /// The failure, described for a run that stops on it.
+    let describe (failure : TypeBindingFailure) : string =
+        match failure with
+        | TypeBindingFailure.AssemblyUnavailable reference ->
+            $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
+        | TypeBindingFailure.TypeAbsent miss -> string<TypeResolutionMiss> miss
+        | TypeBindingFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
+        | TypeBindingFailure.Unmodelled unmodelled -> unmodelled.Diagnostic
 
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
 /// Operates on the loaded-assemblies dictionary directly, without requiring IlMachineState.
@@ -110,24 +166,6 @@ module TypeResolution =
                 // that got us here, so the next probe with this reference identity is a hit.
                 let assemblies, canonical = assemblies.WithBoundReference assemblyRef assy
                 Some (assemblies, canonical, canonical.Name)
-
-    /// <summary>
-    /// As <see cref="tryLoadAssembly"/>, for the majority of callers that have no way to report a
-    /// failed bind and so must terminate on one.
-    /// </summary>
-    let internal loadAssembly
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (referencedInAssembly : DumpedAssembly)
-        (r : AssemblyReferenceHandle)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * AssemblyName
-        =
-        match tryLoadAssembly loggerFactory dotnetRuntimeDirs referencedInAssembly r assemblies with
-        | Some loaded -> loaded
-        | None ->
-            let assemblyName = referencedInAssembly.AssemblyReferences.[r].Name
-            failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
 
     /// <summary>
     /// The interpreter's assembly loader: binds AssemblyReferences by simple name against
@@ -187,12 +225,60 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         (definedIn : DumpedAssembly)
         (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
-        : LoadedAssemblies
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies definedIn ty with
-        | assemblies, None -> assemblies
-        | _, Some failure -> failwith (string<BaseChainFailure> failure)
+        | assemblies, None -> assemblies, Ok (definedIn, ty)
+        | assemblies, Some failure -> assemblies, Error (TypeBindingFailure.ofBaseChain failure)
 
+    /// Bind `loadFirst`, which a resolution of `what` asked for, then carry on in the context that
+    /// binds it.
+    let private loadingFirst
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (what : string)
+        (loadFirst : WoofWare.PawPrint.AssemblyReference)
+        (assemblies : LoadedAssemblies)
+        : Result<LoadedAssemblies, TypeBindingFailure>
+        =
+        match
+            tryLoadAssembly
+                loggerFactory
+                dotnetRuntimeDirs
+                assemblies.[snd loadFirst.Handle]
+                (fst loadFirst.Handle)
+                assemblies
+        with
+        | None -> Error (TypeBindingFailure.AssemblyUnavailable loadFirst)
+        | Some (assemblies, _, _) -> Ok (LoadedAssemblies.assertReferenceBound what loadFirst assemblies)
+
+    /// Each of `items` put through `step` in order, threading the load context and stopping at the
+    /// first that fails.
+    let private traverseLoaded
+        (step : LoadedAssemblies -> 'a -> LoadedAssemblies * Result<'b, TypeBindingFailure>)
+        (assemblies : LoadedAssemblies)
+        (items : 'a seq)
+        : LoadedAssemblies * Result<ImmutableArray<'b>, TypeBindingFailure>
+        =
+        let builder = ImmutableArray.CreateBuilder<'b> ()
+        let mutable assemblies = assemblies
+        let mutable failure = None
+        use items = items.GetEnumerator ()
+
+        while failure.IsNone && items.MoveNext () do
+            match step assemblies items.Current with
+            | loaded, Ok item ->
+                assemblies <- loaded
+                builder.Add item
+            | loaded, Error failed ->
+                assemblies <- loaded
+                failure <- Some failed
+
+        match failure with
+        | Some failed -> assemblies, Error failed
+        | None -> assemblies, Ok (builder.ToImmutable ())
+
+    /// The top-level type `ns`.`name` that `assy` declares or forwards, its base chain primed.
     let rec internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -201,25 +287,18 @@ module TypeResolution =
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         match LoadedTypeResolution.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
-            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
-        | TypeResolutionResult.NotFound miss -> failwithf "Top-level type resolution failed: %O" miss
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef
+        | TypeResolutionResult.NotFound miss -> assemblies, Error (TypeBindingFailure.TypeAbsent miss)
+        | TypeResolutionResult.Unmodelled unmodelled -> assemblies, Error (TypeBindingFailure.Unmodelled unmodelled)
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let assemblies, _, _ =
-                loadAssembly
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    assemblies.[snd loadFirst.Handle]
-                    (fst loadFirst.Handle)
-                    assemblies
-
-            let assemblies =
-                LoadedAssemblies.assertReferenceBound $"top-level type %s{name}" loadFirst assemblies
-
-            resolveTopLevelTypeFromName loggerFactory dotnetRuntimeDirs ns name genericArgs assy assemblies
+            match loadingFirst loggerFactory dotnetRuntimeDirs $"top-level type %s{name}" loadFirst assemblies with
+            | Error failure -> assemblies, Error failure
+            | Ok assemblies ->
+                resolveTopLevelTypeFromName loggerFactory dotnetRuntimeDirs ns name genericArgs assy assemblies
 
     /// <summary>
     /// Follow <paramref name="ty" />'s forwarder chain to the assembly that declares the type,
@@ -246,6 +325,7 @@ module TypeResolution =
         match LoadedTypeResolution.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, ExportChainArrival.Arrived (assy, typeDef)
         | TypeResolutionResult.NotFound miss -> assemblies, ExportChainArrival.TypeAbsent miss
+        | TypeResolutionResult.Unmodelled unmodelled -> assemblies, ExportChainArrival.Unmodelled unmodelled
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             match
                 tryLoadAssembly
@@ -289,6 +369,8 @@ module TypeResolution =
             assemblies, ExportedTypeResolution.AssemblyUnavailable reference
         | assemblies, Some (BaseChainFailure.BaseTypeAbsent miss) ->
             assemblies, ExportedTypeResolution.BaseTypeAbsent miss
+        | assemblies, Some (BaseChainFailure.Unmodelled unmodelled) ->
+            assemblies, ExportedTypeResolution.Unmodelled unmodelled
         | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
             // Unreachable: the loader used here reads files. A caller's mistaken belief about
             // what is already loaded is a bug in us, not a fact to report onwards.
@@ -318,33 +400,43 @@ module TypeResolution =
         | assemblies, ExportChainArrival.AssemblyUnavailable reference ->
             assemblies, ExportedTypeResolution.AssemblyUnavailable reference
         | assemblies, ExportChainArrival.TypeAbsent miss -> assemblies, ExportedTypeResolution.TypeAbsent miss
+        | assemblies, ExportChainArrival.Unmodelled unmodelled ->
+            assemblies, ExportedTypeResolution.Unmodelled unmodelled
 
-    /// <summary>
-    /// As <see cref="tryResolveTypeFromExport"/>, for callers that have no way to report a chain
-    /// which does not arrive anywhere and so must terminate on one.
-    /// </summary>
-    let internal resolveTypeFromExport
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (fromAssembly : DumpedAssembly)
-        (ty : WoofWare.PawPrint.ExportedType)
-        (genericArgs : ImmutableArray<TypeDefn>)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+    /// The type a forwarder chain arrived at, or why it arrived at none.
+    let exportedType
+        (resolution : ExportedTypeResolution)
+        : Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        match tryResolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies with
-        | assemblies, ExportedTypeResolution.Forwarded (assy, typeDef) -> assemblies, assy, typeDef
-        | _, ExportedTypeResolution.AssemblyUnavailable reference ->
-            failwith $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
-        | _, ExportedTypeResolution.TypeAbsent miss ->
-            failwithf "Type forwarder %s from %s does not arrive: %O" ty.Name fromAssembly.DefinitionFullName miss
-        | _, ExportedTypeResolution.BaseTypeAbsent miss ->
-            failwithf
+        match resolution with
+        | ExportedTypeResolution.Forwarded (assy, typeDef) -> Ok (assy, typeDef)
+        | ExportedTypeResolution.AssemblyUnavailable reference ->
+            Error (TypeBindingFailure.AssemblyUnavailable reference)
+        | ExportedTypeResolution.TypeAbsent miss -> Error (TypeBindingFailure.TypeAbsent miss)
+        | ExportedTypeResolution.BaseTypeAbsent miss -> Error (TypeBindingFailure.BaseTypeAbsent miss)
+        | ExportedTypeResolution.Unmodelled unmodelled -> Error (TypeBindingFailure.Unmodelled unmodelled)
+
+    /// A failure to follow the forwarder `ty` of `fromAssembly`, described for a run that stops on
+    /// it.
+    let describeExportFailure
+        (ty : WoofWare.PawPrint.ExportedType)
+        (fromAssembly : DumpedAssembly)
+        (failure : TypeBindingFailure)
+        : string
+        =
+        match failure with
+        | TypeBindingFailure.TypeAbsent miss ->
+            sprintf "Type forwarder %s from %s does not arrive: %O" ty.Name fromAssembly.DefinitionFullName miss
+        | TypeBindingFailure.BaseTypeAbsent miss ->
+            sprintf
                 "Type forwarder %s from %s arrives at a type whose base chain is broken: %O"
                 ty.Name
                 fromAssembly.DefinitionFullName
                 miss
+        | TypeBindingFailure.AssemblyUnavailable _
+        | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
 
+    /// The type `target`, a reference of `referencedInAssembly`, names, its base chain primed.
     let rec internal resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -352,30 +444,45 @@ module TypeResolution =
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
-            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
-        | TypeResolutionResult.NotFound miss ->
-            failwithf
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef
+        | TypeResolutionResult.NotFound miss -> assemblies, Error (TypeBindingFailure.TypeAbsent miss)
+        | TypeResolutionResult.Unmodelled unmodelled -> assemblies, Error (TypeBindingFailure.Unmodelled unmodelled)
+        | TypeResolutionResult.FirstLoadAssy loadFirst ->
+            match
+                loadingFirst loggerFactory dotnetRuntimeDirs $"type reference %s{target.Name}" loadFirst assemblies
+            with
+            | Error failure -> assemblies, Error failure
+            | Ok assemblies ->
+                resolveTypeFromRef
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    referencedInAssembly
+                    target
+                    typeGenericArgs
+                    assemblies
+
+    /// A failure to bind `target`, a type reference of `referencedInAssembly`, described for a run
+    /// that stops on it.
+    let describeReferenceFailure
+        (target : TypeRef)
+        (referencedInAssembly : DumpedAssembly)
+        (failure : TypeBindingFailure)
+        : string
+        =
+        match failure with
+        | TypeBindingFailure.TypeAbsent miss ->
+            sprintf
                 "Type reference %s from %s does not resolve: %O"
                 target.Name
                 referencedInAssembly.DefinitionFullName
                 miss
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let assemblies, _, _ =
-                loadAssembly
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    assemblies.[snd loadFirst.Handle]
-                    (fst loadFirst.Handle)
-                    assemblies
-
-            let assemblies =
-                LoadedAssemblies.assertReferenceBound $"type reference %s{target.Name}" loadFirst assemblies
-
-            resolveTypeFromRef loggerFactory dotnetRuntimeDirs referencedInAssembly target typeGenericArgs assemblies
+        | TypeBindingFailure.AssemblyUnavailable _
+        | TypeBindingFailure.BaseTypeAbsent _
+        | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
 
     /// <summary>
     /// Resolve a TypeRef to the identity of the TypeDef it names, following AssemblyRefs and type
@@ -403,6 +510,7 @@ module TypeResolution =
         match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
         | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, TypeReferenceIdentity.Resolved identity
         | TypeResolutionResult.NotFound miss -> assemblies, TypeReferenceIdentity.TypeAbsent miss
+        | TypeResolutionResult.Unmodelled unmodelled -> assemblies, TypeReferenceIdentity.Unmodelled unmodelled
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let referencing = assemblies.[snd loadFirst.Handle]
 
@@ -416,25 +524,6 @@ module TypeResolution =
 
                 tryResolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies
 
-    /// <summary>
-    /// As <see cref="tryResolveTypeRefIdentity" />, for callers that must terminate on a reference to
-    /// an assembly that cannot be bound. <c>Error</c> is a plain absence: every assembly on the way
-    /// was bound, and the last one does not declare the name.
-    /// </summary>
-    let resolveTypeRefIdentity
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (referencedInAssembly : DumpedAssembly)
-        (target : TypeRef)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
-        =
-        match tryResolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies with
-        | assemblies, TypeReferenceIdentity.Resolved identity -> assemblies, Ok identity
-        | assemblies, TypeReferenceIdentity.TypeAbsent miss -> assemblies, Error miss
-        | _, TypeReferenceIdentity.AssemblyUnavailable reference ->
-            failwith $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
-
     let internal resolveType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -442,7 +531,7 @@ module TypeResolution =
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         let target = assy.TypeRefs.[ty]
         resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy target genericArgs assemblies
@@ -483,22 +572,26 @@ module TypeResolution =
     /// not here), so for one the convention is that it names <c>T&lt;!0, ..., !(n-1)&gt;</c> read
     /// in the environment: the environment's first <c>n</c> entries, copied as they stand. An
     /// empty environment leaves the type open, and an environment with fewer than <c>n</c>
-    /// entries is refused rather than leaving some parameters unsubstituted.
+    /// entries is unmodelled rather than leaving some parameters unsubstituted.
     /// </remarks>
     let private instantiateBareSpelling
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (definition : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : Result<WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         let arity = definition.Generics.Length
 
         if arity = 0 || typeGenericArgs.IsEmpty then
-            TypeInfo.applyGenericArgs ImmutableArray.Empty definition
+            Ok (TypeInfo.applyGenericArgs ImmutableArray.Empty definition)
         elif typeGenericArgs.Length < arity then
-            failwith
-                $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} is spelled bare in a generic environment of %d{typeGenericArgs.Length} argument(s), fewer than its %d{arity} generic parameter(s)"
+            {
+                Diagnostic =
+                    $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} is spelled bare in a generic environment of %d{typeGenericArgs.Length} argument(s), fewer than its %d{arity} generic parameter(s)"
+            }
+            |> TypeBindingFailure.Unmodelled
+            |> Error
         else
-            TypeInfo.applyGenericArgs (ImmutableArray.CreateRange (Seq.truncate arity typeGenericArgs)) definition
+            Ok (TypeInfo.applyGenericArgs (ImmutableArray.CreateRange (Seq.truncate arity typeGenericArgs)) definition)
 
     /// A cyclic environment is not something metadata can express: environments are built by the
     /// interpreter, and every live path builds them out of `concreteHandleToTypeDefn`, which emits
@@ -608,7 +701,7 @@ module TypeResolution =
         (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * TypeDefn
+        : LoadedAssemblies * Result<TypeDefn, TypeBindingFailure>
         =
         let key =
             {
@@ -618,9 +711,9 @@ module TypeResolution =
             }
 
         match memo.TryGetValue key with
-        | true, cached -> assemblies, cached
+        | true, cached -> assemblies, Ok cached
         | false, _ ->
-            let assemblies, substituted =
+            match
                 substituteGenericsInTypeDefnUncached
                     loggerFactory
                     dotnetRuntimeDirs
@@ -632,9 +725,11 @@ module TypeResolution =
                     memo
                     assy
                     assemblies
-
-            memo.[key] <- substituted
-            assemblies, substituted
+            with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok substituted ->
+                memo.[key] <- substituted
+                assemblies, Ok substituted
 
     /// The body of <c>substituteGenericsInTypeDefn</c>, without the memo consulted or populated.
     /// Only <c>substituteGenericsInTypeDefn</c> may call this.
@@ -649,167 +744,35 @@ module TypeResolution =
         (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * TypeDefn
+        : LoadedAssemblies * Result<TypeDefn, TypeBindingFailure>
         =
-        match ty with
-        | TypeDefn.GenericTypeParameter idx ->
-            let link = ExpandingParam.Type idx
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link typeGenericArgs.[idx] expanding
-
+        let substitute (expanding : Set<ExpandingParam>) (assemblies : LoadedAssemblies) (ty : TypeDefn) =
             substituteGenericsInTypeDefn
                 loggerFactory
                 dotnetRuntimeDirs
                 baseClassTypes
-                typeGenericArgs.[idx]
+                ty
                 typeGenericArgs
                 methodGenericArgs
-                (Set.add link expanding)
+                expanding
                 memo
                 assy
                 assemblies
-        | TypeDefn.GenericMethodParameter idx ->
-            let link = ExpandingParam.Method idx
 
-            if Set.contains link expanding then
-                failCyclicEnvironment link methodGenericArgs.[idx] expanding
+        // The element substituted, then wrapped back up as it was.
+        let wrapped (wrap : TypeDefn -> TypeDefn) (elementType : TypeDefn) =
+            match substitute expanding assemblies elementType with
+            | assemblies, Ok resolved -> assemblies, Ok (wrap resolved)
+            | assemblies, Error failure -> assemblies, Error failure
 
-            substituteGenericsInTypeDefn
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                methodGenericArgs.[idx]
-                typeGenericArgs
-                methodGenericArgs
-                (Set.add link expanding)
-                memo
-                assy
-                assemblies
-        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
-            let assemblies, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    expanding
-                    memo
-                    assy
-                    assemblies
-
-            assemblies, TypeDefn.OneDimensionalArrayLowerBoundZero resolved
-        | TypeDefn.Array (elementType, rank) ->
-            let assemblies, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    expanding
-                    memo
-                    assy
-                    assemblies
-
-            assemblies, TypeDefn.Array (resolved, rank)
-        | TypeDefn.Pointer elementType ->
-            let assemblies, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    expanding
-                    memo
-                    assy
-                    assemblies
-
-            assemblies, TypeDefn.Pointer resolved
-        | TypeDefn.Byref elementType ->
-            let assemblies, resolved =
-                substituteGenericsInTypeDefn
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    elementType
-                    typeGenericArgs
-                    methodGenericArgs
-                    expanding
-                    memo
-                    assy
-                    assemblies
-
-            assemblies, TypeDefn.Byref resolved
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            // Substitute the arguments, then resolve the head *under those arguments* and convert
-            // back with typeInfoToTypeDefn. Resolving the head canonicalises it (a TypeRef
-            // becomes the TypeDef it binds to, in the assembly it actually binds to) and loads
-            // whatever assembly that names; the structural recursion above keeps arrays,
-            // pointers and byrefs in the arguments intact rather than collapsing them.
-            //
-            // We resolve `generic` directly rather than re-entering resolveTypeFromDefn on the
-            // reassembled `GenericInstantiation (generic, args')`. Re-entering would substitute
-            // `args'` a second time; that cannot change the answer (substitution is idempotent on
-            // its own output, and `args'` is closed whenever the environment is well-founded,
-            // this function's stated precondition), but it re-traverses and re-allocates the
-            // whole argument subtree at every nesting level, and the fresh nodes defeat the
-            // reference-keyed memo, leaving the blowup exponential.
-            let builder = ImmutableArray.CreateBuilder args.Length
-
-            let assemblies =
-                (assemblies, args)
-                ||> Seq.fold (fun assemblies arg ->
-                    let assemblies, resolved =
-                        substituteGenericsInTypeDefn
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            arg
-                            typeGenericArgs
-                            methodGenericArgs
-                            expanding
-                            memo
-                            assy
-                            assemblies
-
-                    builder.Add resolved
-                    assemblies
-                )
-
-            let args' = builder.ToImmutable ()
-
-            // `args'` replaces `typeGenericArgs` as the environment the head is resolved in, so the
-            // memo — which is only valid for one environment — must not travel with it.
-            let assemblies, _assy, resolvedInfo =
-                resolveTypeFromDefnTracked
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    generic
-                    args'
-                    methodGenericArgs
-                    expanding
-                    (SubstitutionMemo ())
-                    assy
-                    assemblies
-
-            let preserved =
-                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
-
-            assemblies, preserved
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Void ->
-            // Leaf types: resolve for side effects (assembly loading) and convert back.
-            // The round-trip through TypeInfo is lossless for these cases.
-            let assemblies, _assy, resolvedInfo =
+        // `ty` resolved in `typeGenericArgs`, read back as the TypeDefn naming the result.
+        let preserved
+            (ty : TypeDefn)
+            (typeGenericArgs : ImmutableArray<TypeDefn>)
+            (memo : SubstitutionMemo)
+            (assemblies : LoadedAssemblies)
+            =
+            match
                 resolveTypeFromDefnTracked
                     loggerFactory
                     dotnetRuntimeDirs
@@ -821,73 +784,55 @@ module TypeResolution =
                     memo
                     assy
                     assemblies
+            with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (_, resolvedInfo) ->
+                assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo)
 
-            let preserved =
-                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
+        match ty with
+        | TypeDefn.GenericTypeParameter idx ->
+            let link = ExpandingParam.Type idx
 
-            match preserved with
-            | TypeDefn.GenericInstantiation (head, injected) ->
-                // `ty` named a type *definition*, and that definition turned out to be generic —
-                // a shape no signature can spell, and which the resolver reads as "this
-                // definition, instantiated at the ambient environment". So resolution has just
-                // put arguments into our answer that it took straight out of `typeGenericArgs`
-                // by sequence number, and substitution has not been applied to any of them.
-                //
-                // The environment is only required to be well-founded, not closed, so those raw
-                // entries can perfectly well mention parameters: under `!0 := !1`, `!1 := int`
-                // this is the difference between answering `List<int>` and answering `List<!1>`,
-                // an open type that then cannot be resolved again on its own. Expanding parameter
-                // `k` under this environment is exactly what substituting `GenericTypeParameter k`
-                // does — cycle guard, memo and all — so ask for that rather than reimplementing
-                // it, and the answer is closed.
-                //
-                // The instantiation case above needs no such fix-up, and must not be given one:
-                // the environment it resolves its head under is `args'`, which is this function's
-                // own output and so already closed by the same induction. Substituting it again
-                // is precisely the redundant second pass, and it is exponential.
-                let builder = ImmutableArray.CreateBuilder injected.Length
+            if Set.contains link expanding then
+                failCyclicEnvironment link typeGenericArgs.[idx] expanding
 
-                let assemblies =
-                    (assemblies, Seq.init injected.Length id)
-                    ||> Seq.fold (fun assemblies k ->
-                        let assemblies, substituted =
-                            substituteGenericsInTypeDefn
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                baseClassTypes
-                                (TypeDefn.GenericTypeParameter k)
-                                typeGenericArgs
-                                methodGenericArgs
-                                expanding
-                                memo
-                                assy
-                                assemblies
+            substitute (Set.add link expanding) assemblies typeGenericArgs.[idx]
+        | TypeDefn.GenericMethodParameter idx ->
+            let link = ExpandingParam.Method idx
 
-                        builder.Add substituted
+            if Set.contains link expanding then
+                failCyclicEnvironment link methodGenericArgs.[idx] expanding
+
+            substitute (Set.add link expanding) assemblies methodGenericArgs.[idx]
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
+            wrapped TypeDefn.OneDimensionalArrayLowerBoundZero elementType
+        | TypeDefn.Array (elementType, rank) -> wrapped (fun resolved -> TypeDefn.Array (resolved, rank)) elementType
+        | TypeDefn.Pointer elementType -> wrapped TypeDefn.Pointer elementType
+        | TypeDefn.Byref elementType -> wrapped TypeDefn.Byref elementType
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            match traverseLoaded (substitute expanding) assemblies args with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok args' -> preserved generic args' (SubstitutionMemo ()) assemblies
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void ->
+            // A bare spelling of a generic definition comes back as its instantiation at the
+            // environment's own parameters (see `instantiateBareSpelling`), which are then
+            // substituted like any other.
+            match preserved ty typeGenericArgs memo assemblies with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (TypeDefn.GenericInstantiation (head, injected)) ->
+                match
+                    traverseLoaded
+                        (fun assemblies k -> substitute expanding assemblies (TypeDefn.GenericTypeParameter k))
                         assemblies
-                    )
-
-                assemblies, TypeDefn.GenericInstantiation (head, builder.ToImmutable ())
-            | preserved -> assemblies, preserved
-        | other ->
-            // For any other TypeDefn variant, resolve and convert back.
-            let assemblies, _assy, resolvedInfo =
-                resolveTypeFromDefnTracked
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    other
-                    typeGenericArgs
-                    methodGenericArgs
-                    expanding
-                    memo
-                    assy
-                    assemblies
-
-            let preserved =
-                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
-
-            assemblies, preserved
+                        (Seq.init injected.Length id)
+                with
+                | assemblies, Error failure -> assemblies, Error failure
+                | assemblies, Ok substituted -> assemblies, Ok (TypeDefn.GenericInstantiation (head, substituted))
+            | assemblies, Ok preserved -> assemblies, Ok preserved
+        | other -> preserved other typeGenericArgs memo assemblies
 
     /// The body of <c>resolveTypeFromDefn</c>, carrying the chain of parameter expansions
     /// currently in flight. The public entry point starts that chain empty; everything inside
@@ -904,9 +849,9 @@ module TypeResolution =
         (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let assemblies, resolvedIn, resolved =
+        match
             resolveTypeFromDefnUnprimed
                 loggerFactory
                 dotnetRuntimeDirs
@@ -918,8 +863,10 @@ module TypeResolution =
                 memo
                 assy
                 assemblies
-
-        primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved, resolvedIn, resolved
+        with
+        | assemblies, Error failure -> assemblies, Error failure
+        | assemblies, Ok (resolvedIn, resolved) ->
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved
 
     /// The body of <c>resolveTypeFromDefn</c>, without the base-chain priming its contract
     /// promises. Only <c>resolveTypeFromDefnTracked</c> may call this.
@@ -934,34 +881,35 @@ module TypeResolution =
         (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
+        let unmodelled (diagnostic : string) =
+            assemblies,
+            Error (
+                TypeBindingFailure.Unmodelled
+                    {
+                        Diagnostic = diagnostic
+                    }
+            )
+
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
-            let builder = ImmutableArray.CreateBuilder args.Length
-
-            let assemblies =
-                (assemblies, args)
-                ||> Seq.fold (fun assemblies arg ->
-                    let assemblies, preservedArg =
-                        substituteGenericsInTypeDefn
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            arg
-                            typeGenericArgs
-                            methodGenericArgs
-                            expanding
-                            memo
-                            assy
-                            assemblies
-
-                    builder.Add preservedArg
-
+            let substitute (assemblies : LoadedAssemblies) (arg : TypeDefn) =
+                substituteGenericsInTypeDefn
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    arg
+                    typeGenericArgs
+                    methodGenericArgs
+                    expanding
+                    memo
+                    assy
                     assemblies
-                )
 
-            let args' = builder.ToImmutable ()
+            match traverseLoaded substitute assemblies args with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok args' ->
 
             // `args'` replaces `typeGenericArgs` as the environment `generic` is resolved in, so
             // in principle the chain's type-parameter links now name parameters of an environment
@@ -988,43 +936,47 @@ module TypeResolution =
         | TypeDefn.FromDefinition (identity, _typeKind) ->
             let assy = assemblies.ByDefinitionName identity.AssemblyFullName
 
-            let defn =
-                instantiateBareSpelling typeGenericArgs assy.TypeDefs.[identity.TypeDefinition.Get]
-
-            assemblies, assy, defn
+            match instantiateBareSpelling typeGenericArgs assy.TypeDefs.[identity.TypeDefinition.Get] with
+            | Ok defn -> assemblies, Ok (assy, defn)
+            | Error failure -> assemblies, Error failure
         | TypeDefn.FromReference (ref, _typeKind) ->
-            let assemblies, resolvedIn, resolved =
-                resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies
-
-            if resolved.Generics.IsEmpty then
-                assemblies, resolvedIn, resolved
-            else
-                assemblies,
-                resolvedIn,
-                instantiateBareSpelling typeGenericArgs resolvedIn.TypeDefs.[resolved.TypeDefHandle]
+            match resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (resolvedIn, resolved) ->
+                if resolved.Generics.IsEmpty then
+                    assemblies, Ok (resolvedIn, resolved)
+                else
+                    match instantiateBareSpelling typeGenericArgs resolvedIn.TypeDefs.[resolved.TypeDefHandle] with
+                    | Ok defn -> assemblies, Ok (resolvedIn, defn)
+                    | Error failure -> assemblies, Error failure
         | TypeDefn.PrimitiveType prim ->
-            let ty =
+            let primitive =
                 match prim with
-                | PrimitiveType.Boolean -> baseClassTypes.Boolean
-                | PrimitiveType.Char -> baseClassTypes.Char
-                | PrimitiveType.SByte -> baseClassTypes.SByte
-                | PrimitiveType.Byte -> baseClassTypes.Byte
-                | PrimitiveType.Int16 -> baseClassTypes.Int16
-                | PrimitiveType.UInt16 -> baseClassTypes.UInt16
-                | PrimitiveType.Int32 -> baseClassTypes.Int32
-                | PrimitiveType.UInt32 -> baseClassTypes.UInt32
-                | PrimitiveType.Int64 -> baseClassTypes.Int64
-                | PrimitiveType.UInt64 -> baseClassTypes.UInt64
-                | PrimitiveType.Single -> baseClassTypes.Single
-                | PrimitiveType.Double -> baseClassTypes.Double
-                | PrimitiveType.String -> baseClassTypes.String
-                | PrimitiveType.TypedReference -> failwith "todo"
-                | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
-                | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
-                | PrimitiveType.Object -> baseClassTypes.Object
-                |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
+                | PrimitiveType.Boolean -> Some baseClassTypes.Boolean
+                | PrimitiveType.Char -> Some baseClassTypes.Char
+                | PrimitiveType.SByte -> Some baseClassTypes.SByte
+                | PrimitiveType.Byte -> Some baseClassTypes.Byte
+                | PrimitiveType.Int16 -> Some baseClassTypes.Int16
+                | PrimitiveType.UInt16 -> Some baseClassTypes.UInt16
+                | PrimitiveType.Int32 -> Some baseClassTypes.Int32
+                | PrimitiveType.UInt32 -> Some baseClassTypes.UInt32
+                | PrimitiveType.Int64 -> Some baseClassTypes.Int64
+                | PrimitiveType.UInt64 -> Some baseClassTypes.UInt64
+                | PrimitiveType.Single -> Some baseClassTypes.Single
+                | PrimitiveType.Double -> Some baseClassTypes.Double
+                | PrimitiveType.String -> Some baseClassTypes.String
+                | PrimitiveType.TypedReference -> None
+                | PrimitiveType.IntPtr -> Some baseClassTypes.IntPtr
+                | PrimitiveType.UIntPtr -> Some baseClassTypes.UIntPtr
+                | PrimitiveType.Object -> Some baseClassTypes.Object
 
-            assemblies, baseClassTypes.Corelib, ty
+            match primitive with
+            | None -> unmodelled "TODO: resolveTypeFromDefn of System.TypedReference is not implemented"
+            | Some ty ->
+                let ty =
+                    ty |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
+
+                assemblies, Ok (baseClassTypes.Corelib, ty)
         | TypeDefn.GenericTypeParameter param ->
             let arg = typeGenericArgs.[param]
             let link = ExpandingParam.Type param
@@ -1072,13 +1024,13 @@ module TypeResolution =
                 baseClassTypes.Array
                 |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
 
-            assemblies, baseClassTypes.Corelib, arrayTy
+            assemblies, Ok (baseClassTypes.Corelib, arrayTy)
         | TypeDefn.Pointer _
         | TypeDefn.Byref _
         | TypeDefn.Pinned _ ->
-            failwith
+            unmodelled
                 $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
-        | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
+        | s -> unmodelled $"TODO: resolveTypeFromDefn unimplemented for {s}"
 
     /// <summary>
     /// Resolve a TypeDefn to the metadata of the type it names, loading assemblies as required.
@@ -1116,7 +1068,7 @@ module TypeResolution =
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         resolveTypeFromDefnTracked
             loggerFactory
@@ -1130,6 +1082,8 @@ module TypeResolution =
             assy
             assemblies
 
+    /// <c>resolveTypeFromDefn</c> of the signature of <paramref name="ty" />, a TypeSpec of
+    /// <paramref name="assy" />.
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1139,7 +1093,7 @@ module TypeResolution =
         (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         let sign = assy.TypeSpecs.[ty].Signature
 
