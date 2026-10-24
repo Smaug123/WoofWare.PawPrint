@@ -711,3 +711,48 @@ module TypeLoad =
                 assemblies
 
         assemblies, miss
+
+    /// <summary>
+    /// The first type reference that names no type, among those CoreCLR's approximate load of
+    /// <paramref name="spelling" />, a value type or a type variable <paramref name="spellingAssembly" /> spells,
+    /// reaches, in the order it reaches them, passing over the definitions <paramref name="loaded" />
+    /// holds. This is how CoreCLR loads a value type that a signature names in order to lay out the
+    /// arguments (<c>SigPointer::PeekElemTypeNormalized</c>): to <c>CLASS_LOAD_APPROXPARENTS</c>, where an
+    /// instantiation loads its generic definition and, of its arguments, only the value types, each
+    /// as approximately, and a definition loads its base and interfaces approximately and the types
+    /// of its value-type fields, but nothing a later level loads. Loads, from
+    /// <paramref name="dotnetRuntimeDirs" />, whatever assemblies those references take, and the
+    /// returned <c>LoadedAssemblies</c> carries them.
+    /// </summary>
+    /// <remarks>A type variable is not a type the load reaches, as for <c>loadMissFrom</c>.</remarks>
+    let approximateLoadMissFrom
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        (loaded : LoadedDefinitions)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * LoadMiss option
+        =
+        match TypeDefn.stripCustomModifiers spelling with
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> ()
+        | spelling when isValueTypeSpelling spelling -> ()
+        | _ ->
+            failwith
+                $"BUG: TypeLoad.approximateLoadMissFrom was given %O{spelling}, which is spelled as neither a value type nor a type variable"
+
+        let (LoadedDefinitions full) = loaded
+
+        let walk =
+            {
+                Assemblies = assemblies
+                Approximate = full
+                Exact = full
+                Full = full
+            }
+
+        let walk, miss =
+            approximateArgument loggerFactory dotnetRuntimeDirs spellingAssembly spelling walk
+
+        walk.Assemblies, miss

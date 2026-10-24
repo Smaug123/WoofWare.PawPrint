@@ -131,6 +131,28 @@ public struct ThingStruct { }
         |> Seq.exactlyOne
         |> fun ty -> ty.TypeDefHandle
 
+    /// `body` over the client read from `client`, the directories the loader looks for assemblies in,
+    /// where the provider is but not loaded, and the assemblies loaded so far: CoreLib and the client.
+    let private overClient<'a>
+        (corelib : DumpedAssembly)
+        (client : byte[])
+        (body : DumpedAssembly -> string list -> LoadedAssemblies -> 'a)
+        : 'a
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let client =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (client))
+
+        let directory = Directory.CreateTempSubdirectory "type-load"
+
+        try
+            File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), incompleteProvider.Value)
+            let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
+            body client dirs (LoadedAssemblies.ofAssemblies [ corelib ; client ])
+        finally
+            directory.Delete true
+
     /// What `TypeLoad` finds loading, in turn, each of the types `spellingsOf` the client spells:
     /// the first miss of each load. Each load is from the definitions the loads before it brought,
     /// if `fromEarlier`, or else from nothing.
@@ -142,30 +164,23 @@ public struct ThingStruct { }
         : TypeLoad.LoadMiss option list
         =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
-        let client =
-            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (client))
+        overClient
+            corelib
+            client
+            (fun client dirs assemblies ->
+                ((assemblies, TypeLoad.nothingLoaded, []), spellingsOf client)
+                ||> List.fold (fun (assemblies, loaded, misses) spelling ->
+                    let from = if fromEarlier then loaded else TypeLoad.nothingLoaded
 
-        // The provider is where the loader looks for assemblies, but not loaded.
-        let directory = Directory.CreateTempSubdirectory "type-load"
+                    let assemblies, loaded, miss =
+                        TypeLoad.loadMissFrom loggerFactory dirs baseClassTypes client spelling from assemblies
 
-        try
-            File.WriteAllBytes (Path.Combine (directory.FullName, "Provider.dll"), incompleteProvider.Value)
-            let dirs = Seq.append [ directory.FullName ] HostImage.runtimeDirs |> List.ofSeq
-            let baseClassTypes = BaseClassTypes.ofCorelib corelib
-
-            ((LoadedAssemblies.ofAssemblies [ corelib ; client ], TypeLoad.nothingLoaded, []), spellingsOf client)
-            ||> List.fold (fun (assemblies, loaded, misses) spelling ->
-                let from = if fromEarlier then loaded else TypeLoad.nothingLoaded
-
-                let assemblies, loaded, miss =
-                    TypeLoad.loadMissFrom loggerFactory dirs baseClassTypes client spelling from assemblies
-
-                assemblies, loaded, miss :: misses
+                    assemblies, loaded, miss :: misses
+                )
+                |> fun (_, _, misses) -> List.rev misses
             )
-            |> fun (_, _, misses) -> List.rev misses
-        finally
-            directory.Delete true
 
     /// What `TypeLoad.loadMissFrom` says CoreCLR does at a `typeof` of each of `names` in turn,
     /// each from the definitions the ones before it loaded: the load fails with the exception of
@@ -621,3 +636,187 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         coverage.Count Outcome.Loads |> shouldBeGreaterThan 150
         coverage.Count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 60
         coverage.Count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 40
+
+    /// A value type to load approximately: one of the client's structs, or one spelled over the
+    /// client's types and the provider's.
+    let private genApproximate (kinds : Kind list) : Gen<Spelled> =
+        let structs =
+            kinds
+            |> List.indexed
+            |> List.filter (fun (_, kind) -> kind = Kind.Struct)
+            |> List.map (fst >> Earlier)
+
+        Gen.frequency
+            [
+                if not structs.IsEmpty then
+                    3, Gen.elements structs
+                3, genArgument kinds 1 |> Gen.map KeptGenericStruct
+                1, Gen.elements [ KeptStruct ; GoneStruct ; GoneEnum ; MissingStruct ]
+            ]
+
+    /// A client declaring `declarations` in the namespace `Client`, and for the `i`th of `names`,
+    /// each a value type as C# spells it, a delegate `D{i}` taking one, a static method `M{i}` taking
+    /// one, and a method `Shuffles.Make{i}` making a `D{i}` over `M{i}`. The delegate is open over
+    /// its target, so CoreCLR makes a thunk to shuffle the arguments while it compiles `Make{i}`,
+    /// loading the type approximately to lay them out (`COMDelegate::GetDelegateCtor`).
+    let private compileShuffles (declarations : string) (names : string list) : byte[] =
+        let delegates =
+            names
+            |> List.mapi (fun i name -> $"public delegate void D%d{i}(%s{name} value);")
+            |> String.concat "\n"
+
+        let methods =
+            names
+            |> List.mapi (fun i name ->
+                $"    public static void M%d{i}(%s{name} value) {{ }}\n    public static void Make%d{i}() => Keep(new D%d{i}(M%d{i}));"
+            )
+            |> String.concat "\n"
+
+        let source =
+            "namespace Client;\n"
+            + declarations
+            + "\n"
+            + delegates
+            + "\npublic static unsafe class Shuffles\n{\n"
+            + "    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n"
+            + "    public static void Keep(object o) { }\n"
+            + methods
+            + "\n}\n"
+
+        Roslyn.compileOptimizedAssemblyWithReferences
+            "Client"
+            OutputKind.DynamicallyLinkedLibrary
+            [
+                MetadataReference.CreateFromImage (ImmutableArray.CreateRange completeProvider.Value)
+                MetadataReference.CreateFromImage (ImmutableArray.CreateRange optionalImage.Value)
+            ]
+            [ source ]
+
+    /// What the host's CoreCLR does running each of `count` methods `Shuffles.Make{i}` in turn.
+    let private hostShuffleOutcomes (client : byte[]) (count : int) : Outcome list =
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("ApproximateTypeLoad", isCollectible = true)
+
+        context.add_Resolving (
+            Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                if name.Name = "Provider" then
+                    context.LoadFromStream (new MemoryStream (incompleteProvider.Value))
+                else
+                    null
+            )
+        )
+
+        try
+            let shuffles =
+                context.LoadFromStream(new MemoryStream (client)).GetType "Client.Shuffles"
+
+            List.init
+                count
+                (fun i ->
+                    try
+                        shuffles.GetMethod($"Make%d{i}").Invoke ((null : obj), [||]) |> ignore<obj>
+                        Outcome.Loads
+                    with :? TargetInvocationException as e ->
+                        Outcome.Fails (e.InnerException.GetType().Name)
+                )
+        finally
+            context.Unload ()
+
+    /// `TypeLoad.approximateLoadMissFrom` checked against the host's CoreCLR, which loads a value type
+    /// approximately when it makes a delegate open over a method taking one: the first miss of the
+    /// approximate load is the exception making the delegate fails with. A full load of the same
+    /// type meets a miss wherever the approximate load does, since it starts with that load.
+    [<Test>]
+    let ``a generated value type fails to load approximately exactly where the host's does, with its exception``
+        ()
+        : unit
+        =
+        let genCase =
+            gen {
+                let! declarations = genClient
+                let kinds = declarations |> List.map (fun d -> d.Kind)
+                let! count = Gen.choose (1, 6)
+                let! loads = Gen.listOfLength count (genApproximate kinds)
+                return declarations, loads
+            }
+
+        // Each load is labelled by what the host does, and by whether the full load meets a miss.
+        let property (cover : Outcome * bool -> unit) (declarations : Declaration list, loads : Spelled list) : unit =
+            let source =
+                declarations |> List.mapi renderDeclaration |> String.concat Environment.NewLine
+
+            let names = List.map render loads
+            let client = compileShuffles source names
+            let host = hostShuffleOutcomes client names.Length
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            let baseClassTypes = BaseClassTypes.ofCorelib hostCoreLib.Value
+
+            let misses =
+                overClient
+                    hostCoreLib.Value
+                    client
+                    (fun client dirs assemblies ->
+                        let parameterOf (index : int) : TypeDefn =
+                            client.Methods.Values
+                            |> Seq.filter (fun m -> m.Name = $"M%d{index}")
+                            |> Seq.exactlyOne
+                            |> fun m -> List.exactlyOne m.Signature.ParameterTypes
+
+                        ((assemblies, []), List.init names.Length parameterOf)
+                        ||> List.fold (fun (assemblies, misses) spelling ->
+                            let assemblies, approximate =
+                                TypeLoad.approximateLoadMissFrom
+                                    loggerFactory
+                                    dirs
+                                    client
+                                    spelling
+                                    TypeLoad.nothingLoaded
+                                    assemblies
+
+                            let assemblies, full =
+                                TypeLoad.loadMiss loggerFactory dirs baseClassTypes client spelling assemblies
+
+                            assemblies, (approximate, full) :: misses
+                        )
+                        |> fun (_, misses) -> List.rev misses
+                    )
+
+            let outcomeOf (miss : TypeLoad.LoadMiss option) : Outcome =
+                match miss with
+                | None -> Outcome.Loads
+                | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Outcome.Fails "TypeLoadException"
+                | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Outcome.Fails "FileNotFoundException"
+                | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
+
+            for host, (_, full) in List.zip host misses do
+                cover (host, full.IsSome)
+
+            let disagreements =
+                List.zip3 names host misses
+                |> List.collect (fun (name, host, (approximate, full)) ->
+                    [
+                        if host <> outcomeOf approximate then
+                            yield $"%s{name}: the host %A{host}, PawPrint %A{outcomeOf approximate}"
+                        if approximate.IsSome && full.IsNone then
+                            yield $"%s{name}: the approximate load meets %A{approximate}, the full load nothing"
+                    ]
+                )
+
+            if not disagreements.IsEmpty then
+                failwith (String.concat Environment.NewLine (source :: disagreements))
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 100) (Arb.fromGen genCase) property
+
+        // The fixed sample reaches every outcome often enough for the comparison to say something,
+        // and has plenty of types that load approximately but not in full, which tell an
+        // approximate load from a full one.
+        coverage.Count (Outcome.Loads, false) |> shouldBeGreaterThan 100
+        coverage.Count (Outcome.Loads, true) |> shouldBeGreaterThan 30
+
+        coverage.Count (Outcome.Fails "TypeLoadException", true)
+        |> shouldBeGreaterThan 20
+
+        coverage.Count (Outcome.Fails "FileNotFoundException", true)
+        |> shouldBeGreaterThan 15

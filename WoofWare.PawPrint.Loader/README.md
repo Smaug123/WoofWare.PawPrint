@@ -43,8 +43,12 @@ What lives here:
   nothing (a `TypeLoadException`) or that needs an assembly no runtime directory supplies (a
   `FileNotFoundException`). The JIT asks for every type a method names at that level. A caller
   loading many types passes from one load to the next the definitions those that met no miss
-  loaded in full, which a load passes over as CoreCLR passes over a type already loaded. The
-  host's CoreCLR is its oracle (`TestTypeLoad`).
+  loaded in full, which a load passes over as CoreCLR passes over a type already loaded. It walks
+  too the approximate load by which CoreCLR lays out the arguments a signature names
+  (`approximateLoadMissFrom`), which loads an instantiation's value-type arguments but not its
+  class arguments, and a definition's fields but not its interfaces' type arguments. The host's
+  CoreCLR is the oracle of both (`TestTypeLoad`), the second through delegates whose thunks shuffle
+  arguments of each type.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as

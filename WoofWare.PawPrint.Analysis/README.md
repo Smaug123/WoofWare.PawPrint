@@ -186,9 +186,14 @@ method) may add more:
   type of the signature whose definition is there where it prepares the method as a function
   pointer: for `ldvirtftn` and a method a method specification instantiates, and otherwise where
   the JIT asks for the address of an `ldftn` whose address is not a delegate's target nor
-  dropped. Making a delegate over a static method, or an open one over an instance method, loads
-  what the target's signature names, which the analysis takes to be every type of it, in full, for
-  any delegate. The JIT asks for an `ldftn`'s address
+  dropped. Making a delegate open over its target, as one over a static method is unless it closes
+  over the method's first argument, CoreCLR makes a thunk to shuffle the arguments, loading
+  approximately each value type of the delegate's `Invoke` signature and then of the target's: a
+  class argument of an instantiation, or an interface's type arguments, need not be there. Making
+  one closed over its target loads nothing more. For a static target that code shared between
+  instantiations names through its type variables, CoreCLR makes the thunk as the delegate is made,
+  where the method's own handlers can catch the failure, but the analysis takes it to fail the
+  compilation there too. The JIT asks for an `ldftn`'s address
   compiling whatever method it inlines the `ldftn` into, so what loading the value types then
   raises the analysis takes to escape every method that calls the body, directly or not, past all
   its handlers, as any of them may have the body inlined into it;

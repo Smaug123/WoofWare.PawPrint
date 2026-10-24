@@ -103,8 +103,10 @@ What lives here:
   looking it up in shared code, or may do while compiling a method it inlines this one into, or
   only if it resolves the implementation a `constrained.` prefix names: those are loads it may make
   (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
-  parameters' targets too. What a call of unmanaged code loads, and what making a delegate over a
-  static method loads, it does not describe. `TestJitTypeLoads` puts each of a grammar of types
+  parameters' targets too. Making a delegate open over its target loads approximately each value
+  type of the `Invoke` method's signature and then of the target's (`JitTypeLoad.Approximately`), as
+  CoreCLR makes a thunk to shuffle the arguments; making one closed over its target loads nothing
+  more. What a call of unmanaged code loads it does not describe. `TestJitTypeLoads` puts each of a grammar of types
   that load, fail to load or live in a missing assembly at each position, runs every probe on the
   host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
   rule and `TypeLoad` say, with the same exception.
