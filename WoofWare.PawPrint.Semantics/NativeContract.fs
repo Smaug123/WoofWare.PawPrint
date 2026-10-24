@@ -279,6 +279,7 @@ module NativeContractTable =
                         |> Array.map (fun assumption ->
                             match assumption with
                             | "NamedTypesLoad" -> NativeAssumption.NamedTypesLoad
+                            | "MetadataWellFormed" -> NativeAssumption.MetadataWellFormed
                             | other -> fail $"no assumption named %s{other}"
                         )
                         |> List.ofArray

@@ -381,6 +381,19 @@ module TestNativeContractTable =
                     | Some path when Text.RegularExpressions.Regex.IsMatch (routine, @"^\w+$") ->
                         Vouched.IndirectBranchesOf (path, routine)
                     | _ -> failwith $"A vouch names %s{callee}, which is not path:routine%s{indirectBranchesSuffix}"
+                elif named.EndsWith ">" && named.Contains "::<" then
+                    let opening = named.LastIndexOf "::<"
+                    let routine = named.Substring (0, opening)
+                    let called = named.Substring (opening + 3, named.Length - opening - 4)
+                    let name = @"^~?[A-Za-z_]\w*(::~?[A-Za-z_]\w*)*$"
+
+                    match path with
+                    | Some path when
+                        Text.RegularExpressions.Regex.IsMatch (routine, name)
+                        && Text.RegularExpressions.Regex.IsMatch (called, name)
+                        ->
+                        Vouched.CallsIn (path, routine, called)
+                    | _ -> failwith $"A vouch names %s{callee}, which is not path:routine::<callee>"
                 else
                     match named.Split ('=', 2) with
                     | [| symbol ; spelling |] when symbol <> "" && spelling <> "" ->
@@ -394,6 +407,7 @@ module TestNativeContractTable =
                 | "exception" -> VouchedRuns.Exception
                 | "unreached" -> VouchedRuns.Unreached
                 | "loads" -> VouchedRuns.Loads
+                | "malformed" -> VouchedRuns.Malformed
                 | other -> failwith $"%s{callee} is vouched to run %s{other}"
 
             {
@@ -432,8 +446,9 @@ module TestNativeContractTable =
         ]
 
     /// Whether `vouch` covers the call of `called` that the routine `routine` of the file `path`
-    /// makes. A vouch for a callee covers its calls wherever they are, and one for a routine's
-    /// indirect branches covers those alone.
+    /// makes. A vouch for a callee covers its calls wherever they are, one for a routine's
+    /// indirect branches covers those alone, and one for a routine's calls of a callee covers
+    /// those alone.
     let private covers (vouch : Vouch) (path : string) (routine : string) (called : string) : bool =
         match vouch.Vouched with
         | Vouched.Callee (_, symbol, _) -> called <> CppSource.indirectBranch && CppSource.names symbol called
@@ -441,7 +456,11 @@ module TestNativeContractTable =
             called = CppSource.indirectBranch
             && vouchedPath = path
             && vouchedRoutine = routine
-        | Vouched.CallsIn _ -> failwith "TODO: covers does not yet read a vouch for one routine's calls"
+        | Vouched.CallsIn (vouchedPath, vouchedRoutine, callee) ->
+            called <> CppSource.indirectBranch
+            && CppSource.names callee called
+            && vouchedPath = path
+            && vouchedRoutine = routine
 
     [<Test>]
     let ``a vouch for a routine's indirect branches covers those alone, and a vouch for a callee covers none``
@@ -519,6 +538,17 @@ module TestNativeContractTable =
 
         (parseVouch "vm/a.cpp:Holder::EnumInit\tmalformed\tBecause.").Runs
         |> shouldEqual VouchedRuns.Malformed
+
+    [<Test>]
+    let ``the vouch reader refuses a vouch for one routine's calls that names no file, routine or callee`` () : unit =
+        for line in
+            [
+                "-:F::<G>\tnothing\tBecause."
+                "vm/a.cpp:::<G>\tnothing\tBecause."
+                "vm/a.cpp:F::<>\tnothing\tBecause."
+                "vm/a.cpp:F::<G H>\tnothing\tBecause."
+            ] do
+            Assert.Throws<exn> (fun () -> parseVouch line |> ignore<Vouch>) |> ignore<exn>
 
     /// What runs managed code from the VM: a call site of the runtime's binder, or the routine
     /// every such call goes through.
@@ -604,7 +634,8 @@ module TestNativeContractTable =
                     match vouch.Vouched with
                     | Vouched.Callee (None, _, _) -> ()
                     | Vouched.Callee (Some path, symbol, _)
-                    | Vouched.IndirectBranchesOf (path, symbol) when not (File.Exists (Path.Combine (coreclr (), path))) ->
+                    | Vouched.IndirectBranchesOf (path, symbol)
+                    | Vouched.CallsIn (path, symbol, _) when not (File.Exists (Path.Combine (coreclr (), path))) ->
                         yield $"%s{symbol} is vouched for in %s{path}, which the pinned source lacks"
                     | Vouched.Callee (Some path, symbol, spelledAs) ->
                         let text = File.ReadAllText (Path.Combine (coreclr (), path))
@@ -627,8 +658,17 @@ module TestNativeContractTable =
                                 && managedCall.IsMatch routine.Text
                             then
                                 yield $"%s{path}:%s{routine.Name} is vouched for, and calls managed code"
-                    | Vouched.CallsIn _ ->
-                        failwith "TODO: the check of vouches does not yet read a vouch for one routine's calls"
+                    | Vouched.CallsIn (path, routine, callee) ->
+                        // The callee is defined elsewhere, and the vouch is for these calls alone.
+                        let calls =
+                            routinesOf path
+                            |> List.exists (fun defined ->
+                                defined.Name = routine && defined.Calls |> Seq.exists (CppSource.names callee)
+                            )
+
+                        if not calls then
+                            yield
+                                $"The calls of %s{callee} by %s{routine} are vouched for, and %s{path} defines no %s{routine} that makes one"
                     | Vouched.IndirectBranchesOf (path, routine) ->
                         let branches =
                             routinesOf path
