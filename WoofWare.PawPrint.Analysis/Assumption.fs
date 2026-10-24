@@ -191,6 +191,19 @@ module Assumption =
         | Assumption.MembersAccessible
         | Assumption.FieldsWrittenVisibly -> []
 
+    /// Whether what an answer relies on this assumption for is what values hold, rather than what a
+    /// method raises, so that no handler stops a failure of it: a method that relies on it, or calls
+    /// one that does, relies on it wherever the method runs.
+    let concernsValues (assumption : Assumption) : bool =
+        match assumption with
+        | Assumption.FieldsWrittenVisibly -> true
+        | Assumption.NamedTypesLoad
+        | Assumption.StackTracePreserved
+        | Assumption.CoreLibTypeInitializers
+        | Assumption.JitOptimises
+        | Assumption.DynamicCastsAsDocumented
+        | Assumption.MembersAccessible -> false
+
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by
     /// class, name and signature; and any type initializer.

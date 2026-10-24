@@ -335,6 +335,10 @@ type internal LocalFacts =
         /// Where an assumption's contract stands in for code the body runs: an exception the
         /// contract does not list may arise there if the assumption fails.
         Assumed : (int * Assumption) list
+        /// Each instruction at which the body comes to rely on an assumption about what a value
+        /// holds (`Assumption.concernsValues`), by offset: a run past it relies on the assumption,
+        /// whatever handlers the body has.
+        Relies : (int * Assumption) list
         /// Each call, and what it passes: each argument, `this` first, or for `newobj` the object
         /// it makes. Empty for a call the JIT emits in place of the body's own.
         Calls : (int * CallSite * SpelledArgument list) list
@@ -3277,6 +3281,7 @@ module EscapeAnalysis =
             Raises = []
             Opaque = []
             Assumed = []
+            Relies = []
             Calls = []
             ConstrainedPointers = []
             Rethrows = []
@@ -3640,6 +3645,7 @@ module EscapeAnalysis =
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
+                Relies = []
                 Calls = runs |> List.map (fun (method, passes) -> 0, runtimeRuns method, passes)
                 ConstrainedPointers = []
                 Rethrows = []
@@ -5564,8 +5570,8 @@ module EscapeAnalysis =
                 |> Seq.filter executed.Contains
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
                 |> Seq.append (List.rev accessAssumed)
-                |> Seq.append (List.rev fieldAssumed)
                 |> List.ofSeq
+            Relies = List.rev fieldAssumed
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
             HelperSites = List.rev helperSites
@@ -6802,6 +6808,7 @@ module EscapeAnalysis =
                             Raises = facts.Raises |> List.filter (fst >> at)
                             Opaque = facts.Opaque |> List.filter (fun (offset, _, _) -> at offset)
                             Assumed = facts.Assumed |> List.filter (fst >> at)
+                            Relies = facts.Relies |> List.filter (fst >> at)
                             Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
                             LookedUp = facts.LookedUp |> List.filter (fst >> at)
                             // Read only to drop `Calls` at its offsets, which are filtered.
@@ -7084,6 +7091,27 @@ module EscapeAnalysis =
                                     }
 
                             let state, facts = instanceFacts state instance
+
+                            // The writer's facts say what it stores only where they are of the IL
+                            // whose store this is: a contract in place of its body says nothing of
+                            // what it stores.
+                            let storedBy (op : IlOp option) : MetadataToken option =
+                                match op with
+                                | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Stfld | UnaryMetadataTokenIlOp.Stsfld),
+                                                                 MetadataOperand.FromMetadata token)) ->
+                                    Some token.Token
+                                | _ -> None
+
+                            let ownStore =
+                                match runsFor state.Assumptions assembly key, MethodInfo.tryIlBody method with
+                                | Runs.Il (body, _), Some own ->
+                                    let scanned = storedBy (own.Locations.TryFind offset)
+                                    scanned.IsSome && storedBy (body.Locations.TryFind offset) = scanned
+                                | _ -> false
+
+                            if not ownStore then
+                                state, None
+                            else
 
                             match Map.tryFind offset facts.Stored with
                             | Some (StackValue.Objects objects) ->
@@ -7803,6 +7831,8 @@ module EscapeAnalysis =
                         | state, false -> state, assumes
                 )
 
+            let assumes = Set.union assumes (facts.Relies |> List.map snd |> Set.ofList)
+
             state,
             {
                 Types = types
@@ -7926,6 +7956,10 @@ module EscapeAnalysis =
                                 ||> Set.fold (fun (state, assumes) assumption ->
                                     if Set.contains assumption assumes then
                                         state, assumes
+                                    // What a callee relies on of what values hold, its caller does
+                                    // too, past every handler.
+                                    elif Assumption.concernsValues assumption then
+                                        state, Set.add assumption assumes
                                     else
                                         match escapesAt state key offset None with
                                         | state, true -> state, Set.add assumption assumes
