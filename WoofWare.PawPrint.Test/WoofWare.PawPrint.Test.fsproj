@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="CoverageSample.fs" />
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="BindingResult.fs" />
     <Compile Include="Launched.fs" />
     <Compile Include="ExpectRun.fs" />
     <Compile Include="SynthesisedLayoutKind.fs" />
@@ -16,6 +17,7 @@
     <Compile Include="TestJitSwitchLowering.fs" />
     <Compile Include="TestNoMissedInterpolation.fs" />
     <Compile Include="TestFixturesDeclareParallelism.fs" />
+    <Compile Include="TestCiSelectsEveryExplicitFixture.fs" />
     <Compile Include="TestPublishedXmlDocumentation.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="FrameworkUnderTest.fs" />
@@ -78,6 +80,7 @@
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestAssemblyProbe.fs" />
     <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="TestUnmodelledBinding.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />

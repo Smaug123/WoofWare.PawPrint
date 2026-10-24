@@ -196,11 +196,15 @@ public class Outer<A>
         let assy =
             state.TypeSystem._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
-        BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-            (IlMachineState.loader loggerFactory state)
-            state.TypeSystem._LoadedAssemblies
-            assy
-            typeInfo.TypeDefHandle
+        match
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (IlMachineState.loader loggerFactory state)
+                state.TypeSystem._LoadedAssemblies
+                assy
+                typeInfo.TypeDefHandle
+        with
+        | assemblies, None -> assemblies
+        | _, Some failure -> failwith (string<BaseChainFailure> failure)
         |> absorbLoads state
 
     /// A closed `TypeDefn` for `typeInfo` instantiated at `args`, which must have exactly the

@@ -63,9 +63,14 @@ module TestAssemblyDictionaryKeying =
             with
             | TypeResolutionResult.Resolved (assy, identity, _) -> assemblies, assy, identity
             | TypeResolutionResult.NotFound miss -> failwithf "%O" miss
+            | TypeResolutionResult.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
             | TypeResolutionResult.FirstLoadAssy assyRef ->
                 let handle, referencedIn = assyRef.Handle
-                let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
+
+                let assemblies, _ =
+                    (match loadAssembly.TryLoadAssembly assemblies referencedIn handle with
+                     | Ok loaded -> loaded
+                     | Error failure -> failwith (string<AssemblyLoadFailure> failure))
 
                 // Same guard production uses: a load that leaves the reference unbound would make
                 // this retry spin forever, so fail with a diagnosis instead of hanging.
@@ -128,15 +133,21 @@ module TestAssemblyDictionaryKeying =
         | Some resolved -> resolved.Name.FullName |> shouldEqual targetAssembly.Name.FullName
 
     [<Test>]
-    let ``ensureTypeDefinitionBaseAssembliesLoaded succeeds for a type reached through a forwarding facade`` () : unit =
+    let ``tryEnsureTypeDefinitionBaseAssembliesLoaded succeeds for a type reached through a forwarding facade``
+        ()
+        : unit
+        =
         let loaded, _, _, targetAssembly, identity = loadForwardedAccessControlType ()
 
-        BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-            (loader ())
-            loaded
-            loaded.[targetAssembly.Name]
-            identity.TypeDefinition.Get
-        |> ignore
+        match
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (loader ())
+                loaded
+                loaded.[targetAssembly.Name]
+                identity.TypeDefinition.Get
+        with
+        | _, None -> ()
+        | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
     [<Test>]
     let ``concretizeTypeDefinition succeeds for a type reached through a forwarding facade`` () : unit =

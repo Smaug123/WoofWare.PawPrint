@@ -14537,3 +14537,783 @@ public static class Cases
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
+
+    /// A statement of a body whose locals each hold an object of one of `LocalFlow`'s classes,
+    /// every one of which overrides `Hit` to throw an exception of its own.
+    [<RequireQualifiedAccess>]
+    type private LocalStatement =
+        /// `local = new C<made>()`.
+        | Make of local : int * made : int
+        /// `local = other`.
+        | Copy of local : int * other : int
+        /// `if (argument) { ... } else { ... }`, on an argument no other `If` of the body tests.
+        | If of argument : int * thenBranch : LocalStatement list * elseBranch : LocalStatement list
+        /// `try { ... } finally { ... }`.
+        | TryFinally of body : LocalStatement list * cleanup : LocalStatement list
+        /// `try { ...; throw new Marker(); } catch (Marker) { ... }`.
+        | TryCatch of body : LocalStatement list * handler : LocalStatement list
+        /// `ldloca local; pop`: the body takes the local's address.
+        | Address of local : int
+        /// `ldloca local; newobj C<made>; stind.ref`: a store through the local's address.
+        | StoreThrough of local : int * made : int
+        /// The statements, run twice by a loop on a counter of its own.
+        | Twice of LocalStatement list
+
+    /// A body of `LocalFlow`'s `Run(bool, bool, bool)`: it stores a new `C0` in every local, runs
+    /// `Statements`, then calls `Hit` on the local `Final`.
+    type private LocalFlowCase =
+        {
+            Statements : LocalStatement list
+            Final : int
+        }
+
+    let private localFlowLocals : int = 3
+    let private localFlowClasses : int = 4
+    let private localFlowArguments : int = 3
+
+    /// Whether the analysis must say exactly what the real runtime raises: where the body has no
+    /// handler and takes no local's address, every path through it is a run for some arguments,
+    /// since each `If` tests an argument of its own.
+    let rec private exactlyDecided (statements : LocalStatement list) : bool =
+        statements
+        |> List.forall (fun statement ->
+            match statement with
+            | LocalStatement.Make _
+            | LocalStatement.Copy _ -> true
+            | LocalStatement.If (_, thenBranch, elseBranch) -> exactlyDecided thenBranch && exactlyDecided elseBranch
+            | LocalStatement.TryFinally _
+            | LocalStatement.TryCatch _
+            | LocalStatement.Address _
+            | LocalStatement.StoreThrough _
+            | LocalStatement.Twice _ -> false
+        )
+
+    let private localFlowGen : FsCheck.Gen<LocalFlowCase> =
+        let local = FsCheck.FSharp.Gen.choose (0, localFlowLocals - 1)
+
+        let rec statements (size : int) : FsCheck.Gen<LocalStatement list> =
+            FsCheck.FSharp.Gen.choose (0, 3)
+            |> FsCheck.FSharp.Gen.bind (fun count -> FsCheck.FSharp.Gen.listOfLength count (statement size))
+
+        and statement (size : int) : FsCheck.Gen<LocalStatement> =
+            let leaves =
+                [
+                    4,
+                    FsCheck.FSharp.Gen.map2
+                        (fun l c -> LocalStatement.Make (l, c))
+                        local
+                        (FsCheck.FSharp.Gen.choose (0, localFlowClasses - 1))
+                    2, FsCheck.FSharp.Gen.map2 (fun l o -> LocalStatement.Copy (l, o)) local local
+                    1, FsCheck.FSharp.Gen.map LocalStatement.Address local
+                    1,
+                    FsCheck.FSharp.Gen.map2
+                        (fun l c -> LocalStatement.StoreThrough (l, c))
+                        local
+                        (FsCheck.FSharp.Gen.choose (0, localFlowClasses - 1))
+                ]
+
+            if size <= 0 then
+                FsCheck.FSharp.Gen.frequency leaves
+            else
+                let nested = statements (size - 1)
+
+                FsCheck.FSharp.Gen.frequency (
+                    leaves
+                    @ [
+                        3, FsCheck.FSharp.Gen.map2 (fun t e -> LocalStatement.If (0, t, e)) nested nested
+                        1, FsCheck.FSharp.Gen.map2 (fun b c -> LocalStatement.TryFinally (b, c)) nested nested
+                        1, FsCheck.FSharp.Gen.map2 (fun b h -> LocalStatement.TryCatch (b, h)) nested nested
+                        1, FsCheck.FSharp.Gen.map LocalStatement.Twice nested
+                    ]
+                )
+
+        // Give each `If`, in order, an argument of its own, keeping only the `then` branch of one
+        // past the last argument.
+        let rec numbered (next : int) (statements : LocalStatement list) : int * LocalStatement list =
+            ((next, []), statements)
+            ||> List.fold (fun (next, done') statement ->
+                match statement with
+                | LocalStatement.If (_, thenBranch, elseBranch) when next < localFlowArguments ->
+                    let next', thenBranch = numbered (next + 1) thenBranch
+                    let next', elseBranch = numbered next' elseBranch
+                    next', LocalStatement.If (next, thenBranch, elseBranch) :: done'
+                | LocalStatement.If (_, thenBranch, _) ->
+                    let next, thenBranch = numbered next thenBranch
+                    next, List.rev thenBranch @ done'
+                | LocalStatement.TryFinally (body, cleanup) ->
+                    let next, body = numbered next body
+                    let next, cleanup = numbered next cleanup
+                    next, LocalStatement.TryFinally (body, cleanup) :: done'
+                | LocalStatement.TryCatch (body, handler) ->
+                    let next, body = numbered next body
+                    let next, handler = numbered next handler
+                    next, LocalStatement.TryCatch (body, handler) :: done'
+                | LocalStatement.Twice body ->
+                    let next, body = numbered next body
+                    next, LocalStatement.Twice body :: done'
+                | LocalStatement.Make _
+                | LocalStatement.Copy _
+                | LocalStatement.Address _
+                | LocalStatement.StoreThrough _ -> next, statement :: done'
+            )
+            |> fun (next, done') -> next, List.rev done'
+
+        FsCheck.FSharp.Gen.map2
+            (fun statements final ->
+                {
+                    Statements = snd (numbered 0 statements)
+                    Final = final
+                }
+            )
+            (statements 3)
+            local
+
+    /// The image of `LocalFlow`, an assembly named `name`, whose `Cases.Run` is `case`'s body.
+    let private localFlowImage (name : string) (case : LocalFlowCase) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule name
+
+        let exceptionType (typeName : string) : Emit.TypeBuilder * Emit.ConstructorBuilder =
+            let defined =
+                modul.DefineType (typeName, TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Exception>)
+
+            defined, defined.DefineDefaultConstructor MethodAttributes.Public
+
+        let marker, markerConstructor = exceptionType "LocalFlow.Marker"
+
+        let baseType =
+            modul.DefineType ("LocalFlow.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+        let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+        let hit =
+            baseType.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                [||]
+            )
+
+        let classes =
+            [
+                for index in 0 .. localFlowClasses - 1 do
+                    let thrown, thrownConstructor = exceptionType $"LocalFlow.E%d{index}"
+
+                    let made =
+                        modul.DefineType (
+                            $"LocalFlow.C%d{index}",
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            baseType
+                        )
+
+                    let constructor =
+                        made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+                    let il = constructor.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Call, baseConstructor)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let overriding =
+                        made.DefineMethod (
+                            "Hit",
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Virtual
+                            ||| MethodAttributes.HideBySig,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = overriding.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+                    il.Emit Emit.OpCodes.Throw
+                    made.DefineMethodOverride (overriding, hit)
+                    yield made, constructor, thrown
+            ]
+
+        let cases =
+            modul.DefineType (
+                "LocalFlow.Cases",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            )
+
+        let run =
+            cases.DefineMethod (
+                "Run",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                Array.replicate localFlowArguments typeof<bool>
+            )
+
+        let il = run.GetILGenerator ()
+
+        let locals = [ for _ in 1..localFlowLocals -> il.DeclareLocal baseType ]
+
+        let constructorOf (index : int) =
+            let _, constructor, _ = classes.[index]
+            constructor
+
+        let rec emit (statement : LocalStatement) : unit =
+            match statement with
+            | LocalStatement.Make (local, made) ->
+                il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                il.Emit (Emit.OpCodes.Stloc, locals.[local])
+            | LocalStatement.Copy (local, other) ->
+                il.Emit (Emit.OpCodes.Ldloc, locals.[other])
+                il.Emit (Emit.OpCodes.Stloc, locals.[local])
+            | LocalStatement.If (argument, thenBranch, elseBranch) ->
+                let otherwise = il.DefineLabel ()
+                let after = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Ldarg, int16 argument)
+                il.Emit (Emit.OpCodes.Brfalse, otherwise)
+                List.iter emit thenBranch
+                il.Emit (Emit.OpCodes.Br, after)
+                il.MarkLabel otherwise
+                List.iter emit elseBranch
+                il.MarkLabel after
+            | LocalStatement.TryFinally (body, cleanup) ->
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                List.iter emit body
+                il.BeginFinallyBlock ()
+                List.iter emit cleanup
+                il.EndExceptionBlock ()
+            | LocalStatement.TryCatch (body, handler) ->
+                il.BeginExceptionBlock () |> ignore<Emit.Label>
+                List.iter emit body
+                il.Emit (Emit.OpCodes.Newobj, markerConstructor)
+                il.Emit Emit.OpCodes.Throw
+                il.BeginCatchBlock marker
+                il.Emit Emit.OpCodes.Pop
+                List.iter emit handler
+                il.EndExceptionBlock ()
+            | LocalStatement.Address local ->
+                il.Emit (Emit.OpCodes.Ldloca, locals.[local])
+                il.Emit Emit.OpCodes.Pop
+            | LocalStatement.StoreThrough (local, made) ->
+                il.Emit (Emit.OpCodes.Ldloca, locals.[local])
+                il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                il.Emit Emit.OpCodes.Stind_Ref
+            | LocalStatement.Twice body ->
+                let counter = il.DeclareLocal typeof<int>
+                let head = il.DefineLabel ()
+                il.Emit Emit.OpCodes.Ldc_I4_2
+                il.Emit (Emit.OpCodes.Stloc, counter)
+                il.MarkLabel head
+                List.iter emit body
+                il.Emit (Emit.OpCodes.Ldloc, counter)
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Sub
+                il.Emit Emit.OpCodes.Dup
+                il.Emit (Emit.OpCodes.Stloc, counter)
+                il.Emit (Emit.OpCodes.Brtrue, head)
+
+        for local in locals do
+            il.Emit (Emit.OpCodes.Newobj, constructorOf 0)
+            il.Emit (Emit.OpCodes.Stloc, local)
+
+        List.iter emit case.Statements
+        il.Emit (Emit.OpCodes.Ldloc, locals.[case.Final])
+        il.Emit (Emit.OpCodes.Callvirt, hit)
+        il.Emit Emit.OpCodes.Ret
+
+        marker.CreateType () |> ignore<Type>
+        baseType.CreateType () |> ignore<Type>
+
+        for made, _, thrown in classes do
+            thrown.CreateType () |> ignore<Type>
+            made.CreateType () |> ignore<Type>
+
+        cases.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// The exceptions of `LocalFlow`'s classes that the real runtime raises from `Cases.Run` in
+    /// `image`, over every combination of its arguments, as the expectations spell them.
+    let private localFlowRaised (image : byte[]) : Set<string> =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("LocalFlow", isCollectible = true)
+
+        try
+            let run =
+                context.LoadFromStream(new MemoryStream (image)).GetType("LocalFlow.Cases").GetMethod ("Run")
+
+            let raisedWith (combination : int) : string =
+                let arguments =
+                    Array.init localFlowArguments (fun index -> box ((combination >>> index) &&& 1 = 1))
+
+                try
+                    run.Invoke ((null : obj), arguments) |> ignore<obj>
+                    failwith<string> "LocalFlow.Cases.Run returned, though every class's Hit throws"
+                with :? TargetInvocationException as e ->
+                    "=" + e.InnerException.GetType().FullName
+
+            [ 0 .. (1 <<< localFlowArguments) - 1 ] |> List.map raisedWith |> Set.ofList
+        finally
+            context.Unload ()
+
+    [<Test>]
+    let ``a virtual call on a local dispatches on what the body stored there, as the real runtime does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let mutable count = 0
+
+        let property (case : LocalFlowCase) : unit =
+            count <- count + 1
+            let name = $"LocalFlow%d{count}"
+            let image = localFlowImage name case
+            let raised = localFlowRaised image
+
+            let fixture =
+                Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+            let _, escapes =
+                EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "LocalFlow.Cases" "Run")
+
+            let ours =
+                render (analysisOver [ fixture ] id) escapes
+                |> Set.filter (fun shown -> shown.StartsWith "=LocalFlow.E")
+
+            if not escapes.Unknown && not (Set.isSubset raised ours) then
+                failwith
+                    $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says only %A{Set.toList ours}"
+
+            if exactlyDecided case.Statements && (escapes.Unknown || ours <> raised) then
+                failwith
+                    $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says %A{Set.toList ours}, unknown %b{escapes.Unknown}"
+
+        // A store into a local that the body then reads.
+        property
+            {
+                Statements = [ LocalStatement.Make (0, 1) ]
+                Final = 0
+            }
+
+        // Two paths storing different classes meet.
+        property
+            {
+                Statements =
+                    [
+                        LocalStatement.If (0, [ LocalStatement.Make (0, 1) ], [ LocalStatement.Make (0, 2) ])
+                    ]
+                Final = 0
+            }
+
+        // A copy holds what the local copied from held at the copy.
+        property
+            {
+                Statements = [ LocalStatement.Copy (1, 0) ; LocalStatement.Make (0, 3) ]
+                Final = 1
+            }
+
+        // A `finally` runs on the way out of its `try`, so what it stores is what the local holds.
+        property
+            {
+                Statements =
+                    [
+                        LocalStatement.TryFinally ([ LocalStatement.Make (0, 1) ], [ LocalStatement.Make (0, 2) ])
+                    ]
+                Final = 0
+            }
+
+        // A store through a local's address.
+        property
+            {
+                Statements = [ LocalStatement.StoreThrough (0, 2) ]
+                Final = 0
+            }
+
+        // A loop's second run copies what its first run stored.
+        property
+            {
+                Statements =
+                    [
+                        LocalStatement.Twice [ LocalStatement.Copy (1, 0) ; LocalStatement.Make (0, 2) ]
+                    ]
+                Final = 1
+            }
+
+        // A handler runs after any of its `try`'s stores.
+        property
+            {
+                Statements =
+                    [
+                        LocalStatement.TryCatch ([ LocalStatement.Make (0, 1) ], [ LocalStatement.Copy (1, 0) ])
+                    ]
+                Final = 1
+            }
+
+        FsCheck.Check.One (
+            FsCheck.Config.QuickThrowOnFailure.WithMaxTest 60,
+            FsCheck.FSharp.Prop.forAll (FsCheck.FSharp.Arb.fromGen localFlowGen) property
+        )
+
+    /// A local of a sealed type holds an object of exactly that type, so a call on it dispatches
+    /// there, though the body stored in it a value the analysis cannot name: an array's element.
+    [<Test>]
+    let ``a virtual call on a local of a sealed type dispatches there, whatever was stored in it`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "SealedLocal", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "SealedLocal"
+
+            let thrown =
+                modul.DefineType (
+                    "SealedLocal.Raised",
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    typeof<Exception>
+                )
+
+            let thrownConstructor = thrown.DefineDefaultConstructor MethodAttributes.Public
+
+            let baseType =
+                modul.DefineType ("SealedLocal.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+            let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+            let hit =
+                baseType.DefineMethod (
+                    "Hit",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<Void>,
+                    [||]
+                )
+
+            let made =
+                modul.DefineType ("SealedLocal.Made", TypeAttributes.Public ||| TypeAttributes.Sealed, baseType)
+
+            let constructor =
+                made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+            let il = constructor.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Call, baseConstructor)
+            il.Emit Emit.OpCodes.Ret
+
+            let overriding =
+                made.DefineMethod (
+                    "Hit",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.HideBySig,
+                    typeof<Void>,
+                    [||]
+                )
+
+            let il = overriding.GetILGenerator ()
+            il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+            il.Emit Emit.OpCodes.Throw
+            made.DefineMethodOverride (overriding, hit)
+
+            let cases =
+                modul.DefineType (
+                    "SealedLocal.Cases",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let run =
+                cases.DefineMethod (
+                    "FirstOf",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [| made.MakeArrayType () |]
+                )
+
+            let il = run.GetILGenerator ()
+            let local = il.DeclareLocal made
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ldelem_Ref
+            il.Emit (Emit.OpCodes.Stloc, local)
+            il.Emit (Emit.OpCodes.Ldloc, local)
+            il.Emit (Emit.OpCodes.Callvirt, hit)
+            il.Emit Emit.OpCodes.Ret
+
+            thrown.CreateType () |> ignore<Type>
+            baseType.CreateType () |> ignore<Type>
+            made.CreateType () |> ignore<Type>
+            cases.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "SealedLocal.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "SealedLocal.Cases" "FirstOf")
+
+        escapes.Unknown |> shouldEqual false
+        render analysis escapes |> shouldContain "=SealedLocal.Raised"
+
+    /// A store of an integer constant into a local of an integer type, then a division by the
+    /// local: `ldc; stloc; ldc 1; ldloc; div`, at the widths the local's type loads as.
+    type private StoredDivisor =
+        {
+            /// The local's type.
+            Local : Type
+            /// The constant stored.
+            Stored : int64
+            /// Whether the constant is pushed as a native int, rather than at the width the local's
+            /// type loads as.
+            AsNative : bool
+            /// Whether the local is of an enum whose underlying type is `Local`, rather than of
+            /// `Local` itself.
+            InEnum : bool
+            /// Whether `Run` takes the constant as an argument of the type it is pushed as, which
+            /// `Caller` passes it, rather than pushing it itself.
+            ThroughArgument : bool
+            /// Whether `Run` tests the local, dividing by zero where it is zero, rather than
+            /// dividing by it.
+            ByBranch : bool
+        }
+
+    /// The width a local of `local` loads as: 4, 8, or 0 for a native int.
+    let private loadedWidth (local : Type) : int =
+        if local = typeof<int64> || local = typeof<uint64> then
+            8
+        elif local = typeof<nativeint> || local = typeof<unativeint> then
+            0
+        else
+            4
+
+    /// Emit into `modul` the case of `divisor` at `index` (`storedDivisorImage`).
+    let private emitStoredDivisor (modul : Emit.ModuleBuilder) (index : int) (divisor : StoredDivisor) : unit =
+        let cases =
+            modul.DefineType (
+                $"StoredDivisor.Cases%d{index}",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            )
+
+        let localType : Type =
+            if divisor.InEnum then
+                let enum =
+                    modul.DefineEnum ($"StoredDivisor.Narrow%d{index}", TypeAttributes.Public, divisor.Local)
+
+                enum.CreateType ()
+            else
+                divisor.Local
+
+        let width = loadedWidth divisor.Local
+        let pushedWidth = if divisor.AsNative then 0 else width
+
+        let pushedType : Type =
+            match pushedWidth with
+            | 8 -> typeof<int64>
+            | 4 -> typeof<int32>
+            | _ -> typeof<nativeint>
+
+        let run =
+            cases.DefineMethod (
+                "Run",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                (if divisor.ThroughArgument then [| pushedType |] else [||])
+            )
+
+        let il = run.GetILGenerator ()
+        let local = il.DeclareLocal localType
+
+        // Push `value` at `width`: 4 and 8 as constants of those widths, 0 as a native int.
+        let push (il : Emit.ILGenerator) (width : int) (value : int64) : unit =
+            match width with
+            | 8 -> il.Emit (Emit.OpCodes.Ldc_I8, value)
+            | 4 -> il.Emit (Emit.OpCodes.Ldc_I4, int32 value)
+            | _ ->
+                il.Emit (Emit.OpCodes.Ldc_I8, value)
+                il.Emit Emit.OpCodes.Conv_I
+
+        if divisor.ThroughArgument then
+            il.Emit Emit.OpCodes.Ldarg_0
+        else
+            push il pushedWidth divisor.Stored
+
+        il.Emit (Emit.OpCodes.Stloc, local)
+
+        if divisor.ByBranch then
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Ldloc, local)
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit Emit.OpCodes.Ldc_I4_1
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Pop
+            il.MarkLabel skip
+        else
+            push il width 1L
+            il.Emit (Emit.OpCodes.Ldloc, local)
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Pop
+
+        il.Emit Emit.OpCodes.Ret
+
+        let caller =
+            cases.DefineMethod ("Caller", MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+        let il = caller.GetILGenerator ()
+
+        if divisor.ThroughArgument then
+            push il pushedWidth divisor.Stored
+
+        il.Emit (Emit.OpCodes.Call, run)
+        il.Emit Emit.OpCodes.Ret
+        cases.CreateType () |> ignore<Type>
+
+
+    /// The image of `StoredDivisor`: for the divisor at each index `i`, `StoredDivisor.Cases<i>.Run`, a
+    /// body as the divisor says, and `Caller`, which calls it.
+    let private storedDivisorImage (divisors : StoredDivisor list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "StoredDivisor", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "StoredDivisor"
+
+        for index, divisor in List.indexed divisors do
+            emitStoredDivisor modul index divisor
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``a division by a local divides by what the store left there, as the real runtime does`` () : unit =
+
+        let locals =
+            [
+                typeof<bool>
+                typeof<char>
+                typeof<sbyte>
+                typeof<byte>
+                typeof<int16>
+                typeof<uint16>
+                typeof<int32>
+                typeof<uint32>
+                typeof<int64>
+                typeof<uint64>
+                typeof<nativeint>
+                typeof<unativeint>
+            ]
+
+        let constants =
+            [
+                0L
+                1L
+                -1L
+                2L
+                255L
+                256L
+                65535L
+                65536L
+                0x1_0000_0000L
+                Int64.MinValue
+                Int64.MaxValue
+            ]
+
+        // An enum's underlying type is an integer type other than bool, char and the native ints.
+        let enumerable (local : Type) : bool =
+            local <> typeof<bool>
+            && local <> typeof<char>
+            && local <> typeof<nativeint>
+            && local <> typeof<unativeint>
+
+        // Every local type, with each constant at the width it loads as, and as a native int where
+        // the store converts it; in a local of the type, and of an enum of it; pushed by the body,
+        // and passed by its caller; divided by, and tested.
+        let divisors =
+            [
+                for local in locals do
+                    for stored in constants do
+                        for asNative in
+                            (if loadedWidth local = 4 then
+                                 [ false ; true ]
+                             else
+                                 [ false ]) do
+                            for inEnum in (if enumerable local then [ false ; true ] else [ false ]) do
+                                for throughArgument in [ false ; true ] do
+                                    for byBranch in [ false ; true ] do
+                                        yield
+                                            {
+                                                Local = local
+                                                Stored = stored
+                                                AsNative = asNative
+                                                InEnum = inEnum
+                                                ThroughArgument = throughArgument
+                                                ByBranch = byBranch
+                                            }
+            ]
+
+        let image = storedDivisorImage divisors
+
+        let raised =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("StoredDivisor", isCollectible = true)
+
+            try
+                let loaded = context.LoadFromStream (new MemoryStream (image))
+
+                divisors
+                |> List.mapi (fun index divisor ->
+                    let caller = loaded.GetType($"StoredDivisor.Cases%d{index}").GetMethod ("Caller")
+
+                    try
+                        caller.Invoke ((null : obj), [||]) |> ignore<obj>
+                        false
+                    with :? TargetInvocationException as e ->
+                        match e.InnerException with
+                        | :? DivideByZeroException -> true
+                        | other -> failwith $"%A{divisor}: the real runtime raised %O{other}"
+                )
+            finally
+                context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "StoredDivisor.dll") (new MemoryStream (image))
+
+        let failures =
+            ((analysisOver [ fixture ] id, []), List.indexed (List.zip divisors raised))
+            ||> List.fold (fun (analysis, failures) (index, (divisor, raises)) ->
+                let analysis, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed fixture $"StoredDivisor.Cases%d{index}" "Caller")
+
+                let says = (render analysis escapes).Contains "=System.DivideByZeroException"
+
+                let failure =
+                    if raises && not says && not escapes.Unknown then
+                        Some $"%A{divisor}: the real runtime divides by zero, which the analysis rules out"
+                    // A constant the store keeps at the width the local loads as is what the local
+                    // holds.
+                    elif
+                        not divisor.AsNative
+                        && not divisor.InEnum
+                        && not divisor.ThroughArgument
+                        && says <> raises
+                    then
+                        Some $"%A{divisor}: the real runtime divides by zero %b{raises}, the analysis says %b{says}"
+                    else
+                        None
+
+                analysis, Option.toList failure @ failures
+            )
+            |> snd
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> List.rev |> String.concat Environment.NewLine |> failwith

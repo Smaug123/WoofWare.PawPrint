@@ -27,12 +27,19 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * AssemblyName
         =
         let assemblies, dumped, assyName =
-            TypeResolution.loadAssembly
-                loggerFactory
-                state.DotnetRuntimeDirs
-                referencedInAssembly
-                r
-                state.TypeSystem._LoadedAssemblies
+            match
+                TypeResolution.tryLoadAssembly
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    referencedInAssembly
+                    r
+                    state.TypeSystem._LoadedAssemblies
+            with
+            | Some loaded -> loaded
+            | None ->
+                TypeBindingFailure.AssemblyUnavailable referencedInAssembly.AssemblyReferences.[r]
+                |> TypeBindingFailure.describe
+                |> failwith
 
         { state with
             TypeSystem =
@@ -212,14 +219,19 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTopLevelTypeFromName
-                loggerFactory
-                state.DotnetRuntimeDirs
-                ns
-                name
-                genericArgs
-                assy
-                state.TypeSystem._LoadedAssemblies
+            match
+                TypeResolution.resolveTopLevelTypeFromName
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    ns
+                    name
+                    genericArgs
+                    assy
+                    state.TypeSystem._LoadedAssemblies
+            with
+            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | _, Error (TypeBindingFailure.TypeAbsent miss) -> failwithf "Top-level type resolution failed: %O" miss
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         { state with
             TypeSystem =
@@ -333,13 +345,18 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromExport
-                loggerFactory
-                state.DotnetRuntimeDirs
-                fromAssembly
-                ty
-                genericArgs
-                state.TypeSystem._LoadedAssemblies
+            let assemblies, resolution =
+                TypeResolution.tryResolveTypeFromExport
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    fromAssembly
+                    ty
+                    genericArgs
+                    state.TypeSystem._LoadedAssemblies
+
+            match TypeResolution.exportedType resolution with
+            | Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | Error failure -> failwith (TypeResolution.describeExportFailure ty fromAssembly failure)
 
         { state with
             TypeSystem =
@@ -395,15 +412,19 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromDefn
-                loggerFactory
-                state.DotnetRuntimeDirs
-                baseClassTypes
-                ty
-                typeGenericArgs
-                methodGenericArgs
-                assy
-                state.TypeSystem._LoadedAssemblies
+            match
+                TypeResolution.resolveTypeFromDefn
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    ty
+                    typeGenericArgs
+                    methodGenericArgs
+                    assy
+                    state.TypeSystem._LoadedAssemblies
+            with
+            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         { state with
             TypeSystem =

@@ -652,6 +652,7 @@ module NativeRuntimeAssembly =
                 // that into a `TypeLoadException` when the caller asked to be thrown at — so
                 // reporting absence here is reporting it at the right layer.
                 ForwarderMiss.AnswerNull, state, None
+            | ExportedTypeResolution.Unmodelled unmodelled -> failwith $"%s{operation}: %s{unmodelled.Diagnostic}"
             | ExportedTypeResolution.AssemblyUnavailable reference ->
                 // The chain named an assembly nothing supplies. CoreCLR raises
                 // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
@@ -783,6 +784,7 @@ module NativeRuntimeAssembly =
                 // resolves. Answering `null` here would be answering a question we did not ask.
                 failwith
                     $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name}, and the target does not declare that name under the forwarder's own spelling: %O{miss}. Folding is not yet carried across a forwarder hop."
+            | _, ExportChainArrival.Unmodelled unmodelled -> failwith $"%s{operation}: %s{unmodelled.Diagnostic}"
             | state, ExportChainArrival.AssemblyUnavailable reference ->
                 // A missing *first* hop is missing for CoreCLR too, whatever it folds; a later one
                 // was reached through an assembly whose folded candidates went unchecked.
@@ -858,6 +860,8 @@ module NativeRuntimeAssembly =
                 | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
                     // Unreachable: the loader used here reads files.
                     failwith $"%s{operation}: %s{string<BaseChainFailure> failure}"
+                | _, Some (BaseChainFailure.Unmodelled unmodelled) ->
+                    failwith $"%s{operation}: %s{unmodelled.Diagnostic}"
 
         match outcome with
         | Choice1Of2 miss ->

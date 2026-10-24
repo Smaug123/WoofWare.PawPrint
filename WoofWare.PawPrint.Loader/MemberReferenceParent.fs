@@ -26,6 +26,8 @@ type MemberReferenceParent =
     /// supplies, so binding the member throws <c>FileNotFoundException</c>, whatever the member. The
     /// reference is the first such one that load reaches.
     | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+    /// The parent, or what loading it reaches, is a shape PawPrint does not implement binding.
+    | Unmodelled of UnmodelledBinding
 
 [<RequireQualifiedAccess>]
 module MemberReferenceParent =
@@ -52,20 +54,29 @@ module MemberReferenceParent =
 
             assemblies, TypeLoad.ofIdentity identity
 
+        let unmodelled (diagnostic : string) =
+            assemblies,
+            Error (
+                TypeLoad.LoadMiss.Unmodelled
+                    {
+                        Diagnostic = diagnostic
+                    }
+            )
+
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.GenericInstantiation (root, _) ->
             match TypeDefn.stripCustomModifiers root with
             | TypeDefn.FromDefinition (identity, _) -> assemblies, Ok identity
             | TypeDefn.FromReference (typeRef, _) -> ofReference typeRef
             | other ->
-                failwith
+                unmodelled
                     $"An instantiation in %s{spellingAssembly.DefinitionFullName} applies arguments to %O{other}, which names no generic definition"
         | TypeDefn.FromDefinition (identity, _) -> assemblies, Ok identity
         | TypeDefn.FromReference (typeRef, _) -> ofReference typeRef
         | TypeDefn.PrimitiveType primitive ->
             assemblies, Ok (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
         | other ->
-            failwith $"Expected a type with members in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
+            unmodelled $"Expected a type with members in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
 
     /// Read the parent token of one of `referencingAssembly`'s MemberRefs. Loads whatever assemblies
     /// naming it takes.
@@ -84,6 +95,7 @@ module MemberReferenceParent =
             match miss with
             | TypeLoad.LoadMiss.TypeAbsent miss -> MemberReferenceParent.Unresolved miss
             | TypeLoad.LoadMiss.AssemblyUnavailable reference -> MemberReferenceParent.AssemblyUnavailable reference
+            | TypeLoad.LoadMiss.Unmodelled unmodelled -> MemberReferenceParent.Unmodelled unmodelled
 
         let nominal (assemblies, result) =
             match result with
@@ -145,8 +157,16 @@ module MemberReferenceParent =
                         assemblies
                     |> nominal
         | MetadataToken.ModuleReference _ ->
-            failwith
-                $"TODO: MemberRef %s{row.PrettyName} in %s{referencingAssembly.DefinitionFullName} names a global member of another module, which is not modelled"
+            assemblies,
+            MemberReferenceParent.Unmodelled
+                {
+                    Diagnostic =
+                        $"TODO: MemberRef %s{row.PrettyName} in %s{referencingAssembly.DefinitionFullName} names a global member of another module, which is not modelled"
+                }
         | other ->
-            failwith
-                $"MemberRef %s{row.PrettyName} in %s{referencingAssembly.DefinitionFullName} has parent %O{other}, which ECMA-335 does not permit"
+            assemblies,
+            MemberReferenceParent.Unmodelled
+                {
+                    Diagnostic =
+                        $"MemberRef %s{row.PrettyName} in %s{referencingAssembly.DefinitionFullName} has parent %O{other}, which ECMA-335 does not permit"
+                }

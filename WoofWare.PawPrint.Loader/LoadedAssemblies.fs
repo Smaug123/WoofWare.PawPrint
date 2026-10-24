@@ -327,9 +327,13 @@ type TypeResolutionResult =
     /// report absence should <c>failwith</c> the miss's own description.
     | NotFound of TypeResolutionMiss
 
+    /// The search reached a shape PawPrint does not implement resolving.
+    | Unmodelled of UnmodelledBinding
+
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.FullName})"
         | TypeResolutionResult.Resolved (assy, identity, ty) ->
             $"Resolved(%s{assy.DefinitionFullName}: %O{identity} {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
         | TypeResolutionResult.NotFound miss -> $"NotFound(%O{miss})"
+        | TypeResolutionResult.Unmodelled unmodelled -> $"Unmodelled(%s{unmodelled.Diagnostic})"

@@ -426,13 +426,13 @@ public class Consumer
         let dumped = dumpedAssembly (Some "ModuleRef.Test.dll") assemblyBytes
         let assemblies = loadedAssemblies [ dumped ]
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () ->
-                LoadedTypeResolution.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
-                |> ignore
+        match LoadedTypeResolution.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer with
+        | TypeResolutionResult.Unmodelled unmodelled ->
+            Assert.That (
+                unmodelled.Diagnostic,
+                Does.Contain "ModuleRef type resolution is not yet supported for type N.Inner"
             )
-
-        Assert.That (ex.Message, Does.Contain "ModuleRef type resolution is not yet supported for type N.Inner")
+        | other -> failwith $"expected the ModuleRef scope to be unmodelled, got %O{other}"
 
     [<Test>]
     let ``forwarded top-level exported types resolve to the target assembly`` () =
@@ -1323,12 +1323,13 @@ public class Outer<T>
             use _loggerFactoryResource = loggerFactory
 
             let _, loaded, name =
-                TypeResolution.loadAssembly
+                TypeResolution.tryLoadAssembly
                     loggerFactory
                     [ firstDir ; secondDir ]
                     referencing
                     handle
                     (loadedAssemblies [])
+                |> Option.defaultWith (fun () -> failwith "Probe.Target did not bind")
 
             name.Name |> shouldEqual "Probe.Target"
             loaded.OriginalPath |> shouldEqual (Some firstPath)

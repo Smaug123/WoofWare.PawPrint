@@ -110,7 +110,9 @@ module StackShape =
 
             match pushed with
             | Pushed.Argument index -> fixedShape inputs.Arguments.[index]
-            | Pushed.Local index -> fixedShape inputs.Locals.[index]
+            | Pushed.Local index ->
+                failwith
+                    $"BUG: StackShape's lattice was asked what ldloc of local %d{index} pushes at offset %d{offset}, which StackFlow answers from the local"
             | Pushed.Operand fromTop
             | Pushed.Negated fromTop -> Ok (fun popped -> popped.[fromTop])
             | Pushed.Arithmetic -> Ok arithmetic
@@ -158,6 +160,10 @@ module StackShape =
 
         {
             Push = push
+            // The importer loads a local as its declared type, whatever was stored in it.
+            Local = fun index -> inputs.Locals.[index]
+            Store = fun index _ -> inputs.Locals.[index]
+            JoinLocal = fun index _ _ -> inputs.Locals.[index]
             Join = join
             Caught = fun _ -> SlotShape.Other
             WideningConverts = true

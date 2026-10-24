@@ -139,6 +139,13 @@ module internal StackInteger =
             | PrimitiveType.Object -> None
         | _ -> None
 
+    /// The integer type of a local spelled `local`, native ints among them; `None` for any other
+    /// type, an enum's or a type variable's included.
+    let ofLocal (local : TypeDefn) : PrimitiveType option =
+        match TypeDefn.stripCustomModifiers local with
+        | TypeDefn.PrimitiveType (PrimitiveType.IntPtr | PrimitiveType.UIntPtr as primitive) -> Some primitive
+        | spelled -> ofParameter spelled
+
     /// What `ldarg` pushes of a parameter of the integer type `parameter` (`ofParameter`) that a
     /// call passed `value` as: `value` converted to the parameter's type, truncated where that is
     /// narrower (ECMA-335 III.1.6), then widened as the stack holds it. `None` where the IL would
@@ -247,8 +254,12 @@ type internal BodySpellings =
         Spellings : SpelledType list
         /// What `ldarg` of each index pushes, `this` at 0 for an instance method.
         Arguments : StackValue list
-        /// What `ldloc` of each index pushes.
+        /// What each local may hold where the flow does not follow what is stored in it
+        /// (`SlotLattice.Local`): any value of its declared type.
         Locals : StackValue list
+        /// The integer type of each local that has one (`StackInteger.ofLocal`), which a store into
+        /// it truncates to.
+        LocalIntegers : Map<int, PrimitiveType>
         /// What `ldstr` pushes.
         String : StackValue
         /// What the token of the instruction at each offset makes it push, where it decides that:
@@ -531,12 +542,13 @@ module internal StackValues =
     /// How many objects, or integers, a slot may name before it is `Unknown`; it bounds the join.
     let private limit : int = 8
 
-    let private join (_ : int) (_ : int) (a : StackValue) (b : StackValue) : Result<StackValue, StackShapeError> =
-        let bounded (joined : Set<'a>) (value : Set<'a> -> StackValue) : Result<StackValue, StackShapeError> =
+    /// The value a slot or a local holds where two paths' values for it meet.
+    let private joinValues (a : StackValue) (b : StackValue) : StackValue =
+        let bounded (joined : Set<'a>) (value : Set<'a> -> StackValue) : StackValue =
             if joined.Count > limit then
-                Ok StackValue.Unknown
+                StackValue.Unknown
             else
-                Ok (value joined)
+                value joined
 
         match a, b with
         | StackValue.Objects a, StackValue.Objects b -> bounded (Set.union a b) StackValue.Objects
@@ -578,7 +590,7 @@ module internal StackValues =
             // where it imports both paths, which a branch it folds may not, so the slot's width,
             // and what a conversion makes of it, is the JIT's to decide.
             if List.length (List.filter id [ anyInt32 ; anyInt64 ; anyNative ]) > 1 then
-                Ok StackValue.Unknown
+                StackValue.Unknown
             else
                 bounded joined StackValue.Integers
         | StackValue.Addresses a, StackValue.Addresses b -> bounded (Set.union a b) StackValue.Addresses
@@ -586,7 +598,34 @@ module internal StackValues =
         | StackValue.Integers _, (StackValue.Objects _ | StackValue.Addresses _)
         | StackValue.Addresses _, (StackValue.Objects _ | StackValue.Integers _)
         | StackValue.Unknown, _
-        | _, StackValue.Unknown -> Ok StackValue.Unknown
+        | _, StackValue.Unknown -> StackValue.Unknown
+
+    /// What a local of the integer type `local` (`StackInteger.ofLocal`) holds once a `stloc` stores `value` in
+    /// it, where the analysis can say: a constant at the width the local loads as, truncated to the
+    /// local's own width (ECMA-335 III.1.6). `None` for a constant the store would convert between
+    /// widths, and for an argument or a pointee's value, which may be wider than the local.
+    let private storedInteger (local : PrimitiveType) (value : SpelledInteger) : SpelledInteger option =
+        match value with
+        | SpelledInteger.Constant constant ->
+            let narrowed (conversion : IntegerConversion) =
+                Some (SpelledInteger.Constant (StackInteger.converted conversion constant))
+
+            match local, constant with
+            | PrimitiveType.Boolean, StackInteger.Int32 _
+            | PrimitiveType.Byte, StackInteger.Int32 _ -> narrowed IntegerConversion.U1
+            | PrimitiveType.SByte, StackInteger.Int32 _ -> narrowed IntegerConversion.I1
+            | PrimitiveType.Int16, StackInteger.Int32 _ -> narrowed IntegerConversion.I2
+            | PrimitiveType.Char, StackInteger.Int32 _
+            | PrimitiveType.UInt16, StackInteger.Int32 _ -> narrowed IntegerConversion.U2
+            | PrimitiveType.Int32, StackInteger.Int32 _
+            | PrimitiveType.UInt32, StackInteger.Int32 _
+            | PrimitiveType.Int64, StackInteger.Int64 _
+            | PrimitiveType.UInt64, StackInteger.Int64 _
+            | PrimitiveType.IntPtr, StackInteger.NativeInt _
+            | PrimitiveType.UIntPtr, StackInteger.NativeInt _ -> Some value
+            | _ -> None
+        | SpelledInteger.Argument _
+        | SpelledInteger.Loaded _ -> None
 
     let private lattice (spellings : BodySpellings) (unwritten : Set<int>) : SlotLattice<StackValue> =
         let fixedValue (value : StackValue) : Result<StackValue list -> StackValue, StackShapeError> =
@@ -637,7 +676,9 @@ module internal StackValues =
         let push (offset : int) (op : IlOp) (pushed : Pushed) =
             match pushed with
             | Pushed.Argument index -> fixedValue (List.item index spellings.Arguments)
-            | Pushed.Local index -> fixedValue (List.item index spellings.Locals)
+            | Pushed.Local index ->
+                failwith
+                    $"BUG: StackValues' lattice was asked what ldloc of local %d{index} pushes at offset %d{offset}, which StackFlow answers from the local"
             | Pushed.Operand fromTop -> Ok (fun popped -> List.item fromTop popped)
             | Pushed.Negated fromTop -> Ok (fun popped -> ofConstants StackInteger.negated (List.item fromTop popped))
             | Pushed.Null -> fixedValue (StackValue.Objects (Set.singleton SpelledObject.Null))
@@ -703,9 +744,37 @@ module internal StackValues =
             | ExceptionRegion.Finally _
             | ExceptionRegion.Fault _ -> StackValue.Unknown
 
+        // Anything stored in a local is of its declared type, so that is what it holds where
+        // nothing narrower is known.
+        let local (index : int) : StackValue = List.item index spellings.Locals
+
+        let narrowest (index : int) (value : StackValue) : StackValue =
+            match value with
+            | StackValue.Unknown -> local index
+            | StackValue.Objects _
+            | StackValue.Integers _
+            | StackValue.Addresses _ -> value
+
+        // A store converts an integer to the local's type, which only a local of an integer type
+        // says.
+        let store (index : int) (value : StackValue) : StackValue =
+            match value, Map.tryFind index spellings.LocalIntegers with
+            | StackValue.Integers integers, Some primitive ->
+                let kept = integers |> Seq.map (storedInteger primitive) |> List.ofSeq
+
+                if List.forall Option.isSome kept then
+                    StackValue.Integers (kept |> List.choose id |> Set.ofList)
+                else
+                    local index
+            | StackValue.Integers _, None -> local index
+            | _ -> narrowest index value
+
         {
             Push = push
-            Join = join
+            Local = local
+            Store = store
+            JoinLocal = fun index a b -> narrowest index (joinValues a b)
+            Join = fun _ _ a b -> Ok (joinValues a b)
             Caught = caught
             // A join of spelled types widens only this account of the values, never the values.
             WideningConverts = false

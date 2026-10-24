@@ -195,7 +195,8 @@ module MetadataAccess =
             | TypeResolutionResult.Resolved (definedIn, identity, _) ->
                 Some (definedIn, definedIn.TypeDefs.[identity.TypeDefinition.Get])
             | TypeResolutionResult.FirstLoadAssy _
-            | TypeResolutionResult.NotFound _ -> None
+            | TypeResolutionResult.NotFound _
+            | TypeResolutionResult.Unmodelled _ -> None
         | _ -> None
 
     let rec private typeAccessible

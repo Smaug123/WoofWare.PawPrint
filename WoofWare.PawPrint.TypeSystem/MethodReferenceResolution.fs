@@ -461,3 +461,4 @@ module MethodReferenceResolution =
             withAssemblies ctx assemblies, MethodReferenceTarget.ParentTypeMissing miss
         | assemblies, MemberReferenceParent.AssemblyUnavailable reference ->
             withAssemblies ctx assemblies, MethodReferenceTarget.ParentAssemblyUnavailable reference
+        | _, MemberReferenceParent.Unmodelled unmodelled -> failwith unmodelled.Diagnostic

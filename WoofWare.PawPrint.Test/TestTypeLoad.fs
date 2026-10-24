@@ -186,6 +186,7 @@ public struct ThingStruct { }
             | None -> Outcome.Loads
             | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Outcome.Fails "TypeLoadException"
             | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Outcome.Fails "FileNotFoundException"
+            | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
         )
 
     let private hostCoreLib : Lazy<DumpedAssembly> =
@@ -585,6 +586,7 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
                 | None -> None
                 | Some (TypeLoad.LoadMiss.TypeAbsent miss) -> Some (Choice1Of2 miss)
                 | Some (TypeLoad.LoadMiss.AssemblyUnavailable reference) -> Some (Choice2Of2 reference.Name.FullName)
+                | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
 
             let fresh = missesOf hostCoreLib.Value client spellingsOf false |> List.map named
 
