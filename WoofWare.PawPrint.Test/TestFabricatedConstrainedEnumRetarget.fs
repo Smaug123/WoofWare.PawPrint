@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Reflection
 open System.Reflection.Emit
+open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -312,7 +313,21 @@ public static class Driver
 
     [<Test>]
     let ``a final override of GetHashCode by a MethodImpl holds a slot of its own, and runs on the box`` () : unit =
-        run "Retarget.RenamedHash(DayOfWeek.Friday)" 43
+        // The box is no `Renamed`, so PawPrint refuses the call (`TestFabricatedConstrainedClassMethod`).
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth
+                "Retarget"
+                (fabricate ())
+                "RetargetDriver"
+                (driver "Retarget.RenamedHash(DayOfWeek.Friday)")
+
+        onHost |> shouldEqual (RealRuntimeResult.NormalExit 43)
+
+        match onPawPrint with
+        | FabricatedOutcome.Failed e ->
+            e.ToString ()
+            |> shouldContainText "does not mean the same in the value type's method table"
+        | FabricatedOutcome.Exited code -> failwith $"PawPrint ran the guest to exit code %d{code}"
 
     // `Int32`'s storage is an enum's own, but an enum over these primitives keeps its `value__`
     // apart from the primitive, so the primitive's method must read the enum's storage as its own.
