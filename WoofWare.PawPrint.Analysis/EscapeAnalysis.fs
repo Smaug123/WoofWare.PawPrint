@@ -3241,6 +3241,11 @@ module EscapeAnalysis =
         let state, writes = fieldWrites state assembly
         state, not (writes.Unfollowed.Contains field.Row)
 
+    /// Whether the analysis takes `field` to hold only what its assembly's IL stores in it, null among
+    /// that (`followableField`), and the analysis to ask next.
+    let internal followsField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
+        followableField state field
+
     /// Whether every object among `objects` is spelled, in `spellings`, as of a reference type, so
     /// that whether it is null is what a `brtrue` tests of it. An object a call returns that names
     /// no declared type is not.

@@ -16507,6 +16507,9 @@ public static class Cases
         | Argument of made : int
         /// `ldflda field; newobj C<made>; stind.ref`: a store through the field's address.
         | ThroughAddress of made : int
+        /// `field = new[] { new C<made>() }[0]`: an array's element, which the analysis does not
+        /// follow.
+        | Element of made : int
 
     /// The accessibility of `FieldFlow`'s field.
     [<RequireQualifiedAccess>]
@@ -16539,7 +16542,8 @@ public static class Cases
                | FieldWrite.Make _
                | FieldWrite.Null -> true
                | FieldWrite.Argument _
-               | FieldWrite.ThroughAddress _ -> false
+               | FieldWrite.ThroughAddress _
+               | FieldWrite.Element _ -> false
            )
 
     let private fieldFlowGen : FsCheck.Gen<FieldFlowCase> =
@@ -16552,6 +16556,7 @@ public static class Cases
                     1, FsCheck.FSharp.Gen.constant FieldWrite.Null
                     1, FsCheck.FSharp.Gen.map FieldWrite.Argument made
                     1, FsCheck.FSharp.Gen.map FieldWrite.ThroughAddress made
+                    1, FsCheck.FSharp.Gen.map FieldWrite.Element made
                 ]
 
         FsCheck.FSharp.Gen.map3
@@ -16679,7 +16684,8 @@ public static class Cases
                                     | FieldWrite.Argument _ -> [| baseType :> Type |]
                                     | FieldWrite.Make _
                                     | FieldWrite.Null
-                                    | FieldWrite.ThroughAddress _ -> [||]
+                                    | FieldWrite.ThroughAddress _
+                                    | FieldWrite.Element _ -> [||]
 
                                 let writer =
                                     holder.DefineMethod (
@@ -16705,6 +16711,15 @@ public static class Cases
                                         il.Emit (Emit.OpCodes.Ldflda, field)
 
                                     il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                | FieldWrite.Element made ->
+                                    il.Emit Emit.OpCodes.Ldc_I4_1
+                                    il.Emit (Emit.OpCodes.Newarr, baseType)
+                                    il.Emit Emit.OpCodes.Dup
+                                    il.Emit Emit.OpCodes.Ldc_I4_0
+                                    il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                    il.Emit Emit.OpCodes.Stelem_Ref
+                                    il.Emit Emit.OpCodes.Ldc_I4_0
+                                    il.Emit Emit.OpCodes.Ldelem_Ref
 
                                 match write, case.Static with
                                 | FieldWrite.ThroughAddress _, _ -> il.Emit Emit.OpCodes.Stind_Ref
@@ -16762,7 +16777,8 @@ public static class Cases
                         | FieldWrite.Argument passed -> il.Emit (Emit.OpCodes.Newobj, constructorOf passed)
                         | FieldWrite.Make _
                         | FieldWrite.Null
-                        | FieldWrite.ThroughAddress _ -> ()
+                        | FieldWrite.ThroughAddress _
+                        | FieldWrite.Element _ -> ()
 
                         il.Emit (Emit.OpCodes.Call, writer)
                         il.MarkLabel skip
@@ -16869,6 +16885,10 @@ public static class Cases
                     elif fieldExactlyDecided case && (unknown || ours <> raised || not assumes) then
                         Some
                             $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says %A{Set.toList ours}, unknown %b{unknown}, assuming %b{assumes}"
+                    // Where another assembly may write the field, or a writer stores something the
+                    // analysis does not follow, nothing says what the field holds beyond its type.
+                    elif not (fieldExactlyDecided case) && not unknown then
+                        Some $"%A{case}: the analysis decides the call, though it cannot know what the field holds"
                     // Without the assumption, nothing says what the field holds beyond its type, on
                     // which `Hit` is abstract.
                     elif not unknownWithheld then
@@ -16920,3 +16940,252 @@ public static class Cases
                 (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf fieldFlowGen))
                 property
         )
+
+    /// An image named `name` with an abstract `Fields.Base`, whose `Hit` `Fields.C1` overrides to
+    /// throw `Fields.E1`, and whatever `emit` adds, given the module, `Base`, `Hit` and `C1`'s
+    /// constructor; with `InternalsVisibleTo` each of `friends`.
+    let private fieldFixture
+        (name : string)
+        (friends : string list)
+        (emit : Emit.ModuleBuilder -> Emit.TypeBuilder -> Emit.MethodBuilder -> Emit.ConstructorBuilder -> unit)
+        : byte[]
+        =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+
+        for friend in friends do
+            builder.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<System.Runtime.CompilerServices.InternalsVisibleToAttribute>.GetConstructor
+                        [| typeof<string> |],
+                    [| box friend |]
+                )
+            )
+
+        let modul = builder.DefineDynamicModule name
+
+        let baseType =
+            modul.DefineType ("Fields.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+        let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+        let hit =
+            baseType.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                [||]
+            )
+
+        let thrown =
+            modul.DefineType ("Fields.E1", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Exception>)
+
+        let thrownConstructor = thrown.DefineDefaultConstructor MethodAttributes.Public
+
+        let made =
+            modul.DefineType ("Fields.C1", TypeAttributes.Public ||| TypeAttributes.Sealed, baseType)
+
+        let constructor =
+            made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+        let il = constructor.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit (Emit.OpCodes.Call, baseConstructor)
+        il.Emit Emit.OpCodes.Ret
+
+        let overriding =
+            made.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.HideBySig,
+                typeof<Void>,
+                [||]
+            )
+
+        let il = overriding.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+        il.Emit Emit.OpCodes.Throw
+        made.DefineMethodOverride (overriding, hit)
+
+        emit modul baseType hit constructor
+
+        baseType.CreateType () |> ignore<Type>
+        thrown.CreateType () |> ignore<Type>
+        made.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// What the analysis, allowed every assumption, says of `Fields.Cases.Run` in `image`, and what
+    /// the real runtime raises from it, as the expectations spell them.
+    let private fieldFixtureAnswers (name : string) (image : byte[]) : Set<string> * bool * string =
+        let raised =
+            let context = System.Runtime.Loader.AssemblyLoadContext (name, isCollectible = true)
+
+            try
+                let run =
+                    context.LoadFromStream(new MemoryStream (image)).GetType("Fields.Cases").GetMethod ("Run")
+
+                try
+                    run.Invoke ((null : obj), [||]) |> ignore<obj>
+                    failwith<string> "Fields.Cases.Run returned, though C1's Hit throws"
+                with :? TargetInvocationException as e ->
+                    "=" + e.InnerException.GetType().FullName
+            finally
+                context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Fields.Cases" "Run")
+
+        render analysis escapes, escapes.Unknown, raised
+
+    [<Test>]
+    let ``a field another field of an explicit layout overlaps holds what is stored in either`` () : unit =
+        // `b` lies over `a`, so storing in `a` stores in `b`, which no instruction stores to.
+        let image =
+            fieldFixture
+                "OverlappingFields"
+                []
+                (fun modul baseType hit made ->
+                    let overlap =
+                        modul.DefineType (
+                            "Fields.Overlap",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.ExplicitLayout
+                        )
+
+                    let overlapConstructor = overlap.DefineDefaultConstructor MethodAttributes.Public
+                    let a = overlap.DefineField ("a", baseType, FieldAttributes.Private)
+                    a.SetOffset 0
+                    let b = overlap.DefineField ("b", baseType, FieldAttributes.Private)
+                    b.SetOffset 0
+
+                    let run =
+                        overlap.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, overlapConstructor)
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stfld, a)
+                    il.Emit (Emit.OpCodes.Ldfld, b)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let caseRun =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = caseRun.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Call, run)
+                    il.Emit Emit.OpCodes.Ret
+                    overlap.CreateType () |> ignore<Type>
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        let shown, unknown, raised = fieldFixtureAnswers "OverlappingFields" image
+        raised |> shouldEqual "=Fields.E1"
+
+        if not unknown && not (shown.Contains raised) then
+            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
+
+    [<Test>]
+    let ``an internal field of an assembly with a friend holds what the friend may store`` () : unit =
+        let image =
+            fieldFixture
+                "FriendlyFields"
+                [ "Friend" ]
+                (fun modul baseType hit made ->
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let held =
+                        cases.DefineField ("held", baseType, FieldAttributes.Assembly ||| FieldAttributes.Static)
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stsfld, held)
+                    il.Emit (Emit.OpCodes.Ldsfld, held)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        // `Friend` may store any `Base` in it, so nothing says which class `Hit` dispatches on.
+        let _, unknown, raised = fieldFixtureAnswers "FriendlyFields" image
+        raised |> shouldEqual "=Fields.E1"
+        unknown |> shouldEqual true
+
+    [<Test>]
+    let ``no field CoreCLR's native code binds by name is taken to hold only what IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let typeName (handle : TypeDefinitionHandle) : string =
+            TypeInfo.fullName (fun handle -> corelib.TypeDefs.[handle]) corelib.TypeDefs.[handle]
+
+        let fields =
+            corelib.Fields
+            |> Seq.map (fun (KeyValue (handle, field)) ->
+                (typeName field.DeclaringType.Identity.TypeDefinition.Get, field.Name), handle
+            )
+            |> List.ofSeq
+
+        let mutable analysis = analysisOver [] id
+
+        let follows (handle : FieldDefinitionHandle) : bool =
+            let next, follows =
+                EscapeAnalysis.followsField analysis (FieldKey.make corelib.DefinitionFullName handle)
+
+            analysis <- next
+            follows
+
+        let followedBound =
+            fields
+            |> List.filter (fun (named, _) -> (VmBoundField.all.Force ()).Contains named)
+            |> List.filter (snd >> follows)
+            |> List.map fst
+
+        followedBound |> shouldEqual []
+
+        // The analysis does follow some of CoreLib's fields, or the check above says nothing.
+        fields |> List.exists (snd >> follows) |> shouldEqual true
