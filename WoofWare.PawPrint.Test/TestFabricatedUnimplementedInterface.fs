@@ -251,7 +251,7 @@ module TestFabricatedUnimplementedInterface =
         image.ToArray ()
 
     /// Exit with what `call` returns, or 201 where it raises `EntryPointNotFoundException`, or 202
-    /// where it raises `AmbiguousImplementationException`. `Dynamic` implements
+    /// where it raises `AmbiguousImplementationException`. `Dynamic` and `DynamicStruct` implement
     /// `IDynamicInterfaceCastable`, answering every interface with `IAbsImpl`'s implementation.
     let private driver (call : string) : string =
         $$"""
@@ -266,6 +266,14 @@ public interface IAbsImpl : IAbs
 }
 
 public sealed class Dynamic : IDynamicInterfaceCastable
+{
+    public bool IsInterfaceImplemented(RuntimeTypeHandle interfaceType, bool throwIfNotImplemented) => true;
+
+    public RuntimeTypeHandle GetInterfaceImplementation(RuntimeTypeHandle interfaceType) =>
+        typeof(IAbsImpl).TypeHandle;
+}
+
+public struct DynamicStruct : IDynamicInterfaceCastable
 {
     public bool IsInterfaceImplemented(RuntimeTypeHandle interfaceType, bool throwIfNotImplemented) => true;
 
@@ -397,3 +405,8 @@ public static class Driver
         match onPawPrint with
         | FabricatedOutcome.Failed e when e.ToString().Contains "IDynamicInterfaceCastable" -> ()
         | other -> failwith $"expected PawPrint to refuse to ask an IDynamicInterfaceCastable receiver; got %O{other}"
+
+    [<Test>]
+    let ``a value type implementing IDynamicInterfaceCastable is not asked, and raises`` () : unit =
+        // The runtime marks only a class as dynamically castable.
+        run "Calls.Plain(new DynamicStruct())" 201
