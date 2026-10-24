@@ -143,6 +143,7 @@
     <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />
+    <Compile Include="TestJitImport.fs" />
     <Compile Include="TestStackShapeDynamicScope.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestByrefAlignmentAgainstHost.fs" />
