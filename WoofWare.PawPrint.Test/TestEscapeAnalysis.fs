@@ -16650,6 +16650,37 @@ public static class Cases
             let _, _, constructor = classes.[index]
             constructor
 
+        // `Check` throws `ENull` for null: what it is passed decides its branch, so a field taken
+        // never to be null would rule that out.
+        let nullThrown =
+            modul.DefineType ("FieldFlow.ENull", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Exception>)
+
+        let nullThrownConstructor =
+            nullThrown.DefineDefaultConstructor MethodAttributes.Public
+
+        let checks =
+            modul.DefineType (
+                "FieldFlow.Checks",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            )
+
+        let check =
+            checks.DefineMethod (
+                "Check",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| baseType :> Type |]
+            )
+
+        let il = check.GetILGenerator ()
+        let present = il.DefineLabel ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit (Emit.OpCodes.Brtrue, present)
+        il.Emit (Emit.OpCodes.Newobj, nullThrownConstructor)
+        il.Emit Emit.OpCodes.Throw
+        il.MarkLabel present
+        il.Emit Emit.OpCodes.Ret
+
         let caseTypes =
             [
                 for index, case in List.indexed cases do
@@ -16745,6 +16776,8 @@ public static class Cases
                         il.Emit Emit.OpCodes.Ldarg_0
                         il.Emit (Emit.OpCodes.Ldfld, field)
 
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Call, check)
                     il.Emit (Emit.OpCodes.Callvirt, hit)
                     il.Emit Emit.OpCodes.Ret
 
@@ -16790,6 +16823,8 @@ public static class Cases
             ]
 
         baseType.CreateType () |> ignore<Type>
+        nullThrown.CreateType () |> ignore<Type>
+        checks.CreateType () |> ignore<Type>
 
         for thrown, made, _ in classes do
             thrown.CreateType () |> ignore<Type>
@@ -16853,7 +16888,7 @@ public static class Cases
                     id
 
             // What the analysis says of each case's `Run`: the exceptions of `FieldFlow`'s classes
-            // and null's, whether it is unknown, and whether it relied on `FieldsWrittenVisibly`.
+            // and `Check`'s, whether it is unknown, and whether it relied on `FieldsWrittenVisibly`.
             let answers (assumptions : Set<Assumption>) : (Set<string> * bool * bool) list =
                 ((analysisAllowing assumptions, []), List.indexed cases)
                 ||> List.fold (fun (analysis, answers) (index, _) ->
@@ -16862,9 +16897,7 @@ public static class Cases
 
                     let ours =
                         render analysis escapes
-                        |> Set.filter (fun shown ->
-                            shown.StartsWith "=FieldFlow.E" || shown = "=System.NullReferenceException"
-                        )
+                        |> Set.filter (fun shown -> shown.StartsWith "=FieldFlow.E")
 
                     analysis,
                     (ours, escapes.Unknown, escapes.Assumes.Contains Assumption.FieldsWrittenVisibly)
@@ -17189,3 +17222,178 @@ public static class Cases
 
         // The analysis does follow some of CoreLib's fields, or the check above says nothing.
         fields |> List.exists (snd >> follows) |> shouldEqual true
+
+    /// A store into a field through a member reference naming it, which neither C# nor
+    /// Reflection.Emit writes for a field of a type that is not generic, so the IL is built directly:
+    /// `Write` stores a string in `M.Holder.held` through a member reference whose parent is
+    /// `Holder` itself, and `Read` loads the field by its definition and calls `ToString` on it.
+    [<Test>]
+    let ``a field a member reference may store to holds what that store does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "FieldReferences.dll",
+            metadata.GetOrAddGuid (Guid "6d1e2f3a-4b5c-4d6e-8f90-a1b2c3d4e5f6"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "FieldReferences",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        let toString =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (0, (fun returnType -> returnType.Type().String ()), ignore<ParametersEncoder>)
+
+            metadata.AddMemberReference (
+                (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+                metadata.GetOrAddString "ToString",
+                metadata.GetOrAddBlob blob
+            )
+
+        let objectField =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).Field().Type().Object ()
+            metadata.GetOrAddBlob blob
+
+        let held =
+            metadata.AddFieldDefinition (
+                FieldAttributes.Private ||| FieldAttributes.Static,
+                metadata.GetOrAddString "held",
+                objectField
+            )
+
+        // The holder is the second type definition, after `<Module>`.
+        let holder = MetadataTokens.TypeDefinitionHandle 2
+
+        let heldByReference =
+            metadata.AddMemberReference (
+                (TypeDefinitionHandle.op_Implicit holder : EntityHandle),
+                metadata.GetOrAddString "held",
+                objectField
+            )
+
+        let staticVoid =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returnType -> returnType.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        let write =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadString (metadata.GetOrAddUserString "stored")
+            code.OpCode ILOpCode.Stsfld
+            code.Token (MemberReferenceHandle.op_Implicit heldByReference : EntityHandle)
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let read =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.OpCode ILOpCode.Ldsfld
+            code.Token (FieldDefinitionHandle.op_Implicit held : EntityHandle)
+            code.OpCode ILOpCode.Callvirt
+            code.Token (MemberReferenceHandle.op_Implicit toString : EntityHandle)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let writeMethod =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "Write",
+                staticVoid,
+                write,
+                MetadataTokens.ParameterHandle 1
+            )
+
+        metadata.AddMethodDefinition (
+            MethodAttributes.Public ||| MethodAttributes.Static,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "Read",
+            staticVoid,
+            read,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            held,
+            writeMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "M",
+            metadata.GetOrAddString "Holder",
+            (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+            held,
+            writeMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image = BlobBuilder ()
+        peBuilder.Serialize image |> ignore<BlobContentId>
+
+        let assembly =
+            Assembly.read loggerFactory (Some "FieldReferences.dll") (new MemoryStream (image.ToArray ()))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let _, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "M.Holder" "Read")
+
+        // `Write` may have stored any object, whose `ToString` may raise anything.
+        escapes.Unknown |> shouldEqual true
