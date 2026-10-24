@@ -5527,6 +5527,11 @@ module EscapeAnalysis =
             state, DispatchOutcome.Raises (constructedRaise state "System.Runtime.AmbiguousImplementationException")
         | Some (VirtualImplementation.Reabstracted _) ->
             state, DispatchOutcome.Raises (constructedRaise state "System.EntryPointNotFoundException")
+        // As `DispatchFailure.NotImplemented` and `DispatchFailure.StaticNotImplemented` say.
+        | Some VirtualImplementation.NotImplemented when definition.IsStatic ->
+            state, DispatchOutcome.Raises (constructedRaise state "System.Runtime.AmbiguousImplementationException")
+        | Some VirtualImplementation.NotImplemented ->
+            state, DispatchOutcome.Raises (constructedRaise state "System.EntryPointNotFoundException")
         | Some (VirtualImplementation.Found runs) ->
             match runs.Definition.TryMetadata with
             | None -> state, DispatchOutcome.Undecided
