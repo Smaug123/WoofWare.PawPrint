@@ -7238,6 +7238,9 @@ public static unsafe class Natives
     public static extern void SwiftTakesByrefToGoneStruct(ref Provider.GoneStruct x);
     [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
     public static extern void CdeclTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    // Its import's calling-convention bits are cleared after compiling.
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void UnspecifiedTakesPointerToGoneStruct(Provider.GoneStruct* x);
 }
 
 public static unsafe class Calls
@@ -7253,6 +7256,7 @@ public static unsafe class Calls
     public static void SwiftPointerToGoneStruct() { if (never) Natives.SwiftTakesPointerToGoneStruct(null); }
     public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
     public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
+    public static void UnspecifiedPointerToGoneStruct() { if (never) Natives.UnspecifiedTakesPointerToGoneStruct(null); }
     public static void CaughtGenericOfGone()
     {
         try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
@@ -7287,7 +7291,46 @@ public static unsafe class Calls
         let completeProvider = compile "Provider" [] (provider true)
         let incompleteProvider = compile "Provider" [] (provider false)
         let optionalImage = compile "Optional" [] optional
-        let clientImage = compile "Client" [ completeProvider ; optionalImage ] client
+        // The image with the calling-convention bits of the P/Invoke named `methodName`'s import
+        // cleared, which C# never emits and CoreCLR reads as `WinApi`.
+        let clearImportConvention (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let method =
+                metadata.MethodDefinitions
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+
+            // A small image's `MemberForwarded` is a two-byte coded index whose tag 1 is a method.
+            let memberForwarded =
+                (MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit method : EntityHandle)
+                 <<< 1)
+                ||| 1
+
+            let rowSize = metadata.GetTableRowSize TableIndex.ImplMap
+
+            let tableStart =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.ImplMap
+
+            let row =
+                [ 0 .. metadata.GetTableRowCount TableIndex.ImplMap - 1 ]
+                |> List.filter (fun row ->
+                    int (BitConverter.ToUInt16 (patched, tableStart + row * rowSize + 2)) = memberForwarded
+                )
+                |> List.exactlyOne
+
+            let offset = tableStart + row * rowSize
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let cleared = flags &&& ~~~(uint16 MethodImportAttributes.CallingConventionMask)
+            Array.blit (BitConverter.GetBytes cleared) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ; optionalImage ] client
+            |> clearImportConvention "UnspecifiedTakesPointerToGoneStruct"
 
         let typeLoad = "System.TypeLoadException"
         let fileNotFound = "System.IO.FileNotFoundException"
@@ -7319,6 +7362,8 @@ public static unsafe class Calls
                 "SwiftByrefToGoneStruct", CallOutcome.Runs, []
                 // The import's convention is not `WinApi`, so CoreCLR reads no `UnmanagedCallConv`.
                 "CdeclPointerToGoneStruct", CallOutcome.Runs, []
+                // An import that names no calling convention CoreCLR reads as naming `WinApi`.
+                "UnspecifiedPointerToGoneStruct", swiftEscapes, [ typeLoad ]
                 // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
                 // analysis does not decide.
                 "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
