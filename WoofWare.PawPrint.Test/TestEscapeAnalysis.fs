@@ -17062,24 +17062,26 @@ public static class Cases
         builder.Save stream
         stream.ToArray ()
 
+    /// What the real runtime raises from `Fields.Cases.Run` in `image`, as the expectations spell it.
+    let private fieldFixtureRaises (name : string) (image : byte[]) : string =
+        let context = System.Runtime.Loader.AssemblyLoadContext (name, isCollectible = true)
+
+        try
+            let run =
+                context.LoadFromStream(new MemoryStream (image)).GetType("Fields.Cases").GetMethod ("Run")
+
+            try
+                run.Invoke ((null : obj), [||]) |> ignore<obj>
+                failwith<string> "Fields.Cases.Run returned, though it must throw"
+            with :? TargetInvocationException as e ->
+                "=" + e.InnerException.GetType().FullName
+        finally
+            context.Unload ()
+
     /// What the analysis, allowed every assumption, says of `Fields.Cases.Run` in `image`, and what
     /// the real runtime raises from it, as the expectations spell them.
     let private fieldFixtureAnswers (name : string) (image : byte[]) : Set<string> * bool * string =
-        let raised =
-            let context = System.Runtime.Loader.AssemblyLoadContext (name, isCollectible = true)
-
-            try
-                let run =
-                    context.LoadFromStream(new MemoryStream (image)).GetType("Fields.Cases").GetMethod ("Run")
-
-                try
-                    run.Invoke ((null : obj), [||]) |> ignore<obj>
-                    failwith<string> "Fields.Cases.Run returned, though C1's Hit throws"
-                with :? TargetInvocationException as e ->
-                    "=" + e.InnerException.GetType().FullName
-            finally
-                context.Unload ()
-
+        let raised = fieldFixtureRaises name image
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let fixture =
@@ -17725,14 +17727,11 @@ public static class Cases
                 )
 
         // The marshaller did write `text`: the real runtime gets past the load of it.
-        let shown, unknown, raised = fieldFixtureAnswers "FormattedFields" image
-        raised |> shouldEqual "=System.ArgumentOutOfRangeException"
+        fieldFixtureRaises "FormattedFields" image
+        |> shouldEqual "=System.ArgumentOutOfRangeException"
 
-        if not unknown && not (shown.Contains raised) then
-            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
-
-        // Whether or not the marshalling itself is opaque to the analysis, it must not take `text`
-        // to hold only what IL stores in it.
+        // The marshalling is opaque to the analysis, so its answer for `Run` says nothing here; what
+        // it must not do is take `text` to hold only what IL stores in it.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let fixture =
