@@ -25,6 +25,12 @@ What lives here:
   execute: following branches, fall-through and `leave`, entering a handler only once its protected
   block has run, and following a conditional branch one way only where it pops a Boolean known in
   advance. `StackShape` and the escape analysis both read it.
+* `JitImport` — what CoreCLR's JIT compiles of a body, which is not quite what a run can execute: it
+  skips the side of a branch whose condition it folds to a constant, and folds nothing in a body it
+  does not optimise. Two bounds stand in for its folding, which PawPrint does not model: what it
+  surely compiles, crossing only branches it cannot fold, and what it may. Where something it may
+  compile it need not, a consumer must refuse rather than guess. It also gives the order in which
+  the JIT surely reaches one instruction before another, whatever its worklist does.
 * `StackEffect` — what each instruction pops, and what each value it pushes is (a literal, an
   argument, a call's result, an element of the array popped, ...), without saying what such a
   value is in any one analysis's terms. CoreCLR's own `opcode.def` is its oracle.
