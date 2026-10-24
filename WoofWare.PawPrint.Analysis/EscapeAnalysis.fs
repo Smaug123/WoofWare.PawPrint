@@ -5395,16 +5395,17 @@ module EscapeAnalysis =
                 )
 
     /// The type CoreCLR resolves a `constrained.` call of `callee` against, where the prefix names
-    /// a token of `assembly`, when the body making the call runs as `caller`: the type the prefix
-    /// names, or the underlying primitive of an enum it names (`ConstrainedType.resolve`). `None`
-    /// where only an instance decides it.
+    /// a token of `assembly`, when the body making the call runs as `caller`, with the method it
+    /// dispatches there: the type the prefix names and `callee`, or the underlying primitive of an
+    /// enum it names and what CoreCLR dispatches on that (`ConstrainedType.resolve`). `None` where
+    /// only an instance decides it.
     let private constrainedReceiver
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
         (constrainedType : MetadataToken)
         (callee : Callee)
-        : EscapeAnalysisState * ConcreteTypeHandle option
+        : EscapeAnalysisState * (ConcreteTypeHandle * Callee) option
         =
         let typeSystem, spelling, spellingAssembly =
             TypeSystemState.resolveTypeMetadataToken
@@ -5441,7 +5442,20 @@ module EscapeAnalysis =
 
             match resolved with
             | ConstrainedType.AsNamed receiver
-            | ConstrainedType.EnumUnderlying (_, receiver) -> state, Some receiver
+            | ConstrainedType.EnumUnderlying (_, receiver, RetargetedCall.Named) -> state, Some (receiver, callee)
+            | ConstrainedType.EnumUnderlying (_, receiver, RetargetedCall.ObjectGetHashCode) ->
+                let getHashCode = ConstrainedType.objectGetHashCode state.BaseTypes
+
+                let dispatched : Callee =
+                    {
+                        Callee =
+                            MethodKey.make
+                                (assemblyOf state getHashCode.DeclaringAssemblyFullName)
+                                (MethodInfo.requireMetadata "Object.GetHashCode" getHashCode).Handle
+                        Spelling = CalleeSpelling.Fixed
+                    }
+
+                state, Some (receiver, dispatched)
             | ConstrainedType.Undecided _ -> state, None
 
     /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
@@ -5455,7 +5469,7 @@ module EscapeAnalysis =
         : EscapeAnalysisState * DispatchOutcome
         =
         match constrainedReceiver state assembly caller constrainedType callee with
-        | state, Some receiver -> dispatchOn state assembly caller receiver false callee
+        | state, Some (receiver, dispatched) -> dispatchOn state assembly caller receiver false dispatched
         | state, None -> state, DispatchOutcome.Undecided
 
     /// Whether the JIT boxes the receiver of `site`, a `constrained.` call the body of `assembly`
@@ -5475,7 +5489,7 @@ module EscapeAnalysis =
         =
         match constrainedReceiver state assembly caller site.Constrained site.Named with
         | state, None -> state, ReceiverBox.Undecided
-        | state, Some receiver ->
+        | state, Some (receiver, dispatched) ->
 
         match AllConcreteTypes.lookup receiver state.TypeSystem.ConcreteTypes with
         | _ when TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem receiver ->
@@ -5483,7 +5497,7 @@ module EscapeAnalysis =
         | None -> state, ReceiverBox.Undecided
         | Some concrete ->
 
-        let named = site.Named.Callee
+        let named = dispatched.Callee
         let _, method = methodOf state named
 
         let state, declared =
@@ -5492,7 +5506,7 @@ module EscapeAnalysis =
             elif not (isOverridable state named) then
                 state, Some (declaringTypeOf state named = concrete.Identity)
             else
-                match dispatchOn state assembly caller receiver false site.Named with
+                match dispatchOn state assembly caller receiver false dispatched with
                 | state, DispatchOutcome.Reaches reached ->
                     state, Some (declaringTypeOf state reached.Definition = concrete.Identity)
                 | state, DispatchOutcome.Raises _ -> state, Some false

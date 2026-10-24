@@ -196,7 +196,16 @@ module TestConstrainedType =
                     let underlying =
                         concretize (TypeDefn.PrimitiveType (primitiveOf (Enum.GetUnderlyingType constrained)))
 
-                    ConstrainedType.EnumUnderlying (handle, underlying)
+                    // CoreCLR resolves a class's method on a value type by its slot
+                    // (`TryResolveConstraintMethodApprox`), and every class holds
+                    // `Object.GetHashCode` in that one.
+                    let dispatches =
+                        if methodInfo.DeclaringType.IsInterface then
+                            RetargetedCall.Named
+                        else
+                            RetargetedCall.ObjectGetHashCode
+
+                    ConstrainedType.EnumUnderlying (handle, underlying, dispatches)
                 else
                     ConstrainedType.AsNamed handle
 
@@ -248,6 +257,13 @@ module TestConstrainedType =
             EnumRuns : MethodInfo option
             /// Whether the instruction is `ldftn`, rather than a call.
             LoadsPointer : bool
+            /// Whether a generic method makes the call on its type variable, instantiated at the
+            /// enum, rather than the probe on the enum it names.
+            Generic : bool
+            /// Whether a retargeted call passes the enum's address unboxed to `PrimitiveRuns`, a
+            /// method the primitive declares, which itself boxes nothing: the probe then reaches no
+            /// `CastHelpers` method that boxes.
+            PassesUnboxed : bool
         }
 
     /// An enum, in the fabricated assembly, of each underlying type.
@@ -277,6 +293,38 @@ module TestConstrainedType =
                 TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
             )
 
+        // `ldarga 0`, then the arguments `probe.Called` takes, each its type's zero, then the call
+        // under `constrained. on`, discarding what it returns.
+        let emitCall (il : Emit.ILGenerator) (on : Type) (probe : Probe) : unit =
+            if not probe.Called.IsStatic then
+                il.Emit (Emit.OpCodes.Ldarga_S, 0uy)
+
+            for parameter in probe.Called.GetParameters () do
+                let ty = parameter.ParameterType
+
+                if ty.IsByRef then
+                    il.Emit (Emit.OpCodes.Ldloca, il.DeclareLocal (ty.GetElementType ()))
+                elif ty.IsValueType then
+                    let local = il.DeclareLocal ty
+                    il.Emit (Emit.OpCodes.Ldloca, local)
+                    il.Emit (Emit.OpCodes.Initobj, ty)
+                    il.Emit (Emit.OpCodes.Ldloc, local)
+                else
+                    il.Emit Emit.OpCodes.Ldnull
+
+            il.Emit (Emit.OpCodes.Constrained, on)
+
+            il.Emit (
+                (if probe.Called.IsStatic then
+                     Emit.OpCodes.Call
+                 else
+                     Emit.OpCodes.Callvirt),
+                probe.Called
+            )
+
+            if probe.Called.ReturnType <> typeof<Void> then
+                il.Emit Emit.OpCodes.Pop
+
         for probe in probes do
             let enumType : Type = enums.[probe.Underlying]
 
@@ -297,35 +345,25 @@ module TestConstrainedType =
                 il.Emit (Emit.OpCodes.Constrained, enumType)
                 il.Emit (Emit.OpCodes.Ldftn, probe.Called)
                 il.Emit Emit.OpCodes.Pop
+            elif probe.Generic then
+                // The call is made by a generic method of `T`, instantiated at the enum.
+                let generic =
+                    probesType.DefineMethod (
+                        probe.Name + "_Generic",
+                        MethodAttributes.Public ||| MethodAttributes.Static
+                    )
+
+                let t = generic.DefineGenericParameters([| "T" |]).[0]
+                generic.SetReturnType typeof<Void>
+                generic.SetParameters [| t :> Type |]
+                let genericIl = generic.GetILGenerator ()
+                emitCall genericIl t probe
+                genericIl.Emit Emit.OpCodes.Ret
+
+                il.Emit Emit.OpCodes.Ldarg_0
+                il.Emit (Emit.OpCodes.Call, generic.MakeGenericMethod [| enumType |])
             else
-                if not probe.Called.IsStatic then
-                    il.Emit (Emit.OpCodes.Ldarga_S, 0uy)
-
-                for parameter in probe.Called.GetParameters () do
-                    let ty = parameter.ParameterType
-
-                    if ty.IsByRef then
-                        il.Emit (Emit.OpCodes.Ldloca, il.DeclareLocal (ty.GetElementType ()))
-                    elif ty.IsValueType then
-                        let local = il.DeclareLocal ty
-                        il.Emit (Emit.OpCodes.Ldloca, local)
-                        il.Emit (Emit.OpCodes.Initobj, ty)
-                        il.Emit (Emit.OpCodes.Ldloc, local)
-                    else
-                        il.Emit Emit.OpCodes.Ldnull
-
-                il.Emit (Emit.OpCodes.Constrained, enumType)
-
-                il.Emit (
-                    (if probe.Called.IsStatic then
-                         Emit.OpCodes.Call
-                     else
-                         Emit.OpCodes.Callvirt),
-                    probe.Called
-                )
-
-                if probe.Called.ReturnType <> typeof<Void> then
-                    il.Emit Emit.OpCodes.Pop
+                emitCall il enumType probe
 
             il.Emit Emit.OpCodes.Ret
 
@@ -418,7 +456,9 @@ module TestConstrainedType =
                                         Called = called
                                         PrimitiveRuns = map.TargetMethods.[index]
                                         EnumRuns = None
+                                        PassesUnboxed = false
                                         LoadsPointer = false
+                                        Generic = false
                                     }
 
                                 yield probe
@@ -442,15 +482,26 @@ module TestConstrainedType =
                     let enumRunsOf (m : MethodInfo) =
                         enumConvertible.TargetMethods.[Array.IndexOf (enumConvertible.InterfaceMethods, m)]
 
-                    yield
-                        {
-                            Name = $"Call_%s{suffix}_GetHashCode"
-                            Underlying = underlying
-                            Called = typeof<obj>.GetMethod ("GetHashCode", Type.EmptyTypes)
-                            PrimitiveRuns = underlying.GetMethod ("GetHashCode", Type.EmptyTypes)
-                            EnumRuns = Some (typeof<Enum>.GetMethod ("GetHashCode", Type.EmptyTypes))
-                            LoadsPointer = false
-                        }
+                    // The call may name `GetHashCode` on any class an enum derives from: CoreCLR
+                    // resolves each by its slot on the primitive, which derives from none but
+                    // `Object`.
+                    // A type variable's box may need a `CastHelpers` method, which an enum's does
+                    // not, so only a call on one shows whether the receiver is boxed.
+                    for declaring in [ typeof<obj> ; typeof<ValueType> ; typeof<Enum> ] do
+                        for generic in [ false ; true ] do
+                            yield
+                                {
+                                    Name =
+                                        $"Call_%s{suffix}_%s{declaring.Name}_GetHashCode"
+                                        + (if generic then "_OnVariable" else "")
+                                    Underlying = underlying
+                                    Called = declaring.GetMethod ("GetHashCode", Type.EmptyTypes)
+                                    PrimitiveRuns = underlying.GetMethod ("GetHashCode", Type.EmptyTypes)
+                                    EnumRuns = Some (typeof<Enum>.GetMethod ("GetHashCode", Type.EmptyTypes))
+                                    PassesUnboxed = true
+                                    LoadsPointer = false
+                                    Generic = generic
+                                }
 
                     yield
                         {
@@ -459,7 +510,9 @@ module TestConstrainedType =
                             Called = typeof<IConvertible>.GetMethod "ToSByte"
                             PrimitiveRuns = primitiveRunsOf (typeof<IConvertible>.GetMethod "ToSByte")
                             EnumRuns = Some (enumRunsOf (typeof<IConvertible>.GetMethod "ToSByte"))
+                            PassesUnboxed = false
                             LoadsPointer = false
+                            Generic = false
                         }
 
                     yield
@@ -469,7 +522,9 @@ module TestConstrainedType =
                             Called = typeof<IConvertible>.GetMethod "GetTypeCode"
                             PrimitiveRuns = primitiveRunsOf (typeof<IConvertible>.GetMethod "GetTypeCode")
                             EnumRuns = Some (enumRunsOf (typeof<IConvertible>.GetMethod "GetTypeCode"))
+                            PassesUnboxed = false
                             LoadsPointer = false
+                            Generic = false
                         }
             ]
 
@@ -597,6 +652,18 @@ module TestConstrainedType =
                     | Some enumRuns when reached.Contains (corelibKey enumRuns) ->
                         failures.Add $"%s{describe ()}, which reaches Enum::%s{enumRuns.Name}, though it is retargeted"
                     | _ -> ()
+
+                    if probe.PassesUnboxed then
+                        let boxes =
+                            reached
+                            |> Seq.map (EscapeAnalysis.methodName analysis)
+                            |> Seq.filter (fun name ->
+                                name.StartsWith "System.Runtime.CompilerServices.CastHelpers::Box"
+                            )
+                            |> List.ofSeq
+
+                        if not boxes.IsEmpty then
+                            failures.Add $"%s{describe ()}, which boxes its receiver by %A{boxes}"
             elif not probe.LoadsPointer then
                 let next, reached = EscapeAnalysis.reachable analysis key
                 analysis <- next
