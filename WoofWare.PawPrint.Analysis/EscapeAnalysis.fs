@@ -5624,7 +5624,12 @@ module EscapeAnalysis =
         let shared (spelled : SpelledType) : bool =
             match caller with
             | Instantiation.Closed (typeArguments, methodArguments) ->
-                namesSharedArgument state typeArguments methodArguments spelled.Type
+                CodeSharing.namesSharedArgument
+                    state.BaseTypes
+                    state.TypeSystem
+                    typeArguments
+                    methodArguments
+                    spelled.Type
             | Instantiation.Open -> false
 
         match concretizeIn state caller named.Type named.SpelledIn with
