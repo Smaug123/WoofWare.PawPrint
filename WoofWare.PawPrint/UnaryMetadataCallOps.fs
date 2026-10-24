@@ -1019,6 +1019,14 @@ module internal UnaryMetadataCallOps =
         /// faults. The call's arguments are popped and the program counter has not moved.
         | NullDereference of IlMachineState
 
+    /// What a `callvirt` runs where its `constrained.` prefix names a value type.
+    [<RequireQualifiedAccess>]
+    type private ValueTypeReceiver =
+        /// This method, with the value type's address as `this`.
+        | OnAddress of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        /// What the call dispatches to on a box of the value type, as on any other object.
+        | OnBox
+
     /// Enter the callee a `callvirt` has resolved: check the receiver for null, as `callvirt` always
     /// does, then dispatch on it when `dispatchesOnReceiver`, which is false only when a
     /// `constrained.` prefix has already chosen the implementation. Shared by the metadata operand
@@ -1491,26 +1499,38 @@ module internal UnaryMetadataCallOps =
                         $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers, byrefs and fnptrs cannot be generic type arguments"
                 | ConcreteTypeHandle.Concrete _ ->
 
+                // The definition of the method the call names, as its declaring type defines it.
+                let namedDefinition =
+                    match methodToCall.TryMetadata with
+                    | Some metadata ->
+                        state.LoadedAssembly(methodToCall.DeclaringAssemblyFullName).Value.Methods.[metadata.Handle]
+                    | None ->
+                        failwith
+                            $"BUG: constrained.callvirt of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}: a method a metadata token names has a MethodDef row"
+
                 // CoreCLR resolves the call against an enum's underlying primitive where the method
                 // holds `Object.GetHashCode`'s slot number, with the enum's address as the
                 // primitive's: the byref on the stack is the primitive's `this` from here on.
-                let state, tHandle, concretizedMethod, retargeted =
+                let state, tHandle, called, concretizedMethod, calledOn, retargeted =
                     match resolveConstrainedType ctx tHandle methodToCall state with
-                    | state, ConstrainedType.AsNamed named -> state, named, concretizedMethod, false
+                    | state, ConstrainedType.AsNamed named ->
+                        state, named, namedDefinition, concretizedMethod, declaringTypeHandle, false
                     | state, ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.Named) ->
-                        state, underlying, concretizedMethod, true
+                        state, underlying, namedDefinition, concretizedMethod, declaringTypeHandle, true
                     | state, ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.ObjectGetHashCode) ->
-                        let state, getHashCode, _ =
+                        let getHashCode = ConstrainedType.objectGetHashCode baseClassTypes
+
+                        let state, concreteGetHashCode, objectHandle =
                             ExecutionConcretization.concretizeMethodForExecution
                                 loggerFactory
                                 baseClassTypes
                                 thread
-                                (ConstrainedType.objectGetHashCode baseClassTypes)
+                                getHashCode
                                 None
                                 None
                                 state
 
-                        state, underlying, getHashCode, true
+                        state, underlying, getHashCode, concreteGetHashCode, objectHandle, true
                     | state, ConstrainedType.Undecided enum ->
                         refuseUndecidedRetarget "constrained.callvirt" state enum methodToCall
 
@@ -1528,62 +1548,20 @@ module internal UnaryMetadataCallOps =
                     // Reference-type T: dereference the byref to the underlying ObjectRef.
                     applyCase1 state
                 else
-                    // Value-type T. If T has its own implementation of the method, invoke it
-                    // non-virtually with the managed pointer still serving as `this` (ECMA
-                    // case 2). Otherwise box and let ordinary virtual dispatch handle the boxed
-                    // receiver (case 3): the method is then one T inherits from
-                    // Object/ValueType/Enum, or a default interface body, and either runs on the
-                    // box, a copy of `*ptr`; or T does not implement the method's interface, and
-                    // the box's dispatch raises.
-                    let state, directImplementation =
-                        IlMachineStateExecution.tryResolveVirtualImplementation
-                            loggerFactory
-                            baseClassTypes
-                            thread
-                            concretizedMethod.Generics
-                            concretizedMethod
-                            tHandle
-                            false
-                            state
 
-                    match directImplementation with
-                    | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
-                        failwith
-                            $"BUG: constrained.callvirt: the exact-type probe of %s{tConcrete.Namespace}.%s{tConcrete.Name} for %s{methodToCall.Name} found %s{DispatchFailure.describe failure}, but an exact-type probe never searches default interface bodies"
-                    | IlMachineStateExecution.ResolvedVirtualCall.Runs directImplementation ->
-                        // The byref stays the callee's `this` without being dereferenced here, so
-                        // a null one is the callee's business: it faults if and when it reads it.
-                        match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
-                        | Some (EvalStackValue.ManagedPointer ptr) ->
-                            let state =
-                                if retargeted then
-                                    // The primitive's method reads its `this` as the primitive, so
-                                    // it gets the enum's storage viewed as that, at the same address.
-                                    let _, state = IlMachineState.popEvalStack thread state
+                let calledDeclaring =
+                    state
+                        .LoadedAssembly(called.DeclaringAssemblyFullName)
+                        .Value.TypeDefs.[called.RequiredDeclaringType.Definition.Get]
 
-                                    IlMachineState.pushToEvalStack'
-                                        (EvalStackValue.ManagedPointer (ManagedPointerSource.reinterpretAs tHandle ptr))
-                                        thread
-                                        state
-                                else
-                                    state
-
-                            ConstrainedReceiver.Ready (state, directImplementation, false)
-                        | Some other ->
-                            failwith
-                                $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
-                        | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
-                    | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden when retargeted ->
-                        // Every primitive overrides `GetHashCode` and has no default interface body
-                        // in its slot, so this is a method of an interface the primitive does not
-                        // implement.
-                        failwith
-                            $"TODO: constrained.callvirt of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} on an enum is resolved against its underlying primitive %s{tConcrete.Namespace}.%s{tConcrete.Name}, which has no implementation of it: CoreCLR boxes the primitive and dispatches on the box, which PawPrint does not model"
-                    | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden ->
-                        // The box runs whatever ordinary dispatch finds on T, so if that were T's
-                        // own method, the exact-type probe above missed it, and the body would
-                        // run on a copy where it should run on `*ptr`.
-                        let state, dispatched =
+                let state, onValueType =
+                    if calledDeclaring.IsInterface then
+                        // An interface's method runs T's own implementation, invoked non-virtually
+                        // with the managed pointer still serving as `this` (ECMA case 2), where T
+                        // has one; otherwise the box's, which is a method T inherits from
+                        // Object/ValueType/Enum, or a default interface body (case 3); or T does not
+                        // implement the method's interface, and the box's dispatch raises.
+                        let state, directImplementation =
                             IlMachineStateExecution.tryResolveVirtualImplementation
                                 loggerFactory
                                 baseClassTypes
@@ -1591,66 +1569,218 @@ module internal UnaryMetadataCallOps =
                                 concretizedMethod.Generics
                                 concretizedMethod
                                 tHandle
-                                true
+                                false
                                 state
 
-                        // A failure is no method of T's, and the box's dispatch raises it.
-                        match dispatched with
-                        | IlMachineStateExecution.ResolvedVirtualCall.Runs dispatched ->
-                            match dispatched.Owner with
-                            | MethodOwner.DeclaredOn owner when owner.Identity = tConcrete.Identity ->
-                                failwith
-                                    $"constrained.callvirt: %s{methodToCall.Name} dispatches to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}'s own method, but the exact-type probe found no implementation on it"
-                            | MethodOwner.DeclaredOn _
-                            | MethodOwner.DynamicMethodsClass _ -> ()
-                        | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden
-                        | IlMachineStateExecution.ResolvedVirtualCall.Fails _ -> ()
-
-                        let ptr, state = IlMachineState.popEvalStack thread state
-
-                        let src =
-                            match ptr with
-                            | EvalStackValue.ManagedPointer src -> src
-                            | other ->
-                                failwith
-                                    $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
-
-                        match src with
-                        | ManagedPointerSource.Null when
-                            methodToCall.RequiredDeclaringType.Identity = baseClassTypes.Object.Identity
-                            && methodToCall.Name = "GetType"
-                            ->
-                            // Measured on .NET 10: the optimising JIT folds `box T; GetType` into
-                            // T's type handle and answers `typeof(T)` without loading through the
-                            // byref, while the unoptimised JIT boxes and faults. Which one a guest
-                            // sees depends on the method's tier, so there is no answer to give.
+                        match directImplementation with
+                        | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
                             failwith
-                                $"refusing constrained.callvirt Object::GetType through a null byref to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}: real .NET answers typeof(T) when the method is optimised and raises NullReferenceException when it is not"
-                        | ManagedPointerSource.Null ->
-                            // Boxing copies `*ptr`, and the copy faults on the null byref.
-                            ConstrainedReceiver.NullDereference state
-                        | src ->
+                                $"BUG: constrained.callvirt: the exact-type probe of %s{tConcrete.Namespace}.%s{tConcrete.Name} for %s{methodToCall.Name} found %s{DispatchFailure.describe failure}, but an exact-type probe never searches default interface bodies"
+                        | IlMachineStateExecution.ResolvedVirtualCall.Runs directImplementation ->
+                            state, ValueTypeReceiver.OnAddress directImplementation
+                        | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden when retargeted ->
+                            // Every primitive overrides `GetHashCode` and has no default interface
+                            // body in its slot, so this is a method of an interface the primitive
+                            // does not implement.
+                            failwith
+                                $"TODO: constrained.callvirt of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} on an enum is resolved against its underlying primitive %s{tConcrete.Namespace}.%s{tConcrete.Name}, which has no implementation of it: CoreCLR boxes the primitive and dispatches on the box, which PawPrint does not model"
+                        | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, ValueTypeReceiver.OnBox
+                    else
 
-                        let derefCli =
-                            IlMachineState.readManagedByref
+                    // A class's method, which CoreCLR resolves on T by its slot, whichever class
+                    // declares it.
+                    let describe () : string =
+                        $"constrained. %s{tConcrete.Namespace}.%s{tConcrete.Name} callvirt %s{MethodOwner.describe called.Owner}::%s{called.Name}"
+
+                    // CoreCLR runs the method named on a box of T, or on T's address, though T is
+                    // no instance of the method's class. That body then reads `this` as an instance
+                    // of a class it is not, which no C# compiler emits and which PawPrint does not
+                    // model.
+                    let refuseMistyped (on : string) =
+                        failwith
+                            $"refusing %s{describe ()}: CoreCLR runs %s{called.Name} on %s{on}, which is no instance of %s{MethodOwner.describe called.Owner}"
+
+                    let typeSystem, resolved =
+                        ConstrainedType.resolveClassMethodOnValueType
+                            loggerFactory
+                            state.DotnetRuntimeDirs
+                            baseClassTypes
+                            state.TypeSystem
+                            tHandle
+                            called
+
+                    let state = state.WithTypeSystem typeSystem
+
+                    match resolved with
+                    | ClassMethodOnValueType.Undecided ->
+                        failwith
+                            $"refusing %s{describe ()}: the method holds a slot that does not mean the same in the value type's method table, or no slot PawPrint places, so CoreCLR runs whatever the value type's table holds there, if anything"
+                    | ClassMethodOnValueType.Resolves runs when
+                        runs.DeclaringAssemblyFullName = called.DeclaringAssemblyFullName
+                        && MethodInfo.sameDeclaredMethod runs called
+                        ->
+                        // The method named is a value type's own, which runs on T's address.
+                        if calledOn = tHandle then
+                            state, ValueTypeReceiver.OnAddress concretizedMethod
+                        else
+                            refuseMistyped "the receiver's address"
+                    | ClassMethodOnValueType.Resolves runs ->
+                        let state, runs, _ =
+                            ExecutionConcretization.concretizeMethodWithAllGenerics
+                                loggerFactory
+                                baseClassTypes
+                                tConcrete.Generics
+                                runs
+                                concretizedMethod.Generics
+                                state
+
+                        state, ValueTypeReceiver.OnAddress runs
+                    | ClassMethodOnValueType.Boxes when
+                        LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies calledDeclaring
+                        ->
+                        // A value type's method that is not virtual. Measured on .NET 10, CoreCLR
+                        // passes the box itself as its `this`, not the address of the value in it.
+                        failwith
+                            $"refusing %s{describe ()}: CoreCLR passes a box of the value type as `this` to %s{called.Name}, a value type's method, which reads it as the value type's address"
+                    | ClassMethodOnValueType.Boxes ->
+                        // A `Nullable<T>` boxes as its `T`.
+                        let boxType =
+                            if tConcrete.Identity = baseClassTypes.Nullable.Identity then
+                                tConcrete.Generics.[0]
+                            else
+                                tHandle
+
+                        let state, boxIsInstance =
+                            IlMachineState.isConcreteTypeAssignableTo
+                                loggerFactory
                                 baseClassTypes
                                 state
-                                (ManagedPointerSource.requireAddressed src)
+                                boxType
+                                calledOn
 
-                        let derefEval = EvalStackValue.ofCliType derefCli
+                        if boxIsInstance then
+                            state, ValueTypeReceiver.OnBox
+                        // `getMethodAttribsInternal` (jitinterface.cpp) takes a method of a sealed
+                        // class as final, so the call runs it without dispatching.
+                        elif
+                            not concretizedMethod.DispatchesVirtually
+                            || calledDeclaring.TypeAttributes.HasFlag TypeAttributes.Sealed
+                        then
+                            refuseMistyped "a box of the value type"
+                        else
+                            // The box runs what its own method table holds in the method's slot,
+                            // which is no method of the method's class.
+                            let state, dispatched =
+                                IlMachineStateExecution.tryResolveVirtualImplementation
+                                    loggerFactory
+                                    baseClassTypes
+                                    thread
+                                    concretizedMethod.Generics
+                                    concretizedMethod
+                                    tHandle
+                                    true
+                                    state
 
-                        // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
-                        // included: a value-less `Nullable<T>` becomes null, so the null check
-                        // below raises NullReferenceException; one with a value boxes its `T`,
-                        // so `GetType` on the box answers `T`.
-                        let boxed, state =
-                            Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state
+                            match dispatched with
+                            | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden ->
+                                // Dispatch on the box would fall back to the method named.
+                                refuseMistyped "a box of the value type"
+                            | IlMachineStateExecution.ResolvedVirtualCall.Runs _
+                            | IlMachineStateExecution.ResolvedVirtualCall.Fails _ -> state, ValueTypeReceiver.OnBox
 
-                        ConstrainedReceiver.Ready (
-                            IlMachineState.pushToEvalStack' boxed thread state,
-                            concretizedMethod,
+                match onValueType with
+                | ValueTypeReceiver.OnAddress directImplementation ->
+                    // The byref stays the callee's `this` without being dereferenced here, so
+                    // a null one is the callee's business: it faults if and when it reads it.
+                    match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
+                    | Some (EvalStackValue.ManagedPointer ptr) ->
+                        let state =
+                            if retargeted then
+                                // The primitive's method reads its `this` as the primitive, so
+                                // it gets the enum's storage viewed as that, at the same address.
+                                let _, state = IlMachineState.popEvalStack thread state
+
+                                IlMachineState.pushToEvalStack'
+                                    (EvalStackValue.ManagedPointer (ManagedPointerSource.reinterpretAs tHandle ptr))
+                                    thread
+                                    state
+                            else
+                                state
+
+                        ConstrainedReceiver.Ready (state, directImplementation, false)
+                    | Some other ->
+                        failwith
+                            $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
+                    | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
+                | ValueTypeReceiver.OnBox ->
+                    // The box runs whatever ordinary dispatch finds on T, so if that were T's
+                    // own method, the resolution above missed it, and the body would run on a
+                    // copy where it should run on `*ptr`.
+                    let state, dispatched =
+                        IlMachineStateExecution.tryResolveVirtualImplementation
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            concretizedMethod.Generics
+                            concretizedMethod
+                            tHandle
                             true
-                        )
+                            state
+
+                    // A failure is no method of T's, and the box's dispatch raises it.
+                    match dispatched with
+                    | IlMachineStateExecution.ResolvedVirtualCall.Runs dispatched ->
+                        match dispatched.Owner with
+                        | MethodOwner.DeclaredOn owner when owner.Identity = tConcrete.Identity ->
+                            failwith
+                                $"constrained.callvirt: %s{methodToCall.Name} dispatches to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}'s own method, but the constrained. prefix's resolution boxed the receiver"
+                        | MethodOwner.DeclaredOn _
+                        | MethodOwner.DynamicMethodsClass _ -> ()
+                    | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden
+                    | IlMachineStateExecution.ResolvedVirtualCall.Fails _ -> ()
+
+                    let ptr, state = IlMachineState.popEvalStack thread state
+
+                    let src =
+                        match ptr with
+                        | EvalStackValue.ManagedPointer src -> src
+                        | other ->
+                            failwith
+                                $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
+
+                    match src with
+                    | ManagedPointerSource.Null when
+                        methodToCall.RequiredDeclaringType.Identity = baseClassTypes.Object.Identity
+                        && methodToCall.Name = "GetType"
+                        ->
+                        // Measured on .NET 10: the optimising JIT folds `box T; GetType` into
+                        // T's type handle and answers `typeof(T)` without loading through the
+                        // byref, while the unoptimised JIT boxes and faults. Which one a guest
+                        // sees depends on the method's tier, so there is no answer to give.
+                        failwith
+                            $"refusing constrained.callvirt Object::GetType through a null byref to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}: real .NET answers typeof(T) when the method is optimised and raises NullReferenceException when it is not"
+                    | ManagedPointerSource.Null ->
+                        // Boxing copies `*ptr`, and the copy faults on the null byref.
+                        ConstrainedReceiver.NullDereference state
+                    | src ->
+
+                    let derefCli =
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+
+                    let derefEval = EvalStackValue.ofCliType derefCli
+
+                    // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
+                    // included: a value-less `Nullable<T>` becomes null, so the null check
+                    // below raises NullReferenceException; one with a value boxes its `T`,
+                    // so `GetType` on the box answers `T`.
+                    let boxed, state =
+                        Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state
+
+                    ConstrainedReceiver.Ready (
+                        IlMachineState.pushToEvalStack' boxed thread state,
+                        concretizedMethod,
+                        true
+                    )
 
             match transformed with
             | ConstrainedReceiver.NullDereference _ -> transformed
