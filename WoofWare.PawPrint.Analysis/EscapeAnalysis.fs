@@ -34,6 +34,16 @@ type Opacity =
     /// runs, which the analysis does not follow. So too such a call on a type variable that allows a
     /// byref-like type, in a definition analysed for every instantiation at once.
     | BoxedByRefLikeReceiver
+    /// A <c>constrained.</c> call on a value type of a class's method that cannot be overridden (it is
+    /// final, on a sealed class, or not virtual), where the value type does not declare the method
+    /// holding that slot itself and does not derive from the class: CoreCLR boxes the receiver and
+    /// runs the method named on the box (<c>TryResolveConstraintMethodApprox</c>, methodtable.cpp;
+    /// <c>CORINFO_BOX_THIS</c>, <c>getCallInfo</c>, jitinterface.cpp), whose body then reads it as an
+    /// instance of a class it is not. So too where the method named is another value type's, which
+    /// CoreCLR runs on the receiver's address, or holds a slot beyond the value type's vtable, which
+    /// CoreCLR reads past the vtable for. The analysis does not follow what a method does with such
+    /// a receiver.
+    | MistypedReceiver
     /// The method is <c>InternalCall</c>, <c>PInvoke</c> or runtime-provided: its behaviour is not IL.
     | NativeBody
     /// The method is abstract.
