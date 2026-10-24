@@ -17629,3 +17629,120 @@ public static class Cases
 
         if not unknown && not (shown.Contains raised) then
             failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
+
+    /// A field of a class with sequential layout, which the interop marshaller writes as a
+    /// formatted class: `Marshal.PtrToStructure` fills it from unmanaged memory, as does a P/Invoke
+    /// that takes the class as an `[Out]` parameter, where no instruction names the field.
+    [<Test>]
+    let ``a field of a class with sequential layout holds what the marshaller writes in it`` () : unit =
+        let marshal (name : string) (parameters : Type[]) : MethodInfo =
+            typeof<System.Runtime.InteropServices.Marshal>.GetMethod (name, parameters)
+
+        let image =
+            fieldFixture
+                "FormattedFields"
+                []
+                (fun modul _ _ _ ->
+                    let formatted =
+                        modul.DefineType (
+                            "Fields.Formatted",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.SequentialLayout
+                        )
+
+                    let formattedConstructor =
+                        formatted.DefineDefaultConstructor MethodAttributes.Public
+
+                    // No instruction of the image stores to `text`.
+                    let text = formatted.DefineField ("text", typeof<string>, FieldAttributes.Private)
+
+                    let run =
+                        formatted.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    let memory = il.DeclareLocal typeof<IntPtr>
+                    let holder = il.DeclareLocal formatted
+                    // Unmanaged memory the size of the class, holding a pointer to an ANSI string.
+                    il.Emit (Emit.OpCodes.Ldtoken, formatted)
+
+                    il.Emit (
+                        Emit.OpCodes.Call,
+                        typeof<Type>.GetMethod ("GetTypeFromHandle", [| typeof<RuntimeTypeHandle> |])
+                    )
+
+                    il.Emit (Emit.OpCodes.Call, marshal "SizeOf" [| typeof<Type> |])
+                    il.Emit (Emit.OpCodes.Call, marshal "AllocHGlobal" [| typeof<int> |])
+                    il.Emit (Emit.OpCodes.Stloc, memory)
+                    il.Emit (Emit.OpCodes.Ldloc, memory)
+                    il.Emit (Emit.OpCodes.Ldc_I4_0)
+                    il.Emit (Emit.OpCodes.Ldstr, "written by the marshaller")
+                    il.Emit (Emit.OpCodes.Call, marshal "StringToHGlobalAnsi" [| typeof<string> |])
+
+                    il.Emit (
+                        Emit.OpCodes.Call,
+                        marshal "WriteIntPtr" [| typeof<IntPtr> ; typeof<int> ; typeof<IntPtr> |]
+                    )
+                    // The marshaller fills a fresh `Formatted` from it.
+                    il.Emit (Emit.OpCodes.Newobj, formattedConstructor)
+                    il.Emit (Emit.OpCodes.Stloc, holder)
+                    il.Emit (Emit.OpCodes.Ldloc, memory)
+                    il.Emit (Emit.OpCodes.Ldloc, holder)
+                    il.Emit (Emit.OpCodes.Call, marshal "PtrToStructure" [| typeof<IntPtr> ; typeof<obj> |])
+                    // `text.Substring 1000` raises `ArgumentOutOfRangeException`, where a null `text`
+                    // would raise `NullReferenceException`.
+                    il.Emit (Emit.OpCodes.Ldloc, holder)
+                    il.Emit (Emit.OpCodes.Ldfld, text)
+                    il.Emit (Emit.OpCodes.Ldc_I4, 1000)
+                    il.Emit (Emit.OpCodes.Callvirt, typeof<string>.GetMethod ("Substring", [| typeof<int> |]))
+                    il.Emit Emit.OpCodes.Pop
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let caseRun =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = caseRun.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Call, run)
+                    il.Emit Emit.OpCodes.Ret
+                    formatted.CreateType () |> ignore<Type>
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        // The marshaller did write `text`: the real runtime gets past the load of it.
+        let shown, unknown, raised = fieldFixtureAnswers "FormattedFields" image
+        raised |> shouldEqual "=System.ArgumentOutOfRangeException"
+
+        if not unknown && not (shown.Contains raised) then
+            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
+
+        // Whether or not the marshalling itself is opaque to the analysis, it must not take `text`
+        // to hold only what IL stores in it.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "FormattedFields.dll") (new MemoryStream (image))
+
+        let text =
+            fixture.Fields
+            |> Seq.pick (fun (KeyValue (handle, field)) -> if field.Name = "text" then Some handle else None)
+
+        let _, follows =
+            EscapeAnalysis.followsField (analysisOver [ fixture ] id) (FieldKey.make fixture.DefinitionFullName text)
+
+        follows |> shouldEqual false
