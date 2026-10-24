@@ -39,14 +39,15 @@ module TestFabricatedUnimplementedInterface =
     /// The image:
     ///
     /// * `interface IAbs { static abstract int SA(); int IA(); }` and
-    ///   `interface IDef { int ID() => 8; }`;
+    ///   `interface IDef { int ID() => 8; }` and `interface IVar<in T> { int M(); }`;
     /// * `class Cls` and `struct Str`, which implement neither;
     /// * `static class Calls`, whose methods each make one call on `Cls`, `Str`, or a type variable,
     ///   as their names say: `Static*` call `IAbs.SA`, `StaticPointerOnClass` loads a pointer to it
     ///   and returns 100 without calling it, `OwnBody*` call `op_CheckedAddition` on their two
     ///   arguments, `OwnBodyPointerOnClass` through a pointer, `Instance*` call `IAbs.IA` and
     ///   `DefaultBody*` call `IDef.ID`, each through `constrained.`; `Plain(object)` and
-    ///   `PlainDefaultBody(object)` call them with a plain `callvirt` on the argument, and
+    ///   `PlainDefaultBody(object)` call them with a plain `callvirt` on the argument,
+    ///   `PlainVariant(object)` calls `IVar<object>.M` so, and
     ///   `VirtualPointer(object)` loads a pointer to `IAbs.IA` with `ldvirtftn` and returns 100.
     let private fabricate () : byte[] =
         let builder =
@@ -104,6 +105,30 @@ module TestFabricatedUnimplementedInterface =
             il.Emit OpCodes.Ret
 
         def.CreateType () |> ignore<Type>
+
+        // `interface IVar<in T> { int M(); }`, whose dispatch searches variance-compatible
+        // instantiations too.
+        let var = modul.DefineType ("IVar`1", interfaceAttributes)
+
+        (var.DefineGenericParameters [| "T" |]).[0].SetGenericParameterAttributes
+            GenericParameterAttributes.Contravariant
+
+        let varM =
+            var.DefineMethod (
+                "M",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.NewSlot
+                ||| MethodAttributes.HideBySig,
+                typeof<int>,
+                Type.EmptyTypes
+            )
+
+        var.CreateType () |> ignore<Type>
+
+        let varOfObjectM =
+            TypeBuilder.GetMethod (var.MakeGenericType [| typeof<obj> |], varM)
 
         let cls = modul.DefineType ("Cls", TypeAttributes.Public, typeof<obj>)
         let clsCtor = cls.DefineDefaultConstructor MethodAttributes.Public
@@ -225,7 +250,12 @@ module TestFabricatedUnimplementedInterface =
             il.Emit (OpCodes.Callvirt, ia)
             il.Emit OpCodes.Ret
 
-        for name, called in [ "Plain", (ia :> MethodInfo) ; "PlainDefaultBody", (id :> MethodInfo) ] do
+        for name, called in
+            [
+                "Plain", (ia :> MethodInfo)
+                "PlainDefaultBody", (id :> MethodInfo)
+                "PlainVariant", varOfObjectM
+            ] do
             define
                 name
                 [| typeof<obj> |]
@@ -384,6 +414,10 @@ public static class Driver
     [<Test>]
     let ``a plain callvirt of an interface method with a body of its own on such an object raises`` () : unit =
         run "Calls.PlainDefaultBody(new Cls())" 201
+
+    [<Test>]
+    let ``a plain callvirt of a variant interface's method on an object that does not implement it raises`` () : unit =
+        run "Calls.PlainVariant(new Cls())" 201
 
     [<Test>]
     let ``ldvirtftn of an interface method on an object that does not implement it raises`` () : unit =
