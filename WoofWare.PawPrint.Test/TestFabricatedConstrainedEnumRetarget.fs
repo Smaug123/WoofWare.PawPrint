@@ -18,7 +18,8 @@ open WoofWare.PawPrint
 /// implements neither interface. `IFormattable.ToString` does not either, and `Enum` implements it,
 /// formatting the enum's name where `Int32` would format its number. `String.GetHashCode` is a
 /// class's method in that slot, which CoreCLR resolves by slot on `Int32`, giving
-/// `Int32.GetHashCode`. No C# source spells any of these calls on an enum.
+/// `Int32.GetHashCode`, even where the method is a sealed class's final override, which a call on a
+/// box would run. No C# source spells any of these calls on an enum.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFabricatedConstrainedEnumRetarget =
@@ -46,7 +47,8 @@ module TestFabricatedConstrainedEnumRetarget =
     ///   what that returns plus 13.
     /// * `FormatLength(DayOfWeek)` returns the length of what `IFormattable.ToString` makes of the
     ///   argument.
-    /// * `StringHash(DayOfWeek)` calls `String.GetHashCode` on the argument.
+    /// * `StringHash(DayOfWeek)` calls `String.GetHashCode` on the argument, and `SealedHash(DayOfWeek)`
+    ///   calls `Sealed.GetHashCode`, a final override returning 42 on a sealed class.
     let private fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Retarget", typeof<obj>.Assembly)
@@ -132,15 +134,39 @@ module TestFabricatedConstrainedEnumRetarget =
             il.Emit (OpCodes.Callvirt, typeof<string>.GetProperty("Length").GetMethod)
             il.Emit OpCodes.Ret
 
+        let sealedClass =
+            modul.DefineType ("Sealed", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<obj>)
+
+        let sealedHash =
+            sealedClass.DefineMethod (
+                "GetHashCode",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Final
+                ||| MethodAttributes.HideBySig,
+                typeof<int>,
+                Type.EmptyTypes
+            )
+
         do
+            let il = sealedHash.GetILGenerator ()
+            il.Emit (OpCodes.Ldc_I4_S, 42y)
+            il.Emit OpCodes.Ret
+
+        for name, getHashCode in
+            [
+                "StringHash", typeof<string>.GetMethod ("GetHashCode", Type.EmptyTypes)
+                "SealedHash", (sealedHash :> MethodInfo)
+            ] do
             let il =
-                retarget.DefineMethod("StringHash", attributes, typeof<int>, [| typeof<DayOfWeek> |]).GetILGenerator ()
+                retarget.DefineMethod(name, attributes, typeof<int>, [| typeof<DayOfWeek> |]).GetILGenerator ()
 
             il.Emit (OpCodes.Ldarga_S, 0uy)
             il.Emit (OpCodes.Constrained, typeof<DayOfWeek>)
-            il.Emit (OpCodes.Callvirt, typeof<string>.GetMethod ("GetHashCode", Type.EmptyTypes))
+            il.Emit (OpCodes.Callvirt, getHashCode)
             il.Emit OpCodes.Ret
 
+        sealedClass.CreateType () |> ignore<Type>
         retarget.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
@@ -233,3 +259,10 @@ public static class Driver
     [<Test>]
     let ``a class method in GetHashCode's slot runs the underlying primitive's GetHashCode`` () : unit =
         run "Retarget.StringHash(DayOfWeek.Friday)" 5
+
+    [<Test>]
+    let ``a sealed class's final override in GetHashCode's slot runs the underlying primitive's GetHashCode``
+        ()
+        : unit
+        =
+        run "Retarget.SealedHash(DayOfWeek.Friday)" 5
