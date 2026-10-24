@@ -14714,3 +14714,259 @@ public static class Cases
 
         escapes.Unknown |> shouldEqual false
         render analysis escapes |> shouldContain "=SealedLocal.Raised"
+
+    /// A store of an integer constant into a local of an integer type, then a division by the
+    /// local: `ldc; stloc; ldc 1; ldloc; div`, at the widths the local's type loads as.
+    type private StoredDivisor =
+        {
+            /// The local's type.
+            Local : Type
+            /// The constant stored.
+            Stored : int64
+            /// Whether the constant is pushed as a native int, rather than at the width the local's
+            /// type loads as.
+            AsNative : bool
+            /// Whether the local is of an enum whose underlying type is `Local`, rather than of
+            /// `Local` itself.
+            InEnum : bool
+            /// Whether `Run` takes the constant as an argument of the type it is pushed as, which
+            /// `Caller` passes it, rather than pushing it itself.
+            ThroughArgument : bool
+            /// Whether `Run` tests the local, dividing by zero where it is zero, rather than
+            /// dividing by it.
+            ByBranch : bool
+        }
+
+    /// The width a local of `local` loads as: 4, 8, or 0 for a native int.
+    let private loadedWidth (local : Type) : int =
+        if local = typeof<int64> || local = typeof<uint64> then
+            8
+        elif local = typeof<nativeint> || local = typeof<unativeint> then
+            0
+        else
+            4
+
+    /// Emit into `modul` the case of `divisor` at `index` (`storedDivisorImage`).
+    let private emitStoredDivisor (modul : Emit.ModuleBuilder) (index : int) (divisor : StoredDivisor) : unit =
+        let cases =
+            modul.DefineType (
+                $"StoredDivisor.Cases%d{index}",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            )
+
+        let localType : Type =
+            if divisor.InEnum then
+                let enum =
+                    modul.DefineEnum ($"StoredDivisor.Narrow%d{index}", TypeAttributes.Public, divisor.Local)
+
+                enum.CreateType ()
+            else
+                divisor.Local
+
+        let width = loadedWidth divisor.Local
+        let pushedWidth = if divisor.AsNative then 0 else width
+
+        let pushedType : Type =
+            match pushedWidth with
+            | 8 -> typeof<int64>
+            | 4 -> typeof<int32>
+            | _ -> typeof<nativeint>
+
+        let run =
+            cases.DefineMethod (
+                "Run",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                (if divisor.ThroughArgument then [| pushedType |] else [||])
+            )
+
+        let il = run.GetILGenerator ()
+        let local = il.DeclareLocal localType
+
+        // Push `value` at `width`: 4 and 8 as constants of those widths, 0 as a native int.
+        let push (il : Emit.ILGenerator) (width : int) (value : int64) : unit =
+            match width with
+            | 8 -> il.Emit (Emit.OpCodes.Ldc_I8, value)
+            | 4 -> il.Emit (Emit.OpCodes.Ldc_I4, int32 value)
+            | _ ->
+                il.Emit (Emit.OpCodes.Ldc_I8, value)
+                il.Emit Emit.OpCodes.Conv_I
+
+        if divisor.ThroughArgument then
+            il.Emit Emit.OpCodes.Ldarg_0
+        else
+            push il pushedWidth divisor.Stored
+
+        il.Emit (Emit.OpCodes.Stloc, local)
+
+        if divisor.ByBranch then
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Ldloc, local)
+            il.Emit (Emit.OpCodes.Brtrue, skip)
+            il.Emit Emit.OpCodes.Ldc_I4_1
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Pop
+            il.MarkLabel skip
+        else
+            push il width 1L
+            il.Emit (Emit.OpCodes.Ldloc, local)
+            il.Emit Emit.OpCodes.Div
+            il.Emit Emit.OpCodes.Pop
+
+        il.Emit Emit.OpCodes.Ret
+
+        let caller =
+            cases.DefineMethod ("Caller", MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+        let il = caller.GetILGenerator ()
+
+        if divisor.ThroughArgument then
+            push il pushedWidth divisor.Stored
+
+        il.Emit (Emit.OpCodes.Call, run)
+        il.Emit Emit.OpCodes.Ret
+        cases.CreateType () |> ignore<Type>
+
+
+    /// The image of `StoredDivisor`: for the divisor at each index `i`, `StoredDivisor.Cases<i>.Run`, a
+    /// body as the divisor says, and `Caller`, which calls it.
+    let private storedDivisorImage (divisors : StoredDivisor list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "StoredDivisor", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "StoredDivisor"
+
+        for index, divisor in List.indexed divisors do
+            emitStoredDivisor modul index divisor
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``a division by a local divides by what the store left there, as the real runtime does`` () : unit =
+
+        let locals =
+            [
+                typeof<bool>
+                typeof<char>
+                typeof<sbyte>
+                typeof<byte>
+                typeof<int16>
+                typeof<uint16>
+                typeof<int32>
+                typeof<uint32>
+                typeof<int64>
+                typeof<uint64>
+                typeof<nativeint>
+                typeof<unativeint>
+            ]
+
+        let constants =
+            [
+                0L
+                1L
+                -1L
+                2L
+                255L
+                256L
+                65535L
+                65536L
+                0x1_0000_0000L
+                Int64.MinValue
+                Int64.MaxValue
+            ]
+
+        // An enum's underlying type is an integer type other than bool, char and the native ints.
+        let enumerable (local : Type) : bool =
+            local <> typeof<bool>
+            && local <> typeof<char>
+            && local <> typeof<nativeint>
+            && local <> typeof<unativeint>
+
+        // Every local type, with each constant at the width it loads as, and as a native int where
+        // the store converts it; in a local of the type, and of an enum of it; pushed by the body,
+        // and passed by its caller; divided by, and tested.
+        let divisors =
+            [
+                for local in locals do
+                    for stored in constants do
+                        for asNative in
+                            (if loadedWidth local = 4 then
+                                 [ false ; true ]
+                             else
+                                 [ false ]) do
+                            for inEnum in (if enumerable local then [ false ; true ] else [ false ]) do
+                                for throughArgument in [ false ; true ] do
+                                    for byBranch in [ false ; true ] do
+                                        yield
+                                            {
+                                                Local = local
+                                                Stored = stored
+                                                AsNative = asNative
+                                                InEnum = inEnum
+                                                ThroughArgument = throughArgument
+                                                ByBranch = byBranch
+                                            }
+            ]
+
+        let image = storedDivisorImage divisors
+
+        let raised =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("StoredDivisor", isCollectible = true)
+
+            try
+                let loaded = context.LoadFromStream (new MemoryStream (image))
+
+                divisors
+                |> List.mapi (fun index divisor ->
+                    let caller = loaded.GetType($"StoredDivisor.Cases%d{index}").GetMethod ("Caller")
+
+                    try
+                        caller.Invoke ((null : obj), [||]) |> ignore<obj>
+                        false
+                    with :? TargetInvocationException as e ->
+                        match e.InnerException with
+                        | :? DivideByZeroException -> true
+                        | other -> failwith $"%A{divisor}: the real runtime raised %O{other}"
+                )
+            finally
+                context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "StoredDivisor.dll") (new MemoryStream (image))
+
+        let failures =
+            ((analysisOver [ fixture ] id, []), List.indexed (List.zip divisors raised))
+            ||> List.fold (fun (analysis, failures) (index, (divisor, raises)) ->
+                let analysis, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed fixture $"StoredDivisor.Cases%d{index}" "Caller")
+
+                let says = (render analysis escapes).Contains "=System.DivideByZeroException"
+
+                let failure =
+                    if raises && not says && not escapes.Unknown then
+                        Some $"%A{divisor}: the real runtime divides by zero, which the analysis rules out"
+                    // A constant the store keeps at the width the local loads as is what the local
+                    // holds.
+                    elif
+                        not divisor.AsNative
+                        && not divisor.InEnum
+                        && not divisor.ThroughArgument
+                        && says <> raises
+                    then
+                        Some $"%A{divisor}: the real runtime divides by zero %b{raises}, the analysis says %b{says}"
+                    else
+                        None
+
+                analysis, Option.toList failure @ failures
+            )
+            |> snd
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> List.rev |> String.concat Environment.NewLine |> failwith
