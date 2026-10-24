@@ -511,6 +511,37 @@ public class Program
         {
         }
 
+        // 27, 28. A `catch` clause's type is resolved as an operand is, so `System.Void` is refused
+        // there too, even when nothing is thrown (measured), against the `Exception` control 28.
+        Func<int> Catching(Type caught) => IntMethod(il =>
+        {
+            LocalBuilder result = il.DeclareLocal(typeof(int));
+            il.BeginExceptionBlock();
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Stloc, result);
+            il.BeginCatchBlock(caught);
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Stloc, result);
+            il.EndExceptionBlock();
+            il.Emit(OpCodes.Ldloc, result);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            Catching(typeof(void))();
+            return 27;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        if (Catching(typeof(Exception))() != 1)
+        {
+            return 28;
+        }
+
         return 0;
     }
 }
