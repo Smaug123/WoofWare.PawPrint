@@ -194,6 +194,8 @@ public class Consumer
                 ImmutableArray.Empty
                 innerDefn
 
+        let handle = BindingResult.value handle
+
         loader.Calls |> shouldEqual [ (consumer.Name.FullName, defining.Name.FullName) ]
 
         let outer = getTopLevelTypeDef defining "N" "Outer"
@@ -562,6 +564,8 @@ public class Consumer
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 forwardedDefn
+
+        let handle = BindingResult.value handle
 
         loader.Calls
         |> shouldEqual
@@ -997,6 +1001,8 @@ public class Outer
                 ImmutableArray.Empty
                 genericType
 
+        let first = BindingResult.value first
+
         let second, _ =
             TypeConcretization.concretizeType
                 ctx
@@ -1005,6 +1011,8 @@ public class Outer
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 genericType
+
+        let second = BindingResult.value second
 
         first |> shouldEqual second
 
@@ -1201,6 +1209,8 @@ public class Outer<T>
                 ImmutableArray.Empty
                 firstInstantiated
 
+        let firstHandle = BindingResult.value firstHandle
+
         let repeatedFirstHandle, ctx =
             TypeConcretization.concretizeType
                 ctx
@@ -1210,6 +1220,8 @@ public class Outer<T>
                 ImmutableArray.Empty
                 firstInstantiated
 
+        let repeatedFirstHandle = BindingResult.value repeatedFirstHandle
+
         let secondHandle, ctx =
             TypeConcretization.concretizeType
                 ctx
@@ -1218,6 +1230,8 @@ public class Outer<T>
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 secondInstantiated
+
+        let secondHandle = BindingResult.value secondHandle
 
         firstHandle |> shouldEqual repeatedFirstHandle
         firstHandle |> shouldNotEqual secondHandle

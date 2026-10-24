@@ -80,7 +80,9 @@
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestAssemblyProbe.fs" />
     <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="UnmodelledImage.fs" />
     <Compile Include="TestUnmodelledBinding.fs" />
+    <Compile Include="TestTypeSystemBindingFailure.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />

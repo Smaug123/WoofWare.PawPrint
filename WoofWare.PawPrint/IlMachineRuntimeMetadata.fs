@@ -176,13 +176,18 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * TypeDefn * DumpedAssembly
         =
         let typeSystem, typeDefn, assembly =
-            TypeSystemState.lookupTypeRef
-                loggerFactory
-                state.DotnetRuntimeDirs
-                baseClassTypes
-                state.TypeSystem
-                activeAssy
-                ref
+            match
+                TypeSystemState.lookupTypeRef
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    state.TypeSystem
+                    activeAssy
+                    ref
+            with
+            | typeSystem, Ok (typeDefn, assembly) -> typeSystem, typeDefn, assembly
+            | _, Error failure ->
+                failwith (TypeResolution.describeReferenceFailure activeAssy.TypeRefs.[ref] activeAssy failure)
 
         state.WithTypeSystem typeSystem, typeDefn, assembly
 
@@ -196,13 +201,27 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * DumpedAssembly * TypeDefn
         =
         let typeSystem, assembly, typeDefn =
-            TypeSystemState.resolveBaseTypeInfo
-                loggerFactory
-                state.DotnetRuntimeDirs
-                baseClassTypes
-                state.TypeSystem
-                currentAssembly
-                baseTypeInfo
+            match
+                TypeSystemState.resolveBaseTypeInfo
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    state.TypeSystem
+                    currentAssembly
+                    baseTypeInfo
+            with
+            | typeSystem, Ok (assembly, typeDefn) -> typeSystem, assembly, typeDefn
+            | _, Error failure ->
+                match baseTypeInfo with
+                | BaseTypeInfo.TypeRef handle ->
+                    failwith (
+                        TypeResolution.describeReferenceFailure
+                            currentAssembly.TypeRefs.[handle]
+                            currentAssembly
+                            failure
+                    )
+                | BaseTypeInfo.TypeDef _
+                | BaseTypeInfo.TypeSpec _ -> failwith (TypeBindingFailure.describe failure)
 
         state.WithTypeSystem typeSystem, assembly, typeDefn
 
@@ -1555,13 +1574,21 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * TypeDefn * DumpedAssembly
         =
         let typeSystem, typeDefn, assembly =
-            TypeSystemState.resolveTypeMetadataToken
-                loggerFactory
-                state.DotnetRuntimeDirs
-                baseClassTypes
-                state.TypeSystem
-                activeAssy
-                token
+            match
+                TypeSystemState.resolveTypeMetadataToken
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    state.TypeSystem
+                    activeAssy
+                    token
+            with
+            | typeSystem, Ok (typeDefn, assembly) -> typeSystem, typeDefn, assembly
+            | _, Error failure ->
+                match token with
+                | MetadataToken.TypeReference ref ->
+                    failwith (TypeResolution.describeReferenceFailure activeAssy.TypeRefs.[ref] activeAssy failure)
+                | _ -> failwith (TypeBindingFailure.describe failure)
 
         state.WithTypeSystem typeSystem, typeDefn, assembly
 

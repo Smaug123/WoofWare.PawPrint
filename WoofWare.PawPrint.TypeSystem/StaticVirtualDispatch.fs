@@ -337,7 +337,7 @@ module StaticVirtualDispatch =
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
         | VirtualImplementation.Found implementation ->
-            let state, implementation, declaringType =
+            let state, implementationResult =
                 MethodConcretisation.concretizeMethodWithAllGenerics
                     loggerFactory
                     dotnetRuntimeDirs
@@ -346,5 +346,7 @@ module StaticVirtualDispatch =
                     implementation.Definition
                     implementation.MethodGenerics
                     state
+
+            let implementation, declaringType = BindingStop.bound implementationResult
 
             state, ConstrainedStaticImplementation.Runs (implementation, declaringType)
