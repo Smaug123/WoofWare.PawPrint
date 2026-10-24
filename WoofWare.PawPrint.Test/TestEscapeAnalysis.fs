@@ -2877,6 +2877,69 @@ public static class Cases
         let _, pointer = helpersReached analysis fixture "Emitted" "StorePointer"
         pointer |> shouldEqual Set.empty
 
+    /// Whether `fixture`, read from `image`, reaches a `CastHelpers` box from each parameterless
+    /// method of `cases` exactly where the real runtime allocates calling it, where each such method
+    /// allocates nothing but by boxing. `boxing` is one the real runtime must allocate for and
+    /// `notBoxing` one it must not, so that the comparison is not vacuous.
+    let private boxesWhereTheRealRuntimeAllocates
+        (image : byte[])
+        (fixture : DumpedAssembly)
+        (cases : string)
+        (boxing : string)
+        (notBoxing : string)
+        : unit
+        =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Boxes", isCollectible = true)
+
+        try
+            let methods =
+                context
+                    .LoadFromStream(new MemoryStream (image))
+                    .GetType(cases)
+                    .GetMethods (BindingFlags.Public ||| BindingFlags.Static)
+                |> List.ofArray
+
+            // The first calls compile the case and what it calls, and make the `RuntimeType`
+            // `GetType` answers.
+            let allocates (case : MethodInfo) : bool =
+                let run = case.CreateDelegate<Action> ()
+                run.Invoke ()
+                run.Invoke ()
+                let before = GC.GetAllocatedBytesForCurrentThread ()
+
+                for _ in 1..64 do
+                    run.Invoke ()
+
+                GC.GetAllocatedBytesForCurrentThread () - before > 0L
+
+            let observed = methods |> List.map (fun case -> case.Name, allocates case)
+
+            observed |> List.filter snd |> List.map fst |> shouldContain boxing
+
+            observed |> List.filter (snd >> not) |> List.map fst |> shouldContain notBoxing
+
+            let failures =
+                ((analysisOver [ fixture ] id, []), observed)
+                ||> List.fold (fun (analysis, failures) (name, allocated) ->
+                    let analysis, reached = helpersReached analysis fixture cases name
+                    let boxes = reached.Contains "Box" || reached.Contains "Box_Nullable"
+
+                    if boxes = allocated then
+                        analysis, failures
+                    else
+                        analysis,
+                        $"%s{cases}::%s{name}: the real runtime allocates %b{allocated}, but the analysis reaches %A{Set.toList reached}"
+                        :: failures
+                )
+                |> snd
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
+
     /// Calls the JIT compiles without optimising (`MethodImplOptions.NoOptimization`), as it compiles
     /// a method at tier 0. Each case makes one `constrained.` call on a struct, a `Nullable<T>` or a
     /// string, of a method that allocates nothing, so a case allocates only where the JIT boxes the
@@ -2990,63 +3053,113 @@ public static class Cases
         let fixture =
             Assembly.read loggerFactory (Some "BoxThis.dll") (new MemoryStream (image))
 
-        let context =
-            System.Runtime.Loader.AssemblyLoadContext ("BoxThis", isCollectible = true)
+        boxesWhereTheRealRuntimeAllocates image fixture "BoxThis.Cases" "DefaultOfDefaulting" "DefaultOfImplementing"
 
-        try
-            let cases =
-                context
-                    .LoadFromStream(new MemoryStream (image))
-                    .GetType("BoxThis.Cases")
-                    .GetMethods (BindingFlags.Public ||| BindingFlags.Static)
-                |> List.ofArray
+    /// C# calls a struct's own method with `call`, but `constrained.` may name one, and CoreCLR
+    /// takes a method that is not virtual to be none the type declares
+    /// (`TryResolveConstraintMethodApprox`, methodtable.cpp): it boxes the receiver and passes the
+    /// box where the method expects the struct's address. It boxes nothing for one that is virtual.
+    [<Test>]
+    let ``a constrained call of a struct's own method boxes its receiver where the method is not virtual`` () : unit =
+        let image =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "OwnMethods", typeof<obj>.Assembly)
 
-            // The first calls compile the case and what it calls, and make the `RuntimeType`
-            // `GetType` answers.
-            let allocates (case : MethodInfo) : bool =
-                let run = case.CreateDelegate<Action> ()
-                run.Invoke ()
-                run.Invoke ()
-                let before = GC.GetAllocatedBytesForCurrentThread ()
+            let modul = builder.DefineDynamicModule "OwnMethods"
 
-                for _ in 1..64 do
-                    run.Invoke ()
-
-                GC.GetAllocatedBytesForCurrentThread () - before > 0L
-
-            let observed = cases |> List.map (fun case -> case.Name, allocates case)
-
-            // The real runtime boxes some receivers and not others, so the comparison is not vacuous.
-            observed
-            |> List.filter snd
-            |> List.map fst
-            |> shouldContain "DefaultOfDefaulting"
-
-            observed
-            |> List.filter (snd >> not)
-            |> List.map fst
-            |> shouldContain "DefaultOfImplementing"
-
-            let failures =
-                ((analysisOver [ fixture ] id, []), observed)
-                ||> List.fold (fun (analysis, failures) (name, allocated) ->
-                    let analysis, reached = helpersReached analysis fixture "BoxThis.Cases" name
-                    let boxes = reached.Contains "Box" || reached.Contains "Box_Nullable"
-
-                    if boxes = allocated then
-                        analysis, failures
-                    else
-                        analysis,
-                        $"BoxThis.Cases::%s{name}: the real runtime allocates %b{allocated}, but the analysis reaches %A{Set.toList reached}"
-                        :: failures
+            let measured =
+                modul.DefineType (
+                    "IMeasured",
+                    TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
                 )
-                |> snd
 
-            match failures with
-            | [] -> ()
-            | failures -> failures |> String.concat Environment.NewLine |> failwith
-        finally
-            context.Unload ()
+            let measure =
+                measured.DefineMethod (
+                    "Measure",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Abstract
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+
+            let measured = measured.CreateType ()
+
+            let owner =
+                modul.DefineType (
+                    "Owner",
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            owner.AddInterfaceImplementation measured
+
+            owner.DefineField ("X", typeof<int>, FieldAttributes.Public)
+            |> ignore<Emit.FieldBuilder>
+
+            let constant (method : Emit.MethodBuilder) =
+                let il = method.GetILGenerator ()
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Ret
+                method
+
+            let plain =
+                owner.DefineMethod ("Plain", MethodAttributes.Public ||| MethodAttributes.HideBySig, typeof<int>, [||])
+                |> constant
+
+            let final =
+                owner.DefineMethod (
+                    "Measure",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.Final
+                    ||| MethodAttributes.HideBySig
+                    ||| MethodAttributes.NewSlot,
+                    typeof<int>,
+                    [||]
+                )
+                |> constant
+
+            owner.DefineMethodOverride (final, measure)
+            let owner = owner.CreateType ()
+
+            let emitted =
+                modul.DefineType (
+                    "Emitted",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let case (name : string) (called : Emit.MethodBuilder) =
+                let method =
+                    emitted.DefineMethod (name, MethodAttributes.Public ||| MethodAttributes.Static, typeof<Void>, [||])
+
+                method.SetImplementationFlags MethodImplAttributes.NoOptimization
+                let il = method.GetILGenerator ()
+                il.DeclareLocal owner |> ignore<Emit.LocalBuilder>
+                il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                il.Emit (Emit.OpCodes.Constrained, owner)
+                il.Emit (Emit.OpCodes.Callvirt, called)
+                il.Emit Emit.OpCodes.Pop
+                il.Emit Emit.OpCodes.Ret
+
+            case "OwnPlain" plain
+            case "OwnFinal" final
+            emitted.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "OwnMethods.dll") (new MemoryStream (image))
+
+        boxesWhereTheRealRuntimeAllocates image fixture "Emitted" "OwnPlain" "OwnFinal"
 
     /// C# makes a ref struct implement every method of an interface itself, but IL may leave it to
     /// inherit a default interface body. A `constrained.` call of that body on the ref struct boxes
@@ -3197,6 +3310,22 @@ public static class Cases
         |> Seq.map (renderSite analysis)
         |> Set.ofSeq
         |> shouldEqual (Set.singleton "Calls::DefaultOf IL BoxedByRefLikeReceiver IDefaulted::Default")
+
+        // Asked about by itself, the definition stands for every instantiation, a ref struct's
+        // among them.
+        let analysis, definition =
+            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "DefaultOf")
+
+        definition
+        |> Seq.map (renderSite analysis)
+        |> Set.ofSeq
+        |> shouldEqual (
+            Set.ofList
+                [
+                    "Calls::DefaultOf IL BoxedByRefLikeReceiver IDefaulted::Default"
+                    "Calls::DefaultOf IL VirtualCall IDefaulted::Default"
+                ]
+        )
 
     /// The `CastHelpers` methods that `jithelpers.h` binds the JIT's helpers for boxing and unboxing
     /// to, and an exception each can raise: a box allocates, and an unbox of the wrong type throws
