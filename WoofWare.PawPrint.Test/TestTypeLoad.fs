@@ -355,14 +355,20 @@ public class InterfaceOfMissingAfterClass<T> where T : Provider.KeptGeneric<Opti
 public class InterfaceSignatureAfterVariable<T, U> where T : Provider.IKeptGeneric<Optional.Thing>, U where U : Provider.Gone { }
 public class ParentBeforeConstraint<T> : Provider.Gone where T : Optional.Thing { }
 public class StaticFieldBeforeConstraint<T> where T : Optional.Thing { public static Provider.GoneStruct F; }
+public class ConstrainedBase<T> where T : Optional.IThing { }
+public class DerivesConstrainedBase<X> : ConstrainedBase<X> where X : Optional.IThing { public static Provider.GoneStruct F; }
 public class StaticGoneHolder { public static Provider.GoneStruct F; }
 public interface IStaticGoneHolder { public static Provider.GoneStruct F; }
 public class ConstrainedToStaticGoneHolder<T> where T : StaticGoneHolder { }
 public class ConstrainedToIStaticGoneHolder<T> where T : IStaticGoneHolder { }
 public class InterfaceOfGoneSecond<T> where T : Provider.IKept, Provider.IKeptGeneric<Provider.Gone> { }
 public class InterfaceOfGoneAfterClass<T> where T : Provider.Kept, Provider.IKeptGeneric<Provider.Gone> { }
-public class InterfaceOfGoneAfterStruct<T> where T : struct, Provider.IKeptGeneric<Provider.Gone> { }
+public class InterfaceOfGoneWithStruct<T> where T : struct, Provider.IKeptGeneric<Provider.Gone> { }
 public class InterfaceOfGoneAfterVariable<T, U> where T : U, Provider.IKeptGeneric<Provider.Gone> { }
+public class ConstrainedToIGoneBase<T> where T : Provider.IGone { }
+public class DerivesConstrainedToIGoneBase<X> : ConstrainedToIGoneBase<X> where X : Optional.IThing, Provider.IGone { }
+public interface InterfaceExtendingGone<U> : Provider.IGone { }
+public class SecondInterfaceOverGoneBase<T> where T : Provider.IKept, InterfaceExtendingGone<Provider.Kept> { }
 """
 
     let private curatedConstrainedNames : string list =
@@ -390,12 +396,15 @@ public class InterfaceOfGoneAfterVariable<T, U> where T : U, Provider.IKeptGener
             "InterfaceSignatureAfterVariable<,>"
             "ParentBeforeConstraint<>"
             "StaticFieldBeforeConstraint<>"
+            "DerivesConstrainedBase<>"
             "ConstrainedToStaticGoneHolder<>"
             "ConstrainedToIStaticGoneHolder<>"
             "InterfaceOfGoneSecond<>"
             "InterfaceOfGoneAfterClass<>"
-            "InterfaceOfGoneAfterStruct<>"
+            "InterfaceOfGoneWithStruct<>"
             "InterfaceOfGoneAfterVariable<,>"
+            "DerivesConstrainedToIGoneBase<>"
+            "SecondInterfaceOverGoneBase<>"
         ]
 
     [<Test>]
