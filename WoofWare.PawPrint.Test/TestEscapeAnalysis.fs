@@ -7177,6 +7177,333 @@ public static unsafe class Calls
                 "CallsManagedPointer", false
             ]
 
+    /// A client compiled against one version of a provider, run against another lacking two types,
+    /// taking the address of a method whose signature names a type that fails to load. The JIT
+    /// loads the return type of the method whose address it takes in full; CoreCLR prepares the
+    /// method as a function pointer, loading each value type of its signature whose definition is
+    /// there, before that for an `ldvirtftn` or a method specification, and otherwise only where the
+    /// JIT asks for the address itself, which it does compiling whatever method it inlines the
+    /// `ldftn` into; a delegate's target it does not prepare. Each caller takes one address inside a
+    /// `catch` of every exception, and names the type in no local and nowhere in its own signature.
+    /// The host's CoreCLR, running each caller against the same assemblies, says which fail, and
+    /// where. Where the JIT may ask for the address while compiling some caller of the method taking
+    /// it, the analysis takes that caller, and each of its callers in turn, to fail past its
+    /// handlers, which the host's outcome does not decide.
+    [<Test>]
+    let ``taking a method's address loads its return type, and its value types where CoreCLR prepares it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+
+namespace Client;
+
+public class DerivesFromGone : Provider.Gone { }
+public struct HoldsGone { public Provider.GoneStruct G; }
+public delegate void TakesHoldsGoneHandler(HoldsGone x);
+public delegate void TakesGoneStructHandler(Provider.GoneStruct x);
+public interface IStatic { static abstract void Target<U>(HoldsGone x); }
+public struct StaticStruct : IStatic { public static void Target<U>(HoldsGone x) { } }
+
+public static class Targets
+{
+    public static void TakesHoldsGone(HoldsGone x) { }
+    public static void TakesGoneStruct(Provider.GoneStruct x) { }
+    public static void TakesGone(Provider.Gone x) { }
+    public static DerivesFromGone ReturnsDerivesFromGone() => null;
+    public static void GenericTakesHoldsGone<T>(HoldsGone x) { }
+}
+
+public class Instance
+{
+    public void TakesHoldsGone(HoldsGone x) { }
+    public virtual void VirtualTakesHoldsGone(HoldsGone x) { }
+}
+
+public static unsafe class Takes
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Use(void* p) { }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void UseDelegate(TakesHoldsGoneHandler d) { }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void UseStructDelegate(TakesGoneStructHandler d) { }
+
+    public static void* ConstrainedAddress<T>() where T : IStatic => (void*)(delegate*<HoldsGone, void>)&T.Target<int>;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void* InlinedAddress() => (void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void* NotInlinedAddress() => (void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone;
+}
+
+public static class SharedTarget<T>
+{
+    public static void TakesHoldsGone(HoldsGone x) { }
+}
+
+public static unsafe class Shared<T>
+{
+    public static void* Address() => (void*)(delegate*<HoldsGone, void>)&SharedTarget<T>.TakesHoldsGone;
+}
+
+public static unsafe class Addresses
+{
+    static void Use(void* p) { }
+
+    public static string PointerToTakesHoldsGone()
+    {
+        try { Takes.Use((void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string PointerToTakesGoneStruct()
+    {
+        try { Takes.Use((void*)(delegate*<Provider.GoneStruct, void>)&Targets.TakesGoneStruct); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string PointerToTakesGone()
+    {
+        try { Takes.Use((void*)(delegate*<Provider.Gone, void>)&Targets.TakesGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string PointerToReturnsDerivesFromGone()
+    {
+        try { Takes.Use((void*)(delegate*<DerivesFromGone>)&Targets.ReturnsDerivesFromGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string PointerToGenericTakesHoldsGone()
+    {
+        try { Takes.Use((void*)(delegate*<HoldsGone, void>)&Targets.GenericTakesHoldsGone<int>); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string DelegateToVirtualTakesHoldsGone()
+    {
+        try { Takes.UseDelegate(new Instance().VirtualTakesHoldsGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string DelegateToStaticTakesGoneStruct()
+    {
+        try { Takes.UseStructDelegate(Targets.TakesGoneStruct); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string DelegateToTakesHoldsGone()
+    {
+        try { Takes.UseDelegate(new Instance().TakesHoldsGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsInlinedAddress()
+    {
+        try { Takes.Use(Takes.InlinedAddress()); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsSharedAddress()
+    {
+        try { Takes.Use(Shared<object>.Address()); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsNotInlinedAddress()
+    {
+        try { Takes.Use(Takes.NotInlinedAddress()); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string DiscardedPointerToTakesHoldsGone()
+    {
+        try { Use((void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsConstrainedAddress()
+    {
+        Takes.Use(Takes.ConstrainedAddress<StaticStruct>());
+        return null;
+    }
+}
+"""
+
+        // Optimised, so that the JIT inlines: a Debug build disables its optimisation.
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> TestJitTypeLoads.discardAddresses "Addresses"
+
+        let typeLoad = "System.TypeLoadException"
+
+        // Each caller, the name of a type the signature of the method whose address it takes
+        // spells, what running it does, and what the analysis lets escape it.
+        let methods =
+            [
+                "PointerToTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "PointerToTakesGoneStruct", "GoneStruct", CallOutcome.Runs, []
+                "PointerToTakesGone", "Gone", CallOutcome.Runs, []
+                "PointerToReturnsDerivesFromGone", "DerivesFromGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "PointerToGenericTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "DelegateToVirtualTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // Making a delegate over a static method, or an open one over an instance method,
+                // loads what its signature names, which `JitTypeLoads` does not describe and the
+                // analysis takes to load in full for any delegate.
+                "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, [ typeLoad ]
+                "DelegateToStaticTakesGoneStruct", "GoneStruct", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // The caller's JIT, inlining the method taking the address, asks for it.
+                "CallsInlinedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // In shared code a generic dictionary supplies the address; the caller's JIT, inlining
+                // the method for one instantiation, asks for it.
+                "CallsSharedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // The analysis does not tell which methods a JIT inlines.
+                "CallsNotInlinedAddress", "HoldsGone", CallOutcome.Caught typeLoad, [ typeLoad ]
+                // `Use`'s call replaced by a `pop`: nothing asks for the address.
+                "DiscardedPointerToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, []
+                // CoreCLR prepares the method resolving the `constrained.` prefix, compiling the
+                // method taking its address, which this caller does not catch.
+                "CallsConstrainedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("MethodAddressTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let addresses =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Addresses"
+
+                methods
+                |> List.map (fun (name, _, _, _) ->
+                    let outcome =
+                        try
+                            match addresses.GetMethod(name).Invoke ((null : obj), [||]) with
+                            | null -> CallOutcome.Runs
+                            | caught -> CallOutcome.Caught (unbox<string> caught)
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        let named = namedTypes clientAssembly
+
+        // The runtime makes the exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeTypeLoad =
+            let next, made = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            render analysis made
+
+        let failures =
+            [
+                for name, calleeType, expected, expectedEscaping in methods do
+                    let key = methodNamed clientAssembly "Client.Addresses" name
+                    let method = clientAssembly.Methods.[key.Method.Get]
+
+                    // Only the method whose address is taken names the type: nothing the JIT loads
+                    // of the caller's own signature or of its locals does.
+                    let ownLoads =
+                        [
+                            match method.Signature.ReturnType with
+                            | MethodReturnType.Void -> ()
+                            | MethodReturnType.Returns returned -> yield JitTypePosition.OwnReturn, returned
+                            for parameter in method.Signature.ParameterTypes do
+                                yield JitTypePosition.OwnParameter, parameter
+                            match method.Body with
+                            | MethodBody.Il body ->
+                                for local in Option.defaultValue ImmutableArray.Empty body.LocalVars do
+                                    yield JitTypePosition.Local, local
+                            | _ -> ()
+                        ]
+                        |> List.choose (fun (position, spelling) -> JitTypeLoads.load position spelling)
+
+                    if
+                        ownLoads
+                        |> List.exists (fun load ->
+                            match load with
+                            | JitTypeLoad.InFull loaded -> List.contains calleeType (named loaded)
+                            | other -> failwith $"%s{name}: the JIT loads %O{other} of its own signature or a local"
+                        )
+                    then
+                        yield $"%s{name}: the JIT loads %s{calleeType} for its own signature or a local: %A{ownLoads}"
+
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [
+                            typeLoad
+                            "System.MissingMethodException"
+                            "System.IO.FileNotFoundException"
+                        ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    // What escapes is the exception the caller's compilation raises, and whatever
+                    // making that one raises.
+                    let unexplained =
+                        match expectedEscaping with
+                        | [] -> escaping
+                        | expectedEscaping ->
+                            (expectedEscaping
+                             |> List.filter (fun expected -> not (List.contains expected escaping))
+                             |> List.map (fun missing -> $"no %s{missing}"))
+                            @ (escaping
+                               |> List.filter (fun escaped ->
+                                   not (List.contains escaped expectedEscaping)
+                                   && not (madeTypeLoad.Contains $"=%s{escaped}")
+                               ))
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
