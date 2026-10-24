@@ -3300,7 +3300,8 @@ public static class Cases
     /// inherit a default interface body. A `constrained.` call of that body on the ref struct boxes
     /// the receiver, which CoreCLR's JIT refuses to compile (`getBoxHelper`, jitinterface.cpp,
     /// raises `InvalidProgramException`), whether the type is named directly or through a type
-    /// variable that allows it.
+    /// variable that allows it. It refuses before the method runs, so no handler in the method catches
+    /// it, and no value a caller passes keeps it from compiling the call.
     [<Test>]
     let ``a constrained call that would box a ref struct is opaque, and the real runtime refuses it`` () : unit =
         let image =
@@ -3399,6 +3400,54 @@ public static class Cases
                     il.Emit (Emit.OpCodes.Call, defaultOf.MakeGenericMethod [| refStruct |])
                 )
 
+            caller
+                "Caught"
+                (fun il ->
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+                    il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+                    il.Emit (Emit.OpCodes.Constrained, refStruct)
+                    il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+                    il.Emit Emit.OpCodes.Pop
+                    il.BeginCatchBlock typeof<obj>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                )
+
+            let gated =
+                calls.DefineMethod (
+                    "Gated",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<int>,
+                    [| typeof<bool> |]
+                )
+
+            let il = gated.GetILGenerator ()
+            il.DeclareLocal refStruct |> ignore<Emit.LocalBuilder>
+            let skip = il.DefineLabel ()
+            il.Emit Emit.OpCodes.Ldarg_0
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Initobj, refStruct)
+            il.Emit (Emit.OpCodes.Ldloca_S, 0uy)
+            il.Emit (Emit.OpCodes.Constrained, refStruct)
+            il.Emit (Emit.OpCodes.Callvirt, defaultBody)
+            il.Emit Emit.OpCodes.Ret
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit Emit.OpCodes.Ret
+
+            let gatedOff =
+                calls.DefineMethod ("GatedOff", MethodAttributes.Public ||| MethodAttributes.Static, typeof<int>, [||])
+
+            // Optimising, the JIT inlines `Gated`, folds the branch on the constant, and never sees
+            // the call; at tier 0 it inlines nothing.
+            gatedOff.SetImplementationFlags MethodImplAttributes.NoOptimization
+            let il = gatedOff.GetILGenerator ()
+            il.Emit Emit.OpCodes.Ldc_I4_0
+            il.Emit (Emit.OpCodes.Call, gated)
+            il.Emit Emit.OpCodes.Ret
+
             calls.CreateType () |> ignore<Type>
 
             use stream = new MemoryStream ()
@@ -3416,7 +3465,7 @@ public static class Cases
         try
             let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
 
-            for name in [ "Directly" ; "ThroughVariable" ] do
+            for name in [ "Directly" ; "ThroughVariable" ; "Caught" ; "GatedOff" ] do
                 let raised =
                     try
                         calls.GetMethod(name).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
@@ -3424,27 +3473,28 @@ public static class Cases
                     with :? TargetInvocationException as e ->
                         Some (e.InnerException.GetType ())
 
-                raised |> shouldEqual (Some typeof<InvalidProgramException>)
+                (name, raised) |> shouldEqual (name, Some typeof<InvalidProgramException>)
         finally
             context.Unload ()
 
-        let analysis = analysisOver [ fixture ] id
+        let mutable analysis = analysisOver [ fixture ] id
 
-        let analysis, directly =
-            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "Directly")
+        for name, refused in
+            [
+                "Directly", "Directly"
+                "ThroughVariable", "DefaultOf"
+                "Caught", "Caught"
+                "GatedOff", "Gated"
+            ] do
+            let next, sources =
+                EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" name)
 
-        directly
-        |> Seq.map (renderSite analysis)
-        |> Set.ofSeq
-        |> shouldEqual (Set.singleton "Calls::Directly IL BoxedByRefLikeReceiver IDefaulted::Default")
+            analysis <- next
 
-        let analysis, throughVariable =
-            EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "ThroughVariable")
-
-        throughVariable
-        |> Seq.map (renderSite analysis)
-        |> Set.ofSeq
-        |> shouldEqual (Set.singleton "Calls::DefaultOf IL BoxedByRefLikeReceiver IDefaulted::Default")
+            sources
+            |> Seq.map (renderSite analysis)
+            |> Set.ofSeq
+            |> shouldEqual (Set.singleton $"Calls::%s{refused} entry BoxedByRefLikeReceiver")
 
         // Asked about by itself, the definition stands for every instantiation, a ref struct's
         // among them.
@@ -3460,7 +3510,7 @@ public static class Cases
         |> shouldEqual (
             Set.ofList
                 [
-                    "Calls::DefaultOf IL BoxedByRefLikeReceiver IDefaulted::Default"
+                    "Calls::DefaultOf entry BoxedByRefLikeReceiver"
                     "Calls::DefaultOf IL VirtualCall IDefaulted::Default"
                 ]
         )
