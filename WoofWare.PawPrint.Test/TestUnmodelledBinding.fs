@@ -25,6 +25,8 @@ module TestUnmodelledBinding =
             Absent : TypeReferenceHandle
             /// `System.Gone`, scoped to an assembly named `Nowhere`.
             Unbound : TypeReferenceHandle
+            /// `System.Collections.Generic.List`1`, scoped to CoreLib.
+            List : TypeReferenceHandle
             /// `N.Inner`, scoped to a module reference.
             ModuleScoped : TypeReferenceHandle
             /// A field reference whose parent is a module reference.
@@ -93,6 +95,9 @@ module TestUnmodelledBinding =
 
         let unbound =
             typeRef (AssemblyReferenceHandle.op_Implicit nowhereRef) "System" "Gone"
+
+        let list =
+            typeRef (AssemblyReferenceHandle.op_Implicit corelibRef) "System.Collections.Generic" "List`1"
 
         let otherModule =
             metadata.AddModuleReference (metadata.GetOrAddString "Other.netmodule")
@@ -204,6 +209,7 @@ module TestUnmodelledBinding =
         {
             Absent = absent
             Unbound = unbound
+            List = list
             ModuleScoped = moduleScoped
             ModuleParent = moduleParent
             MethodParent = methodParent
@@ -351,3 +357,35 @@ module TestUnmodelledBinding =
         match resolve f.Shapes.MethodSignature with
         | FieldReferenceTarget.Unmodelled unmodelled -> unmodelledSaying "names a method, not a field" unmodelled
         | other -> failwith $"expected Unmodelled, got %A{other}"
+
+    [<Test>]
+    let ``an argument of an instantiation that names nothing is the instantiation's miss`` () : unit =
+        let f = fixture ()
+
+        let spelled (handle : TypeReferenceHandle) =
+            TypeDefn.FromReference (f.Analysed.TypeRefs.[handle], SignatureTypeKind.Class)
+
+        // The arguments are resolved in order, stopping at the first that fails, so the second
+        // argument's unavailable assembly is never looked for.
+        for arguments in [ [ f.Shapes.Absent ] ; [ f.Shapes.Absent ; f.Shapes.Unbound ] ] do
+            let instantiation =
+                TypeDefn.GenericInstantiation (
+                    spelled f.Shapes.List,
+                    arguments |> List.map spelled |> ImmutableArray.CreateRange
+                )
+
+            match
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    instantiation
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    f.Analysed
+                    f.Assemblies
+            with
+            | _,
+              Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+                ()
+            | _, other -> failwith $"expected System.Gone to be absent, got %A{other}"
