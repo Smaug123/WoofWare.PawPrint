@@ -83,6 +83,17 @@ type Assumption =
     /// names does not settle the check (`MetadataAccess`). This assumption stands in for no
     /// method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
     | MembersAccessible
+    /// Every field is written only by instructions that name it and that CoreCLR's access checks
+    /// let the writing method name it from: `stfld` and `stsfld`, and stores through the address
+    /// `ldflda` or `ldsflda` takes. Then a private field, or an internal one of an assembly that
+    /// makes no other assembly its friend, is written only by its own assembly's IL, so what it
+    /// holds is what that IL stores in it, or null. This holds when nothing writes a field through
+    /// reflection (`FieldInfo.SetValue`, `TypedReference`), an `[UnsafeAccessor]`, a pointer or
+    /// `Unsafe` made from another location, or a memory copy over its object, and when no assembly
+    /// asks CoreCLR to ignore access checks to the field's (`IgnoresAccessChecksToAttribute`).
+    /// This assumption stands in for no method's body, so `Assumption.raises` and
+    /// `Assumption.constructs` list nothing for it.
+    | FieldsWrittenVisibly
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -97,6 +108,7 @@ module Assumption =
                 Assumption.JitOptimises
                 Assumption.DynamicCastsAsDocumented
                 Assumption.MembersAccessible
+                Assumption.FieldsWrittenVisibly
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -145,7 +157,8 @@ module Assumption =
                 exceptionName "System.StackOverflowException"
             ]
         | Assumption.JitOptimises
-        | Assumption.MembersAccessible -> []
+        | Assumption.MembersAccessible
+        | Assumption.FieldsWrittenVisibly -> []
         | Assumption.DynamicCastsAsDocumented ->
             [
                 // What the documentation asks for, and what CoreLib throws in its place.
@@ -175,7 +188,8 @@ module Assumption =
         | Assumption.CoreLibTypeInitializers
         | Assumption.JitOptimises
         | Assumption.DynamicCastsAsDocumented
-        | Assumption.MembersAccessible -> []
+        | Assumption.MembersAccessible
+        | Assumption.FieldsWrittenVisibly -> []
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by

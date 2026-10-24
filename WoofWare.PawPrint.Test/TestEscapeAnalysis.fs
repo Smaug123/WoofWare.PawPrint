@@ -1914,11 +1914,19 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises` and `MembersAccessible` stand in for no method.
+        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
-        |> shouldEqual (Assumption.all - set [ Assumption.JitOptimises ; Assumption.MembersAccessible ])
+        |> shouldEqual (
+            Assumption.all
+            - set
+                [
+                    Assumption.JitOptimises
+                    Assumption.MembersAccessible
+                    Assumption.FieldsWrittenVisibly
+                ]
+        )
 
         // Each stands in for one method, but the one about CoreLib's type initializers, which
         // stands in for each of them.
@@ -1929,7 +1937,8 @@ public static class SR
             | Assumption.StackTracePreserved
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises
-            | Assumption.MembersAccessible -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.MembersAccessible
+            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -9274,8 +9283,9 @@ namespace Provider;
 
 static class Init
 {
-    // Of no class the analysis can tell, so that what its `ToString` raises is unknown.
-    static object s_value;
+    // Of no class the analysis can tell, being public, so that what its `ToString` raises is
+    // unknown.
+    public static object s_value;
 
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void Run()
@@ -16484,3 +16494,429 @@ public static class Cases
         match failures with
         | [] -> ()
         | failures -> failures |> List.rev |> String.concat Environment.NewLine |> failwith
+
+
+    /// What one writer of `FieldFlow`'s field stores in it.
+    [<RequireQualifiedAccess>]
+    type private FieldWrite =
+        /// `field = new C<made>()`.
+        | Make of made : int
+        /// `field = null`.
+        | Null
+        /// `field = argument`, which `Run` calls the writer with as `new C<made>()`.
+        | Argument of made : int
+        /// `ldflda field; newobj C<made>; stind.ref`: a store through the field's address.
+        | ThroughAddress of made : int
+
+    /// The accessibility of `FieldFlow`'s field.
+    [<RequireQualifiedAccess>]
+    type private FieldAccess =
+        | Private
+        | Internal
+        | Public
+
+    /// A holder of one field of `FieldFlow.Base`'s type, written by `Writers`, one method each, and
+    /// read by `Read`, which calls `Hit` on what the field holds. `Run(bool, bool, bool)` makes a
+    /// holder, calls the writer at each index whose argument is true, then calls `Read`.
+    type private FieldFlowCase =
+        {
+            Static : bool
+            Access : FieldAccess
+            Writers : FieldWrite list
+        }
+
+    let private fieldFlowClasses : int = 4
+    let private fieldFlowWriters : int = 3
+
+    /// Whether the analysis, allowed `FieldsWrittenVisibly`, must say exactly what the real runtime
+    /// raises: where only the field's own assembly can name it, and every writer stores an object it
+    /// makes or null in it by `stfld` or `stsfld`. Each writer runs alone for some arguments.
+    let private fieldExactlyDecided (case : FieldFlowCase) : bool =
+        case.Access <> FieldAccess.Public
+        && case.Writers
+           |> List.forall (fun write ->
+               match write with
+               | FieldWrite.Make _
+               | FieldWrite.Null -> true
+               | FieldWrite.Argument _
+               | FieldWrite.ThroughAddress _ -> false
+           )
+
+    let private fieldFlowGen : FsCheck.Gen<FieldFlowCase> =
+        let made = FsCheck.FSharp.Gen.choose (0, fieldFlowClasses - 1)
+
+        let write =
+            FsCheck.FSharp.Gen.frequency
+                [
+                    4, FsCheck.FSharp.Gen.map FieldWrite.Make made
+                    1, FsCheck.FSharp.Gen.constant FieldWrite.Null
+                    1, FsCheck.FSharp.Gen.map FieldWrite.Argument made
+                    1, FsCheck.FSharp.Gen.map FieldWrite.ThroughAddress made
+                ]
+
+        FsCheck.FSharp.Gen.map3
+            (fun isStatic access writers ->
+                {
+                    Static = isStatic
+                    Access = access
+                    Writers = writers
+                }
+            )
+            (FsCheck.FSharp.Gen.elements [ false ; true ])
+            (FsCheck.FSharp.Gen.frequency
+                [
+                    2, FsCheck.FSharp.Gen.constant FieldAccess.Private
+                    2, FsCheck.FSharp.Gen.constant FieldAccess.Internal
+                    1, FsCheck.FSharp.Gen.constant FieldAccess.Public
+                ])
+            (FsCheck.FSharp.Gen.choose (1, fieldFlowWriters)
+             |> FsCheck.FSharp.Gen.bind (fun count -> FsCheck.FSharp.Gen.listOfLength count write))
+
+    /// The image of `FieldFlow`: the classes every case shares, then each case at index `i` as
+    /// `FieldFlow<i>.Holder` and `FieldFlow<i>.Cases.Run`.
+    let private fieldFlowImage (cases : FieldFlowCase list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "FieldFlow", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "FieldFlow"
+
+        let baseType =
+            modul.DefineType ("FieldFlow.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+        let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+        let hit =
+            baseType.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                [||]
+            )
+
+        let classes =
+            [
+                for index in 0 .. fieldFlowClasses - 1 do
+                    let thrown =
+                        modul.DefineType (
+                            $"FieldFlow.E%d{index}",
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            typeof<Exception>
+                        )
+
+                    let thrownConstructor = thrown.DefineDefaultConstructor MethodAttributes.Public
+
+                    let made =
+                        modul.DefineType (
+                            $"FieldFlow.C%d{index}",
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            baseType
+                        )
+
+                    let constructor =
+                        made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+                    let il = constructor.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Call, baseConstructor)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let overriding =
+                        made.DefineMethod (
+                            "Hit",
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Virtual
+                            ||| MethodAttributes.HideBySig,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = overriding.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+                    il.Emit Emit.OpCodes.Throw
+                    made.DefineMethodOverride (overriding, hit)
+                    yield thrown, made, constructor
+            ]
+
+        let constructorOf (index : int) =
+            let _, _, constructor = classes.[index]
+            constructor
+
+        let caseTypes =
+            [
+                for index, case in List.indexed cases do
+                    let holder =
+                        modul.DefineType ($"FieldFlow%d{index}.Holder", TypeAttributes.Public ||| TypeAttributes.Sealed)
+
+                    let holderConstructor = holder.DefineDefaultConstructor MethodAttributes.Public
+
+                    let access =
+                        match case.Access with
+                        | FieldAccess.Private -> FieldAttributes.Private
+                        | FieldAccess.Internal -> FieldAttributes.Assembly
+                        | FieldAccess.Public -> FieldAttributes.Public
+
+                    let field =
+                        holder.DefineField (
+                            "held",
+                            baseType,
+                            (if case.Static then
+                                 access ||| FieldAttributes.Static
+                             else
+                                 access)
+                        )
+
+                    let instanceMethod = MethodAttributes.Public ||| MethodAttributes.HideBySig
+
+                    let writers =
+                        [
+                            for writerIndex, write in List.indexed case.Writers do
+                                let parameters =
+                                    match write with
+                                    | FieldWrite.Argument _ -> [| baseType :> Type |]
+                                    | FieldWrite.Make _
+                                    | FieldWrite.Null
+                                    | FieldWrite.ThroughAddress _ -> [||]
+
+                                let writer =
+                                    holder.DefineMethod (
+                                        $"Write%d{writerIndex}",
+                                        instanceMethod,
+                                        typeof<Void>,
+                                        parameters
+                                    )
+
+                                let il = writer.GetILGenerator ()
+
+                                if not case.Static then
+                                    il.Emit Emit.OpCodes.Ldarg_0
+
+                                match write with
+                                | FieldWrite.Make made -> il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                | FieldWrite.Null -> il.Emit Emit.OpCodes.Ldnull
+                                | FieldWrite.Argument _ -> il.Emit Emit.OpCodes.Ldarg_1
+                                | FieldWrite.ThroughAddress made ->
+                                    if case.Static then
+                                        il.Emit (Emit.OpCodes.Ldsflda, field)
+                                    else
+                                        il.Emit (Emit.OpCodes.Ldflda, field)
+
+                                    il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+
+                                match write, case.Static with
+                                | FieldWrite.ThroughAddress _, _ -> il.Emit Emit.OpCodes.Stind_Ref
+                                | _, true -> il.Emit (Emit.OpCodes.Stsfld, field)
+                                | _, false -> il.Emit (Emit.OpCodes.Stfld, field)
+
+                                // A store through the address of an instance field leaves `this`
+                                // beneath it.
+                                match write, case.Static with
+                                | FieldWrite.ThroughAddress _, false -> il.Emit Emit.OpCodes.Pop
+                                | _ -> ()
+
+                                il.Emit Emit.OpCodes.Ret
+                                yield writer, write
+                        ]
+
+                    let read = holder.DefineMethod ("Read", instanceMethod, typeof<Void>, [||])
+                    let il = read.GetILGenerator ()
+
+                    if case.Static then
+                        il.Emit (Emit.OpCodes.Ldsfld, field)
+                    else
+                        il.Emit Emit.OpCodes.Ldarg_0
+                        il.Emit (Emit.OpCodes.Ldfld, field)
+
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            $"FieldFlow%d{index}.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            Array.replicate fieldFlowWriters typeof<bool>
+                        )
+
+                    let il = run.GetILGenerator ()
+                    let made = il.DeclareLocal holder
+                    il.Emit (Emit.OpCodes.Newobj, holderConstructor)
+                    il.Emit (Emit.OpCodes.Stloc, made)
+
+                    for writerIndex, (writer, write) in List.indexed writers do
+                        let skip = il.DefineLabel ()
+                        il.Emit (Emit.OpCodes.Ldarg, int16 writerIndex)
+                        il.Emit (Emit.OpCodes.Brfalse, skip)
+                        il.Emit (Emit.OpCodes.Ldloc, made)
+
+                        match write with
+                        | FieldWrite.Argument passed -> il.Emit (Emit.OpCodes.Newobj, constructorOf passed)
+                        | FieldWrite.Make _
+                        | FieldWrite.Null
+                        | FieldWrite.ThroughAddress _ -> ()
+
+                        il.Emit (Emit.OpCodes.Call, writer)
+                        il.MarkLabel skip
+
+                    il.Emit (Emit.OpCodes.Ldloc, made)
+                    il.Emit (Emit.OpCodes.Call, read)
+                    il.Emit Emit.OpCodes.Ret
+                    yield holder, cases
+            ]
+
+        baseType.CreateType () |> ignore<Type>
+
+        for thrown, made, _ in classes do
+            thrown.CreateType () |> ignore<Type>
+            made.CreateType () |> ignore<Type>
+
+        for holder, cases in caseTypes do
+            holder.CreateType () |> ignore<Type>
+            cases.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// What the real runtime raises from each case's `Run` in `image`, over every combination of its
+    /// arguments, as the expectations spell them.
+    let private fieldFlowRaised (image : byte[]) (count : int) : Set<string> list =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("FieldFlow", isCollectible = true)
+
+        try
+            let loaded = context.LoadFromStream (new MemoryStream (image))
+
+            [
+                for index in 0 .. count - 1 do
+                    let run = loaded.GetType($"FieldFlow%d{index}.Cases").GetMethod ("Run")
+
+                    let raisedWith (combination : int) : string =
+                        let arguments =
+                            Array.init fieldFlowWriters (fun bit -> box ((combination >>> bit) &&& 1 = 1))
+
+                        try
+                            run.Invoke ((null : obj), arguments) |> ignore<obj>
+                            failwith<string> "FieldFlow's Run returned, though every class's Hit throws"
+                        with :? TargetInvocationException as e ->
+                            "=" + e.InnerException.GetType().FullName
+
+                    yield [ 0 .. (1 <<< fieldFlowWriters) - 1 ] |> List.map raisedWith |> Set.ofList
+            ]
+        finally
+            context.Unload ()
+
+    [<Test>]
+    let ``a virtual call on a field dispatches on what its writers store there, as the real runtime does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let property (cases : FieldFlowCase list) : unit =
+            let image = fieldFlowImage cases
+            let raised = fieldFlowRaised image cases.Length
+
+            let fixture =
+                Assembly.read loggerFactory (Some "FieldFlow.dll") (new MemoryStream (image))
+
+            let analysisAllowing (assumptions : Set<Assumption>) =
+                analysisOf
+                    (hostCoreLib ())
+                    (FrameworkUnderTest.runtimeDirs ())
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    assumptions
+                    [ fixture ]
+                    id
+
+            // What the analysis says of each case's `Run`: the exceptions of `FieldFlow`'s classes
+            // and null's, whether it is unknown, and whether it relied on `FieldsWrittenVisibly`.
+            let answers (assumptions : Set<Assumption>) : (Set<string> * bool * bool) list =
+                ((analysisAllowing assumptions, []), List.indexed cases)
+                ||> List.fold (fun (analysis, answers) (index, _) ->
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture $"FieldFlow%d{index}.Cases" "Run")
+
+                    let ours =
+                        render analysis escapes
+                        |> Set.filter (fun shown ->
+                            shown.StartsWith "=FieldFlow.E" || shown = "=System.NullReferenceException"
+                        )
+
+                    analysis,
+                    (ours, escapes.Unknown, escapes.Assumes.Contains Assumption.FieldsWrittenVisibly)
+                    :: answers
+                )
+                |> snd
+                |> List.rev
+
+            let allowed = answers Assumption.all
+            let withheld = answers (Set.remove Assumption.FieldsWrittenVisibly Assumption.all)
+
+            let failures =
+                List.zip3 cases raised (List.zip allowed withheld)
+                |> List.choose (fun (case, raised, ((ours, unknown, assumes), (_, unknownWithheld, _))) ->
+                    if not unknown && not (Set.isSubset raised ours) then
+                        Some
+                            $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says only %A{Set.toList ours}"
+                    elif fieldExactlyDecided case && (unknown || ours <> raised || not assumes) then
+                        Some
+                            $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says %A{Set.toList ours}, unknown %b{unknown}, assuming %b{assumes}"
+                    // Without the assumption, nothing says what the field holds beyond its type, on
+                    // which `Hit` is abstract.
+                    elif not unknownWithheld then
+                        Some $"%A{case}: without FieldsWrittenVisibly the analysis still decides the call"
+                    else
+                        None
+                )
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+        // A private field each writer makes an object for, or nulls.
+        property
+            [
+                {
+                    Static = false
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Make 1 ; FieldWrite.Make 2 ]
+                }
+                {
+                    Static = true
+                    Access = FieldAccess.Internal
+                    Writers = [ FieldWrite.Make 3 ; FieldWrite.Null ]
+                }
+                // A store through the field's address may store anything.
+                {
+                    Static = true
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Make 1 ; FieldWrite.ThroughAddress 2 ]
+                }
+                // Another assembly may write a public field.
+                {
+                    Static = false
+                    Access = FieldAccess.Public
+                    Writers = [ FieldWrite.Make 0 ]
+                }
+                // What a writer is passed, its callers decide.
+                {
+                    Static = false
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Argument 3 ]
+                }
+            ]
+
+        FsCheck.Check.One (
+            FsCheck.Config.QuickThrowOnFailure.WithMaxTest 10,
+            FsCheck.FSharp.Prop.forAll
+                (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf fieldFlowGen))
+                property
+        )
