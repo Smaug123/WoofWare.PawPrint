@@ -1,0 +1,5 @@
+# The fields of CoreLib that CoreCLR's native code binds by name, on any supported runtime: each row of vm/corelib.h's DEFINE_FIELD and DEFINE_FIELD_U.
+# TestVmBoundField holds this to the union of every supported runtime's pinned corelib.h.
+# Two tab-separated fields:
+#   type     the declaring type's full name, nesting joined with + and generic arity after a backtick, as Type.FullName spells it
+#   field    the field's name

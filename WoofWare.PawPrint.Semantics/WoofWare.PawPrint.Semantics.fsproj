@@ -33,6 +33,7 @@
         <Compile Include="IntrinsicPrimitive.fs" />
         <Compile Include="NativeContract.fs" />
         <Compile Include="SharedNativeField.fs" />
+        <Compile Include="VmBoundField.fs" />
         <Compile Include="NativeMethod.fs" />
         <Compile Include="StringConstructor.fs" />
         <Compile Include="UnmanagedConvention.fs" />
@@ -43,6 +44,7 @@
         <EmbeddedResource Include="HardwareIntrinsicTable.Net10.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net10.tsv" />
         <EmbeddedResource Include="HardwareIntrinsicTable.Net11.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net11.tsv" />
         <EmbeddedResource Include="NativeContractTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.tsv" />
+        <EmbeddedResource Include="VmBoundFields.tsv" LogicalName="WoofWare.PawPrint.Semantics.VmBoundFields.tsv" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
