@@ -937,6 +937,10 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
 
+    /// The managed code a native method calls (`NativeContract.Runs`), and what it passes.
+    let internal nativeCallee (state : EscapeAnalysisState) (call : NativeCall) : MethodKey * SpelledArgument list =
+        nativeCall state (NativeCall.resolve state.Runtime call)
+
     /// The one static method of CoreLib's `ns.typeName` of this name that takes `arity` arguments.
     let private corelibStatic
         (state : EscapeAnalysisState)
@@ -3744,7 +3748,7 @@ module EscapeAnalysis =
             contracted
                 (exactly contract.Raises)
                 (contract.Assumes |> List.map Assumption.ofNative)
-                (constructors @ List.map (nativeCall state) contract.Runs)
+                (constructors @ List.map (nativeCallee state) contract.Runs)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.

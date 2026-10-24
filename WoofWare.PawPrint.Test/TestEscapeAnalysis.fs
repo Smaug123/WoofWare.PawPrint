@@ -2266,6 +2266,8 @@ public static class SR
                 let analysis, (made, unknown) =
                     ((analysis, (made, false)), row.Contract.Runs)
                     ||> List.fold (fun (analysis, (made, unknown)) call ->
+                        let call = NativeCall.resolve (FrameworkUnderTest.runtime ()) call
+
                         let analysis, escapes =
                             EscapeAnalysis.escapes analysis (methodNamed corelib call.DeclaringType call.Method)
 

@@ -106,7 +106,7 @@ module TestNativeContractTable =
         let corelib = TestIntrinsicBody.coreLib which
 
         for row in rows do
-            for call in row.Contract.Runs do
+            for call in row.Contract.Runs |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
                 let ns, name = namespaceAndName call.DeclaringType
 
                 let declaringType =
@@ -207,7 +207,7 @@ module TestNativeContractTable =
             File.ReadAllText (Path.Combine (coreclr (), path))
 
         for row in rows do
-            for call in row.Contract.Runs do
+            for call in row.Contract.Runs |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
                 let binderIds = binderIds call
 
                 if binderIds.IsEmpty then
@@ -524,7 +524,11 @@ module TestNativeContractTable =
         Net11Frontier.park Net11Frontier.nativeContractTable
 
         for row in rows do
-            let runs = row.Contract.Runs |> List.collect binderIds |> Set.ofList
+            let runs =
+                row.Contract.Runs
+                |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ()))
+                |> List.collect binderIds
+                |> Set.ofList
 
             for source, routine in citedRoutines row do
                 for site in managedCall.Matches routine.Text do
@@ -875,21 +879,24 @@ module TestNativeContractTable =
         |> shouldEqual (TabulatedNative.InstanceFCall ("System.Ty", "Method"))
 
     /// A row's `runs` field as the table spells it.
-    let private spellRuns (calls : ManagedCall list) : string =
+    let private spellRuns (calls : NativeCall list) : string =
         match calls with
         | [] -> "-"
         | calls ->
             calls
             |> List.map (fun call ->
-                let arguments =
-                    call.Arguments
-                    |> List.map (fun argument ->
-                        match argument with
-                        | NativeArgument.Unnamed -> "?"
-                    )
-                    |> String.concat ","
+                match call with
+                | NativeCall.Method call ->
+                    let arguments =
+                        call.Arguments
+                        |> List.map (fun argument ->
+                            match argument with
+                            | NativeArgument.Unnamed -> "?"
+                        )
+                        |> String.concat ","
 
-                $"%s{call.DeclaringType}::%s{call.Method}(%s{arguments})"
+                    $"%s{call.DeclaringType}::%s{call.Method}(%s{arguments})"
+                | NativeCall.ResourceMessage -> "ResourceMessage"
             )
             |> String.concat "|"
 
@@ -904,21 +911,22 @@ module TestNativeContractTable =
                 return System.String (Array.ofList (head :: tail))
             }
 
-        let call : Gen<ManagedCall> =
+        let call : Gen<NativeCall> =
             gen {
                 let! declaringType = name
                 let! method = name
                 let! arity = Gen.choose (0, 5)
 
                 return
-                    {
-                        DeclaringType = declaringType
-                        Method = method
-                        Arguments = List.replicate arity NativeArgument.Unnamed
-                    }
+                    NativeCall.Method
+                        {
+                            DeclaringType = declaringType
+                            Method = method
+                            Arguments = List.replicate arity NativeArgument.Unnamed
+                        }
             }
 
-        let property (calls : ManagedCall list) : unit =
+        let property (calls : NativeCall list) : unit =
             let line =
                 String.concat
                     "\t"

@@ -62,6 +62,28 @@ type ManagedCall =
         Arguments : NativeArgument list
     }
 
+/// Managed code a native method can call, whose exceptions escape the native method to its caller.
+[<RequireQualifiedAccess>]
+type NativeCall =
+    /// A call of this method of CoreLib's.
+    | Method of ManagedCall
+    /// CoreCLR's lookup of one of CoreLib's resource strings by name (`ResMgrGetString`, excep.cpp),
+    /// by which it gives the message to an exception it throws with a resource name, as
+    /// `COMPlusThrow(kind, W("name"))` does. The CoreLib method it calls differs between runtimes:
+    /// .NET 10's `Environment.GetResourceStringLocal(string)`, .NET 11's
+    /// `Environment.GetResourceString(char*, string*, Exception*)`.
+    | ResourceMessage
+
+[<RequireQualifiedAccess>]
+module NativeCall =
+
+    /// The CoreLib method a call runs on `runtime`.
+    let resolve (runtime : EmulatedRuntime) (call : NativeCall) : ManagedCall =
+        match call with
+        | NativeCall.Method call -> call
+        | NativeCall.ResourceMessage ->
+            failwith $"TODO: NativeCall does not yet resolve the lookup of a resource message on %O{runtime}"
+
 /// A claim about the program under which a native method's contract holds, and which an analyser
 /// must be allowed to make before it relies on the contract.
 [<RequireQualifiedAccess>]
@@ -86,10 +108,10 @@ type NativeContract =
         CanReturn : bool
         /// What is known of its result's nullness.
         Result : ResultNullness
-        /// The calls of CoreLib's methods it can make, each any number of times, besides the
-        /// constructors of the exceptions it raises. The empty list is a positive claim that it
-        /// runs no other managed code.
-        Runs : ManagedCall list
+        /// The managed code it can call, each any number of times, besides the constructors of the
+        /// exceptions it raises. The empty list is a positive claim that it runs no other managed
+        /// code.
+        Runs : NativeCall list
         /// The claims under which all of the above holds. Where one fails, the method may run
         /// other managed code and raise anything.
         Assumes : NativeAssumption list
@@ -220,11 +242,12 @@ module NativeContractTable =
                                 )
                                 |> List.ofArray
 
-                        {
-                            DeclaringType = declaringType
-                            Method = method
-                            Arguments = arguments
-                        }
+                        NativeCall.Method
+                            {
+                                DeclaringType = declaringType
+                                Method = method
+                                Arguments = arguments
+                            }
                     )
                     |> List.ofArray
 
