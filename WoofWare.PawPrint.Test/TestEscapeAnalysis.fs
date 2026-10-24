@@ -6860,7 +6860,8 @@ public static unsafe class Probe
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
     /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
-    /// `Compiled`; with the places that make each answer unknown.
+    /// `Compiled`; with the places that make each answer unknown. The analysis is over the test
+    /// host's own framework, as `ucoCompilations` compiles on the test host's own CoreCLR.
     let private ucoAnalysed
         (image : byte[])
         (provider : byte[])
@@ -6880,7 +6881,12 @@ public static unsafe class Probe
             client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOf
+                (Assembly.readFile loggerFactory HostImage.coreLibPath)
+                HostImage.runtimeDirs
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
                 [ client ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -7055,6 +7061,130 @@ public static unsafe class Uco
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
 
+    /// .NET 11's `UnmanagedCallersOnlyAttribute` declares an `AssociatedSourceType` named argument,
+    /// which .NET 10's does not, and each runtime's VM parses the attribute's blob against its own
+    /// attribute: .NET 10 refuses a blob naming it (a `COMException`), and .NET 11 reads the
+    /// conventions beside it. A `SwiftSelf*` parameter shows which it read: the JIT refuses one only
+    /// for Swift's convention (`lvaInitSpecialSwiftParam`'s `BADCODE`, an
+    /// `InvalidProgramException`). C# cannot spell the argument against .NET 10's reference
+    /// assemblies, so the guest spells an `EntryPoint` of the same length and the image is patched.
+    /// The runtime under test runs the guest, in a process of its own.
+    [<Test>]
+    let ``each runtime reads an UnmanagedCallersOnly naming AssociatedSourceType as its own attribute declares``
+        ()
+        : unit
+        =
+        let guest =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Swift;
+
+public static unsafe class Program
+{
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static void Control(SwiftSelf* x) { }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) }, EntryPoint = "0123456789")]
+    public static void Associated(SwiftSelf* x) { }
+
+    static int Compile(string name)
+    {
+        try { RuntimeHelpers.PrepareMethod(typeof(Program).GetMethod(name).MethodHandle); return 0; }
+        catch (InvalidProgramException) { return 1; }
+        catch (COMException) { return 2; }
+    }
+
+    public static int Main() => 10 * Compile("Control") + Compile("Associated");
+}
+"""
+
+        let compiled =
+            Roslyn.compileAssembly "AssociatedSourceType" OutputKind.ConsoleApplication [] [ guest ]
+
+        // `FIELD STRING "EntryPoint" "0123456789"` and `FIELD TYPE "AssociatedSourceType" null`
+        // are the same length.
+        let bytesOf (parts : byte list list) : byte[] = parts |> List.concat |> Array.ofList
+
+        let ascii (text : string) : byte list =
+            Text.Encoding.ASCII.GetBytes text |> List.ofArray
+
+        let entryPoint =
+            bytesOf
+                [
+                    [ 0x53uy ; 0x0Euy ; 10uy ]
+                    ascii "EntryPoint"
+                    [ 10uy ]
+                    ascii "0123456789"
+                ]
+
+        let associated =
+            bytesOf [ [ 0x53uy ; 0x50uy ; 20uy ] ; ascii "AssociatedSourceType" ; [ 0xFFuy ] ]
+
+        let at =
+            [ 0 .. compiled.Length - entryPoint.Length ]
+            |> List.filter (fun i -> compiled.AsSpan(i, entryPoint.Length).SequenceEqual (ReadOnlySpan entryPoint))
+            |> List.exactlyOne
+
+        let image = Array.copy compiled
+        Array.blit associated 0 image at associated.Length
+
+        let runtime = FrameworkUnderTest.runtime ()
+
+        // Control compiles for Swift's convention on each runtime; Associated for it on .NET 11, and
+        // not at all on .NET 10.
+        let expected =
+            match runtime with
+            | EmulatedRuntime.Net10 -> 12
+            | EmulatedRuntime.Net11 -> 11
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit code when code = expected -> ()
+        | other -> failwith $"On %A{runtime}, the guest ends %A{other}, not exiting %d{expected}"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "AssociatedSourceType.dll") (new MemoryStream (image))
+
+        let readings =
+            [ "Control" ; "Associated" ]
+            |> List.map (fun name ->
+                let method = assembly.Methods.[(methodNamed assembly "Program" name).Method.Get]
+
+                match MethodInfo.unmanagedCallersOnly method with
+                | None -> failwith $"%s{name} carries no UnmanagedCallersOnly"
+                | Some application ->
+                    UnmanagedCallingConvention.ofCallersOnly runtime application
+                    |> UnmanagedCallingConvention.isSwift (hostTarget ())
+            )
+
+        let associatedIsSwift =
+            match runtime with
+            | EmulatedRuntime.Net10 -> false
+            | EmulatedRuntime.Net11 -> true
+
+        readings |> shouldEqual [ true ; associatedIsSwift ]
+
+        let analysis = analysisOver [ assembly ] id
+
+        let _, sources =
+            EscapeAnalysis.unknownSources analysis (methodNamed assembly "Program" "Associated")
+
+        let unreadable =
+            sources
+            |> Seq.map (renderSite analysis)
+            |> Seq.filter (fun site -> site.StartsWith "Program::Associated entry")
+            |> List.ofSeq
+
+        let expectedSites =
+            match runtime with
+            | EmulatedRuntime.Net10 -> [ "Program::Associated entry UnreadableCallingConvention" ]
+            | EmulatedRuntime.Net11 -> []
+
+        unreadable |> shouldEqual expectedSites
+
     /// The bytes of a `SerString`: the null sentinel, or a `PackedLen` and the UTF-8 bytes.
     let private serString (text : string option) : byte list =
         match text with
@@ -7108,7 +7238,8 @@ public static unsafe class Uco
         ]
 
     /// One named argument of a generated `[UnmanagedCallersOnly]` blob, as bytes: mostly the two
-    /// the attribute declares, sometimes one CoreCLR refuses.
+    /// the attribute declares on every runtime, sometimes `AssociatedSourceType`, which only .NET
+    /// 11's declares, and sometimes one CoreCLR refuses.
     let private ucoNamedArgument : FsCheck.Gen<byte list> =
         let kind = FsCheck.FSharp.Gen.elements [ 0x53uy ; 0x54uy ]
 
@@ -7143,6 +7274,12 @@ public static unsafe class Uco
                 8, callConvs
                 4, stringArgument (Some "EntryPoint")
                 1, stringArgument (Some "EntryPoinx")
+                1, stringArgument (Some "AssociatedSourceType")
+                1,
+                FsCheck.FSharp.Gen.map2
+                    (fun kind value -> [ kind ; 0x50uy ] @ serString (Some "AssociatedSourceType") @ serString value)
+                    kind
+                    (FsCheck.FSharp.Gen.elements [ Some "System.Int32" ; None ])
                 1, stringArgument (Some "CallConvs")
                 1, stringArgument None
                 1, stringArgument (Some "")

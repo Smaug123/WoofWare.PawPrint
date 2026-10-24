@@ -512,7 +512,7 @@ type MetadataMethodFacts =
         /// and computed here so that the call path can ask without re-walking metadata; the two are
         /// built together and so cannot drift apart.
         /// </remarks>
-        UnmanagedCallersOnly : UnmanagedCallersOnlyCallConvs option
+        UnmanagedCallersOnly : UnmanagedCallersOnlyApplication option
     }
 
 /// <summary>
@@ -977,7 +977,7 @@ module MethodInfo =
     /// What this method's `[System.Runtime.InteropServices.UnmanagedCallersOnly]` names as its
     /// calling conventions, as CoreCLR reads them; `None` if it does not carry the attribute, as a
     /// synthesised method does not (`isUnmanagedCallersOnly`).
-    let unmanagedCallersOnly (this : MethodInfo<'a, 'b, 'c>) : UnmanagedCallersOnlyCallConvs option =
+    let unmanagedCallersOnly (this : MethodInfo<'a, 'b, 'c>) : UnmanagedCallersOnlyApplication option =
         match this with
         | MethodInfo.Synthesised _ -> None
         | MethodInfo.Metadata (_, facts) -> facts.UnmanagedCallersOnly
@@ -1285,7 +1285,7 @@ module MethodInfo =
         (metadataReader : MetadataReader)
         (describeMethod : unit -> string)
         (methodDef : MethodDefinition)
-        : UnmanagedCallersOnlyCallConvs option
+        : UnmanagedCallersOnlyApplication option
         =
         let describeTarget () = $"method %s{describeMethod ()}"
 

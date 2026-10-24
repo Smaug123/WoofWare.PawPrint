@@ -110,15 +110,33 @@ module UnmanagedCallingConvention =
                 }
         | None -> Some conventions
 
-    /// The calling convention CoreCLR compiles a method for whose `[UnmanagedCallersOnly]` names
-    /// `callConvs`, where the method's signature has the default or vararg calling convention, which
-    /// ECMA-335 gives every method definition. CoreCLR reads another convention, which only
-    /// hand-written IL can give one, from the signature instead.
-    let ofCallersOnly (callConvs : UnmanagedCallersOnlyCallConvs) : CallersOnlyConvention =
+    /// Whether `runtime`'s `UnmanagedCallersOnlyAttribute` declares the `AssociatedSourceType` named
+    /// argument, which its VM accepts in the attribute's blob (`namedArgs`,
+    /// `CallConv::TryGetCallingConventionFromUnmanagedCallersOnly`).
+    let declaresAssociatedSourceType (runtime : EmulatedRuntime) : bool =
+        match runtime with
+        | EmulatedRuntime.Net10 -> false
+        | EmulatedRuntime.Net11 -> true
+
+    /// The calling convention `runtime`'s CoreCLR compiles a method for whose
+    /// `[UnmanagedCallersOnly]` is `application`, where the method's signature has the default or
+    /// vararg calling convention, which ECMA-335 gives every method definition. CoreCLR reads
+    /// another convention, which only hand-written IL can give one, from the signature instead.
+    let ofCallersOnly
+        (runtime : EmulatedRuntime)
+        (application : UnmanagedCallersOnlyApplication)
+        : CallersOnlyConvention
+        =
+        match application with
+        | UnmanagedCallersOnlyApplication.Malformed reason -> CallersOnlyConvention.Unreadable reason
+        | UnmanagedCallersOnlyApplication.Parsed (_, true) when not (declaresAssociatedSourceType runtime) ->
+            CallersOnlyConvention.Unreadable
+                $"The blob names AssociatedSourceType, which %A{runtime}'s attribute does not declare"
+        | UnmanagedCallersOnlyApplication.Parsed (callConvs, _) ->
+
         match callConvs with
         | UnmanagedCallersOnlyCallConvs.Unnamed -> CallersOnlyConvention.PlatformDefault
         | UnmanagedCallersOnlyCallConvs.NullArray -> CallersOnlyConvention.NullArray
-        | UnmanagedCallersOnlyCallConvs.Malformed reason -> CallersOnlyConvention.Unreadable reason
         | UnmanagedCallersOnlyCallConvs.Types typeNames ->
             (Some empty, typeNames)
             ||> List.fold (fun conventions typeName -> conventions |> Option.bind (addFullyQualifiedTypeName typeName))

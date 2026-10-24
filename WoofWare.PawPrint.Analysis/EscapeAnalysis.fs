@@ -4335,8 +4335,8 @@ module EscapeAnalysis =
         let parameterPosition, conventionFailures =
             match MethodInfo.unmanagedCallersOnly method with
             | None -> JitTypePosition.OwnParameter, Set.empty
-            | Some callConvs ->
-                match UnmanagedCallingConvention.ofCallersOnly callConvs with
+            | Some application ->
+                match UnmanagedCallingConvention.ofCallersOnly state.Runtime application with
                 | CallersOnlyConvention.Unreadable _
                 | CallersOnlyConvention.NullArray ->
                     JitTypePosition.OwnParameter,
