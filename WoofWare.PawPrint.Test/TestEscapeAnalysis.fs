@@ -7955,6 +7955,308 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client compiled against one version of a provider, run against another lacking two types,
+    /// making delegates. Making a delegate open over its target, as one over a static method is
+    /// unless it closes over the method's first argument, needs a thunk to shuffle the arguments,
+    /// and CoreCLR, making the thunk, loads approximately each value type of the delegate's `Invoke`
+    /// signature and then of the target's (`COMDelegate::GetDelegateCtor`, `SetupShuffleThunk`).
+    /// Making one closed over its target's receiver or first argument loads nothing of either
+    /// signature. CoreCLR makes the thunk while the JIT compiles the method making the delegate,
+    /// unless the target is a static method that code shared between instantiations names through
+    /// its type variables, whose thunk it makes as the delegate is made (`Delegate_Construct`).
+    /// Each caller makes one delegate inside a `catch` of every exception, or calls a method that
+    /// does, and names none of the types in a local or in its own signature. The host's CoreCLR,
+    /// running each caller against the same assemblies, says which fail, and where.
+    [<Test>]
+    let ``making an open delegate loads approximately the value types of its signature`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+
+namespace Client;
+
+public struct HoldsGone { public Provider.GoneStruct G; }
+public struct Wraps<T> { public T Value; }
+public interface IHolds<T> { }
+public struct ViaInterface : IHolds<Provider.Gone> { }
+
+public delegate void TakesHoldsGone(HoldsGone h);
+public delegate void TakesWrapsGone(Wraps<Provider.Gone> w);
+public delegate void TakesViaInterface(ViaInterface v);
+public delegate void TakesGone(Provider.Gone g);
+public delegate void TakesGoneStruct(Provider.GoneStruct s);
+
+public class Target
+{
+    public void TakesHoldsGone(HoldsGone h) { }
+    public virtual void VirtualTakesHoldsGone(HoldsGone h) { }
+}
+
+public static class Targets
+{
+    public static void TakesHoldsGone(HoldsGone h) { }
+    public static void TakesWrapsGone(Wraps<Provider.Gone> w) { }
+    public static void TakesViaInterface(ViaInterface v) { }
+    public static void TakesGone(Provider.Gone g) { }
+    public static void ExtensionTakesHoldsGone(this Target t, HoldsGone h) { }
+    public static void TakesGoneStruct(Provider.GoneStruct s) { }
+    public static void GenericTakesGoneStruct<U>(Provider.GoneStruct s) { }
+}
+
+public static class Generic<T>
+{
+    public static void TakesHoldsGone(HoldsGone h) { }
+}
+
+public static class Takes
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Use(object o) { }
+}
+
+public static class Shared
+{
+    public static string OverTypeArgument<T>()
+    {
+        try { Takes.Use(new TakesHoldsGone(Generic<T>.TakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OverMethodArgument<T>()
+    {
+        try { Takes.Use(new TakesGoneStruct(Targets.GenericTakesGoneStruct<T>)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+}
+
+public static class Members
+{
+    public static string OpenStaticHoldsGone()
+    {
+        try { Takes.Use(new TakesHoldsGone(Targets.TakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OpenStaticWrapsGone()
+    {
+        try { Takes.Use(new TakesWrapsGone(Targets.TakesWrapsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OpenStaticViaInterface()
+    {
+        try { Takes.Use(new TakesViaInterface(Targets.TakesViaInterface)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OpenStaticGoneStruct()
+    {
+        try { Takes.Use(new TakesGoneStruct(Targets.TakesGoneStruct)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OpenStaticGone()
+    {
+        try { Takes.Use(new TakesGone(Targets.TakesGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ClosedInstanceHoldsGone()
+    {
+        try { Takes.Use(new TakesHoldsGone(new Target().TakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ClosedVirtualHoldsGone()
+    {
+        try { Takes.Use(new TakesHoldsGone(new Target().VirtualTakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ClosedStaticHoldsGone()
+    {
+        try { Takes.Use(new TakesHoldsGone(new Target().ExtensionTakesHoldsGone)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string UnsharedOverTypeArgument() => Shared.OverTypeArgument<int>();
+    public static string SharedOverTypeArgument() => Shared.OverTypeArgument<string>();
+    public static string UnsharedOverMethodArgument() => Shared.OverMethodArgument<int>();
+    public static string SharedOverMethodArgument() => Shared.OverMethodArgument<string>();
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let clientImage = compile "Client" [ completeProvider ] client
+
+        let typeLoad = "System.TypeLoadException"
+
+        // Each caller, the name of the type whose load fails, or would, and what running it does.
+        let methods =
+            [
+                "OpenStaticHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad
+                // The approximate load of an instantiation leaves out a class argument.
+                "OpenStaticWrapsGone", "Gone", CallOutcome.Runs
+                // The approximate load of a type loads only the generic definition of an interface.
+                "OpenStaticViaInterface", "Gone", CallOutcome.Runs
+                "OpenStaticGone", "Gone", CallOutcome.Runs
+                "OpenStaticGoneStruct", "GoneStruct", CallOutcome.Escapes typeLoad
+                "ClosedInstanceHoldsGone", "HoldsGone", CallOutcome.Runs
+                // `ldvirtftn` prepares its method as a function pointer, which loads the value types of
+                // its signature, whatever becomes of the address.
+                "ClosedVirtualHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad
+                "ClosedStaticHoldsGone", "HoldsGone", CallOutcome.Runs
+                "UnsharedOverTypeArgument", "HoldsGone", CallOutcome.Escapes typeLoad
+                "SharedOverTypeArgument", "HoldsGone", CallOutcome.Caught typeLoad
+                // An `ldftn` of a method a method specification instantiates prepares it as a
+                // function pointer too, but that passes over a reference to a type its assembly lacks.
+                "UnsharedOverMethodArgument", "GoneStruct", CallOutcome.Escapes typeLoad
+                "SharedOverMethodArgument", "GoneStruct", CallOutcome.Caught typeLoad
+            ]
+
+        // The analysis takes a failure making a delegate's thunk to fail the caller's compilation
+        // wherever CoreCLR makes it, though where it makes it as the delegate is made, the caller's
+        // `catch` stops the failure: an over-approximation.
+        let overReported = set [ "SharedOverTypeArgument" ; "SharedOverMethodArgument" ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("DelegateTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let members =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Members"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let outcome =
+                        try
+                            match members.GetMethod(name).Invoke ((null : obj), [||]) with
+                            | null -> CallOutcome.Runs
+                            | caught -> CallOutcome.Caught (unbox<string> caught)
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly))
+
+        let named = namedTypes clientAssembly
+
+        // The runtime makes the exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeTypeLoad =
+            let next, made = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            render analysis made
+
+        let failures =
+            [
+                for name, failingType, expected in methods do
+                    let key = methodNamed clientAssembly "Client.Members" name
+                    let method = clientAssembly.Methods.[key.Method.Get]
+
+                    // Only the delegate's signature or its target's names the type: nothing the JIT
+                    // loads of the caller's own signature or of its locals does.
+                    let ownLoads =
+                        [
+                            match method.Signature.ReturnType with
+                            | MethodReturnType.Void -> ()
+                            | MethodReturnType.Returns returned -> yield JitTypePosition.OwnReturn, returned
+                            for parameter in method.Signature.ParameterTypes do
+                                yield JitTypePosition.OwnParameter, parameter
+                            match method.Body with
+                            | MethodBody.Il body ->
+                                for local in Option.defaultValue ImmutableArray.Empty body.LocalVars do
+                                    yield JitTypePosition.Local, local
+                            | _ -> ()
+                        ]
+                        |> List.choose (fun (position, spelling) -> JitTypeLoads.load position spelling)
+
+                    if
+                        ownLoads
+                        |> List.exists (fun load ->
+                            match load with
+                            | JitTypeLoad.InFull loaded -> List.contains failingType (named loaded)
+                            | other -> failwith $"%s{name}: the JIT loads %O{other} of its own signature or a local"
+                        )
+                    then
+                        yield $"%s{name}: the JIT loads %s{failingType} for its own signature or a local: %A{ownLoads}"
+
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let analysed =
+                        if overReported.Contains name then
+                            CallOutcome.Escapes typeLoad
+                        else
+                            expected
+
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; "System.IO.FileNotFoundException" ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    // What escapes is the exception the caller's compilation raises, and whatever
+                    // making that one raises.
+                    let unexplained =
+                        match analysed with
+                        | CallOutcome.Escapes exceptionName ->
+                            if not (List.contains exceptionName escaping) then
+                                escaping @ [ $"no %s{exceptionName}" ]
+                            else
+                                escaping
+                                |> List.filter (fun escaped ->
+                                    escaped <> exceptionName && not (madeTypeLoad.Contains $"=%s{escaped}")
+                                )
+                        | CallOutcome.Caught _
+                        | CallOutcome.Runs -> escaping
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
