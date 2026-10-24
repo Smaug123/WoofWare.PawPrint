@@ -7660,6 +7660,10 @@ public class DerivesFromGone : Provider.Gone
     public static int Count;
     public static void M() { }
 }
+public class VarArgsOnGone : Provider.Gone
+{
+    public static void M(__arglist) { }
+}
 public struct HoldsGone { public Provider.GoneStruct G; }
 public static class Box<T>
 {
@@ -7729,6 +7733,11 @@ public static class Members
         try { DerivesFromGone.M(); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
+    public static string CallsVarArgsOnGone()
+    {
+        try { VarArgsOnGone.M(__arglist(1)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
     public static string ReadsBoxOfHoldsGoneCount()
     {
         try { Takes.Use(Box<HoldsGone>.Count); return null; }
@@ -7793,6 +7802,9 @@ public static class Members
                 "ReadsStaticHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad
                 "ReadsDerivesFromGoneCount", "DerivesFromGone", CallOutcome.Escapes typeLoad
                 "CallsDerivesFromGoneM", "DerivesFromGone", CallOutcome.Escapes typeLoad
+                // A vararg call site names the method by a member reference whose parent is its
+                // definition.
+                "CallsVarArgsOnGone", "VarArgsOnGone", CallOutcome.Escapes typeLoad
                 "ReadsBoxOfHoldsGoneCount", "HoldsGone", CallOutcome.Escapes typeLoad
                 "CallsBoxOfHoldsGoneM", "HoldsGone", CallOutcome.Escapes typeLoad
                 // CoreCLR matches the reference to the field by its signature, which names a type that
