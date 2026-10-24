@@ -157,9 +157,8 @@ method) may add more:
   type that is static, a constructor, or an instance method of a value type or an interface, unless
   the type is marked `beforefieldinit`. A generic type's initializer runs for the instantiation
   the access or call names;
-* every token a body names, a `catch` clause's included, and the signature of every method whose
-  address it takes (`ldftn`, `ldvirtftn`), is bound against the assemblies actually loaded, and a
-  member or type that is not there contributes the `MissingMethodException`,
+* every token a body names, a `catch` clause's included, is bound against the assemblies actually
+  loaded, and a member or type that is not there contributes the `MissingMethodException`,
   `MissingFieldException` or `TypeLoadException` the JIT would throw. A member of one of the
   method's type variables (`!!0::Value`) exists or not depending on the instantiation, so binding
   it is "unknown". The type a type token names, each type argument of a method a call
@@ -174,7 +173,14 @@ method) may add more:
   which the analysis takes any `[UnmanagedCallersOnly]` method to be; a return type of such a type
   it loads with what it points to. What the JIT loads of a call of unmanaged code (a P/Invoke, or
   `calli` by an unmanaged calling convention) depends on the marshalling the call needs, and the
-  analysis takes it to load every type of the signature in full;
+  analysis takes it to load every type of the signature in full. Of a method whose address the body
+  takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value
+  type of the signature whose definition is there where it prepares the method as a function
+  pointer: for `ldvirtftn` and a method a method specification instantiates, and otherwise where
+  the JIT asks for the address of an `ldftn` whose address is not a delegate's target nor
+  dropped. The JIT asks compiling whatever method it inlines the `ldftn` into, so what that load
+  raises the analysis takes to escape every method that calls the body, directly or not, past all
+  its handlers, as any of them may have the body inlined into it;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),
@@ -383,12 +389,13 @@ needs rebuilding (or, for a package, a different version). Other ways such a cha
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
 constraint added since now rejects, and a type whose own base type, interfaces or fields are no
-longer there (`TypeLoadException`) where only the signature of a method whose address the body
-takes names it, or it declares a method or field that the body names by its definition.
+longer there (`TypeLoadException`) where it declares a method or field that the body names by its
+definition.
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`
-clause, the method's own signature or the signature of a method it calls names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
+clause, the method's own signature or the signature of a method it calls or takes the address of
+names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
 `AppDomain.AssemblyResolve` handlers, which may throw (the runtime then raises a `FileLoadException`
 wrapping what they threw), or load an assembly in its place whose code then runs.
 
