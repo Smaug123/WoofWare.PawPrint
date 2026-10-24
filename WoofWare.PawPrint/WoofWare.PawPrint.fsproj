@@ -97,6 +97,7 @@
     <Compile Include="MultiDimArrayAllocation.fs" />
     <Compile Include="IlMachineThreadState.fs" />
     <Compile Include="ArrayConstructor.fs" />
+    <Compile Include="TypeOperand.fs" />
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />
     <Compile Include="ReflectedTypeTarget.fs" />
@@ -133,7 +134,6 @@
     <Compile Include="DelegateRepresentation.fs" />
     <Compile Include="ArrayElementOperands.fs" />
     <Compile Include="NullaryIlOp.fs" />
-    <Compile Include="TypeOperand.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
     <Compile Include="InternalSignatureTypeResolution.fs" />
     <Compile Include="DynamicMethodBody.fs" />

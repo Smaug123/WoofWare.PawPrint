@@ -215,6 +215,31 @@ type internal UnaryMetadataIlOpContext =
 module internal UnaryMetadataIlOpContext =
 
     /// <summary>
+    /// Raises into the guest the <c>InvalidProgramException</c> CoreCLR raises for an instruction
+    /// whose token names a type it refuses there (see <c>TypeOperand</c>).
+    /// </summary>
+    let raiseTypeRefusal
+        (ctx : UnaryMetadataIlOpContext)
+        (refusal : TypeOperandRefusal)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        ctx.Logger.LogWarning ("{Op} refused its token, which names {Refusal}", ctx.Op, refusal)
+
+        // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+        // CoreCLR's message here is InvalidProgramException's default (measured).
+        IlMachineStateExecution.raiseRuntimeException
+            ctx.LoggerFactory
+            ctx.BaseClassTypes
+            (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
+                ResolutionFault.TokenBinding,
+                ctx.BaseClassTypes.InvalidProgramException
+            ))
+            []
+            ctx.Thread
+            state
+
+    /// <summary>
     /// Raises into the guest CoreCLR's refusal of <paramref name="handle"/> as this instruction's
     /// type operand, or <c>None</c> where the instruction may consume it (see
     /// <c>TypeOperand.refusal</c>). An op calls this on the operand it resolved, from either
@@ -229,19 +254,4 @@ module internal UnaryMetadataIlOpContext =
         =
         match TypeOperand.refusal ctx.BaseClassTypes state.TypeSystem.ConcreteTypes handle with
         | None -> None
-        | Some refusal ->
-            ctx.Logger.LogWarning ("{Op} refused its type operand, {Refusal}", ctx.Op, refusal)
-
-            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
-            // CoreCLR's message here is InvalidProgramException's default (measured).
-            IlMachineStateExecution.raiseRuntimeException
-                ctx.LoggerFactory
-                ctx.BaseClassTypes
-                (IlMachineStateExecution.RaiseOrigin.InstructionResolution (
-                    ResolutionFault.TokenBinding,
-                    ctx.BaseClassTypes.InvalidProgramException
-                ))
-                []
-                ctx.Thread
-                state
-            |> Some
+        | Some refusal -> raiseTypeRefusal ctx refusal state |> Some
