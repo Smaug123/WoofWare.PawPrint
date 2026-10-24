@@ -916,26 +916,9 @@ module EscapeAnalysis =
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name and arity"
 
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
-    /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
+    /// name (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
     let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
-        let corelib = state.BaseTypes.Corelib
-
-        let found =
-            corelib.TryGetTopLevelTypeDef "System" "Environment"
-            |> Option.toList
-            |> List.collect (fun ty -> List.ofSeq ty.Methods)
-            |> List.filter (fun m ->
-                m.Name = "GetResourceStringLocal"
-                && m.IsStatic
-                && m.Signature.ParameterTypes.Length = 1
-            )
-            |> List.choose (fun m -> m.TryMetadata)
-
-        match found with
-        | [ facts ] -> MethodKey.make corelib facts.Handle
-        | found ->
-            failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
+        nativeCall state (NativeCall.resolve state.Runtime NativeCall.ResourceMessage) |> fst
 
     /// The managed code a native method calls (`NativeContract.Runs`), and what it passes.
     let internal nativeCallee (state : EscapeAnalysisState) (call : NativeCall) : MethodKey * SpelledArgument list =

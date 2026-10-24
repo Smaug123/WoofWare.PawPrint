@@ -82,7 +82,19 @@ module NativeCall =
         match call with
         | NativeCall.Method call -> call
         | NativeCall.ResourceMessage ->
-            failwith $"TODO: NativeCall does not yet resolve the lookup of a resource message on %O{runtime}"
+            match runtime with
+            | EmulatedRuntime.Net10 ->
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceStringLocal"
+                    Arguments = [ NativeArgument.Unnamed ]
+                }
+            | EmulatedRuntime.Net11 ->
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceString"
+                    Arguments = List.replicate 3 NativeArgument.Unnamed
+                }
 
 /// A claim about the program under which a native method's contract holds, and which an analyser
 /// must be allowed to make before it relies on the contract.
@@ -216,6 +228,8 @@ module NativeContractTable =
                 | runs ->
                     runs.Split '|'
                     |> Array.map (fun call ->
+                        if call = "ResourceMessage" then NativeCall.ResourceMessage else
+
                         let opening = call.IndexOf '('
 
                         if opening < 0 || not (call.EndsWith ')') then

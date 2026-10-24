@@ -9,7 +9,9 @@
 #   result   none (not a reference), nonnull, or maybenull
 #   runs     the CoreLib methods it can call, whose exceptions escape it, separated by |; - for none. Each is
 #            Namespace.Type::Method(arguments), the only method of that name its type declares, with one
-#            argument per parameter, this first, separated by commas: ? for a value the row does not name
+#            argument per parameter, this first, separated by commas: ? for a value the row does not name;
+#            or ResourceMessage, CoreCLR's lookup of a resource string by name (ResMgrGetString), which calls
+#            .NET 10's Environment.GetResourceStringLocal(?) and .NET 11's Environment.GetResourceString(?,?,?)
 #   assumes  the claims all the above holds under, separated by |; - for none. NamedTypesLoad: every type it loads is found without the program's assembly resolution handlers, is intact, and is defined as its name says
 #   sources  path:symbol under src/coreclr, each a function or assembly routine the file defines, separated by |, the function it is bound to first
 #   reason   why, in a sentence
