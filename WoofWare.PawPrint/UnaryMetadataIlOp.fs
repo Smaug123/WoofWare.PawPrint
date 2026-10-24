@@ -97,8 +97,9 @@ module internal UnaryMetadataIlOp =
                     | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Method, exceptionType, why)
                 | IlDecoding.ScopeOperandKind.AnyType ->
                     // No narrowing: `ldtoken` hands the handle to the guest rather than consuming
-                    // it, so every shape a target can take is a legal operand. See `closedType` for
-                    // the three refusals that apply to the opcodes which do consume a type.
+                    // it, so every shape a target can take is a legal operand. See `closedType` and
+                    // `TypeOperand.refusal` for the refusals that apply to the opcodes which do
+                    // consume a type.
                     match DynamicScopeOperand.typeHandleTarget baseClassTypes operation scopeIndex state scope with
                     | Ok target -> ResolvedMetadataOperand.ScopeTypeTarget target |> OperandResolution.Ready
                     | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Unnamed, exceptionType, why)

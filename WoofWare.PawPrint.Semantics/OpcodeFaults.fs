@@ -48,7 +48,8 @@ type ResolutionFault =
     /// `FileLoadException`, `BadImageFormatException`), and the token may fail to resolve against
     /// one that loaded (`TypeLoadException`, `MissingFieldException`, `MissingMethodException`,
     /// `InvalidProgramException`). Or it binds, and the JIT rejects the instruction for what it
-    /// names, with one of the same: `call` or `ldftn` of an abstract method
+    /// names, with one of the same: a byref or `System.Void` as the type operand of any instruction
+    /// but `ldtoken` (`InvalidProgramException`), `call` or `ldftn` of an abstract method
     /// (`BadImageFormatException`), `box` of a byref-like type that it does not fold away
     /// (`InvalidProgramException`; `BoxPattern`), or `newarr` of one (`TypeLoadException`). CoreCLR's JIT resolves every token of a method as it
     /// compiles it, so it raises most of these where the method is called, before any of its

@@ -867,8 +867,9 @@ PawPrint stops with an error that says so rather than pick one, unless the JIT m
 method, which leaves only shared code's answer: it is marked `NoInlining` or `NoOptimization`, or its
 assembly's `DebuggableAttribute` disables optimisation, as a C# Debug build's does. It stops likewise where the fold turns on what
 `compareTypesForCast` answers for the canonical form of a type cast to a generic interface, which
-PawPrint does not build, and where an instruction after the box names a byref or `System.Void` in
-metadata, which the JIT refuses as an operand but PawPrint does not validate.
+PawPrint does not build. Where an instruction after the box names a byref or `System.Void`, which the
+JIT refuses as it resolves that instruction's operand, PawPrint refuses the box with the same
+exception.
 
 **Spec status**: ECMA-335 does not mention byref-like types; their rules are CoreCLR's.
 
@@ -884,6 +885,36 @@ follows the box and `JitTypeComparison` what the JIT decides about it, and
 `UnaryMetadataArrayOps.executeNewarr`. `TestFabricatedByRefLikeBox` pins each pattern, folded and
 refused, with the box reached on every run and no handler of its own, where the two runtimes agree,
 and `RefStructNullTest.cs` the null tests Roslyn emits.
+
+## A byref or `System.Void` type operand fails when it is reached
+
+**CoreCLR**: every instruction that consumes a type refuses a byref or `System.Void` as its operand,
+and so does a `catch` clause: `CEEInfo::resolveToken` raises `InvalidProgramException`, with that
+type's default message, for every kind of token but `ldtoken`'s, which accepts both. A pointer is
+accepted. Measured on .NET 10 for `isinst`, `castclass`, `box`, `unbox`, `unbox.any`, `newarr`,
+`sizeof`, `initobj`, `ldobj`, `stobj`, `cpobj`, `ldelema` with and without `readonly.`, `ldelem`,
+`stelem`, `mkrefany`, `refanyval` and `constrained.`, from metadata, and from a `DynamicMethod`'s
+scope where a guest can build the operand. As for an abstract method's `call`, the refusal happens
+when the method is compiled, even where the instruction is on a path that would not execute.
+
+**PawPrint**: raises the same exception, with the same message, when the instruction *executes*, or
+for a `DynamicMethod`'s `catch` clause when the method is first invoked, as CoreCLR does. A `catch`
+clause in metadata naming either is not refused: it matches no exception. `cpobj`, `mkrefany` and
+`refanyval` are not implemented at all.
+
+**Spec status**: ECMA-335 forbids some of these uses outright: a managed pointer as an array's
+element type or boxed (§I.8.2.1.1), a box of `System.Void` (§I.8.2.4), and any location or value of
+type `System.Void` (§I.8.7). It does not say what an implementation does with IL that breaks those
+rules, or when, and says nothing of `isinst` or `sizeof` of either. No compiler emits either.
+
+**Why we chose this**: as for an abstract method's `call`.
+
+**Where this lives in code**: `TypeOperand.refusal`, asked by each type-consuming op through
+`UnaryMetadataIlOpContext.refuseTypeOperand`, by `DynamicMethodExecution.concretize` for a `catch`
+clause, and by `UnaryMetadataObjectOps.executeBox` of an instruction after a byref-like box.
+`TestFabricatedTypeOperandRefusal` pins each instruction over metadata, and
+`DynamicMethodTypeToken.cs` over a `DynamicScope`, each with the instruction reached on every run
+and no handler of its own, where the two runtimes agree.
 
 ## A field reference that binds nothing throws when it is reached
 

@@ -436,6 +436,164 @@ public class Program
         {
         }
 
+        // 24. `System.Void` is refused by every opcode that consumes a type, not only by the
+        // `sizeof` of 16 (measured, for each of these, against the `int` control 25 that runs).
+        // The same is true of a metadata operand; `TestFabricatedTypeOperandRefusal` checks that
+        // universe, and a byref operand, which no guest can construct here yet.
+        var consumers = new List<Action<ILGenerator, Type>>
+        {
+            (il, t) => { il.Emit(OpCodes.Ldnull); il.Emit(OpCodes.Isinst, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldnull); il.Emit(OpCodes.Castclass, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Box, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_7); il.Emit(OpCodes.Box, typeof(int)); il.Emit(OpCodes.Unbox, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_7); il.Emit(OpCodes.Box, typeof(int)); il.Emit(OpCodes.Unbox_Any, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Newarr, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Sizeof, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Initobj, t); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Ldobj, t); il.Emit(OpCodes.Pop); },
+            (il, t) => { il.Emit(OpCodes.Ldloca, il.DeclareLocal(typeof(int))); il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Stobj, t); },
+            (il, t) =>
+            {
+                il.Emit(OpCodes.Ldc_I4_1);
+                il.Emit(OpCodes.Newarr, typeof(int));
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ldelema, t);
+                il.Emit(OpCodes.Pop);
+            },
+        };
+
+        foreach (var consume in consumers)
+        {
+            Func<int> Consuming(Type t) => IntMethod(il =>
+            {
+                consume(il, t);
+                il.Emit(OpCodes.Ldc_I4_1);
+                il.Emit(OpCodes.Ret);
+            });
+
+            try
+            {
+                Consuming(typeof(void))();
+                return 24;
+            }
+            catch (InvalidProgramException)
+            {
+            }
+
+            if (Consuming(typeof(int))() != 1)
+            {
+                return 25;
+            }
+        }
+
+        // 26. Nor does an `isinst` after a box take it, which the JIT refuses as it resolves the
+        // entry while matching the pattern (measured).
+        Func<int> byrefLikeBoxCastVoid = IntMethod(il =>
+        {
+            Label taken = il.DefineLabel();
+            il.Emit(OpCodes.Call, typeof(Span<int>).GetProperty("Empty").GetMethod);
+            il.Emit(OpCodes.Box, typeof(Span<int>));
+            il.Emit(OpCodes.Isinst, typeof(void));
+            il.Emit(OpCodes.Brtrue, taken);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+            il.MarkLabel(taken);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeBoxCastVoid();
+            return 26;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        // 27, 28. A `catch` clause's type is resolved as an operand is, so `System.Void` is refused
+        // there too, even when nothing is thrown (measured), against the `Exception` control 28.
+        Func<int> Catching(Type caught) => IntMethod(il =>
+        {
+            LocalBuilder result = il.DeclareLocal(typeof(int));
+            il.BeginExceptionBlock();
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Stloc, result);
+            il.BeginCatchBlock(caught);
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Stloc, result);
+            il.EndExceptionBlock();
+            il.Emit(OpCodes.Ldloc, result);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            Catching(typeof(void))();
+            return 27;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        if (Catching(typeof(Exception))() != 1)
+        {
+            return 28;
+        }
+
+        // 29, 30, 31. The JIT refuses the operand as it resolves the entry, before it looks at the
+        // stack: so with nothing to pop (29, 31), and with a native-int length (30), which PawPrint
+        // does not implement, all measured.
+        Func<int> bareLdobj = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Ldobj, typeof(void));
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            bareLdobj();
+            return 29;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        Func<int> bareUnboxAny = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Unbox_Any, typeof(void));
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            bareUnboxAny();
+            return 31;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
+        Func<int> nativeLength = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Conv_I);
+            il.Emit(OpCodes.Newarr, typeof(void));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            nativeLength();
+            return 30;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

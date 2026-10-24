@@ -133,6 +133,7 @@
     <Compile Include="DelegateRepresentation.fs" />
     <Compile Include="ArrayElementOperands.fs" />
     <Compile Include="NullaryIlOp.fs" />
+    <Compile Include="TypeOperand.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
     <Compile Include="InternalSignatureTypeResolution.fs" />
     <Compile Include="DynamicMethodBody.fs" />

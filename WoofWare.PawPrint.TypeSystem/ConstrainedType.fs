@@ -61,7 +61,7 @@ module ConstrainedType =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (named : ConcreteTypeHandle)
-        (called : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (called : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         : TypeSystemState * ConstrainedType
         =
         match TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state named with
@@ -70,11 +70,7 @@ module ConstrainedType =
 
         // `MethodDesc::GetSlot`: the slot a method holds in the method table of its own declaring
         // type, whichever type that is.
-        let slotOf
-            (state : TypeSystemState)
-            (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-            : TypeSystemState * int option
-            =
+        let slotOf (state : TypeSystemState) (method : MethodInfo<'a, 'b, 'c>) : TypeSystemState * int option =
             match method.TryDeclaringType with
             | None -> state, None
             | Some declaringType ->

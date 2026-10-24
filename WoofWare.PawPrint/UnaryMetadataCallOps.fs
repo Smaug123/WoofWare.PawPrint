@@ -437,8 +437,46 @@ module internal UnaryMetadataCallOps =
             | false, _ -> None
         | _ -> None
 
+    /// `ConstrainedType.resolve` against the machine's type system: the type CoreCLR resolves a
+    /// `constrained.` call of `called` against, where the prefix names `named`.
+    let private resolveConstrainedType
+        (ctx : UnaryMetadataIlOpContext)
+        (named : ConcreteTypeHandle)
+        (called : WoofWare.PawPrint.MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        (state : IlMachineState)
+        : IlMachineState * ConstrainedType
+        =
+        let typeSystem, resolved =
+            ConstrainedType.resolve
+                ctx.LoggerFactory
+                state.DotnetRuntimeDirs
+                ctx.BaseClassTypes
+                state.TypeSystem
+                named
+                called
+
+        state.WithTypeSystem typeSystem, resolved
+
+    /// The refusal of a `constrained.` call or load of `called` on the enum `enum`, where whether
+    /// CoreCLR resolves it against the enum's underlying primitive is not known
+    /// (`ConstrainedType.Undecided`).
+    let private refuseUndecidedRetarget
+        (opName : string)
+        (state : IlMachineState)
+        (enum : ConcreteTypeHandle)
+        (called : WoofWare.PawPrint.MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : 'a
+        =
+        let described =
+            AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes enum
+
+        failwith
+            $"TODO: %s{opName} of %s{MethodOwner.describe called.Owner}::%s{called.Name} on the enum %s{described}: CoreCLR resolves it against the enum's underlying primitive if the method holds Object.GetHashCode's slot number, but PawPrint places no slot for this method, or reads no single instance field `value__` off the enum"
+
     /// `StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod` against the machine's type
-    /// system.
+    /// system, on the type CoreCLR resolves the call against (`ConstrainedType.resolve`): the type
+    /// the prefix names, or the underlying primitive of an enum it names, where CoreCLR retargets
+    /// the call there.
     let resolveConstrainedStaticInterfaceMethod
         (opName : string)
         (ctx : UnaryMetadataIlOpContext)
@@ -448,6 +486,18 @@ module internal UnaryMetadataCallOps =
         (state : IlMachineState)
         : IlMachineState * ConstrainedStaticImplementation
         =
+        let state, resolvedAgainst =
+            resolveConstrainedType ctx constrainedTypeHandle methodToCall state
+
+        let constrainedTypeHandle =
+            match resolvedAgainst with
+            | ConstrainedType.AsNamed named -> named
+            | ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.Named) -> underlying
+            | ConstrainedType.EnumUnderlying (_, _, RetargetedCall.ObjectGetHashCode) ->
+                failwith
+                    $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}, a class's method"
+            | ConstrainedType.Undecided enum -> refuseUndecidedRetarget opName state enum methodToCall
+
         let typeSystem, implementation =
             StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod
                 ctx.LoggerFactory
@@ -1441,6 +1491,29 @@ module internal UnaryMetadataCallOps =
                         $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers, byrefs and fnptrs cannot be generic type arguments"
                 | ConcreteTypeHandle.Concrete _ ->
 
+                // CoreCLR resolves the call against an enum's underlying primitive where the method
+                // holds `Object.GetHashCode`'s slot number, with the enum's address as the
+                // primitive's: the byref on the stack is the primitive's `this` from here on.
+                let state, tHandle, concretizedMethod, retargeted =
+                    match resolveConstrainedType ctx tHandle methodToCall state with
+                    | state, ConstrainedType.AsNamed named -> state, named, concretizedMethod, false
+                    | state, ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.Named) ->
+                        state, underlying, concretizedMethod, true
+                    | state, ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.ObjectGetHashCode) ->
+                        let state, getHashCode, _ =
+                            ExecutionConcretization.concretizeMethodForExecution
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                (ConstrainedType.objectGetHashCode baseClassTypes)
+                                None
+                                None
+                                state
+
+                        state, underlying, getHashCode, true
+                    | state, ConstrainedType.Undecided enum ->
+                        refuseUndecidedRetarget "constrained.callvirt" state enum methodToCall
+
                 let tConcrete, tDefn =
                     AllConcreteTypes.tryTypeInfo
                         state.TypeSystem._LoadedAssemblies
@@ -1480,12 +1553,31 @@ module internal UnaryMetadataCallOps =
                         // The byref stays the callee's `this` without being dereferenced here, so
                         // a null one is the callee's business: it faults if and when it reads it.
                         match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
-                        | Some (EvalStackValue.ManagedPointer _) ->
+                        | Some (EvalStackValue.ManagedPointer ptr) ->
+                            let state =
+                                if retargeted then
+                                    // The primitive's method reads its `this` as the primitive, so
+                                    // it gets the enum's storage viewed as that, at the same address.
+                                    let _, state = IlMachineState.popEvalStack thread state
+
+                                    IlMachineState.pushToEvalStack'
+                                        (EvalStackValue.ManagedPointer (ManagedPointerSource.reinterpretAs tHandle ptr))
+                                        thread
+                                        state
+                                else
+                                    state
+
                             ConstrainedReceiver.Ready (state, directImplementation, false)
                         | Some other ->
                             failwith
                                 $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
                         | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
+                    | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden when retargeted ->
+                        // Every primitive overrides `GetHashCode` and has no default interface body
+                        // in its slot, so this is a method of an interface the primitive does not
+                        // implement.
+                        failwith
+                            $"TODO: constrained.callvirt of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} on an enum is resolved against its underlying primitive %s{tConcrete.Namespace}.%s{tConcrete.Name}, which has no implementation of it: CoreCLR boxes the primitive and dispatches on the box, which PawPrint does not model"
                     | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden ->
                         // The box runs whatever ordinary dispatch finds on T, so if that were T's
                         // own method, the exact-type probe above missed it, and the body would
@@ -1640,6 +1732,10 @@ module internal UnaryMetadataCallOps =
                 currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
+
+        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
+        | Some raised -> raised
+        | None ->
 
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
