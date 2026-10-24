@@ -17,11 +17,6 @@ module Net11Frontier =
     let stackallocByteOrder : string =
         "On .NET 11, `UnicodeEncoding.GetBytes` (IL offset 797) compares two byte views of one stackalloc block with `clt.un`, and PawPrint refuses: \"refusing clt.un: no structural order between byrefs <<byte 17 of <stack memory block #0> ...>> and <<byte 92 of <stack memory block #0> ...>>\". Sockets, pipes and `EventSource` reach it. Un-park when those byrefs are ordered by their byte coordinates."
 
-    /// .NET 11's `StructureMarshaler<T>` clears the whole unmanaged image, which PawPrint cannot
-    /// do over a pointer it holds there.
-    let clearOverPointerCell : string =
-        "On .NET 11, `Marshal.StructureToPtr` clears the whole unmanaged image with `NativeMemory.Clear` before writing a struct's fields (`StructureMarshaler<T>.ConvertToUnmanaged`), where .NET 10's stub writes each field as a typed value and zeroes only the bytes between fields. Marshalling into a buffer that already holds a pointer from an earlier marshal therefore clears that pointer byte by byte, and PawPrint cannot clear a pointer it holds with provenance, whoever wrote it (`Marshal.WriteIntPtr` too): \"MemoryBlock.writeBytes: refusing byte view over native int with non-byte-addressable provenance <managed pointer <byte 0 of <native memory block #7>>> at offset 8 in <native memory block #8>\". Un-park when clearing native memory replaces the pointers it covers."
-
     /// The checked-in native contract table is .NET 10's.
     let nativeContractTable : string =
         "`NativeContractTable.tsv` was read from .NET 10's source, and has rows for natives .NET 11 does not have: the `Environment.get_CurrentManagedThreadId` FCall, which .NET 11's CoreLib does not declare (it reads a thread-static instead), citing `JIT_GetCurrentManagedThreadId`, which .NET 11's VM does not define; and `Monitor`'s `TryEnter_FastPath` and `Exit_FastPath` FCalls and `Monitor_Enter_Slowpath` and `Monitor_Exit_Slowpath` QCalls, which .NET 11 replaces with its managed thin lock, the third of which runs `SynchronizationContext.InvokeWaitMethodHelper`, which .NET 11's binder does not name and its CoreLib does not define. Un-park when the table is kept per runtime."

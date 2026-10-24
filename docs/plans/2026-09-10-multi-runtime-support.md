@@ -816,9 +816,10 @@ mutation-testing skill applies to each table/classifier they introduce.
    * **(landed)** PawPrint's struct-marshal plan in place of `StructureMarshaler<T>`'s three
      bodies: for a T that is not blittable the call runs `RuntimeBehaviour.StructureMarshalerBody`
      in the method's own frame, which `StructMarshalStub` interprets with the plan it runs for
-     .NET 10's stub, writing only the fields, since RC1's callers zero the image. Ten of the twelve
-     cases pass. The other two marshal into a buffer that already holds a pointer, which RC1's
-     `NativeMemory.Clear` clears byte by byte and PawPrint cannot (`clearOverPointerCell`);
+     .NET 10's stub, writing only the fields, since RC1's callers zero the image. All twelve cases
+     pass, two of them since clearing native memory replaces a pointer the range wholly covers:
+     each marshals into a buffer that already holds a pointer, which RC1's `NativeMemory.Clear`
+     clears;
    * `Delegate_GetMethodDesc`
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.

@@ -3406,6 +3406,62 @@ module IlMachineManagedByref =
         // without forcing BCT lookups.
         writeManagedByrefBytesOrTypedCellCore (Some baseClassTypes) state src newValue
 
+    /// Set the `count` bytes at `dest` to `value` in one step, where `dest` is a byte of a
+    /// `localloc` or native memory block, viewed as raw bytes: see `StackMemoryPool.fill`, which
+    /// replaces a pointer the range wholly covers. A field of a struct a pointer is laid over counts
+    /// as its address, as `anchorRawRootFieldPrefix` gives it. `ValueNone` for a byref into any
+    /// other storage, and for a field of a struct cell the block holds, which the fill must update
+    /// in place.
+    let tryFillMemoryBlock
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (dest : AddressedByref)
+        (value : byte)
+        (count : int)
+        : IlMachineState voption
+        =
+        let dest = anchorRawRootFieldPrefix state dest
+
+        let blockOffset (rootByteOffset : int) : int voption =
+            match dest.Projections with
+            | [] -> ValueSome rootByteOffset
+            | projs ->
+                match peelTrailingByteView (Some baseClassTypes) state projs with
+                | ValueSome ([], viewByteOffset) ->
+                    ValueSome (rootRelativeByteOffset projs rootByteOffset viewByteOffset)
+                | ValueSome _
+                | ValueNone -> ValueNone
+
+        match dest.Root with
+        | ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset) ->
+            blockOffset rootByteOffset
+            |> ValueOption.map (fun offset ->
+                let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+
+                IlMachineThreadState.setStackMemoryPool
+                    thread
+                    frame
+                    (StackMemoryPool.fill block offset count value pool)
+                    state
+            )
+        | ByrefRoot.NativeMemoryByte (block, rootByteOffset) ->
+            blockOffset rootByteOffset
+            |> ValueOption.map (fun offset ->
+                let pool =
+                    NativeMemoryPool.fill block offset count value state.Kernel.NativeMemoryPool
+
+                IlMachineThreadState.setNativeMemoryPool pool state
+            )
+        | ByrefRoot.LocalVariable _
+        | ByrefRoot.Argument _
+        | ByrefRoot.StaticField _
+        | ByrefRoot.PeByteRange _
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.ArrayElement _
+        | ByrefRoot.StringCharAt _
+        | ByrefRoot.ExposedClassObject _ -> ValueNone
+
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
         : (ByrefProjection list * ConcreteTypeHandle * ByrefProjection list) option

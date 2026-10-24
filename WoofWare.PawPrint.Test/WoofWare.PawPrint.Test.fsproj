@@ -150,6 +150,7 @@
     <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
+    <Compile Include="TestMemoryPoolFill.fs" />
     <Compile Include="TestNativeAddressSpace.fs" />
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
