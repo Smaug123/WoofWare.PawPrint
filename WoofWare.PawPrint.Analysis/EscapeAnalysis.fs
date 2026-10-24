@@ -3243,7 +3243,7 @@ module EscapeAnalysis =
         | None, Some IntrinsicBody.CallSiteExpansion -> Runs.Opaque Opacity.IntrinsicExpansion
         // Whether the VM replaces the body turns on whether the instantiation's type argument is
         // blittable, which the analysis does not decide.
-        | None, Some IntrinsicBody.StructMarshalling -> Runs.Opaque Opacity.IntrinsicExpansion
+        | None, Some (IntrinsicBody.StructMarshalling _) -> Runs.Opaque Opacity.IntrinsicExpansion
         | None, Some (IntrinsicBody.JitExpansion expansion) ->
             match method.Body with
             | MethodBody.Il body -> Runs.Il (body, Some expansion)

@@ -170,6 +170,18 @@ type UnsafeAccessorKind =
     | Field
     | StaticField
 
+/// What a struct-marshalling body does to a struct with layout: CoreCLR's <c>MarshalOperation</c>
+/// (.NET 10's stubgen.h, whose struct stub takes it as an argument, and .NET 11's dllimport.h,
+/// whose <c>StructureMarshaler&lt;T&gt;</c> has one body per operation).
+[<RequireQualifiedAccess>]
+type StructMarshalOperation =
+    /// Write the managed struct's unmanaged image (.NET 11's <c>ConvertToUnmanaged</c>).
+    | Marshal
+    /// Read the unmanaged image into the managed struct (.NET 11's <c>ConvertToManaged</c>).
+    | Unmarshal
+    /// Release what the unmanaged image owns (.NET 11's <c>Free</c>).
+    | Cleanup
+
 /// Classifies the runtime-synthesised behaviour of a method whose implementation is
 /// supplied by the runtime. Most variants correspond to
 /// <c>MethodImplAttributes.Runtime</c> (the CLR uses it for delegates and multi-dim
@@ -193,6 +205,15 @@ type RuntimeBehaviour =
     /// Unlike every other case here, a method carrying this is not declared anywhere — it is a
     /// <see cref="MethodInfo.Synthesised"/>, so it has no MethodDef row.
     | StructMarshalStub
+
+    /// The body CoreCLR's VM generates in place of one of <c>StructureMarshaler&lt;T&gt;</c>'s
+    /// <c>[Intrinsic]</c> methods for a T that is not blittable
+    /// (<c>StructMarshalStubs::TryGenerateStructMarshallingMethod</c>, .NET 11's dllimport.cpp):
+    /// it performs the operation on T field by field. PawPrint interprets it directly instead.
+    ///
+    /// The method carrying it is the CoreLib method itself, with its signature
+    /// <c>(ref T, byte*, ref CleanupWorkListElement?)</c>.
+    | StructureMarshalerBody of StructMarshalOperation
 
     /// The multicast invoke stub for the declaring delegate type: what CoreCLR builds as
     /// synthesised IL in <c>Delegate_GetMulticastInvokeSlow</c> (comdelegate.cpp:2177) and stores

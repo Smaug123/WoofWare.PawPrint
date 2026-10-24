@@ -1630,6 +1630,8 @@ module Assembly =
                     Console.WriteLine "<runtime-provided: delegate Invoke>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
                     Console.WriteLine "<runtime-provided: struct-marshal stub>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.StructureMarshalerBody operation) ->
+                    Console.WriteLine $"<runtime-provided: StructureMarshaler<T> body (%O{operation})>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
                     Console.WriteLine "<runtime-provided: multicast delegate invoke stub>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->

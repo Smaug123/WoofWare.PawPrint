@@ -148,22 +148,8 @@ module TestPureCases =
             """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "DelegateMethodInfo.cs",
             """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            yield!
-                [
-                    "MarshalEnumField.cs"
-                    "MarshalPtrToStructureCopiedFields.cs"
-                    "MarshalPtrToStructureDateTimeField.cs"
-                    "MarshalStructureToPtrBoolField.cs"
-                    "MarshalStructureToPtrCharField.cs"
-                    "MarshalStructureToPtrDateTimeField.cs"
-                    "MarshalStructureToPtrDateTimeFields.cs"
-                    "MarshalStructureToPtrDateTimeOverlapping.cs"
-                    "MarshalStructureToPtrDateTimeWithPointer.cs"
-                    "MarshalStructureToPtrDecimalField.cs"
-                    "MarshalStructureToPtrDecimalFieldBytes.cs"
-                    "MarshalStructureToPtrStaticCtorDormant.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.structureMarshalerStub)
+            "MarshalPtrToStructureCopiedFields.cs", Net11Frontier.clearOverPointerCell
+            "MarshalStructureToPtrDateTimeWithPointer.cs", Net11Frontier.clearOverPointerCell
             "LockOnArray.cs",
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",

@@ -909,6 +909,8 @@ module NativeCall =
                 | RuntimeBehaviour.DelegateCtor -> "Runtime (delegate .ctor)"
                 | RuntimeBehaviour.DelegateInvoke -> "Runtime (delegate Invoke)"
                 | RuntimeBehaviour.StructMarshalStub -> "Runtime (struct-marshal stub)"
+                | RuntimeBehaviour.StructureMarshalerBody operation ->
+                    $"Runtime (StructureMarshaler<T> body, %O{operation})"
                 | RuntimeBehaviour.MulticastDelegateInvoke -> "Runtime (multicast delegate invoke stub)"
                 | RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides) ->
                     let nameStr =

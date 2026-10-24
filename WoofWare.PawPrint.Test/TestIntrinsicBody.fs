@@ -548,36 +548,108 @@ module TestIntrinsicBody =
             | _ -> failwith $"corelib.h's STRUCTURE_MARSHALER row is not of a shape this test reads: %s{row}"
         | several -> failwith $"corelib.h has %d{several.Length} STRUCTURE_MARSHALER rows"
 
+    /// The bodies `TryGenerateStructMarshallingMethod` (dllimport.cpp) generates on `runtime`, each
+    /// as the name `corelib.h` binds the method to and the operation its `marshalFlags` select.
+    let private structureMarshalerBodies (runtime : EmulatedRuntime) : (string * StructMarshalOperation) list =
+        let vm =
+            Path.Combine (FrameworkUnderTest.requireRuntimeSourceOf runtime, "src", "coreclr", "vm")
+
+        let boundNames =
+            File.ReadAllLines (Path.Combine (vm, "corelib.h"))
+            |> Array.map _.Trim()
+            |> Array.filter _.StartsWith("DEFINE_METHOD(STRUCTURE_MARSHALER,")
+            |> Array.map (fun row ->
+                match row.Substring(row.IndexOf '(' + 1).TrimEnd(')').Split ',' |> Array.map _.Trim() with
+                | [| _ ; binding ; name ; _ |] -> binding, name
+                | _ ->
+                    failwith $"corelib.h's STRUCTURE_MARSHALER method row is not of a shape this test reads: %s{row}"
+            )
+            |> Map.ofArray
+
+        let dllimport = File.ReadAllLines (Path.Combine (vm, "dllimport.cpp"))
+
+        let operationOf (flags : string) : StructMarshalOperation =
+            match flags with
+            | "MARSHAL_FLAG_IN | MARSHAL_FLAG_NO_CLEANUP" -> StructMarshalOperation.Marshal
+            | "MARSHAL_FLAG_OUT | MARSHAL_FLAG_NO_CLEANUP" -> StructMarshalOperation.Unmarshal
+            | "MARSHAL_FLAG_IN | MARSHAL_FLAG_OUT | MARSHAL_FLAG_CLEANUP_ONLY" -> StructMarshalOperation.Cleanup
+            | other -> failwith $"dllimport.cpp selects marshal flags this test does not read: %s{other}"
+
+        match
+            dllimport
+            |> Array.tryFindIndex _.Contains("StructMarshalStubs::TryGenerateStructMarshallingMethod(")
+        with
+        | None -> []
+        | Some start ->
+            let body =
+                dllimport.[start..]
+                |> Array.takeWhile (fun line -> not (line.StartsWith "}"))
+                |> Array.map _.Trim()
+
+            let pattern =
+                System.Text.RegularExpressions.Regex @"CoreLibBinder::GetMethod\(METHOD__STRUCTURE_MARSHALER__(\w+)\)"
+
+            [
+                for i in 0 .. body.Length - 1 do
+                    let m = pattern.Match body.[i]
+
+                    if m.Success then
+                        let flags =
+                            body.[i + 1 ..]
+                            |> Array.find _.StartsWith("marshalFlags = ")
+                            |> fun line -> line.Substring("marshalFlags = ".Length).TrimEnd ';'
+
+                        let binding = m.Groups.[1].Value
+
+                        match Map.tryFind binding boundNames with
+                        | Some name -> name, operationOf flags
+                        | None ->
+                            failwith
+                                $"dllimport.cpp names METHOD__STRUCTURE_MARSHALER__%s{binding}, which corelib.h does not bind"
+            ]
+
     let runtimes : TestCaseData list = FrameworkUnderTest.everyRuntime
 
     [<TestCaseSource(nameof runtimes)>]
-    let ``StructMarshalling is exactly the intrinsics of the class corelib.h binds as STRUCTURE_MARSHALER``
+    let ``StructMarshalling is exactly the bodies TryGenerateStructMarshallingMethod generates, with their operations``
         (runtime : EmulatedRuntime)
         : unit
         =
         let corelib = readCoreLib (FrameworkUnderTest.requireCoreLibPathOf runtime)
         let methods = methodsOf corelib
+        let bodies = structureMarshalerBodies runtime
 
         let expected =
             match structureMarshalerClass runtime with
-            | None -> Set.empty
+            | None ->
+                bodies |> shouldEqual []
+                Map.empty
             | Some (ns, cls) ->
-                let ofClass =
-                    methods
-                    |> List.filter (fun m ->
-                        m.Namespace = ns && m.Class = cls && IntrinsicBody.isIntrinsic corelib m.Handle
-                    )
+                bodies |> List.length |> shouldEqual 3
 
-                ofClass |> List.length |> shouldBeGreaterThan 0
-                ofClass |> List.map describe |> Set.ofList
+                bodies
+                |> List.map (fun (name, operation) ->
+                    match
+                        methods
+                        |> List.filter (fun m -> m.Namespace = ns && m.Class = cls && m.Name = name)
+                    with
+                    | [ m ] ->
+                        IntrinsicBody.isIntrinsic corelib m.Handle |> shouldEqual true
+                        describe m, operation
+                    | found -> failwith $"expected one %s{ns}.%s{cls}::%s{name}, found %d{found.Length}"
+                )
+                |> Map.ofList
 
         methods
-        |> List.filter (fun m ->
-            IntrinsicBody.isIntrinsic corelib m.Handle
-            && IntrinsicBody.classify corelib m.Handle = IntrinsicBody.StructMarshalling
+        |> List.choose (fun m ->
+            if IntrinsicBody.isIntrinsic corelib m.Handle then
+                match IntrinsicBody.classify corelib m.Handle with
+                | IntrinsicBody.StructMarshalling operation -> Some (describe m, operation)
+                | _ -> None
+            else
+                None
         )
-        |> List.map describe
-        |> Set.ofList
+        |> Map.ofList
         |> shouldEqual expected
 
     [<Test>]

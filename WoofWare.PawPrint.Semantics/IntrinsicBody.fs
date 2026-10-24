@@ -72,10 +72,11 @@ type IntrinsicBody =
     /// resumption stub, runtime-async methods).
     | CallSiteExpansion
     /// A method of CoreLib's `System.StubHelpers.StructureMarshaler<T>`, whose body CoreCLR's VM
-    /// replaces with a stub that marshals T field by field when T is a value type that is neither
-    /// blittable nor an enum (`StructMarshalStubs::TryGenerateStructMarshallingMethod`,
-    /// dllimport.cpp). For any other T, the method's own IL runs.
-    | StructMarshalling
+    /// replaces with a stub that performs the operation on T field by field when T is a value type
+    /// that is neither blittable nor an enum
+    /// (`StructMarshalStubs::TryGenerateStructMarshallingMethod`, dllimport.cpp). For any other T,
+    /// the method's own IL runs.
+    | StructMarshalling of StructMarshalOperation
     /// The method has no IL: an InternalCall, a P/Invoke, a runtime-provided or an abstract body.
     | NoIl
 
@@ -312,17 +313,30 @@ module IntrinsicBody =
             && callSiteExpansions.Contains (declaringType.Namespace, declaringType.Name, definition.Name)
         then
             IntrinsicBody.CallSiteExpansion
-        else if
-
-            // `getMethodInfoWorker` (jitinterface.cpp) offers every intrinsic of corelib.h's
-            // `STRUCTURE_MARSHALER` to `TryGenerateStructMarshallingMethod`.
-            assembly.ThisAssemblyDefinition.Name.Name = corelib
-            && not declaringType.IsNested
-            && declaringType.Namespace = "System.StubHelpers"
-            && declaringType.Name = "StructureMarshaler`1"
-        then
-            IntrinsicBody.StructMarshalling
         else
+
+        // `getMethodInfoWorker` (jitinterface.cpp) offers every intrinsic of corelib.h's
+        // `STRUCTURE_MARSHALER` to `TryGenerateStructMarshallingMethod`, which generates a body
+        // for the three corelib.h binds as `CONVERT_TO_UNMANAGED_CORE`, `CONVERT_TO_MANAGED` and
+        // `FREE_CORE`, and leaves any other to be compiled as usual.
+        let structMarshalling =
+            if
+                assembly.ThisAssemblyDefinition.Name.Name = corelib
+                && not declaringType.IsNested
+                && declaringType.Namespace = "System.StubHelpers"
+                && declaringType.Name = "StructureMarshaler`1"
+            then
+                match definition.Name with
+                | "ConvertToUnmanagedCore" -> Some StructMarshalOperation.Marshal
+                | "ConvertToManaged" -> Some StructMarshalOperation.Unmarshal
+                | "FreeCore" -> Some StructMarshalOperation.Cleanup
+                | _ -> None
+            else
+                None
+
+        match structMarshalling with
+        | Some operation -> IntrinsicBody.StructMarshalling operation
+        | None ->
 
         match definition.Body with
         | MethodBody.InternalCall
@@ -433,7 +447,7 @@ module IntrinsicBody =
             | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method
             | IntrinsicBody.JitExpansion _
             | IntrinsicBody.CallSiteExpansion
-            | IntrinsicBody.StructMarshalling
+            | IntrinsicBody.StructMarshalling _
             | IntrinsicBody.OwnIl
             | IntrinsicBody.NoIl -> None
         else
