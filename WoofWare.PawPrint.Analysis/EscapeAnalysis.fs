@@ -2068,9 +2068,10 @@ module EscapeAnalysis =
         | Other
 
     /// The type a member token names as the member's owner, as `assembly` spells it, which the JIT
-    /// loads before it resolves the member (`JitTypePosition.DeclaringType`); `None` for a token
-    /// naming anything but a member, and for a member reference to a module's global function or
-    /// field, whose owner CoreCLR has loaded with the module.
+    /// loads before it resolves the member (`JitTypePosition.DeclaringType`): a method or field
+    /// definition's declaring type, or that of the method a vararg call site's member reference
+    /// names. `None` for a token naming anything but a member, and for any other member reference,
+    /// whose parent resolving the reference loads (`MemberReferenceParent.resolve`).
     let private ownerSpelling (assembly : DumpedAssembly) (token : MetadataToken) : TypeDefn option =
         let definition (identity : ResolvedTypeIdentity) : TypeDefn =
             TypeDefn.FromDefinition (identity, SignatureTypeKind.Unknown)
@@ -2080,11 +2081,6 @@ module EscapeAnalysis =
         | MetadataToken.FieldDefinition handle -> Some (definition assembly.Fields.[handle].DeclaringType.Identity)
         | MetadataToken.MemberReference handle ->
             match assembly.Members.[handle].Parent with
-            | MetadataToken.TypeDefinition parent -> Some (definition assembly.TypeDefs.[parent].Identity)
-            | MetadataToken.TypeReference parent ->
-                Some (TypeDefn.FromReference (assembly.TypeRefs.[parent], SignatureTypeKind.Unknown))
-            | MetadataToken.TypeSpecification parent -> Some assembly.TypeSpecs.[parent].Signature
-            // A reference to a vararg method of this module.
             | MetadataToken.MethodDef parent ->
                 Some (definition assembly.Methods.[parent].RequiredDeclaringType.Identity)
             | _ -> None
@@ -2151,7 +2147,6 @@ module EscapeAnalysis =
                     | _ -> []
 
                 state, TokenReferent.Method target, unlessOwnerFails failures
-            | MemberSignature.Field _ when ownerFailure.IsSome -> state, TokenReferent.Other, raisesOf ownerFailure
             | MemberSignature.Field _ ->
                 let assemblies, target =
                     FieldReferenceResolution.resolve
