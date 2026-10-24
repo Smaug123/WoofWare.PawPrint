@@ -7204,6 +7204,29 @@ public static unsafe class Program
     let private count32 (count : int) : byte list =
         BitConverter.GetBytes count |> List.ofArray
 
+    /// .NET 11's VM refuses a named argument its attribute declares where the blob names it twice
+    /// (`META_E_CA_REPEATED_ARG`, which the host's .NET 10 shows for `CallConvs` and `EntryPoint`),
+    /// `AssociatedSourceType` among them. C# cannot spell that blob, and the in-process host cannot
+    /// run .NET 11, so this holds the parse to the rule rather than to a measurement.
+    [<Test>]
+    let ``an UnmanagedCallersOnly blob naming AssociatedSourceType twice does not parse`` () : unit =
+        let associated =
+            [ 0x53uy ; 0x50uy ] @ serString (Some "AssociatedSourceType") @ serString None
+
+        let blob (count : int) =
+            [ 0x01uy ; 0x00uy ; byte count ; 0x00uy ]
+            @ List.concat (List.replicate count associated)
+            |> ImmutableArray.CreateRange
+
+        let once = CustomAttribute.parseUnmanagedCallersOnly (blob 1)
+
+        once
+        |> shouldEqual (UnmanagedCallersOnlyApplication.Parsed (UnmanagedCallersOnlyCallConvs.Unnamed, true))
+
+        match CustomAttribute.parseUnmanagedCallersOnly (blob 2) with
+        | UnmanagedCallersOnlyApplication.Malformed _ -> ()
+        | other -> failwith $"Naming AssociatedSourceType twice parses as %A{other}"
+
     /// Serialised type names an `[UnmanagedCallersOnly]` blob may list in its `CallConvs`, some of
     /// which CoreCLR recognises and some of which it does not.
     let private callConvNames : string option list =
