@@ -139,6 +139,13 @@ module internal StackInteger =
             | PrimitiveType.Object -> None
         | _ -> None
 
+    /// The integer type of a local spelled `local`, native ints among them; `None` for any other
+    /// type, an enum's or a type variable's included.
+    let ofLocal (local : TypeDefn) : PrimitiveType option =
+        match TypeDefn.stripCustomModifiers local with
+        | TypeDefn.PrimitiveType (PrimitiveType.IntPtr | PrimitiveType.UIntPtr as primitive) -> Some primitive
+        | spelled -> ofParameter spelled
+
     /// What `ldarg` pushes of a parameter of the integer type `parameter` (`ofParameter`) that a
     /// call passed `value` as: `value` converted to the parameter's type, truncated where that is
     /// narrower (ECMA-335 III.1.6), then widened as the stack holds it. `None` where the IL would
@@ -250,6 +257,9 @@ type internal BodySpellings =
         /// What each local may hold where the flow does not follow what is stored in it
         /// (`SlotLattice.Local`): any value of its declared type.
         Locals : StackValue list
+        /// The integer type of each local that has one (`StackInteger.ofLocal`), which a store into
+        /// it truncates to.
+        LocalIntegers : Map<int, PrimitiveType>
         /// What `ldstr` pushes.
         String : StackValue
         /// What the token of the instruction at each offset makes it push, where it decides that:
@@ -590,6 +600,33 @@ module internal StackValues =
         | StackValue.Unknown, _
         | _, StackValue.Unknown -> StackValue.Unknown
 
+    /// What a local of the integer type `local` (`StackInteger.ofLocal`) holds once a `stloc` stores `value` in
+    /// it, where the analysis can say: a constant at the width the local loads as, truncated to the
+    /// local's own width (ECMA-335 III.1.6). `None` for a constant the store would convert between
+    /// widths, and for an argument or a pointee's value, which may be wider than the local.
+    let private storedInteger (local : PrimitiveType) (value : SpelledInteger) : SpelledInteger option =
+        match value with
+        | SpelledInteger.Constant constant ->
+            let narrowed (conversion : IntegerConversion) =
+                Some (SpelledInteger.Constant (StackInteger.converted conversion constant))
+
+            match local, constant with
+            | PrimitiveType.Boolean, StackInteger.Int32 _
+            | PrimitiveType.Byte, StackInteger.Int32 _ -> narrowed IntegerConversion.U1
+            | PrimitiveType.SByte, StackInteger.Int32 _ -> narrowed IntegerConversion.I1
+            | PrimitiveType.Int16, StackInteger.Int32 _ -> narrowed IntegerConversion.I2
+            | PrimitiveType.Char, StackInteger.Int32 _
+            | PrimitiveType.UInt16, StackInteger.Int32 _ -> narrowed IntegerConversion.U2
+            | PrimitiveType.Int32, StackInteger.Int32 _
+            | PrimitiveType.UInt32, StackInteger.Int32 _
+            | PrimitiveType.Int64, StackInteger.Int64 _
+            | PrimitiveType.UInt64, StackInteger.Int64 _
+            | PrimitiveType.IntPtr, StackInteger.NativeInt _
+            | PrimitiveType.UIntPtr, StackInteger.NativeInt _ -> Some value
+            | _ -> None
+        | SpelledInteger.Argument _
+        | SpelledInteger.Loaded _ -> None
+
     let private lattice (spellings : BodySpellings) (unwritten : Set<int>) : SlotLattice<StackValue> =
         let fixedValue (value : StackValue) : Result<StackValue list -> StackValue, StackShapeError> =
             Ok (fun _ -> value)
@@ -718,10 +755,24 @@ module internal StackValues =
             | StackValue.Integers _
             | StackValue.Addresses _ -> value
 
+        // A store converts an integer to the local's type, which only a local of an integer type
+        // says.
+        let store (index : int) (value : StackValue) : StackValue =
+            match value, Map.tryFind index spellings.LocalIntegers with
+            | StackValue.Integers integers, Some primitive ->
+                let kept = integers |> Seq.map (storedInteger primitive) |> List.ofSeq
+
+                if List.forall Option.isSome kept then
+                    StackValue.Integers (kept |> List.choose id |> Set.ofList)
+                else
+                    local index
+            | StackValue.Integers _, None -> local index
+            | _ -> narrowest index value
+
         {
             Push = push
             Local = local
-            Store = narrowest
+            Store = store
             JoinLocal = fun index a b -> narrowest index (joinValues a b)
             Join = fun _ _ a b -> Ok (joinValues a b)
             Caught = caught

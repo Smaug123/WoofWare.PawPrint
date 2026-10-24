@@ -2805,6 +2805,14 @@ module EscapeAnalysis =
             Spellings = List.ofSeq spellings
             Arguments = arguments
             Locals = locals
+            LocalIntegers =
+                body.LocalVars
+                |> Option.map (
+                    Seq.indexed
+                    >> Seq.choose (fun (index, local) -> StackInteger.ofLocal local |> Option.map (fun p -> index, p))
+                    >> Map.ofSeq
+                )
+                |> Option.defaultValue Map.empty
             String = string
             Tokens = tokens
             Caught = caught
