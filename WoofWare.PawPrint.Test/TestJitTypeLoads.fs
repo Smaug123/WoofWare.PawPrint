@@ -332,6 +332,7 @@ public class ThingException : System.Exception { }
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsNative%d{k}() {{ if (Never) NativeTakes%d{k}(null); }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesNative%d{k}() {{ try {{ if (Never) NativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftNative%d{k}() {{ if (Never) SwiftNativeTakes%d{k}(null); }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesSwiftNative%d{k}() {{ try {{ if (Never) SwiftNativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged<%s{s}, void>)Pointer)(null); }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged[Swift]<%s{s}, void>)Pointer)(null); }}"
             ]
@@ -694,6 +695,14 @@ public class ThingException : System.Exception { }
                       $"CatchesNative%d{k}"
                       $"NativeTakes%d{k}"
                       UnmanagedConvention.NotSwift with
+                    Possible = fun _ -> PossibleLoads.Skipped
+                }
+
+                { unmanagedProbe
+                      "CaughtSwiftUnmanagedParameter"
+                      $"CatchesSwiftNative%d{k}"
+                      $"SwiftNativeTakes%d{k}"
+                      UnmanagedConvention.MaybeSwift with
                     Possible = fun _ -> PossibleLoads.Skipped
                 }
 
