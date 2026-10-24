@@ -918,7 +918,12 @@ module EscapeAnalysis =
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
     /// name (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
     let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
-        nativeCall state (NativeCall.resolve state.Runtime NativeCall.ResourceMessage) |> fst
+        nativeCall state (NativeCall.resolve state.Runtime NativeCall.ResourceMessage)
+        |> fst
+
+    /// Whether the analysis's caller allows `assumption`.
+    let internal allows (state : EscapeAnalysisState) (assumption : Assumption) : bool =
+        state.Assumptions.Contains assumption
 
     /// The managed code a native method calls (`NativeContract.Runs`), and what it passes.
     let internal nativeCallee (state : EscapeAnalysisState) (call : NativeCall) : MethodKey * SpelledArgument list =
@@ -7949,6 +7954,15 @@ module EscapeAnalysis =
                 )
 
             let assumes = Set.union assumes (facts.Relies |> List.map snd |> Set.ofList)
+
+            // A requested abort can arise anywhere in the body, and no handler stops it, since a
+            // catch raises it again at its end (`Assumption.NoThreadAborts`).
+            let types, assumes =
+                if state.Assumptions.Contains Assumption.NoThreadAborts then
+                    types, Set.add Assumption.NoThreadAborts assumes
+                else
+                    Set.add (ThrownType.Exactly (corelibType state "System.Threading" "ThreadAbortException")) types,
+                    assumes
 
             state,
             {

@@ -1534,9 +1534,18 @@ public static class SR
                         yield $"%s{describe ()}, expected unknown %b{unknown}"
                     | _ -> ()
 
+                    // Allowed, the assumption that no thread is aborted removes from every answer what it
+                    // would otherwise raise.
+                    let expected (assumes : Assumption list) : Set<Assumption> =
+                        if EscapeAnalysis.allows analysis Assumption.NoThreadAborts then
+                            Set.ofList assumes |> Set.add Assumption.NoThreadAborts
+                        else
+                            Set.ofList assumes
+
                     match expectation.Assumes with
-                    | Some assumes when Set.ofList assumes <> escapes.Assumes ->
-                        yield $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{assumes}"
+                    | Some assumes when expected assumes <> escapes.Assumes ->
+                        yield
+                            $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{Set.toList (expected assumes)}"
                     | _ -> ()
                 ]
 
@@ -2006,7 +2015,13 @@ public static class SR
                 escapes.Unknown |> shouldEqual false
 
                 escapes.Assumes
-                |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+                |> shouldEqual (
+                    made
+                    |> List.map _.Assumes
+                    |> Set.unionMany
+                    |> Set.add assumption
+                    |> Set.add Assumption.NoThreadAborts
+                )
 
             // Those constructors are known allowed only the assumptions about what constructing a
             // CoreLib exception runs: its message's lookup runs `SR`'s type initializer, and may
@@ -2190,7 +2205,9 @@ public static class SR
         // A type initializer it runs may fail, and the runtime may throw that one's own exception
         // again, which reads its stack trace.
         let assuming, escapes =
-            EscapeAnalysis.escapes (analysis (Set.singleton Assumption.StackTracePreserved)) key
+            EscapeAnalysis.escapes
+                (analysis (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ]))
+                key
 
         render assuming escapes
         |> shouldEqual (
@@ -2200,7 +2217,9 @@ public static class SR
         )
 
         escapes.Unknown |> shouldEqual false
-        escapes.Assumes |> shouldEqual (Set.singleton Assumption.StackTracePreserved)
+
+        escapes.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ])
 
         // Allowed every other assumption, only reading that stack trace is hidden.
         let unassuming, escapes =
@@ -5077,7 +5096,9 @@ public static class Cases
 
         span.Unknown |> shouldEqual false
         span.Types |> shouldEqual Set.empty
-        span.Assumes |> shouldEqual (Set.singleton Assumption.JitOptimises)
+
+        span.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.JitOptimises ; Assumption.NoThreadAborts ])
 
         // Not assumed to, it calls both.
         let unassuming =
