@@ -156,15 +156,6 @@ module TestPureCases =
             """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
             "ReflectionStripMethodInstantiationOpenDefinition.cs",
             """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `NullReferenceException`: the non-public `RuntimeMethodHandle` member the guest looks up by reflection (line 29) is not there to call. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            yield!
-                [
-                    "AnonymousPipeThreads.cs"
-                    "SocketAcceptBlocking.cs"
-                    "SocketConnectManaged.cs"
-                    "SocketPoll.cs"
-                    "SocketPollTimeout.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.stackallocByteOrder)
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
         ]

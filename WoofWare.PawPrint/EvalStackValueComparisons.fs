@@ -1,14 +1,18 @@
 namespace WoofWare.PawPrint
 
-/// Which order an unsigned comparison of two byrefs asks about.
+/// Which order an unsigned comparison or branch of two byrefs asks about.
 [<RequireQualifiedAccess>]
 type ByrefOrderQuestion =
-    /// `cgt.un`: is the left operand's address strictly above the right's?
+    /// `cgt.un` and `bgt.un`: is the left operand's address strictly above the right's?
     | LeftAbove
-    /// `clt.un`: is the left operand's address strictly below the right's?
+    /// `clt.un` and `blt.un`: is the left operand's address strictly below the right's?
     | LeftBelow
+    /// `bge.un`: is the left operand's address at or above the right's?
+    | LeftAtOrAbove
+    /// `ble.un`: is the left operand's address at or below the right's?
+    | LeftAtOrBelow
 
-/// What `cgt.un` or `clt.un` concluded. `Decided` is an answer; `NeedsByteLocation` is the
+/// What an unsigned comparison or branch concluded. `Decided` is an answer; `NeedsByteLocation` is the
 /// byref pair whose order structural comparison could not fix (see
 /// `ByteAddressDeltaSign`), together with the `question` asked of it, for a caller with
 /// `IlMachineState` to settle by byte coordinates (`StorageLocation.resolveOrder`). A caller
@@ -59,6 +63,8 @@ module EvalStackValueComparisons =
             match question with
             | ByrefOrderQuestion.LeftAbove -> UnsignedOrderOutcome.Decided (sign < 0)
             | ByrefOrderQuestion.LeftBelow -> UnsignedOrderOutcome.Decided (sign > 0)
+            | ByrefOrderQuestion.LeftAtOrAbove -> UnsignedOrderOutcome.Decided (sign <= 0)
+            | ByrefOrderQuestion.LeftAtOrBelow -> UnsignedOrderOutcome.Decided (sign >= 0)
         | ByteAddressDeltaSign.NeedsByteLocation (left, right, diagnostic) ->
             UnsignedOrderOutcome.NeedsByteLocation (left, right, question, diagnostic)
 
@@ -664,6 +670,40 @@ module EvalStackValueComparisons =
 
     /// `ble.un`: see `unsignedBranch` for how this differs from `cleUn`.
     let bleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool = unsignedBranch "ble.un" cleUn var1 var2
+
+    /// `unsignedBranch`, but returning the deferral of a pair of byrefs rather than failing on it,
+    /// as `unsignedOrderDeferred` does for the compare opcodes. The int32 widening `unsignedBranch`
+    /// refuses over never arises for a byref pair.
+    let private unsignedBranchDeferred
+        (opcode : string)
+        (question : ByrefOrderQuestion)
+        (compare : EvalStackValue -> EvalStackValue -> bool)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : UnsignedOrderOutcome
+        =
+        match
+            tryByrefOperand (unwrapPlaceholderForBitComparison var1),
+            tryByrefOperand (unwrapPlaceholderForBitComparison var2)
+        with
+        | Some p1, Some p2 -> orderByrefs question p1 p2
+        | _ -> UnsignedOrderOutcome.Decided (unsignedBranch opcode compare var1 var2)
+
+    /// `bgtUn`, deferring a byref pair it cannot order structurally: see `unsignedBranchDeferred`.
+    let bgtUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedBranchDeferred "bgt.un" ByrefOrderQuestion.LeftAbove cgtUn var1 var2
+
+    /// `bgeUn`, deferring a byref pair it cannot order structurally: see `unsignedBranchDeferred`.
+    let bgeUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedBranchDeferred "bge.un" ByrefOrderQuestion.LeftAtOrAbove cgeUn var1 var2
+
+    /// `bltUn`, deferring a byref pair it cannot order structurally: see `unsignedBranchDeferred`.
+    let bltUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedBranchDeferred "blt.un" ByrefOrderQuestion.LeftBelow cltUn var1 var2
+
+    /// `bleUn`, deferring a byref pair it cannot order structurally: see `unsignedBranchDeferred`.
+    let bleUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedBranchDeferred "ble.un" ByrefOrderQuestion.LeftAtOrBelow cleUn var1 var2
 
     /// The equality `bne.un` negates: `ceqDeferred`, except that an int32 against a native int
     /// goes through `unsignedBranch` (which decides or refuses, and never defers).

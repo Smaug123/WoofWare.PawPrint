@@ -377,7 +377,7 @@ module internal StorageLocation =
                 leftOffset = rightOffset
             | _ -> failwith diagnostic
 
-    /// Answer a byref ordering (`cgt.un`, `clt.un`) that structural comparison deferred, by
+    /// Answer a byref ordering (`cgt.un`, `clt.un`, or an unsigned branch) that structural comparison deferred, by
     /// resolving both sides to flat byte coordinates.
     ///
     /// As with `resolveCeq`, this decides only what one container's coordinate system proves:
@@ -402,4 +402,6 @@ module internal StorageLocation =
                 match question with
                 | ByrefOrderQuestion.LeftAbove -> leftOffset > rightOffset
                 | ByrefOrderQuestion.LeftBelow -> leftOffset < rightOffset
+                | ByrefOrderQuestion.LeftAtOrAbove -> leftOffset >= rightOffset
+                | ByrefOrderQuestion.LeftAtOrBelow -> leftOffset <= rightOffset
             | _ -> failwith diagnostic
