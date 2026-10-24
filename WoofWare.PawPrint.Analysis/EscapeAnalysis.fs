@@ -5548,14 +5548,18 @@ module EscapeAnalysis =
                     instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
                 )
 
-    /// The type a `constrained.` prefix names, a token of `assembly`, when the body making the call
-    /// runs as `caller`; `None` where only an instance decides it.
+    /// The type CoreCLR resolves a `constrained.` call of `callee` against, where the prefix names
+    /// a token of `assembly`, when the body making the call runs as `caller`, with the method it
+    /// dispatches there: the type the prefix names and `callee`, or the underlying primitive of an
+    /// enum it names and what CoreCLR dispatches on that (`ConstrainedType.resolve`). `None` where
+    /// only an instance decides it.
     let private constrainedReceiver
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
         (constrainedType : MetadataToken)
-        : EscapeAnalysisState * ConcreteTypeHandle option
+        (callee : Callee)
+        : EscapeAnalysisState * (ConcreteTypeHandle * Callee) option
         =
         let typeSystem, spelling, spellingAssembly =
             TypeSystemState.resolveTypeMetadataToken
@@ -5571,10 +5575,45 @@ module EscapeAnalysis =
                 TypeSystem = typeSystem
             }
 
-        concretizeIn state caller spelling spellingAssembly.DefinitionFullName
+        match concretizeIn state caller spelling spellingAssembly.DefinitionFullName with
+        | state, None -> state, None
+        | state, Some named ->
+            let _, called = methodOf state callee.Callee
+
+            let typeSystem, resolved =
+                ConstrainedType.resolve
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    state.TypeSystem
+                    named
+                    called
+
+            let state =
+                { state with
+                    TypeSystem = typeSystem
+                }
+
+            match resolved with
+            | ConstrainedType.AsNamed receiver
+            | ConstrainedType.EnumUnderlying (_, receiver, RetargetedCall.Named) -> state, Some (receiver, callee)
+            | ConstrainedType.EnumUnderlying (_, receiver, RetargetedCall.ObjectGetHashCode) ->
+                let getHashCode = ConstrainedType.objectGetHashCode state.BaseTypes
+
+                let dispatched : Callee =
+                    {
+                        Callee =
+                            MethodKey.make
+                                (assemblyOf state getHashCode.DeclaringAssemblyFullName)
+                                (MethodInfo.requireMetadata "Object.GetHashCode" getHashCode).Handle
+                        Spelling = CalleeSpelling.Fixed
+                    }
+
+                state, Some (receiver, dispatched)
+            | ConstrainedType.Undecided _ -> state, None
 
     /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
-    /// the type the prefix names decides it (`dispatchOn`).
+    /// the type CoreCLR resolves it against decides it (`constrainedReceiver`, `dispatchOn`).
     let private constrainedInstance
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -5583,16 +5622,18 @@ module EscapeAnalysis =
         (callee : Callee)
         : EscapeAnalysisState * DispatchOutcome
         =
-        match constrainedReceiver state assembly caller constrainedType with
-        | state, Some receiver -> dispatchOn state assembly caller receiver false callee
+        match constrainedReceiver state assembly caller constrainedType callee with
+        | state, Some (receiver, dispatched) -> dispatchOn state assembly caller receiver false dispatched
         | state, None -> state, DispatchOutcome.Undecided
 
     /// Whether the JIT boxes the receiver of `site`, a `constrained.` call the body of `assembly`
-    /// makes running as `caller`. It does where the type the prefix names is a value type and the
-    /// method the call runs is no method the type declares (`TryResolveConstraintMethodApprox`,
-    /// methodtable.cpp, finds none): one it inherits from a class, a default interface body, or
-    /// one that is not virtual, such as `Object.GetType` (`getCallInfo`, jitinterface.cpp). It
-    /// boxes as `box` does. Where dispatch fails, it boxes before the call raises.
+    /// makes running as `caller`. It does where the type CoreCLR resolves the call against
+    /// (`constrainedReceiver`: an enum's underlying primitive, where it retargets the call) is a
+    /// value type and the method the call runs is no method that type declares
+    /// (`TryResolveConstraintMethodApprox`, methodtable.cpp, finds none): one it inherits from a
+    /// class, a default interface body, or one that is not virtual, such as `Object.GetType`
+    /// (`getCallInfo`, jitinterface.cpp). It boxes as `box` does. Where dispatch fails, it boxes
+    /// before the call raises.
     let private receiverBox
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -5600,9 +5641,9 @@ module EscapeAnalysis =
         (site : ReceiverBoxSite)
         : EscapeAnalysisState * ReceiverBox
         =
-        match constrainedReceiver state assembly caller site.Constrained with
+        match constrainedReceiver state assembly caller site.Constrained site.Named with
         | state, None -> state, ReceiverBox.Undecided
-        | state, Some receiver ->
+        | state, Some (receiver, dispatched) ->
 
         match AllConcreteTypes.lookup receiver state.TypeSystem.ConcreteTypes with
         | _ when TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem receiver ->
@@ -5610,7 +5651,7 @@ module EscapeAnalysis =
         | None -> state, ReceiverBox.Undecided
         | Some concrete ->
 
-        let named = site.Named.Callee
+        let named = dispatched.Callee
         let _, method = methodOf state named
 
         let state, declared =
@@ -5619,7 +5660,7 @@ module EscapeAnalysis =
             elif not (isOverridable state named) then
                 state, Some (declaringTypeOf state named = concrete.Identity)
             else
-                match dispatchOn state assembly caller receiver false site.Named with
+                match dispatchOn state assembly caller receiver false dispatched with
                 | state, DispatchOutcome.Reaches reached ->
                     state, Some (declaringTypeOf state reached.Definition = concrete.Identity)
                 | state, DispatchOutcome.Raises _ -> state, Some false

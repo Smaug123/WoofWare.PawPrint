@@ -37,6 +37,7 @@
         <Compile Include="DefaultInterfaceImplementation.fs" />
         <Compile Include="ConcreteVirtualDispatch.fs" />
         <Compile Include="StaticVirtualDispatch.fs" />
+        <Compile Include="ConstrainedType.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
