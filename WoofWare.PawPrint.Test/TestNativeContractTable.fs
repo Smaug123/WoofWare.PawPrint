@@ -106,7 +106,9 @@ module TestNativeContractTable =
         let corelib = TestIntrinsicBody.coreLib which
 
         for row in rows do
-            for call in row.Contract.Runs |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
+            for call in
+                row.Contract.Runs
+                |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
                 let ns, name = namespaceAndName call.DeclaringType
 
                 let declaringType =
@@ -207,7 +209,9 @@ module TestNativeContractTable =
             File.ReadAllText (Path.Combine (coreclr (), path))
 
         for row in rows do
-            for call in row.Contract.Runs |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
+            for call in
+                row.Contract.Runs
+                |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
                 let binderIds = binderIds call
 
                 if binderIds.IsEmpty then
@@ -946,7 +950,61 @@ module TestNativeContractTable =
             | [ read ] -> read.Contract.Runs |> shouldEqual calls
             | read -> failwith $"%s{line} read as %d{read.Length} rows"
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen (Gen.listOf call)) property)
+        // The resource lookup, too, which the table spells by its name alone.
+        let run : Gen<NativeCall> =
+            Gen.frequency [ 4, call ; 1, Gen.constant NativeCall.ResourceMessage ]
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen (Gen.listOf run)) property)
+
+    /// CoreCLR's `ResMgrGetString` (excep.cpp) calls .NET 10's `Environment.GetResourceStringLocal`
+    /// through the binder, and .NET 11's `Environment.GetResourceString` as an
+    /// `UnmanagedCallersOnly` method.
+    [<Test>]
+    let ``the resource lookup a row runs is the method the runtime's binder names for it`` () : unit =
+        NativeCall.resolve EmulatedRuntime.Net10 NativeCall.ResourceMessage
+        |> shouldEqual
+            {
+                DeclaringType = "System.Environment"
+                Method = "GetResourceStringLocal"
+                Arguments = [ NativeArgument.Unnamed ]
+            }
+
+        NativeCall.resolve EmulatedRuntime.Net11 NativeCall.ResourceMessage
+        |> shouldEqual
+            {
+                DeclaringType = "System.Environment"
+                Method = "GetResourceString"
+                Arguments = List.replicate 3 NativeArgument.Unnamed
+            }
+
+        let resolved =
+            NativeCall.resolve (FrameworkUnderTest.runtime ()) NativeCall.ResourceMessage
+
+        let expected =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> "METHOD__ENVIRONMENT__GET_RESOURCE_STRING_LOCAL"
+            | EmulatedRuntime.Net11 -> "METHOD__ENVIRONMENT__GET_RESOURCE_STRING"
+
+        binderIds resolved |> shouldEqual [ expected ]
+
+        // That ID is the one `ResMgrGetString` calls.
+        let excep = File.ReadAllText (Path.Combine (coreclr (), "vm/excep.cpp"))
+
+        let resMgrGetString =
+            CppSource.definitions excep
+            |> List.filter (fun routine -> routine.Name = "ResMgrGetString")
+            |> List.exactlyOne
+
+        let callers =
+            CppSource.definitions excep
+            |> List.filter (fun routine -> routine.Text.Contains expected)
+            |> List.map (fun routine -> routine.Name)
+
+        callers |> shouldNotEqual []
+
+        callers
+        |> List.forall (fun caller -> caller = "ResMgrGetString" || resMgrGetString.Calls.Contains caller)
+        |> shouldEqual true
 
     [<Test>]
     let ``the table's reader reads back the assumptions a row holds under`` () : unit =

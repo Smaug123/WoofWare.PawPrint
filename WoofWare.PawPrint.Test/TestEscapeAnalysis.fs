@@ -2282,6 +2282,20 @@ public static class SR
 
         ()
 
+    /// A row that runs CoreCLR's lookup of a resource message (`NativeCall.ResourceMessage`) runs the
+    /// CoreLib method the runtime under test calls for it.
+    [<Test>]
+    let ``a native's lookup of a resource message runs the runtime's method for it`` () : unit =
+        let analysis = analysisOver [] id
+        let key, _ = EscapeAnalysis.nativeCallee analysis NativeCall.ResourceMessage
+
+        let expected =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> "System.Environment::GetResourceStringLocal"
+            | EmulatedRuntime.Net11 -> "System.Environment::GetResourceString"
+
+        EscapeAnalysis.methodName analysis key |> shouldEqual expected
+
     /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
     /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
     [<Test>]
