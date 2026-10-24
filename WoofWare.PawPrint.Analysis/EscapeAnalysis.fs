@@ -549,6 +549,7 @@ type EscapeAnalysisState =
             /// What may escape every method each instance summarised so far is inlined into, past
             /// every handler: what compiling the instance, or a method it calls, raises wherever the
             /// JIT compiles that code (`LocalFacts.RaisedWhereInlined`). Its summary has it too.
+            /// An instance absent here lets nothing escape so.
             InlinedSummaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
@@ -6808,8 +6809,10 @@ module EscapeAnalysis =
 
         // What compiling each method raises wherever the JIT compiles its code, which escapes
         // every method it is inlined into past all handlers.
+        // An instance absent from these maps, as from `InlinedSummaries`, lets nothing escape so.
         let inlinedSeeds =
             reachable
+            |> List.filter (fun key -> not state.InstanceFacts.[key].RaisedWhereInlined.IsEmpty)
             |> List.map (fun key ->
                 let facts = state.InstanceFacts.[key]
 
@@ -6852,25 +6855,33 @@ module EscapeAnalysis =
                 | Some known -> known
                 | None -> current.[key]
 
-            let inlinedOf (key : MethodInstance) : Escapes =
+            let inlinedOf (key : MethodInstance) : Escapes option =
                 match state.InlinedSummaries.TryFind key with
-                | Some known -> known
-                | None -> currentInlined.[key]
+                | Some known -> Some known
+                | None -> currentInlined.TryFind key
+
+            let join (acc : Escapes option) (escapes : Escapes option) : Escapes option =
+                match acc, escapes with
+                | acc, None -> acc
+                | None, escapes -> escapes
+                | Some acc, Some escapes -> Some (Escapes.union acc escapes)
 
             let nextInlined =
-                (currentInlined, reachable)
+                (Map.empty, reachable)
                 ||> List.fold (fun nextInlined key ->
                     let calls = state.InstanceCalls.[key]
 
                     let inlined =
-                        (inlinedSeeds.[key], calls.RaisedWhereInlined)
-                        ||> List.fold (fun acc made -> Escapes.union acc (summaryOf made))
+                        (inlinedSeeds.TryFind key, calls.RaisedWhereInlined)
+                        ||> List.fold (fun acc made -> join acc (Some (summaryOf made)))
 
                     let inlined =
                         (inlined, calls.Callees)
-                        ||> List.fold (fun acc (_, callee) -> Escapes.union acc (inlinedOf callee))
+                        ||> List.fold (fun acc (_, callee) -> join acc (inlinedOf callee))
 
-                    Map.add key inlined nextInlined
+                    match inlined with
+                    | Some inlined -> Map.add key inlined nextInlined
+                    | None -> nextInlined
                 )
 
             let state, next =
@@ -6958,7 +6969,12 @@ module EscapeAnalysis =
                             | Raised.Assumed _ -> state, acc
                         )
 
-                    state, Map.add key (Escapes.union escaping nextInlined.[key]) next
+                    let escaping =
+                        match nextInlined.TryFind key with
+                        | Some inlined -> Escapes.union escaping inlined
+                        | None -> escaping
+
+                    state, Map.add key escaping next
                 )
 
             if next = current && nextInlined = currentInlined then
