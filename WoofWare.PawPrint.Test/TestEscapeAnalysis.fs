@@ -2301,6 +2301,93 @@ public static class SR
 
         EscapeAnalysis.methodName analysis key |> shouldEqual expected
 
+    /// Methods that do nothing, or that catch everything their bodies raise.
+    let private abortSource =
+        """
+using System;
+using System.Threading;
+
+namespace Aborts;
+
+public static class Cases
+{
+    public static int Constant() => 1;
+
+    public static void CatchesAll()
+    {
+        try { Constant(); } catch { }
+    }
+
+    public static void Filters()
+    {
+        try { Constant(); } catch (Exception) when (true) { }
+    }
+
+    public static void CatchesAbort()
+    {
+        try { Constant(); } catch (ThreadAbortException) { }
+    }
+
+    public static void Throws() => throw new InvalidOperationException();
+}
+"""
+
+    /// A requested abort (`Assumption.NoThreadAborts`) can arise in any method, and no handler stops
+    /// it, since a catch raises it again at its end; assuming no thread is aborted removes it, and
+    /// every answer says it relies on that.
+    [<Test>]
+    let ``every method can raise ThreadAbortException unless no thread is aborted`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let corelib = hostCoreLib ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Aborts" OutputKind.DynamicallyLinkedLibrary [ abortSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "Aborts.dll") (new MemoryStream (image))
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                [ fixture ]
+                id
+
+        let methods =
+            [
+                for name in [ "Constant" ; "CatchesAll" ; "Filters" ; "CatchesAbort" ; "Throws" ] do
+                    yield name, methodNamed fixture "Aborts.Cases" name
+                // An FCall the contract table describes, and a method an assumption's contract
+                // stands in for.
+                yield "GetToken", methodNamed corelib "System.RuntimeTypeHandle" "GetToken"
+                yield "InternalPreserveStackTrace", methodNamed corelib "System.Exception" "InternalPreserveStackTrace"
+            ]
+
+        let abort = "=System.Threading.ThreadAbortException"
+
+        let answers (analysis : EscapeAnalysisState) : (string * (bool * bool)) list =
+            let _, answers =
+                ((analysis, []), methods)
+                ||> List.fold (fun (analysis, answers) (name, key) ->
+                    let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+                    analysis,
+                    (name,
+                     ((render analysis escapes).Contains abort, escapes.Assumes.Contains Assumption.NoThreadAborts))
+                    :: answers
+                )
+
+            List.rev answers
+
+        // Raising it, and not assuming it away.
+        answers (analysis (Set.remove Assumption.NoThreadAborts Assumption.all))
+        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (true, false)))
+
+        // Not raising it, and assuming it away.
+        answers (analysis Assumption.all)
+        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (false, true)))
+
     /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
     /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
     [<Test>]
