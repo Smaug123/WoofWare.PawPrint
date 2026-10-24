@@ -164,3 +164,16 @@ module UnmanagedCallingConvention =
         | CallersOnlyConvention.PlatformDefault
         | CallersOnlyConvention.Unreadable _
         | CallersOnlyConvention.NullArray -> false
+
+/// What CoreCLR refuses of an `[UnmanagedCallersOnly]` method, which only native code may call.
+[<RequireQualifiedAccess>]
+module UnmanagedCallersOnly =
+    /// Whether `runtime`'s CoreCLR refuses to make a delegate over an `[UnmanagedCallersOnly]`
+    /// method where the JIT compiles the delegate's construction and sees the method the target's
+    /// address instruction names: .NET 10's `COMDelegate::GetDelegateCtor` throws
+    /// `NotSupportedException` (`NotSupported_UnmanagedCallersOnlyTarget`) before it walks any
+    /// signature; .NET 11's no longer checks, and makes the delegate.
+    let refusesDelegateTarget (runtime : EmulatedRuntime) : bool =
+        match runtime with
+        | EmulatedRuntime.Net10 -> true
+        | EmulatedRuntime.Net11 -> false

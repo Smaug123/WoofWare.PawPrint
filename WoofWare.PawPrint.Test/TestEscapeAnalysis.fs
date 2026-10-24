@@ -6857,6 +6857,24 @@ public static unsafe class Probe
         finally
             context.Unload ()
 
+    /// As `analysisOver`, over the test host's own framework rather than the framework under test:
+    /// for an oracle that compiles on the test host's own CoreCLR, in process.
+    let private analysisOverHostImage
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        analysisOf
+            (Assembly.readFile loggerFactory HostImage.coreLibPath)
+            HostImage.runtimeDirs
+            (hostTarget ())
+            HardwareIntrinsicsProfile.ScalarOnly
+            Assumption.all
+            assemblies
+            bind
+
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
     /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
@@ -6881,12 +6899,7 @@ public static unsafe class Probe
             client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOf
-                (Assembly.readFile loggerFactory HostImage.coreLibPath)
-                HostImage.runtimeDirs
-                (hostTarget ())
-                HardwareIntrinsicsProfile.ScalarOnly
-                Assumption.all
+            analysisOverHostImage
                 [ client ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -7174,14 +7187,16 @@ public static unsafe class Uco
             builder.Save image
             image.ToArray ()
 
-    /// CoreCLR refuses to make a delegate over an `[UnmanagedCallersOnly]` method
+    /// .NET 10's CoreCLR refuses to make a delegate over an `[UnmanagedCallersOnly]` method
     /// (`COMDelegate::GetDelegateCtor`, `NotSupported_UnmanagedCallersOnlyTarget`), which it asks
     /// where the JIT compiles the `newobj` of the delegate's constructor and sees the method the
     /// target's address instruction names (`fgOptimizeDelegateConstructor`), before it walks any
     /// signature for a thunk. That fails the compilation of the method making the delegate, past
     /// every handler of it, on both tiers. Where the address reaches the `newobj` any other way, the
     /// JIT does not ask, and the runtime's construction of the delegate (`Delegate_Construct`) does
-    /// not refuse it. The host compiles each probe, at tier 0 and fully optimised.
+    /// not refuse it. The host compiles each probe, at tier 0 and fully optimised, against which the
+    /// analysis reads the host's own image (.NET 11 refuses no such delegate,
+    /// `UnmanagedCallersOnly.refusesDelegateTarget`).
     [<Test>]
     let ``making a delegate over an UnmanagedCallersOnly method fails the compilation where the JIT names the target``
         ()
@@ -7235,7 +7250,7 @@ public static unsafe class Uco
         let assembly =
             Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (delegateProbes.Value))
 
-        let mutable analysis = analysisOver [ assembly ] id
+        let mutable analysis = analysisOverHostImage [ assembly ] id
 
         let failures =
             [
