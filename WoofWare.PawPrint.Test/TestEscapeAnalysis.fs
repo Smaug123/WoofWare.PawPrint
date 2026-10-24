@@ -11160,6 +11160,8 @@ public static class Runners
             Tuple : EntityHandle
             /// `ValueTuple<int modopt(IsConst)>`
             ModifiedTuple : EntityHandle
+            /// `Span<System.Gone modopt(IsConst)>`, which CoreLib declares no `System.Gone` for
+            ModifiedGoneSpan : EntityHandle
         }
 
     /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
@@ -11214,6 +11216,7 @@ public static class Runners
         let spanRef = typeRef "System" "Span`1"
         let tupleRef = typeRef "System" "ValueTuple`1"
         let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
+        let goneRef = typeRef "System" "Gone"
 
         let typeSpec (encode : SignatureTypeEncoder -> unit) : EntityHandle =
             let blob = BlobBuilder ()
@@ -11222,28 +11225,37 @@ public static class Runners
             metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
             |> TypeSpecificationHandle.op_Implicit
 
-        let instance (root : EntityHandle) (modified : bool) (encoder : SignatureTypeEncoder) : unit =
+        let instance
+            (root : EntityHandle)
+            (modified : bool)
+            (spellArgument : SignatureTypeEncoder -> unit)
+            (encoder : SignatureTypeEncoder)
+            : unit
+            =
             let argument = encoder.GenericInstantiation(root, 1, true).AddArgument ()
 
             if modified then
                 argument.CustomModifiers().AddModifier (isConstRef, true)
                 |> ignore<CustomModifiersEncoder>
 
-            argument.Int32 ()
+            spellArgument argument
+
+        let int32 (encoder : SignatureTypeEncoder) : unit = encoder.Int32 ()
 
         let operands =
             {
-                Span = typeSpec (instance spanRef false)
-                ModifiedSpan = typeSpec (instance spanRef true)
-                Tuple = typeSpec (instance tupleRef false)
-                ModifiedTuple = typeSpec (instance tupleRef true)
+                Span = typeSpec (instance spanRef false int32)
+                ModifiedSpan = typeSpec (instance spanRef true int32)
+                Tuple = typeSpec (instance tupleRef false int32)
+                ModifiedTuple = typeSpec (instance tupleRef true int32)
+                ModifiedGoneSpan = typeSpec (instance spanRef true (fun argument -> argument.Type (goneRef, false)))
             }
 
         let locals =
             let blob = BlobBuilder ()
             let variables = BlobEncoder(blob).LocalVariableSignature 2
-            instance spanRef false (variables.AddVariable().Type ())
-            instance tupleRef false (variables.AddVariable().Type ())
+            instance spanRef false int32 (variables.AddVariable().Type ())
+            instance tupleRef false int32 (variables.AddVariable().Type ())
             metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
 
         let signature =
@@ -11348,6 +11360,12 @@ public static class Runners
             // `ValueTuple<int>` is no byref-like type, however its argument is modified.
             "BoxModifiedTuplePop", popped _.ModifiedTuple 1, Refusal.Compiles
             "NewarrModifiedTuple", (fun operands code -> newarr _.ModifiedTuple code operands), Refusal.Compiles
+            // A type that does not load raises what binding the token does, before the JIT can
+            // refuse the box.
+            "BoxModifiedGoneSpanPop", popped _.ModifiedGoneSpan 0, Refusal.Raises typeLoad
+            "NewarrModifiedGoneSpan",
+            (fun operands code -> newarr _.ModifiedGoneSpan code operands),
+            Refusal.Raises typeLoad
         ]
 
     /// PawPrint instantiates no generic type whose argument carries a custom modifier, so the
