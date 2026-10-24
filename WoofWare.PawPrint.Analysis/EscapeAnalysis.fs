@@ -5326,8 +5326,9 @@ module EscapeAnalysis =
 
     /// A type a body spells, as an instance of the body running as `caller` makes it; `spelledIn`
     /// names the assembly whose metadata spells it. `None` where the instance leaves a type
-    /// variable of it open, or the type fails to bind, which fails that body before it runs, as its
-    /// facts report.
+    /// variable of it open; where the type fails to bind, which fails that body before it runs, as
+    /// its facts report; and where TypeSystem does not instantiate it, although CoreCLR may load it
+    /// (`concretizable`).
     let private concretizeIn
         (state : EscapeAnalysisState)
         (caller : Instantiation)
@@ -5977,14 +5978,25 @@ module EscapeAnalysis =
         match concretizeIn state caller named.Type named.SpelledIn with
         | state, None when caller = Instantiation.Open && mentionsTypeVariable named.Type ->
             state, [ OutsideBodyFact.Opaque Opacity.DependsOnInstantiation ]
-        // A type that does not load fails the instruction's binding (`bind`).
-        | state, None -> state, []
-        | state, Some handle ->
+        | state, handle ->
 
-        let byRefLike =
-            match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
-            | Some (_, ty) -> LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
-            | None -> false
+        let state, byRefLike =
+            match handle with
+            | Some handle ->
+                match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+                | Some (_, ty) ->
+                    state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
+                | None -> state, false
+            // The token binds, which loads the type it names in full (`bind`), but the analysis
+            // does not instantiate it (`concretizable`). It is byref-like where its definition is,
+            // whatever its type arguments.
+            | None ->
+                match nominalIdentity state (assemblyOf state named.SpelledIn) named.Type with
+                | state, Some identity ->
+                    let _, ty = definitionOf state identity
+                    state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies ty
+                // No array, pointer or function pointer is byref-like.
+                | state, None -> state, false
 
         if not byRefLike then
             state, []
@@ -6002,7 +6014,15 @@ module EscapeAnalysis =
                     Canonical = shared spelled
                 }
 
-            let boxed = view handle boxed
+            let boxed = handle |> Option.map (fun handle -> view handle boxed)
+
+            // Where the analysis does not instantiate the boxed type, it proves it equal to no type
+            // and decides no cast from it, where the JIT may do either and fold the box: it reports
+            // the refusal.
+            let provesEqual (a : JitTypeView option) (b : JitTypeView option) : bool =
+                match a, b with
+                | Some a, Some b -> JitTypeComparison.provesEqual a b
+                | _, _ -> false
 
             // What the JIT resolves a type the follower names to, in this instance. Where the
             // analysis does not instantiate it, it cannot tell whether the type loads.
@@ -6039,7 +6059,7 @@ module EscapeAnalysis =
                     match resolve state cast with
                     // The JIT resolves the `unbox.any`'s token only once it proves the `isinst`'s
                     // type is the boxed type.
-                    | state, TokenResolution.Resolves cast when JitTypeComparison.provesEqual cast boxed ->
+                    | state, TokenResolution.Resolves cast when provesEqual (Some cast) boxed ->
                         resolveInto state unboxed (fun unboxed -> BoxFollower.CastUnboxed (cast, unboxed))
                     | state, TokenResolution.Resolves _ -> state, TokenResolution.Resolves BoxFollower.Other
                     | state, TokenResolution.Raises -> state, TokenResolution.Raises
@@ -6049,13 +6069,13 @@ module EscapeAnalysis =
             | TokenResolution.Raises -> state, false
             | TokenResolution.Undecided -> state, true
             | TokenResolution.Resolves follower ->
-                match
-                    BoxPattern.foldsByRefLike
-                        JitTypeComparison.provesEqual
-                        (JitTypeComparison.decidesCastFromValueType state.BaseTypes state.TypeSystem)
-                        boxed
-                        follower
-                with
+                let decidesCast (from : JitTypeView option) (target : JitTypeView option) : bool option =
+                    match from, target with
+                    | Some from, Some target ->
+                        JitTypeComparison.decidesCastFromValueType state.BaseTypes state.TypeSystem from target
+                    | _, _ -> None
+
+                match BoxPattern.foldsByRefLike provesEqual decidesCast boxed (BoxFollower.map Some follower) with
                 | Some folds -> state, not folds
                 // A cast from a canonical form to a generic interface, which the JIT decides only
                 // where the canonical form casts to it.
