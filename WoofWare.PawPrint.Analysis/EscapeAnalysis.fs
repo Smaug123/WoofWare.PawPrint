@@ -5394,13 +5394,16 @@ module EscapeAnalysis =
                     instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
                 )
 
-    /// The type a `constrained.` prefix names, a token of `assembly`, when the body making the call
-    /// runs as `caller`; `None` where only an instance decides it.
+    /// The type CoreCLR resolves a `constrained.` call of `callee` against, where the prefix names
+    /// a token of `assembly`, when the body making the call runs as `caller`: the type the prefix
+    /// names, or the underlying primitive of an enum it names (`ConstrainedType.resolve`). `None`
+    /// where only an instance decides it.
     let private constrainedReceiver
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
         (constrainedType : MetadataToken)
+        (callee : Callee)
         : EscapeAnalysisState * ConcreteTypeHandle option
         =
         let typeSystem, spelling, spellingAssembly =
@@ -5417,10 +5420,32 @@ module EscapeAnalysis =
                 TypeSystem = typeSystem
             }
 
-        concretizeIn state caller spelling spellingAssembly.DefinitionFullName
+        match concretizeIn state caller spelling spellingAssembly.DefinitionFullName with
+        | state, None -> state, None
+        | state, Some named ->
+            let _, called = methodOf state callee.Callee
+
+            let typeSystem, resolved =
+                ConstrainedType.resolve
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    state.TypeSystem
+                    named
+                    called
+
+            let state =
+                { state with
+                    TypeSystem = typeSystem
+                }
+
+            match resolved with
+            | ConstrainedType.AsNamed receiver
+            | ConstrainedType.EnumUnderlying (_, receiver) -> state, Some receiver
+            | ConstrainedType.Undecided _ -> state, None
 
     /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
-    /// the type the prefix names decides it (`dispatchOn`).
+    /// the type CoreCLR resolves it against decides it (`constrainedReceiver`, `dispatchOn`).
     let private constrainedInstance
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -5429,16 +5454,18 @@ module EscapeAnalysis =
         (callee : Callee)
         : EscapeAnalysisState * DispatchOutcome
         =
-        match constrainedReceiver state assembly caller constrainedType with
+        match constrainedReceiver state assembly caller constrainedType callee with
         | state, Some receiver -> dispatchOn state assembly caller receiver false callee
         | state, None -> state, DispatchOutcome.Undecided
 
     /// Whether the JIT boxes the receiver of `site`, a `constrained.` call the body of `assembly`
-    /// makes running as `caller`. It does where the type the prefix names is a value type and the
-    /// method the call runs is no method the type declares (`TryResolveConstraintMethodApprox`,
-    /// methodtable.cpp, finds none): one it inherits from a class, a default interface body, or
-    /// one that is not virtual, such as `Object.GetType` (`getCallInfo`, jitinterface.cpp). It
-    /// boxes as `box` does. Where dispatch fails, it boxes before the call raises.
+    /// makes running as `caller`. It does where the type CoreCLR resolves the call against
+    /// (`constrainedReceiver`: an enum's underlying primitive, where it retargets the call) is a
+    /// value type and the method the call runs is no method that type declares
+    /// (`TryResolveConstraintMethodApprox`, methodtable.cpp, finds none): one it inherits from a
+    /// class, a default interface body, or one that is not virtual, such as `Object.GetType`
+    /// (`getCallInfo`, jitinterface.cpp). It boxes as `box` does. Where dispatch fails, it boxes
+    /// before the call raises.
     let private receiverBox
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -5446,7 +5473,7 @@ module EscapeAnalysis =
         (site : ReceiverBoxSite)
         : EscapeAnalysisState * ReceiverBox
         =
-        match constrainedReceiver state assembly caller site.Constrained with
+        match constrainedReceiver state assembly caller site.Constrained site.Named with
         | state, None -> state, ReceiverBox.Undecided
         | state, Some receiver ->
 

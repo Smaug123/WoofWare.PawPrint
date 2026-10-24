@@ -24,6 +24,8 @@ type ConstrainedType =
 [<RequireQualifiedAccess>]
 module ConstrainedType =
 
+    let private operation = "resolving a constrained. call on an enum"
+
     /// The type CoreCLR resolves a `constrained.` call of `called` against, where the prefix names
     /// the closed type `named`.
     let resolve
@@ -35,4 +37,51 @@ module ConstrainedType =
         (called : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : TypeSystemState * ConstrainedType
         =
-        state, ConstrainedType.AsNamed named
+        match TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state named with
+        | state, false -> state, ConstrainedType.AsNamed named
+        | state, true ->
+
+        // `MethodDesc::GetSlot`: the slot a method holds in the method table of its own declaring
+        // type, whichever type that is.
+        let slotOf
+            (state : TypeSystemState)
+            (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : TypeSystemState * int option
+            =
+            match method.TryDeclaringType with
+            | None -> state, None
+            | Some declaringType ->
+                let state, table =
+                    ConcreteMethodTable.slotTableOfDefinition
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        operation
+                        state
+                        declaringType.Identity
+
+                state, MethodTableLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey) table
+
+        // CoreLib's binder names `Object.GetHashCode` by its signature, `IM_RetInt`.
+        let getHashCode =
+            baseClassTypes.Object.Methods
+            |> List.filter (fun m ->
+                m.Name = "GetHashCode"
+                && not m.IsStatic
+                && m.Signature.ParameterTypes.IsEmpty
+                && m.Signature.ReturnType = MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32)
+            )
+            |> List.exactlyOne
+
+        let state, hashCodeSlot =
+            match slotOf state getHashCode with
+            | state, Some slot -> state, slot
+            | _, None -> failwith $"BUG: %s{operation}: Object.GetHashCode holds no slot in Object's method table"
+
+        match slotOf state called with
+        | state, None -> state, ConstrainedType.Undecided named
+        | state, Some slot when slot <> hashCodeSlot -> state, ConstrainedType.AsNamed named
+        | state, Some _ ->
+            match TypeSystemState.enumUnderlyingHandle loggerFactory dotnetRuntimeDirs baseClassTypes state named with
+            | None -> state, ConstrainedType.Undecided named
+            | Some (state, underlying) -> state, ConstrainedType.EnumUnderlying (named, underlying)

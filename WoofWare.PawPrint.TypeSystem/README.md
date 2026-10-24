@@ -54,6 +54,12 @@ What lives here:
   than virtual dispatch's: a MethodImpl on the constrained type's chain, exactly before through
   variance, then the most specific default body, found by identity and never by name, exactly
   before through variance, or that the call is ambiguous.
+* `ConstrainedType` — the type CoreCLR resolves a `constrained.` call against. That is the type
+  the prefix names, except where it names an enum and the method called holds the slot number
+  `Object.GetHashCode` holds in `Object`'s table: `getCallInfo` then resolves the call on the
+  enum's underlying primitive, unboxed. The comparison is of slot numbers alone, so an interface
+  method in that slot (`IConvertible.ToSByte`, or a static virtual numbered past an interface's
+  vtable) is retargeted too.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.

@@ -395,7 +395,9 @@ module TestConstrainedType =
 
                     let interfaces =
                         underlying.GetInterfaces ()
-                        |> Array.filter (fun i -> not (enumInterfaces.Contains i))
+                        // A method of an interface CoreLib keeps internal raises
+                        // `MethodAccessException` from the probe, which the analysis assumes away.
+                        |> Array.filter (fun i -> i.IsVisible && not (enumInterfaces.Contains i))
                         |> Array.sortBy (fun i -> i.FullName)
 
                     for iface in interfaces do
