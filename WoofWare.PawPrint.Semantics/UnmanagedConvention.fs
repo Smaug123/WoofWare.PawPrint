@@ -46,6 +46,11 @@ module UnmanagedConvention =
         match modifier with
         | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
         | TypeDefn.FromDefinition (identity, _) ->
+            // A signature's type definition token names a row of its own module's table.
+            if identity.AssemblyFullName <> assembly.DefinitionFullName then
+                failwith
+                    $"BUG: a signature of %s{assembly.DefinitionFullName} names a type definition of %s{identity.AssemblyFullName}"
+
             let definition = assembly.TypeDefs.[identity.TypeDefinition.Get]
             Some (definition.Namespace, definition.Name)
         | _ -> None

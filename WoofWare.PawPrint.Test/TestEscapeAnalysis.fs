@@ -7236,6 +7236,8 @@ public static unsafe class Natives
     public static extern void SwiftTakesPointerToGoneStruct(Provider.GoneStruct* x);
     [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
     public static extern void SwiftTakesByrefToGoneStruct(ref Provider.GoneStruct x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void CdeclTakesPointerToGoneStruct(Provider.GoneStruct* x);
 }
 
 public static unsafe class Calls
@@ -7250,6 +7252,7 @@ public static unsafe class Calls
     public static void ReturnsGone() { if (never) Natives.ReturnsGone(); }
     public static void SwiftPointerToGoneStruct() { if (never) Natives.SwiftTakesPointerToGoneStruct(null); }
     public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
+    public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
     public static void CaughtGenericOfGone()
     {
         try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
@@ -7314,6 +7317,8 @@ public static unsafe class Calls
                 "SwiftPointerToGoneStruct", swiftEscapes, [ typeLoad ]
                 // A byref needs marshalling, so the JIT leaves the transition to the stub.
                 "SwiftByrefToGoneStruct", CallOutcome.Runs, []
+                // The import's convention is not `WinApi`, so CoreCLR reads no `UnmanagedCallConv`.
+                "CdeclPointerToGoneStruct", CallOutcome.Runs, []
                 // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
                 // analysis does not decide.
                 "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
