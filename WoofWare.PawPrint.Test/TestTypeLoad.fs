@@ -118,7 +118,8 @@ public struct ThingStruct { }
         finally
             context.Unload ()
 
-    /// The client's type definition that C# spells `name`.
+    /// The client's type definition that C# spells `name`, which may name a generic definition
+    /// without arguments, as `G<,>`.
     let private definitionNamed (client : DumpedAssembly) (name : string) : TypeDefinitionHandle =
         let rec spelled (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string =
             if ty.DeclaringType.IsNil then
@@ -126,8 +127,14 @@ public struct ThingStruct { }
             else
                 $"%s{spelled client.TypeDefs.[ty.DeclaringType]}.%s{ty.Name}"
 
+        // `G<,>` is the definition whose metadata name is ``G`2``.
+        let metadataName =
+            match name.IndexOf '<' with
+            | -1 -> name
+            | open' -> $"%s{name.Substring (0, open')}`%d{name.Length - open' - 1}"
+
         client.TypeDefs.Values
-        |> Seq.filter (fun ty -> spelled ty = $"Client.%s{name}")
+        |> Seq.filter (fun ty -> spelled ty = $"Client.%s{metadataName}")
         |> Seq.exactlyOne
         |> fun ty -> ty.TypeDefHandle
 
@@ -320,6 +327,86 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 10
         count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 2
 
+    /// Generic definitions whose type parameters' constraints name types the provider lacks, or an
+    /// assembly that is not there, loaded through `typeof` of the definition itself.
+    let private curatedConstrainedDeclarations : string =
+        """
+public class ConstrainedToGone<T> where T : Provider.Gone { }
+public class ConstrainedToIGone<T> where T : Provider.IGone { }
+public class ConstrainedToInterfaceOfGone<T> where T : Provider.IKeptGeneric<Provider.Gone> { }
+public class ConstrainedToInterfaceOfGoneStruct<T> where T : Provider.IKeptGeneric<Provider.GoneStruct> { }
+public class ConstrainedToInterfaceOfGoneArray<T> where T : Provider.IKeptGeneric<Provider.Gone[]> { }
+public class ConstrainedToClassOfGone<T> where T : Provider.KeptGeneric<Provider.Gone> { }
+public class ConstrainedToMissing<T> where T : Optional.Thing { }
+public class ConstrainedToInterfaceOfMissing<T> where T : Provider.IKeptGeneric<Optional.Thing> { }
+public class ConstrainedToStructAndIGone<T> where T : struct, Provider.IGone { }
+public class ConstrainedToKept<T> where T : Provider.Kept, Provider.IKept, new() { }
+public class ConstrainedToItself<T> where T : Provider.IKeptGeneric<T> { }
+public class ConstrainedToEachOther<T, U> where T : U where U : Provider.IKept { }
+public struct StructConstrainedToGone<T> where T : Provider.Gone { }
+public interface InterfaceConstrainedToGone<T> where T : Provider.Gone { }
+public class FirstParameterFirst<T, U> where T : Provider.Gone where U : Optional.Thing { }
+public class SecondParameterSecond<T, U> where T : Optional.Thing where U : Provider.Gone { }
+public class ConstraintsInOrder<T> where T : Provider.IGone, Optional.IThing { }
+public class ConstraintsInOtherOrder<T> where T : Optional.IThing, Provider.IGone { }
+public class ClassBeforeInterfaceOfMissing<T> where T : Provider.KeptGeneric<Provider.Gone>, Provider.IKeptGeneric<Optional.Thing> { }
+public class InterfaceOfMissingAfterClass<T> where T : Provider.KeptGeneric<Optional.Thing>, Provider.IKeptGeneric<Provider.Gone> { }
+public class InterfaceSignatureAfterVariable<T, U> where T : Provider.IKeptGeneric<Optional.Thing>, U where U : Provider.Gone { }
+public class ParentBeforeConstraint<T> : Provider.Gone where T : Optional.Thing { }
+public class StaticFieldBeforeConstraint<T> where T : Optional.Thing { public static Provider.GoneStruct F; }
+public class StaticGoneHolder { public static Provider.GoneStruct F; }
+public interface IStaticGoneHolder { public static Provider.GoneStruct F; }
+public class ConstrainedToStaticGoneHolder<T> where T : StaticGoneHolder { }
+public class ConstrainedToIStaticGoneHolder<T> where T : IStaticGoneHolder { }
+"""
+
+    let private curatedConstrainedNames : string list =
+        [
+            "ConstrainedToGone<>"
+            "ConstrainedToIGone<>"
+            "ConstrainedToInterfaceOfGone<>"
+            "ConstrainedToInterfaceOfGoneStruct<>"
+            "ConstrainedToInterfaceOfGoneArray<>"
+            "ConstrainedToClassOfGone<>"
+            "ConstrainedToMissing<>"
+            "ConstrainedToInterfaceOfMissing<>"
+            "ConstrainedToStructAndIGone<>"
+            "ConstrainedToKept<>"
+            "ConstrainedToItself<>"
+            "ConstrainedToEachOther<,>"
+            "StructConstrainedToGone<>"
+            "InterfaceConstrainedToGone<>"
+            "FirstParameterFirst<,>"
+            "SecondParameterSecond<,>"
+            "ConstraintsInOrder<>"
+            "ConstraintsInOtherOrder<>"
+            "ClassBeforeInterfaceOfMissing<>"
+            "InterfaceOfMissingAfterClass<>"
+            "InterfaceSignatureAfterVariable<,>"
+            "ParentBeforeConstraint<>"
+            "StaticFieldBeforeConstraint<>"
+            "ConstrainedToStaticGoneHolder<>"
+            "ConstrainedToIStaticGoneHolder<>"
+        ]
+
+    [<Test>]
+    let ``each of a curated set of constrained generic definitions fails to load exactly where the host's does``
+        ()
+        : unit
+        =
+        let disagreements, host =
+            compare curatedConstrainedDeclarations curatedConstrainedNames
+
+        if not disagreements.IsEmpty then
+            failwith (String.concat Environment.NewLine disagreements)
+
+        let count (outcome : Outcome) =
+            host |> List.filter ((=) outcome) |> List.length
+
+        count Outcome.Loads |> shouldBeGreaterThan 4
+        count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 10
+        count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 4
+
     /// A type as a generated client spells it.
     type private Spelled =
         | Kept
@@ -340,6 +427,8 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         | IKeptGeneric of Spelled
         | Pointer of Spelled
         | FunctionPointer of Spelled
+        /// The type parameter at this index of the generic type spelling it, in a constraint.
+        | Parameter of index : int
 
     [<RequireQualifiedAccess>]
     type private Kind =
@@ -347,14 +436,31 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         | Struct
         | Interface
 
-    /// A generated client type: its base class, the interfaces it implements, and its fields, each
-    /// static or not.
+    /// Which of `struct` and `class` a generated type parameter's constraints begin with.
+    [<RequireQualifiedAccess>]
+    type private SpecialConstraint =
+        | Struct
+        | Class
+
+    /// A generated type parameter's constraints, each kind in the place C# requires it.
+    type private ParameterConstraints =
+        {
+            Special : SpecialConstraint option
+            ClassConstraint : Spelled option
+            /// Interfaces and earlier type parameters, in the order spelled.
+            Others : Spelled list
+            New : bool
+        }
+
+    /// A generated client type: its base class, the interfaces it implements, its fields, each
+    /// static or not, and the constraints of each of its type parameters, if it is generic.
     type private Declaration =
         {
             Kind : Kind
             Base : Spelled option
             Interfaces : Spelled list
             Fields : (bool * Spelled) list
+            Generics : ParameterConstraints list
         }
 
     let rec private render (spelled : Spelled) : string =
@@ -376,6 +482,7 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         | IKeptGeneric argument -> $"Provider.IKeptGeneric<%s{render argument}>"
         | Pointer target -> $"%s{render target}*"
         | FunctionPointer returned -> $"delegate*<%s{render returned}>"
+        | Parameter index -> $"P%d{index}"
 
     let private renderDeclaration (index : int) (declaration : Declaration) : string =
         let keyword =
@@ -399,7 +506,37 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
             )
             |> String.concat ""
 
-        $"public unsafe %s{keyword} T%d{index}%s{supertypes} {{%s{fields} }}"
+        let parameters, constraints =
+            match declaration.Generics with
+            | [] -> "", ""
+            | generics ->
+                let parameters = generics |> List.mapi (fun i _ -> $"P%d{i}") |> String.concat ", "
+
+                let constraints =
+                    generics
+                    |> List.mapi (fun i constraints ->
+                        let special =
+                            match constraints.Special with
+                            | None -> []
+                            | Some SpecialConstraint.Struct -> [ "struct" ]
+                            | Some SpecialConstraint.Class -> [ "class" ]
+
+                        match
+                            special
+                            @ (Option.toList constraints.ClassConstraint |> List.map render)
+                            @ (constraints.Others |> List.map render)
+                            @ (if constraints.New then [ "new()" ] else [])
+                        with
+                        | [] -> ""
+                        | parts ->
+                            let parts = String.concat ", " parts
+                            $" where P%d{i} : %s{parts}"
+                    )
+                    |> String.concat ""
+
+                $"<%s{parameters}>", constraints
+
+        $"public unsafe %s{keyword} T%d{index}%s{parameters}%s{supertypes}%s{constraints} {{%s{fields} }}"
 
     /// One of `kept`, `gone` or `missing`, mostly `kept`, so that most generated types still load.
     let private weighted (kept : Spelled list) (gone : Spelled list) (missing : Spelled list) : Gen<Spelled> =
@@ -494,6 +631,7 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
                     Base = baseClass
                     Interfaces = interfaces
                     Fields = fields
+                    Generics = []
                 }
         }
 
@@ -531,6 +669,192 @@ public class InstanceGoneBeforeStaticMissing { public Provider.GoneStruct I; pub
         coverage.Count Outcome.Loads |> shouldBeGreaterThan 100
         coverage.Count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 40
         coverage.Count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 30
+
+    /// The constraints of the type parameter at `index` of `count`, after those of the parameters
+    /// before it, `previous`, naming any of `earlier`, the kinds of the client's non-generic types.
+    /// It keeps to what C# accepts: `struct` with no class constraint and no `new()`, and an earlier
+    /// type parameter as a constraint only on a parameter with neither `struct`, `class` nor a class
+    /// constraint, and only where that parameter has no `struct`.
+    let private genParameterConstraints
+        (earlier : Kind list)
+        (count : int)
+        (index : int)
+        (previous : ParameterConstraints list)
+        : Gen<ParameterConstraints>
+        =
+        let ofKind (kind : Kind) =
+            earlier
+            |> List.indexed
+            |> List.filter (fun (_, k) -> k = kind)
+            |> List.map (fst >> Earlier)
+
+        let argument =
+            Gen.frequency [ 3, genArgument earlier 1 ; 1, Gen.elements (List.init count Parameter) ]
+
+        let genClass =
+            Gen.oneof
+                [
+                    weighted (Kept :: ofKind Kind.Class) [ Gone ] [ Missing ]
+                    Gen.map KeptGeneric argument
+                ]
+
+        let genInterface =
+            Gen.oneof
+                [
+                    weighted (IKept :: ofKind Kind.Interface) [ IGone ] [ IMissing ]
+                    Gen.map IKeptGeneric argument
+                ]
+
+        let genInterfaces =
+            Gen.zip (Gen.choose (0, 2)) (Gen.listOfLength 2 genInterface)
+            |> Gen.map (fun (count, interfaces) -> List.truncate count interfaces |> List.distinctBy render)
+
+        let variables =
+            previous
+            |> List.indexed
+            |> List.filter (fun (_, constraints) -> constraints.Special <> Some SpecialConstraint.Struct)
+            |> List.map (fst >> Parameter)
+
+        let unconstrained =
+            {
+                Special = None
+                ClassConstraint = None
+                Others = []
+                New = false
+            }
+
+        let nominal =
+            gen {
+                let! special =
+                    Gen.frequency
+                        [
+                            3, Gen.constant None
+                            1, Gen.constant (Some SpecialConstraint.Struct)
+                            1, Gen.constant (Some SpecialConstraint.Class)
+                        ]
+
+                let! classConstraint =
+                    match special with
+                    | None -> Gen.oneof [ Gen.constant None ; Gen.map Some genClass ]
+                    | Some _ -> Gen.constant None
+
+                let! interfaces = genInterfaces
+
+                let! isNew =
+                    match special with
+                    | Some SpecialConstraint.Struct -> Gen.constant false
+                    | _ -> Gen.frequency [ 3, Gen.constant false ; 1, Gen.constant true ]
+
+                return
+                    {
+                        Special = special
+                        ClassConstraint = classConstraint
+                        Others = interfaces
+                        New = isNew
+                    }
+            }
+
+        let onVariable =
+            gen {
+                let! variable = Gen.elements variables
+                let! interfaces = genInterfaces
+
+                return
+                    { unconstrained with
+                        Others = variable :: interfaces
+                    }
+            }
+
+        Gen.frequency
+            [
+                1, Gen.constant unconstrained
+                4, nominal
+                if not variables.IsEmpty then
+                    2, onVariable
+            ]
+
+    /// A generic client type with one or two type parameters, naming any of `earlier`, the kinds of
+    /// the client's non-generic types, and nothing generic.
+    let private genGenericDeclaration (earlier : Kind list) : Gen<Declaration> =
+        gen {
+            let! declaration = genDeclaration earlier
+            let! count = Gen.choose (1, 2)
+
+            let! generics =
+                (Gen.constant [], List.init count id)
+                ||> List.fold (fun soFar index ->
+                    gen {
+                        let! previous = soFar
+                        let! constraints = genParameterConstraints earlier count index previous
+                        return previous @ [ constraints ]
+                    }
+                )
+
+            return
+                { declaration with
+                    Generics = generics
+                }
+        }
+
+    /// A client of one to five non-generic types followed by one to three generic ones.
+    let private genConstrainedClient : Gen<Declaration list> =
+        gen {
+            let! plain = genClient
+            let! count = Gen.choose (1, 3)
+            let! generic = Gen.listOfLength count (genGenericDeclaration (plain |> List.map (fun d -> d.Kind)))
+            return plain @ generic
+        }
+
+    /// Whether a declaration's type parameters' constraints name a type the provider lacks or one
+    /// in the assembly that is not there.
+    let private constraintsNameAbsent (declaration : Declaration) : bool =
+        declaration.Generics
+        |> List.exists (fun constraints ->
+            Option.toList constraints.ClassConstraint @ constraints.Others
+            |> List.exists (fun spelled ->
+                let rendered = render spelled
+                rendered.Contains "Gone" || rendered.Contains "Optional."
+            )
+        )
+
+    [<Test>]
+    let ``a generated generic definition fails to load exactly where the host's does, with its exception`` () : unit =
+        let property (cover : Outcome * bool -> unit) (declarations : Declaration list) : unit =
+            let names =
+                declarations
+                |> List.mapi (fun i declaration ->
+                    match declaration.Generics with
+                    | [] -> $"T%d{i}"
+                    | generics -> $"""T%d{i}<%s{String.replicate (generics.Length - 1) ","}>"""
+                )
+
+            let source =
+                declarations |> List.mapi renderDeclaration |> String.concat Environment.NewLine
+
+            let disagreements, host = compare source names
+
+            for declaration, outcome in List.zip declarations host do
+                if not declaration.Generics.IsEmpty then
+                    cover (outcome, constraintsNameAbsent declaration)
+
+            if not disagreements.IsEmpty then
+                failwith (String.concat Environment.NewLine (source :: disagreements))
+
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 100)
+                (Arb.fromGen genConstrainedClient)
+                property
+
+        // Among the generic definitions, enough of each outcome where the constraints name what is
+        // not there, and where they do not, for the comparison to say something.
+        coverage.Count (Outcome.Loads, false) |> shouldBeGreaterThan 20
+
+        coverage.Count (Outcome.Fails "TypeLoadException", true)
+        |> shouldBeGreaterThan 20
+
+        coverage.Count (Outcome.Fails "FileNotFoundException", true)
+        |> shouldBeGreaterThan 15
 
     /// A type to load: one of the client's own, or one spelled over them and the provider's.
     let private genLoad (kinds : Kind list) : Gen<Spelled> =

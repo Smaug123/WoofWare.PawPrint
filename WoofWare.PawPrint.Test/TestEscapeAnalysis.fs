@@ -8331,6 +8331,189 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client compiled against one version of a provider, run against another lacking two types
+    /// and without the assembly `Optional`, naming generic definitions whose type parameters'
+    /// constraints name those types. CoreCLR's full load of a type loads its type parameters'
+    /// constraints (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method names, fails to
+    /// compile it, past the method's own `catch`, even in code shared between instantiations. The
+    /// host's CoreCLR, running each method against the same assemblies, says which fail.
+    [<Test>]
+    let ``loading a generic type loads its type parameters' constraints`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { } public interface IKeptGeneric<T> { }"
+            + (if complete then " public class Gone { }" else "")
+
+        let optional = "namespace Optional; public class Thing { }"
+
+        let client =
+            """
+namespace Client;
+
+public class ConstrainedToGone<T> where T : Provider.Gone { }
+public class ConstrainedToInterfaceOfGone<T> where T : Provider.IKeptGeneric<Provider.Gone> { }
+public class ConstrainedToMissing<T> where T : Optional.Thing { }
+public class ConstrainedToKept<T> where T : Provider.Kept { }
+
+public static class Shared
+{
+    public static string OverTypeArgument<T>()
+    {
+        try { return typeof(ConstrainedToInterfaceOfGone<>).Name; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+}
+
+public static class Members
+{
+    public static string TokenOfConstrainedToGone()
+    {
+        try { return typeof(ConstrainedToGone<>).Name; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string TokenOfConstrainedToInterfaceOfGone()
+    {
+        try { return typeof(ConstrainedToInterfaceOfGone<>).Name; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string TokenOfConstrainedToMissing()
+    {
+        try { return typeof(ConstrainedToMissing<>).Name; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string TokenOfConstrainedToKept()
+    {
+        try { typeof(ConstrainedToKept<>).ToString(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string SharedOverTypeArgument() => Shared.OverTypeArgument<string>();
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let optionalImage = compile "Optional" [] optional
+
+        let clientImage = compile "Client" [ completeProvider ; optionalImage ] client
+
+        let typeLoad = "System.TypeLoadException"
+        let fileNotFound = "System.IO.FileNotFoundException"
+
+        // Each method, and what running it does.
+        let methods =
+            [
+                "TokenOfConstrainedToGone", CallOutcome.Escapes typeLoad
+                // An interface constraint over a type: CoreCLR loads each type its signature names.
+                "TokenOfConstrainedToInterfaceOfGone", CallOutcome.Escapes typeLoad
+                "TokenOfConstrainedToMissing", CallOutcome.Escapes fileNotFound
+                "TokenOfConstrainedToKept", CallOutcome.Runs
+                // Code shared between instantiations loads the type a token names when the JIT
+                // compiles it, as unshared code does.
+                "SharedOverTypeArgument", CallOutcome.Escapes typeLoad
+            ]
+
+        // What running each method does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("ConstraintTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let members =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Members"
+
+                methods
+                |> List.map (fun (name, _) ->
+                    let outcome =
+                        try
+                            match members.GetMethod(name).Invoke ((null : obj), [||]) with
+                            | null -> CallOutcome.Runs
+                            | :? string as returned when returned.StartsWith "System." -> CallOutcome.Caught returned
+                            | _ -> CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly))
+
+        // The runtime makes the exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeTypeLoad =
+            let next, made = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            render analysis made
+
+        let failures =
+            [
+                for name, expected in methods do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Members" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; fileNotFound ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    // What escapes is the exception the method's compilation raises, and whatever
+                    // making that one raises.
+                    let unexplained =
+                        match expected with
+                        | CallOutcome.Escapes exceptionName ->
+                            if not (List.contains exceptionName escaping) then
+                                escaping @ [ $"no %s{exceptionName}" ]
+                            else
+                                escaping
+                                |> List.filter (fun escaped ->
+                                    escaped <> exceptionName && not (madeTypeLoad.Contains $"=%s{escaped}")
+                                )
+                        | CallOutcome.Caught _
+                        | CallOutcome.Runs -> escaping
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
