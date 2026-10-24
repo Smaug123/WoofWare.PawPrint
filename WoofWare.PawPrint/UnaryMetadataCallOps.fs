@@ -1553,7 +1553,20 @@ module internal UnaryMetadataCallOps =
                         // The byref stays the callee's `this` without being dereferenced here, so
                         // a null one is the callee's business: it faults if and when it reads it.
                         match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
-                        | Some (EvalStackValue.ManagedPointer _) ->
+                        | Some (EvalStackValue.ManagedPointer ptr) ->
+                            let state =
+                                if retargeted then
+                                    // The primitive's method reads its `this` as the primitive, so
+                                    // it gets the enum's storage viewed as that, at the same address.
+                                    let _, state = IlMachineState.popEvalStack thread state
+
+                                    IlMachineState.pushToEvalStack'
+                                        (EvalStackValue.ManagedPointer (ManagedPointerSource.reinterpretAs tHandle ptr))
+                                        thread
+                                        state
+                                else
+                                    state
+
                             ConstrainedReceiver.Ready (state, directImplementation, false)
                         | Some other ->
                             failwith
