@@ -105,6 +105,11 @@ type NativeAssumption =
     /// each is named by the metadata of a type already loaded, such as a generic parameter's
     /// constraint.
     | NamedTypesLoad
+    /// The metadata of every loaded image is well formed, so that CoreCLR's metadata readers fail
+    /// on none of it: the HRESULT a reader returns for a bad token, a row past a table's end, a
+    /// heap index out of range or a malformed blob, which the native turns into an exception by
+    /// `IfFailThrow` or `ThrowHR`, does not arise.
+    | MetadataWellFormed
 
 /// What a method CoreCLR implements in native code (`NativeMethod`) can do to its caller, as an
 /// analyser needs it. Unrecoverable failures (`StackOverflowException`, `OutOfMemoryException` from

@@ -1921,7 +1921,8 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
+        // `JitOptimises`, `MembersAccessible`, `FieldsWrittenVisibly`, `MetadataWellFormed` and
+        // `NoThreadAborts` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
@@ -1932,6 +1933,8 @@ public static class SR
                     Assumption.JitOptimises
                     Assumption.MembersAccessible
                     Assumption.FieldsWrittenVisibly
+                    Assumption.MetadataWellFormed
+                    Assumption.NoThreadAborts
                 ]
         )
 
@@ -1945,7 +1948,9 @@ public static class SR
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises
             | Assumption.MembersAccessible
-            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.FieldsWrittenVisibly
+            | Assumption.MetadataWellFormed
+            | Assumption.NoThreadAborts -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf

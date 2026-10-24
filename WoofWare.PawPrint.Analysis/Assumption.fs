@@ -102,6 +102,26 @@ type Assumption =
     /// the field's declared type: on .NET 10's CoreLib, twelve methods are known with it that are
     /// "unknown" without, `Random`'s parameterless constructor among them.
     | FieldsWrittenVisibly
+    /// The metadata of every loaded image is well formed, so that none of CoreCLR's metadata
+    /// readers fails on it: a native whose contract holds under
+    /// `NativeAssumption.MetadataWellFormed` raises none of the exceptions CoreCLR makes of a
+    /// reader's failing HRESULT (by `IfFailThrow` or `ThrowHR`), `BadImageFormatException` and
+    /// others. A compiler writes well-formed metadata; an image written by hand, or damaged, can
+    /// hold a bad token, a row past a table's end, a heap index out of range or a malformed blob.
+    /// This assumption stands in for no method's body, so `Assumption.raises` and
+    /// `Assumption.constructs` list nothing for it.
+    | MetadataWellFormed
+    /// No thread is aborted: neither `ControlledExecution.Run` nor a debugger asks CoreCLR to abort
+    /// one. CoreCLR delivers a requested abort as `ThreadAbortException` wherever it next checks for
+    /// one, which is almost anywhere in managed code: where a hijacked return or a GC poll trips the
+    /// thread (`CommonTripThread`), where it redirects a thread it interrupted in fully interruptible
+    /// code, on a method's first call through the prestub, on return from a P/Invoke
+    /// (`JIT_PInvokeEndRarePath`), and where a wait or a lock checks for interruption
+    /// (`Thread::HandleThreadInterrupt`, `AwareLock::TryEnter`). A handler that catches it raises it
+    /// again at its end unless it calls `Thread.ResetAbort`, so no handler stops it. Without this
+    /// assumption, every method can let `ThreadAbortException` escape. It stands in for no method's
+    /// body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
+    | NoThreadAborts
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -117,6 +137,8 @@ module Assumption =
                 Assumption.DynamicCastsAsDocumented
                 Assumption.MembersAccessible
                 Assumption.FieldsWrittenVisibly
+                Assumption.MetadataWellFormed
+                Assumption.NoThreadAborts
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -166,7 +188,9 @@ module Assumption =
             ]
         | Assumption.JitOptimises
         | Assumption.MembersAccessible
-        | Assumption.FieldsWrittenVisibly -> []
+        | Assumption.FieldsWrittenVisibly
+        | Assumption.MetadataWellFormed
+        | Assumption.NoThreadAborts -> []
         | Assumption.DynamicCastsAsDocumented ->
             [
                 // What the documentation asks for, and what CoreLib throws in its place.
@@ -197,7 +221,9 @@ module Assumption =
         | Assumption.JitOptimises
         | Assumption.DynamicCastsAsDocumented
         | Assumption.MembersAccessible
-        | Assumption.FieldsWrittenVisibly -> []
+        | Assumption.FieldsWrittenVisibly
+        | Assumption.MetadataWellFormed
+        | Assumption.NoThreadAborts -> []
 
     /// Whether what an answer relies on this assumption for is what values hold, rather than what a
     /// method raises, so that no handler stops a failure of it: a method that relies on it, or calls
@@ -210,7 +236,9 @@ module Assumption =
         | Assumption.CoreLibTypeInitializers
         | Assumption.JitOptimises
         | Assumption.DynamicCastsAsDocumented
-        | Assumption.MembersAccessible -> false
+        | Assumption.MembersAccessible
+        | Assumption.MetadataWellFormed
+        | Assumption.NoThreadAborts -> false
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by
@@ -276,3 +304,4 @@ module Assumption =
     let ofNative (assumption : NativeAssumption) : Assumption =
         match assumption with
         | NativeAssumption.NamedTypesLoad -> Assumption.NamedTypesLoad
+        | NativeAssumption.MetadataWellFormed -> Assumption.MetadataWellFormed
