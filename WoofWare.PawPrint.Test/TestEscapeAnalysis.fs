@@ -6475,6 +6475,9 @@ namespace Client;
 public class DerivesFromGone : Provider.Gone { }
 public struct HoldsGone { public Provider.GoneStruct G; }
 public delegate void TakesHoldsGoneHandler(HoldsGone x);
+public delegate void TakesGoneStructHandler(Provider.GoneStruct x);
+public interface IStatic { static abstract void Target<U>(HoldsGone x); }
+public struct StaticStruct : IStatic { public static void Target<U>(HoldsGone x) { } }
 
 public static class Targets
 {
@@ -6497,6 +6500,10 @@ public static unsafe class Takes
     public static void Use(void* p) { }
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void UseDelegate(TakesHoldsGoneHandler d) { }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void UseStructDelegate(TakesGoneStructHandler d) { }
+
+    public static void* ConstrainedAddress<T>() where T : IStatic => (void*)(delegate*<HoldsGone, void>)&T.Target<int>;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void* InlinedAddress() => (void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone;
@@ -6516,6 +6523,8 @@ public static unsafe class Shared<T>
 
 public static unsafe class Addresses
 {
+    static void Use(void* p) { }
+
     public static string PointerToTakesHoldsGone()
     {
         try { Takes.Use((void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone); return null; }
@@ -6546,6 +6555,11 @@ public static unsafe class Addresses
         try { Takes.UseDelegate(new Instance().VirtualTakesHoldsGone); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
+    public static string DelegateToStaticTakesGoneStruct()
+    {
+        try { Takes.UseStructDelegate(Targets.TakesGoneStruct); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
     public static string DelegateToTakesHoldsGone()
     {
         try { Takes.UseDelegate(new Instance().TakesHoldsGone); return null; }
@@ -6566,6 +6580,16 @@ public static unsafe class Addresses
         try { Takes.Use(Takes.NotInlinedAddress()); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
+    public static string DiscardedPointerToTakesHoldsGone()
+    {
+        try { Use((void*)(delegate*<HoldsGone, void>)&Targets.TakesHoldsGone); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallsConstrainedAddress()
+    {
+        Takes.Use(Takes.ConstrainedAddress<StaticStruct>());
+        return null;
+    }
 }
 """
 
@@ -6582,7 +6606,10 @@ public static unsafe class Addresses
 
         let completeProvider = compile "Provider" [] (provider true)
         let incompleteProvider = compile "Provider" [] (provider false)
-        let clientImage = compile "Client" [ completeProvider ] client
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> TestJitTypeLoads.discardAddresses "Addresses"
 
         let typeLoad = "System.TypeLoadException"
 
@@ -6597,6 +6624,9 @@ public static unsafe class Addresses
                 "PointerToGenericTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "DelegateToVirtualTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, []
+                // Making a delegate over a static method loads what its signature names, which
+                // `JitTypeLoads` does not describe and the analysis takes to load in full.
+                "DelegateToStaticTakesGoneStruct", "GoneStruct", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 // The caller's JIT, inlining the method taking the address, asks for it.
                 "CallsInlinedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 // In shared code a generic dictionary supplies the address; the caller's JIT, inlining
@@ -6604,6 +6634,11 @@ public static unsafe class Addresses
                 "CallsSharedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 // The analysis does not tell which methods a JIT inlines.
                 "CallsNotInlinedAddress", "HoldsGone", CallOutcome.Caught typeLoad, [ typeLoad ]
+                // `Use`'s call replaced by a `pop`: nothing asks for the address.
+                "DiscardedPointerToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, []
+                // CoreCLR prepares the method resolving the `constrained.` prefix, compiling the
+                // method taking its address, which this caller does not catch.
+                "CallsConstrainedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
             ]
 
         // What running each caller does on the host's CoreCLR.
