@@ -1076,8 +1076,7 @@ module EscapeAnalysis =
         |> List.map (fun name ->
             match runtimeRaises state name ExceptionMaking.Preallocated with
             | thrown, [] -> thrown
-            | thrown, made ->
-                failwith $"BUG: raising %O{thrown} preallocated runs %d{made.Length} methods"
+            | thrown, made -> failwith $"BUG: raising %O{thrown} preallocated runs %d{made.Length} methods"
         )
 
     /// What the runtime raises for an `OpcodeFault` that `op` raises (`runtimeRaises`).
