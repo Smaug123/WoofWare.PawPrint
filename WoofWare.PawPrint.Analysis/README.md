@@ -178,7 +178,9 @@ method) may add more:
   type of the signature whose definition is there where it prepares the method as a function
   pointer: for `ldvirtftn` and a method a method specification instantiates, and otherwise where
   the JIT asks for the address of an `ldftn` whose address is not a delegate's target nor
-  dropped. The JIT asks compiling whatever method it inlines the `ldftn` into, so what that load
+  dropped. Making a delegate over a static method may load what the method's signature names,
+  which the analysis takes to be every type of it, in full. The JIT asks for an `ldftn`'s address
+  compiling whatever method it inlines the `ldftn` into, so what loading the value types then
   raises the analysis takes to escape every method that calls the body, directly or not, past all
   its handlers, as any of them may have the body inlined into it;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
