@@ -8331,9 +8331,9 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// A client compiled against one version of a provider, run against another lacking two types
-    /// and without the assembly `Optional`, naming generic definitions whose type parameters'
-    /// constraints name those types. CoreCLR's full load of a type loads its type parameters'
+    /// A client compiled against one version of a provider, run against another lacking one of its
+    /// types and without the assembly `Optional`, naming generic definitions whose type parameters'
+    /// constraints name that type or that assembly. CoreCLR's full load of a type loads its type parameters'
     /// constraints (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method names, fails to
     /// compile it, past the method's own `catch`, even in code shared between instantiations. The
     /// host's CoreCLR, running each method against the same assemblies, says which fail.
