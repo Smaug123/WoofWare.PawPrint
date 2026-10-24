@@ -6623,9 +6623,10 @@ public static unsafe class Addresses
                 "PointerToReturnsDerivesFromGone", "DerivesFromGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "PointerToGenericTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "DelegateToVirtualTakesHoldsGone", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
-                "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, []
-                // Making a delegate over a static method loads what its signature names, which
-                // `JitTypeLoads` does not describe and the analysis takes to load in full.
+                // Making a delegate over a static method, or an open one over an instance method,
+                // loads what its signature names, which `JitTypeLoads` does not describe and the
+                // analysis takes to load in full for any delegate.
+                "DelegateToTakesHoldsGone", "HoldsGone", CallOutcome.Runs, [ typeLoad ]
                 "DelegateToStaticTakesGoneStruct", "GoneStruct", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 // The caller's JIT, inlining the method taking the address, asks for it.
                 "CallsInlinedAddress", "HoldsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
