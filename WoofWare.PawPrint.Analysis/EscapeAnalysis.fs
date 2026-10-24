@@ -28,6 +28,12 @@ type Opacity =
     /// <c>EntryPointNotFoundException</c> or <c>AmbiguousImplementationException</c>, at the
     /// instruction itself in code compiled for an exact instantiation.
     | ConstrainedMethodPointer
+    /// A <c>constrained.</c> call that boxes its receiver, of a byref-like type, to call a method the
+    /// type does not declare, such as a default interface body. CoreCLR's JIT refuses to compile the
+    /// method there (<c>getBoxHelper</c> raises <c>InvalidProgramException</c>), which the analysis
+    /// does not follow. So too such a call on a type variable that allows a byref-like type, in a
+    /// definition analysed for every instantiation at once.
+    | BoxedByRefLikeReceiver
     /// The method is <c>InternalCall</c>, <c>PInvoke</c> or runtime-provided: its behaviour is not IL.
     | NativeBody
     /// The method is abstract.
@@ -253,6 +259,35 @@ type internal GenericHelperSite =
         Instruction : HelpedInstruction
     }
 
+/// A `constrained.` call of an instance method on a type that may be a value type. The JIT boxes
+/// the call's receiver, as `box` does, where the type is a value type and the method that runs is
+/// no method the type declares (`CORINFO_BOX_THIS`, `getCallInfo`, jitinterface.cpp), which only
+/// an instance of the body decides.
+type internal ReceiverBoxSite =
+    {
+        /// The type the prefix names, a token of the body's assembly.
+        Constrained : MetadataToken
+        /// The method the call names.
+        Named : Callee
+        /// Whether some instance of the body may name a byref-like type there, whose box the JIT
+        /// refuses.
+        MayBeByRefLike : bool
+    }
+
+/// Whether the JIT boxes the receiver of a `constrained.` call (`ReceiverBoxSite`), as an instance
+/// of the body making the call decides.
+[<RequireQualifiedAccess>]
+type internal ReceiverBox =
+    /// It passes the receiver's address to a method the type declares, or the reference there to
+    /// one a class has.
+    | Unboxed
+    /// It boxes it, by this `CastHelpers` method, or inline (`impImportAndPushBox`, importer.cpp).
+    | Boxed of JitHelper option
+    /// It refuses to, the type being byref-like (`getBoxHelper`, jitinterface.cpp).
+    | Refused
+    /// Only an instance decides.
+    | Undecided
+
 /// What follows a `box` in its block (`impBoxPatternMatch`, importer.cpp), which decides whether
 /// the JIT folds a box of a byref-like type away. It refuses one it does not fold.
 [<RequireQualifiedAccess>]
@@ -304,6 +339,10 @@ type internal LocalFacts =
         /// Each instruction whose `CastHelpers` method only an instance decides, by its offset.
         /// `Calls` has the runtime's call of each one some instance calls there.
         HelperSites : (int * GenericHelperSite) list
+        /// Each `constrained.` call that may box its receiver, by its offset. `Calls` has the
+        /// runtime's call of each `CastHelpers` method a `box` of the type the prefix names may
+        /// call there.
+        ReceiverBoxes : (int * ReceiverBoxSite) list
         /// Each `box` and `newarr` the JIT compiles, by its offset, which it may refuse to
         /// compile the body over, as only the type its token names decides (`refusalAt`).
         Refusals : (int * RefusalSite) list
@@ -2832,6 +2871,7 @@ module EscapeAnalysis =
             Consults = Set.empty
             LookedUp = []
             HelperSites = []
+            ReceiverBoxes = []
             Refusals = []
             Branching = None
         }
@@ -3176,6 +3216,7 @@ module EscapeAnalysis =
                 Consults = Set.empty
                 LookedUp = []
                 HelperSites = []
+                ReceiverBoxes = []
                 Refusals = []
                 Branching = None
             }
@@ -4705,6 +4746,54 @@ module EscapeAnalysis =
                     | _ -> state, helperCalls, helperSites
             )
 
+        // Where the JIT boxes the receiver of a `constrained.` call, as `box` does
+        // (`impTransformThis`, importercalls.cpp): where the type the prefix names is a value type
+        // and the method that runs is no method the type declares (`CORINFO_BOX_THIS`,
+        // `getCallInfo`, jitinterface.cpp), at every level of optimisation. Which method runs, an
+        // instance decides, so `Calls` has a call of each `CastHelpers` method a `box` of the type
+        // may call, and `instanceFacts` keeps the one an instance's box calls.
+        let state, helperCalls, receiverBoxes =
+            ((state, helperCalls, []), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun (state, helperCalls, receiverBoxes) index ->
+                let op, offset = ops.[index]
+
+                match op, Map.tryFind index targets, constrainedPrefix index with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, MetadataOperand.FromMetadata _),
+                  Some (CallTarget.Method callee),
+                  Some (prefix, constrainedType) when
+                    executed.Contains offset
+                    && not (unbound.Contains index)
+                    && not (unbound.Contains prefix)
+                    && not (elided.Contains index)
+                    && not (snd (methodOf state callee.Callee)).IsStatic
+                    ->
+                    match typeOperand state prefix with
+                    | state, None -> state, helperCalls, receiverBoxes
+                    | state, Some spelled ->
+                        let state, helpers, _ =
+                            helpersAt state (assemblyOf state spelled.SpelledIn) HelpedInstruction.Box spelled.Type
+
+                        let state, byRefLike = mayBeByRefLike state spelled spelled.Type
+
+                        if helpers.IsEmpty && not byRefLike then
+                            state, helperCalls, receiverBoxes
+                        else
+                            let called =
+                                helpers
+                                |> Seq.map (fun helper -> offset, runtimeRuns (jitHelperMethod state helper), [])
+                                |> List.ofSeq
+
+                            let site =
+                                {
+                                    Constrained = constrainedType
+                                    Named = callee
+                                    MayBeByRefLike = byRefLike
+                                }
+
+                            state, called @ helperCalls, (offset, site) :: receiverBoxes
+                | _ -> state, helperCalls, receiverBoxes
+            )
+
         let calls =
             stubs
             @ (lookedUp
@@ -4841,6 +4930,7 @@ module EscapeAnalysis =
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
             HelperSites = List.rev helperSites
+            ReceiverBoxes = List.rev receiverBoxes
             Refusals = List.rev refusals
             ConstrainedPointers = List.rev pointers
             Rethrows = List.rev rethrows
@@ -5329,15 +5419,14 @@ module EscapeAnalysis =
                     instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
                 )
 
-    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
-    /// the type the prefix names decides it (`dispatchOn`).
-    let private constrainedInstance
+    /// The type a `constrained.` prefix names, a token of `assembly`, when the body making the call
+    /// runs as `caller`; `None` where only an instance decides it.
+    let private constrainedReceiver
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
         (constrainedType : MetadataToken)
-        (callee : Callee)
-        : EscapeAnalysisState * DispatchOutcome
+        : EscapeAnalysisState * ConcreteTypeHandle option
         =
         let typeSystem, spelling, spellingAssembly =
             TypeSystemState.resolveTypeMetadataToken
@@ -5353,9 +5442,74 @@ module EscapeAnalysis =
                 TypeSystem = typeSystem
             }
 
-        match concretizeIn state caller spelling spellingAssembly.DefinitionFullName with
+        concretizeIn state caller spelling spellingAssembly.DefinitionFullName
+
+    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
+    /// the type the prefix names decides it (`dispatchOn`).
+    let private constrainedInstance
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (constrainedType : MetadataToken)
+        (callee : Callee)
+        : EscapeAnalysisState * DispatchOutcome
+        =
+        match constrainedReceiver state assembly caller constrainedType with
         | state, Some receiver -> dispatchOn state assembly caller receiver false callee
         | state, None -> state, DispatchOutcome.Undecided
+
+    /// Whether the JIT boxes the receiver of `site`, a `constrained.` call the body of `assembly`
+    /// makes running as `caller`. It does where the type the prefix names is a value type and the
+    /// method the call runs is no method the type declares (`TryResolveConstraintMethodApprox`,
+    /// methodtable.cpp, finds none): one it inherits from a class, a default interface body, or
+    /// one that is not virtual, such as `Object.GetType` (`getCallInfo`, jitinterface.cpp). It
+    /// boxes as `box` does. Where dispatch fails, it boxes before the call raises.
+    let private receiverBox
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (site : ReceiverBoxSite)
+        : EscapeAnalysisState * ReceiverBox
+        =
+        match constrainedReceiver state assembly caller site.Constrained with
+        | state, None -> state, ReceiverBox.Undecided
+        | state, Some receiver ->
+
+        match AllConcreteTypes.lookup receiver state.TypeSystem.ConcreteTypes with
+        | _ when TypeSystemState.isReferenceTypeHandle state.BaseTypes "EscapeAnalysis" state.TypeSystem receiver ->
+            state, ReceiverBox.Unboxed
+        | None -> state, ReceiverBox.Undecided
+        | Some concrete ->
+
+        let named = site.Named.Callee
+        let _, method = methodOf state named
+
+        let state, declared =
+            if not method.IsVirtual then
+                state, Some false
+            elif not (isOverridable state named) then
+                state, Some (declaringTypeOf state named = concrete.Identity)
+            else
+                match dispatchOn state assembly caller receiver false site.Named with
+                | state, DispatchOutcome.Reaches reached ->
+                    state, Some (declaringTypeOf state reached.Definition = concrete.Identity)
+                | state, DispatchOutcome.Raises _ -> state, Some false
+                | state, DispatchOutcome.Undecided -> state, None
+
+        match declared with
+        | None -> state, ReceiverBox.Undecided
+        | Some true -> state, ReceiverBox.Unboxed
+        | Some false ->
+            let _, definition = definitionOf state concrete.Identity
+
+            if definition.HasIsByRefLikeAttribute then
+                state, ReceiverBox.Refused
+            elif concrete.Identity = state.BaseTypes.Nullable.Identity then
+                state, ReceiverBox.Boxed (Some JitHelper.BoxNullable)
+            else
+                match boxedWithoutHelper state concrete.Identity with
+                | state, true -> state, ReceiverBox.Boxed None
+                | state, false -> state, ReceiverBox.Boxed (Some JitHelper.Box)
 
     /// The facts of a method definition, read once.
     let private factsFor (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
@@ -5791,6 +5945,7 @@ module EscapeAnalysis =
                             // filtered.
                             LookedUp = facts.LookedUp
                             HelperSites = facts.HelperSites
+                            ReceiverBoxes = facts.ReceiverBoxes |> List.filter (fst >> at)
                             // What the JIT compiles, which no value a caller passes decides.
                             Refusals = facts.Refusals
                             ConstrainedPointers =
@@ -5874,6 +6029,61 @@ module EscapeAnalysis =
                                     | CallSite.Virtual _ -> true
                                 )
                         }
+
+            // The JIT boxes a `constrained.` call's receiver by the one `CastHelpers` method, if any,
+            // that the instance's call picks, and refuses to box a byref-like one.
+            let state, refined =
+                if refined.ReceiverBoxes.IsEmpty then
+                    state, refined
+                else
+                    let assembly, _ = methodOf state instance.Definition
+                    let candidates = candidateHelpers HelpedInstruction.Box
+
+                    let state, excluded, opaque =
+                        ((state, [], []), refined.ReceiverBoxes)
+                        ||> List.fold (fun (state, excluded, opaque) (offset, site) ->
+                            let state, box = receiverBox state assembly instance.Arguments site
+
+                            let kept =
+                                match box with
+                                | ReceiverBox.Boxed helper -> Option.toList helper
+                                | ReceiverBox.Undecided -> candidates
+                                | ReceiverBox.Unboxed
+                                | ReceiverBox.Refused -> []
+
+                            let opaque =
+                                match box with
+                                | ReceiverBox.Refused ->
+                                    (offset, Opacity.BoxedByRefLikeReceiver, Some site.Named.Callee) :: opaque
+                                | ReceiverBox.Undecided when site.MayBeByRefLike ->
+                                    (offset, Opacity.BoxedByRefLikeReceiver, Some site.Named.Callee) :: opaque
+                                | ReceiverBox.Boxed _
+                                | ReceiverBox.Unboxed
+                                | ReceiverBox.Undecided -> opaque
+
+                            let others =
+                                candidates
+                                |> List.filter (fun helper -> not (List.contains helper kept))
+                                |> List.map (fun helper -> offset, jitHelperMethod state helper)
+
+                            state, others @ excluded, opaque
+                        )
+
+                    let excluded = Set.ofList excluded
+
+                    state,
+                    { refined with
+                        Opaque = opaque @ refined.Opaque
+                        Calls =
+                            refined.Calls
+                            |> List.filter (fun (offset, site, _) ->
+                                match site with
+                                | CallSite.Runtime callee -> not (excluded.Contains (offset, callee.Callee))
+                                | CallSite.Direct _
+                                | CallSite.Constrained _
+                                | CallSite.Virtual _ -> true
+                            )
+                    }
 
             // What the JIT raises, should it refuse to compile the instance.
             let state, refused =
