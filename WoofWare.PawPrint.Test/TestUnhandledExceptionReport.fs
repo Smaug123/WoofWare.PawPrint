@@ -38,7 +38,12 @@ module TestUnhandledExceptionReport =
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        BoundedRun.run loggerFactory name None peImage (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+        BoundedRun.run
+            loggerFactory
+            name
+            None
+            peImage
+            (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
         |> ExpectRun.ended
         |> reportOf
 
@@ -251,7 +256,7 @@ class Program
             let dotnetRuntimeDirs =
                 seq {
                     yield tempDir
-                    yield! FrameworkUnderTest.runtimeDirs ()
+                    yield! FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
                 }
                 |> ImmutableArray.CreateRange
 
@@ -377,7 +382,7 @@ class Program
                     "StoredException.cs"
                     None
                     peImage
-                    (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 |> ExpectRun.ended
             with
             | RunOutcome.NormalExit (state, _, _) -> state

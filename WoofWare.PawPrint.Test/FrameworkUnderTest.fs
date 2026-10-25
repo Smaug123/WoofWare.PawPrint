@@ -7,6 +7,7 @@ open Microsoft.Extensions.Logging.Abstractions
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Why the suite cannot run its guests on the framework it was asked for. Each case fails the
 /// run; none of them falls back to another framework.
@@ -263,6 +264,20 @@ module FrameworkUnderTest =
         | EmulatedRuntime.Net10 -> "DOTNET_LINUX_FRAMEWORK_DIR_NET10"
         | EmulatedRuntime.Net11 -> "DOTNET_LINUX_FRAMEWORK_DIR_NET11"
 
+    /// The environment variable in which the Nix devshell names the managed assemblies of
+    /// `runtime`'s osx-arm64 runtime pack, at the version `flake.nix` pins for it.
+    let osxFrameworkVariable (runtime : EmulatedRuntime) : string =
+        match runtime with
+        | EmulatedRuntime.Net10 -> "DOTNET_OSX_FRAMEWORK_DIR_NET10"
+        | EmulatedRuntime.Net11 -> "DOTNET_OSX_FRAMEWORK_DIR_NET11"
+
+    /// The environment variable naming `runtime`'s pinned runtime pack of `flavour`'s CoreLib:
+    /// `linuxFrameworkVariable` or `osxFrameworkVariable`.
+    let frameworkPackVariable (flavour : SimulatedUnixFlavour) (runtime : EmulatedRuntime) : string =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> linuxFrameworkVariable runtime
+        | SimulatedUnixFlavour.Darwin -> osxFrameworkVariable runtime
+
     let private devshellDirectory (variable : string) : string option =
         match Environment.GetEnvironmentVariable variable with
         | null
@@ -297,6 +312,11 @@ module FrameworkUnderTest =
     /// fallback.
     let requireLinuxFrameworkDirectory () : string =
         requireDevshellDirectory (linuxFrameworkVariable (runtime ())) "exercise the linux-x64 CoreLib"
+
+    /// The runtime under test's pinned runtime pack of `flavour`'s CoreLib; outside the Nix
+    /// devshell, the calling test is ignored.
+    let requireFrameworkPackDirectory (flavour : SimulatedUnixFlavour) : string =
+        requireDevshellDirectory (frameworkPackVariable flavour (runtime ())) $"run a guest on the %A{flavour} CoreLib"
 
     /// `runtime`'s pinned linux-x64 framework, whichever runtime is under test; outside the Nix
     /// devshell, the calling test is ignored.
@@ -336,6 +356,26 @@ module FrameworkUnderTest =
     /// (the guest's own siblings, say); if one of them holds a CoreLib, the guest runs on that
     /// CoreLib instead, and `assertServes` is what checks it is still the runtime under test's.
     let runtimeDirs () : ImmutableArray<string> = (selected ()).RuntimeDirs
+
+    /// The `DotnetRuntimeDirs` to run a guest along whose emulated kernel is `platform`: the
+    /// runtime under test's pinned runtime pack of `platform`'s flavour, ahead of `runtimeDirs ()`.
+    ///
+    /// CoreLib is compiled per target, so a process on a Linux kernel runs Linux's CoreLib and one
+    /// on Darwin's runs Darwin's, and a guest has to as well: on a kernel of the other flavour, a
+    /// host's own framework runs code that kernel never meets (Linux's `LowLevelLock` waits on a
+    /// futex, which Darwin has no counterpart of). The pack heads the list on every host, so that
+    /// a guest runs the same CoreLib wherever the suite runs, and `BoundedRun` holds every run to
+    /// it (`assertFlavourServes`). Binding takes the first directory holding an assembly, so the
+    /// pack serves every framework assembly it carries, and `runtimeDirs ()` the rest (ASP.NET
+    /// Core).
+    ///
+    /// Outside the Nix devshell, which alone names the packs, this is `runtimeDirs ()`, and the
+    /// guest runs on the host's framework whatever its kernel's flavour, unchecked: a non-Nix
+    /// checkout runs its guests as it always could, on the host's flavour of CoreLib.
+    let runtimeDirsFor (platform : SimulatedUnixPlatform) : ImmutableArray<string> =
+        match devshellDirectory (frameworkPackVariable (SimulatedUnixPlatform.flavour platform) (runtime ())) with
+        | Some pack -> (runtimeDirs ()).Insert (0, pack)
+        | None -> runtimeDirs ()
 
     /// The shared framework directory the `RealRuntime` oracle runs guests on.
     let sharedFrameworkDirectory () : string = (selected ()).SharedFrameworkDirectory
@@ -416,6 +456,30 @@ module FrameworkUnderTest =
         match checkServes (runtime ()) (loadedCoreLib state) with
         | Ok () -> ()
         | Error error -> failwith $"The run did not serve the framework under test: %s{describe error}"
+
+    /// Fails unless the CoreLib `state`'s run loaded is the runtime under test's pinned pack of
+    /// `platform`'s flavour, which `runtimeDirsFor platform` binds. Outside the Nix devshell, where
+    /// no pack is named and `runtimeDirsFor` binds the host's framework, this checks nothing.
+    let assertFlavourServes (platform : SimulatedUnixPlatform) (state : IlMachineState) : unit =
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        match devshellDirectory (frameworkPackVariable flavour (runtime ())) with
+        | None -> ()
+        | Some pack ->
+
+        let path = (loadedCoreLib state).OriginalPath
+
+        let fromPack =
+            match path with
+            | None -> false
+            | Some path ->
+                match Path.GetDirectoryName path with
+                | null -> false
+                | dir -> resolveLinks dir = resolveLinks pack
+
+        if not fromPack then
+            failwith
+                $"The run's kernel is %A{flavour}, so its CoreLib must be the pinned pack at %s{pack}, but it loaded %A{path}. Run the guest along `FrameworkUnderTest.runtimeDirsFor`, which puts that pack first."
 
     /// `assertServes` on the final state of `runEnd`.
     let assertOutcomeServes (runEnd : RunEnd) : unit = assertServes (RunEnd.state runEnd)

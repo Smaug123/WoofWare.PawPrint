@@ -694,8 +694,8 @@ public static class Entry
 }
 """
 
-    let private dotnetRuntimes : ImmutableArray<string> =
-        FrameworkUnderTest.runtimeDirs ()
+    let private dotnetRuntimes () : ImmutableArray<string> =
+        FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
     /// Run `joinTimeoutSource` under the given jitter strategy, returning the
     /// exit code and the state the guest left behind.
@@ -706,9 +706,9 @@ public static class Entry
         use peImage = new MemoryStream (image)
 
         let hostConfig =
-            { HostConfig.Default dotnetRuntimes with
+            { HostConfig.Default (dotnetRuntimes ()) with
                 Guest =
-                    { GuestConfig.Default dotnetRuntimes with
+                    { GuestConfig.Default (dotnetRuntimes ()) with
                         Kernel =
                             { KernelConfig.Default with
                                 ClockJitter = strategy

@@ -40,7 +40,8 @@ public class Program
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        let host = HostConfig.Default (FrameworkUnderTest.runtimeDirs ())
+        let host =
+            HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform)
 
         let host =
             { host with

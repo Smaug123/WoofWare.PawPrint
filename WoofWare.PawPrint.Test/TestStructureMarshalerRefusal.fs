@@ -58,7 +58,7 @@ public unsafe class Program
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        let runtimes = FrameworkUnderTest.runtimeDirs ()
+        let runtimes = FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         Assert.Throws<GuestFailureException> (fun () ->
             BoundedRun.runWith

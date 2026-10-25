@@ -402,7 +402,7 @@ public static class Program
                     fileName
                     (Some fileName)
                     peImage
-                    (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 |> ignore<RunEnd>
             )
 
@@ -451,7 +451,9 @@ public static class Program
                                 loggerFactory
                                 (Some sourceName)
                                 peImage
-                                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                                (HostConfig.Default (
+                                    FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
+                                ))
                         with _ ->
                             for message in messages () do
                                 Console.Error.WriteLine $"{message}"

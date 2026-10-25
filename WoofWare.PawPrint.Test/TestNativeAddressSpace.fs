@@ -258,7 +258,12 @@ public static unsafe class Program
 
         let state =
             match
-                BoundedRun.run loggerFactory name None peImage (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                BoundedRun.run
+                    loggerFactory
+                    name
+                    None
+                    peImage
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 |> ExpectRun.ended
             with
             | RunOutcome.NormalExit (state, _, _) -> state

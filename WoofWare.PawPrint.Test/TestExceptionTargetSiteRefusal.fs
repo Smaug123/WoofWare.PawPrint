@@ -199,7 +199,12 @@ public static class Program
 
         let exn =
             Assert.Catch (fun () ->
-                BoundedRun.run loggerFactory name None peImage (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                BoundedRun.run
+                    loggerFactory
+                    name
+                    None
+                    peImage
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
