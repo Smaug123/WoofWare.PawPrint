@@ -142,17 +142,22 @@ module UnmanagedTarget =
             | Some import -> import.Attributes.HasFlag MethodImportAttributes.SetLastError
             | None -> false
 
-        // A parameter's marshalling blob that is empty, or does not begin with the default native
-        // type, CoreCLR reads as spelling a marshalling (`ParseNativeTypeInfo`).
+        // CoreCLR finds a parameter's marshalling row by the parameter alone, whatever its
+        // `HasFieldMarshal` flag says, and reads a row whose blob is empty, or does not begin with
+        // the default native type, as spelling a marshalling (`ParseNativeTypeInfo`). A row whose
+        // blob index is zero looks here like no row, and is taken as none, which keeps the loads the
+        // walk may make.
         let marshalled =
             metadata.GetMethodDefinition(method).GetParameters ()
             |> Seq.map metadata.GetParameter
             |> Seq.filter (fun (parameter : Parameter) ->
-                parameter.Attributes.HasFlag ParameterAttributes.HasFieldMarshal
-            )
-            |> Seq.filter (fun (parameter : Parameter) ->
-                let blob = metadata.GetBlobBytes (parameter.GetMarshallingDescriptor ())
-                blob.Length = 0 || blob.[0] <> defaultNativeType
+                let descriptor = parameter.GetMarshallingDescriptor ()
+
+                if descriptor.IsNil then
+                    false
+                else
+                    let blob = metadata.GetBlobBytes descriptor
+                    blob.Length = 0 || blob.[0] <> defaultNativeType
             )
             |> Seq.map (fun (parameter : Parameter) -> parameter.SequenceNumber)
             |> Set.ofSeq
