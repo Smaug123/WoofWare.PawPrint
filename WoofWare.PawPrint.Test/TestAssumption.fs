@@ -31,7 +31,8 @@ module TestAssumption =
                     | None -> ()
             ]
 
-        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
+        // `JitOptimises`, `MembersAccessible`, `FieldsWrittenVisibly`, `MetadataWellFormed` and
+        // `NoThreadAborts` stand in for no method.
         summarised
         |> List.map fst
         |> Set.ofList
@@ -42,6 +43,8 @@ module TestAssumption =
                     Assumption.JitOptimises
                     Assumption.MembersAccessible
                     Assumption.FieldsWrittenVisibly
+                    Assumption.MetadataWellFormed
+                    Assumption.NoThreadAborts
                 ]
         )
 
@@ -62,7 +65,9 @@ module TestAssumption =
             | Assumption.DynamicCastsAsDocumented -> count |> shouldEqual 1
             | Assumption.JitOptimises
             | Assumption.MembersAccessible
-            | Assumption.FieldsWrittenVisibly -> count |> shouldEqual 0
+            | Assumption.FieldsWrittenVisibly
+            | Assumption.MetadataWellFormed
+            | Assumption.NoThreadAborts -> count |> shouldEqual 0
 
         for assumption, method in summarised do
             let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
@@ -109,7 +114,9 @@ module TestAssumption =
                 | other -> failwith $"%A{assumption} summarises a method with no IL: %A{other}"
             | Assumption.JitOptimises
             | Assumption.MembersAccessible
-            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %s{name}"
+            | Assumption.FieldsWrittenVisibly
+            | Assumption.MetadataWellFormed
+            | Assumption.NoThreadAborts -> failwith $"%A{assumption} summarises %s{name}"
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``the resource lookup's contract stands in for one method of the CoreLib, the one it names``

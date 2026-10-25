@@ -916,26 +916,18 @@ module EscapeAnalysis =
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name and arity"
 
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
-    /// name (`ExceptionMaking.ResourceMessage`): `Environment.GetResourceStringLocal`.
+    /// name (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
     let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
-        let corelib = state.BaseTypes.Corelib
+        nativeCall state (NativeCall.resolve state.Runtime NativeCall.ResourceMessage)
+        |> fst
 
-        let found =
-            corelib.TryGetTopLevelTypeDef "System" "Environment"
-            |> Option.toList
-            |> List.collect (fun ty -> List.ofSeq ty.Methods)
-            |> List.filter (fun m ->
-                m.Name = "GetResourceStringLocal"
-                && m.IsStatic
-                && m.Signature.ParameterTypes.Length = 1
-            )
-            |> List.choose (fun m -> m.TryMetadata)
+    /// Whether the analysis's caller allows `assumption`.
+    let internal allows (state : EscapeAnalysisState) (assumption : Assumption) : bool =
+        state.Assumptions.Contains assumption
 
-        match found with
-        | [ facts ] -> MethodKey.make corelib facts.Handle
-        | found ->
-            failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Environment.GetResourceStringLocal(string), found %d{found.Length}"
+    /// The managed code a native method calls (`NativeContract.Runs`), and what it passes.
+    let internal nativeCallee (state : EscapeAnalysisState) (call : NativeCall) : MethodKey * SpelledArgument list =
+        nativeCall state (NativeCall.resolve state.Runtime call)
 
     /// The one static method of CoreLib's `ns.typeName` of this name that takes `arity` arguments.
     let private corelibStatic
@@ -3747,7 +3739,7 @@ module EscapeAnalysis =
             contracted
                 (exactly contract.Raises)
                 (contract.Assumes |> List.map Assumption.ofNative)
-                (constructors @ List.map (nativeCall state) contract.Runs)
+                (constructors @ List.map (nativeCallee state) contract.Runs)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.
@@ -7965,6 +7957,20 @@ module EscapeAnalysis =
                 )
 
             let assumes = Set.union assumes (facts.Relies |> List.map snd |> Set.ofList)
+
+            // A requested abort can arise anywhere in the body, and no handler stops it, since a
+            // catch raises it again at its end (`Assumption.NoThreadAborts`). Where CoreCLR cannot
+            // allocate the abort's exception, it raises its preallocated `OutOfMemoryException`
+            // instead (`CLRException::GetBestException`), which a handler catches as usual; but the
+            // abort can arise where no handler of the body protects it, as in a handler's own code.
+            let types, assumes =
+                if state.Assumptions.Contains Assumption.NoThreadAborts then
+                    types, Set.add Assumption.NoThreadAborts assumes
+                else
+                    types
+                    |> Set.add (ThrownType.Exactly (corelibType state "System.Threading" "ThreadAbortException"))
+                    |> Set.add (ThrownType.Exactly (corelibType state "System" "OutOfMemoryException")),
+                    assumes
 
             state,
             {

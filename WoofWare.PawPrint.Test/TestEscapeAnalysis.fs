@@ -1534,9 +1534,18 @@ public static class SR
                         yield $"%s{describe ()}, expected unknown %b{unknown}"
                     | _ -> ()
 
+                    // Allowed, the assumption that no thread is aborted removes from every answer what it
+                    // would otherwise raise.
+                    let expected (assumes : Assumption list) : Set<Assumption> =
+                        if EscapeAnalysis.allows analysis Assumption.NoThreadAborts then
+                            Set.ofList assumes |> Set.add Assumption.NoThreadAborts
+                        else
+                            Set.ofList assumes
+
                     match expectation.Assumes with
-                    | Some assumes when Set.ofList assumes <> escapes.Assumes ->
-                        yield $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{assumes}"
+                    | Some assumes when expected assumes <> escapes.Assumes ->
+                        yield
+                            $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{Set.toList (expected assumes)}"
                     | _ -> ()
                 ]
 
@@ -1921,7 +1930,8 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
+        // `JitOptimises`, `MembersAccessible`, `FieldsWrittenVisibly`, `MetadataWellFormed` and
+        // `NoThreadAborts` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
@@ -1932,6 +1942,8 @@ public static class SR
                     Assumption.JitOptimises
                     Assumption.MembersAccessible
                     Assumption.FieldsWrittenVisibly
+                    Assumption.MetadataWellFormed
+                    Assumption.NoThreadAborts
                 ]
         )
 
@@ -1945,7 +1957,9 @@ public static class SR
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises
             | Assumption.MembersAccessible
-            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.FieldsWrittenVisibly
+            | Assumption.MetadataWellFormed
+            | Assumption.NoThreadAborts -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -2001,7 +2015,13 @@ public static class SR
                 escapes.Unknown |> shouldEqual false
 
                 escapes.Assumes
-                |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+                |> shouldEqual (
+                    made
+                    |> List.map _.Assumes
+                    |> Set.unionMany
+                    |> Set.add assumption
+                    |> Set.add Assumption.NoThreadAborts
+                )
 
             // Those constructors are known allowed only the assumptions about what constructing a
             // CoreLib exception runs: its message's lookup runs `SR`'s type initializer, and may
@@ -2185,7 +2205,9 @@ public static class SR
         // A type initializer it runs may fail, and the runtime may throw that one's own exception
         // again, which reads its stack trace.
         let assuming, escapes =
-            EscapeAnalysis.escapes (analysis (Set.singleton Assumption.StackTracePreserved)) key
+            EscapeAnalysis.escapes
+                (analysis (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ]))
+                key
 
         render assuming escapes
         |> shouldEqual (
@@ -2195,7 +2217,9 @@ public static class SR
         )
 
         escapes.Unknown |> shouldEqual false
-        escapes.Assumes |> shouldEqual (Set.singleton Assumption.StackTracePreserved)
+
+        escapes.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ])
 
         // Allowed every other assumption, only reading that stack trace is hidden.
         let unassuming, escapes =
@@ -2266,6 +2290,8 @@ public static class SR
                 let analysis, (made, unknown) =
                     ((analysis, (made, false)), row.Contract.Runs)
                     ||> List.fold (fun (analysis, (made, unknown)) call ->
+                        let call = NativeCall.resolve (FrameworkUnderTest.runtime ()) call
+
                         let analysis, escapes =
                             EscapeAnalysis.escapes analysis (methodNamed corelib call.DeclaringType call.Method)
 
@@ -2279,6 +2305,124 @@ public static class SR
             )
 
         ()
+
+    /// A row that runs CoreCLR's lookup of a resource message (`NativeCall.ResourceMessage`) runs the
+    /// CoreLib method the runtime under test calls for it.
+    [<Test>]
+    let ``a native's lookup of a resource message runs the runtime's method for it`` () : unit =
+        let analysis = analysisOver [] id
+        let key, _ = EscapeAnalysis.nativeCallee analysis NativeCall.ResourceMessage
+
+        let expected =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> "System.Environment::GetResourceStringLocal"
+            | EmulatedRuntime.Net11 -> "System.Environment::GetResourceString"
+
+        EscapeAnalysis.methodName analysis key |> shouldEqual expected
+
+    /// Methods that do nothing, or that catch everything their bodies raise.
+    let private abortSource =
+        """
+using System;
+using System.Threading;
+
+namespace Aborts;
+
+public static class Cases
+{
+    public static int Constant() => 1;
+
+    public static void CatchesAll()
+    {
+        try { Constant(); } catch { }
+    }
+
+    public static void Filters()
+    {
+        try { Constant(); } catch (Exception) when (true) { }
+    }
+
+    public static void CatchesAbort()
+    {
+        try { Constant(); } catch (ThreadAbortException) { }
+    }
+
+    public static void Throws() => throw new InvalidOperationException();
+}
+"""
+
+    /// A requested abort (`Assumption.NoThreadAborts`) can arise in any method, and no handler stops
+    /// it, since a catch raises it again at its end. Where CoreCLR cannot allocate the abort's
+    /// exception, it raises its preallocated `OutOfMemoryException` instead, which can arise where
+    /// no handler of the method protects it. Assuming no thread is aborted removes both, and every
+    /// answer says it relies on that.
+    [<Test>]
+    let ``every method can raise ThreadAbortException, or OutOfMemoryException in its place, unless no thread is aborted``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let corelib = hostCoreLib ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Aborts" OutputKind.DynamicallyLinkedLibrary [ abortSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "Aborts.dll") (new MemoryStream (image))
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                [ fixture ]
+                id
+
+        let methods =
+            [
+                for name in [ "Constant" ; "CatchesAll" ; "Filters" ; "CatchesAbort" ; "Throws" ] do
+                    yield name, methodNamed fixture "Aborts.Cases" name
+                // An FCall the contract table describes, and a method an assumption's contract
+                // stands in for.
+                yield "GetToken", methodNamed corelib "System.RuntimeTypeHandle" "GetToken"
+                yield "InternalPreserveStackTrace", methodNamed corelib "System.Exception" "InternalPreserveStackTrace"
+            ]
+
+        let abort = "=System.Threading.ThreadAbortException"
+        let outOfMemory = "=System.OutOfMemoryException"
+
+        let answers (analysis : EscapeAnalysisState) : (string * (bool * bool * bool)) list =
+            let _, answers =
+                ((analysis, []), methods)
+                ||> List.fold (fun (analysis, answers) (name, key) ->
+                    let analysis, escapes = EscapeAnalysis.escapes analysis key
+                    let rendered = render analysis escapes
+
+                    analysis,
+                    (name,
+                     (rendered.Contains abort,
+                      rendered.Contains outOfMemory,
+                      escapes.Assumes.Contains Assumption.NoThreadAborts))
+                    :: answers
+                )
+
+            List.rev answers
+
+        // Raising both, and not assuming them away.
+        answers (analysis (Set.remove Assumption.NoThreadAborts Assumption.all))
+        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (true, true, false)))
+
+        // Not raising the abort, and assuming it away. These raise no `OutOfMemoryException` then,
+        // so the abort's is not added where the assumption is allowed.
+        let raisesNoOutOfMemory = set [ "Constant" ; "CatchesAll" ; "CatchesAbort" ]
+
+        answers (analysis Assumption.all)
+        |> List.iter (fun (name, (raisesAbort, raisesOutOfMemory, assumes)) ->
+            (name, raisesAbort, assumes) |> shouldEqual (name, false, true)
+
+            if raisesNoOutOfMemory.Contains name then
+                (name, raisesOutOfMemory) |> shouldEqual (name, false)
+        )
 
     /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
     /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
@@ -4969,7 +5113,9 @@ public static class Cases
 
         span.Unknown |> shouldEqual false
         span.Types |> shouldEqual Set.empty
-        span.Assumes |> shouldEqual (Set.singleton Assumption.JitOptimises)
+
+        span.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.JitOptimises ; Assumption.NoThreadAborts ])
 
         // Not assumed to, it calls both.
         let unassuming =
