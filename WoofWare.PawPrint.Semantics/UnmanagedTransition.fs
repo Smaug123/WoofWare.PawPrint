@@ -104,6 +104,21 @@ module UnmanagedTarget =
     /// (`NATIVE_TYPE_DEFAULT`, which is `NATIVE_TYPE_MAX`).
     let private defaultNativeType : byte = 0x50uy
 
+    /// Whether `method`, a P/Invoke of `assembly`, passes a locale as an argument: its first
+    /// `LCIDConversion` attribute names, as its one fixed argument, a parameter index other than -1.
+    /// CoreCLR reads -1 where the attribute is missing or its blob does not parse
+    /// (`GetLCIDParameterIndex`).
+    let private convertsLocale (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : bool =
+        match NamedAttribute.ofMethod lcidConversion assembly method with
+        | [] -> false
+        | attribute :: _ ->
+            let blob = attribute.Value
+
+            blob.Length >= 6
+            && blob.[0] = 1uy
+            && blob.[1] = 0uy
+            && System.BitConverter.ToInt32 (blob.AsSpan (2, 4)) <> -1
+
     let private runtimeMarshalling (assembly : DumpedAssembly) : bool =
         (NamedAttribute.ofAssembly disableRuntimeMarshalling assembly).IsEmpty
 
@@ -146,7 +161,7 @@ module UnmanagedTarget =
             {
                 PreservesSignature = preservesSignature
                 SetsLastError = setsLastError
-                ConvertsLocale = not (NamedAttribute.ofMethod lcidConversion assembly method).IsEmpty
+                ConvertsLocale = convertsLocale assembly method
                 TakesVariableArguments =
                     definition.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
                 RuntimeMarshalling = runtimeMarshalling assembly
