@@ -8968,6 +8968,8 @@ public static unsafe class Natives
     [DllImport("nowhere")]
     public static extern void ClassThenGenericOfGone(Provider.Kept k, Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
+    public static extern void GenericThenGenericOfGone(Provider.KeptGeneric<Provider.Kept> k, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
     public static extern bool ReturnsBoolTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
     public static extern Provider.Kept ReturnsKeptTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
@@ -9038,6 +9040,7 @@ public static unsafe class Calls
     public static void ArrayThen() { if (never) Natives.ArrayThenGenericOfGone(null, null); }
     public static void ByrefThen() { if (never) Natives.ByrefThenGenericOfGone(ref *(int*)null, null); }
     public static void ClassThen() { if (never) Natives.ClassThenGenericOfGone(null, null); }
+    public static void GenericThen() { if (never) Natives.GenericThenGenericOfGone(null, null); }
     public static void ReturnsBool() { if (never) Natives.ReturnsBoolTakesGenericOfGone(null); }
     public static void ReturnsKept() { if (never) Natives.ReturnsKeptTakesGenericOfGone(null); }
     public static void SwiftPointerThenString() { if (never) Natives.SwiftPointerThenString(null, null); }
@@ -9163,6 +9166,8 @@ public static unsafe class Calls
                 "Client.Calls", "ArrayThen", false
                 "Client.Calls", "ByrefThen", false
                 "Client.Calls", "ClassThen", false
+                // The walk loads an instantiation of a class, and ends there.
+                "Client.Calls", "GenericThen", false
                 "Client.Calls", "ReturnsBool", false
                 "Client.Calls", "ReturnsKept", false
                 // A pointer's target is what Swift's convention reads, which would fail here.
